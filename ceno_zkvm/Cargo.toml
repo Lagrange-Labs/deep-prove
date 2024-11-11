@@ -32,7 +32,7 @@ tracing-subscriber.workspace = true
 clap = { version = "4.5", features = ["derive"] }
 generic_static = "0.2"
 rand.workspace = true
-tempfile = "3.13"
+tempfile = "3.14"
 thread_local = "1.1"
 
 [dev-dependencies]
