@@ -2137,6 +2137,7 @@ dependencies = [
  "goldilocks",
  "itertools 0.13.0",
  "log",
+ "mpcs",
  "multilinear_extensions",
  "rayon",
  "serde",

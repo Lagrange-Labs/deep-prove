@@ -76,11 +76,14 @@ where
         );
         // N variable to address 2^N rows and M variables to address 2^M columns
         let num_vars = self.nrows().ilog2() + self.ncols().ilog2();
-        DenseMultilinearExtension::from_evaluation_vec_smart(
-            num_vars as usize,
-            self.coeffs.par_iter().flatten().cloned().collect(),
-        )
+        DenseMultilinearExtension::from_evaluation_vec_smart(num_vars as usize, self.evals())
     }
+
+    /// Returns the evaluation point, in order for (row,col) addressing
+    pub fn evals(&self) -> Vec<E> {
+        self.coeffs.par_iter().flatten().cloned().collect()
+    }
+
     pub fn pad_next_power_of_two(mut self) -> Self {
         // assume the matrix is already well formed and there is always n_rows and n_cols
         // this is because we control the creation of the matrix in the first place
@@ -186,6 +189,12 @@ mod test {
         }
         pub fn get(&self, i: usize, j: usize) -> E {
             self.coeffs[i][j].clone()
+        }
+        pub fn random_eval_point(&self) -> Vec<E> {
+            let mut rng = thread_rng();
+            let r = rng.gen_range(0..self.nrows());
+            let c = rng.gen_range(0..self.ncols());
+            self.position_to_boolean(r, c)
         }
     }
 

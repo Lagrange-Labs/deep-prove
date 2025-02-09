@@ -187,6 +187,12 @@ pub(crate) mod test {
         let mut rng = thread_rng();
         (0..n).map(|_| E::random(&mut rng)).collect_vec()
     }
+    pub fn random_bool_vector<E: ExtensionField>(n: usize) -> Vec<E> {
+        let mut rng = thread_rng();
+        (0..n)
+            .map(|_| E::from(rng.gen_bool(0.5) as u64))
+            .collect_vec()
+    }
 
     impl<E: ExtensionField> Model<E> {
         /// Returns a random model with specified number of dense layers and a matching input.

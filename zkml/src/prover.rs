@@ -88,12 +88,12 @@ impl<E: ExtensionField> Context<E> {
             .iter()
             .map(|layer| {
                 // construct dimension of the polynomial given to the sumcheck
-                let (nrows, ncols) = layer.dim();
+                let (_, ncols) = layer.dim();
                 // each poly is only two polynomial right now: matrix and vector
                 // for matrix, each time we fix the variables related to rows so we are only left
                 // with the variables related to columns
                 let matrix_num_vars = ncols.ilog2() as usize;
-                let vector_num_vars = ncols.ilog2() as usize;
+                let vector_num_vars = matrix_num_vars;
                 // there is only one product (i.e. quadratic sumcheck)
                 VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![
                     matrix_num_vars,
@@ -212,7 +212,7 @@ where
             let final_prover_point = state
                 .get_mle_final_evaluations()
                 .into_iter()
-                .fold(E::ONE, |mut acc, eval| acc * eval);
+                .fold(E::ONE, |acc, eval| acc * eval);
             assert_eq!(computed_point, final_prover_point);
 
             // NOTE: this expected_evaluation is computed by the verifier on the "reduced"
@@ -297,6 +297,7 @@ pub fn verify<E: ExtensionField>(
     // 2. Verify each proof sequentially
     for (i, (step, aux)) in proof.steps.iter().zip(ctx.polys_aux).enumerate() {
         info!("verify {}: aux {:?}", i, aux);
+        // TODO: currently that API can panic - should remove panic for error
         let subclaim =
             IOPVerifierState::<E>::verify(claimed_sum, &step.proof, &aux, &mut transcript);
 
@@ -382,7 +383,7 @@ mod test {
         let output = trace.final_output();
         let ctx = Context::generate(&model);
         let io = IO::new(input, output.to_vec());
-        let mut prover = Prover::new();
+        let prover = Prover::new();
         let proof = prover.prove(trace);
         verify(ctx, proof, io).expect("invalid proof");
     }

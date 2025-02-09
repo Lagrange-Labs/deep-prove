@@ -23,3 +23,4 @@ transcript = { version = "0.1.0", path = "../transcript" }
 tracing-subscriber.workspace = true
 log = "0.4.25"
 serde.workspace = true
+mpcs = { version = "0.1.0", path = "../mpcs" }
