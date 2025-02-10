@@ -4,7 +4,7 @@ use crate::{
     VectorTranscript,
     model::{Model, PolyID},
 };
-use anyhow::Context as CC;
+use anyhow::{ensure, Context as CC};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use mpcs::{Basefold, BasefoldBasecodeParams, PolynomialCommitmentScheme, util::arithmetic::sum};
@@ -241,9 +241,11 @@ where
         ctx.write_to_transcript(t)?;
         // 1. verify sumcheck proof
         let fs_challenges = t.read_challenges(self.claims.len());
+        // pairs of (r,y) = (point,eval) claims
         let (full_r, full_y): (Vec<Vec<_>>, Vec<_>) = self
             .claims
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|c| (c.point, c.eval))
             .multiunzip();
         let y_agg = aggregated_rlc(&full_y, &fs_challenges);
@@ -258,6 +260,33 @@ where
         // 3. Manually evaluate the beta matrix MLE to get the output to check the final sumcheck
         //    claim
 
+        // Dummy values - to be replaced with actual values
+        let pairs: Vec<(usize, E)> = self.claims
+        .iter()
+        .map(|claim| {
+            let size = 1 << claim.point.len(); // Size of polynomial for this claim
+            (size, claim.eval)                 // Pair of (size, evaluation)
+        })
+        .collect();
+
+        // Final verification step
+        let mut beta_evals = fs_challenges.iter()
+            .zip(&full_r)
+            //  x_i == sumcheck point <=> r_i * 1 == r_i, otherwise r_i * 0 = 0
+            // Q: why would sumcheck point ever be == r_i ??
+            .map(|(&r_i, x_i)| r_i * identity_eval(x_i, &proof.sumcheck.point))
+            .collect::<Vec<_>>();
+
+        let mut pos = 0;
+        for (i, (size, _)) in pairs.iter().enumerate() {
+            let prod = get_offset_product(*size, pos, &proof.sumcheck.point);
+            pos += size;
+            beta_evals[i] *= prod;
+        }
+
+        let vr = beta_evals.iter().fold(E::ZERO, |acc, &eval| acc - eval);
+
+        ensure!(vr == E::ZERO, "Error in final check");
         Ok(())
     }
 }
@@ -279,6 +308,7 @@ where
 
 /// Individual claim to accumulate with others in a single sumcheck + PCS opening
 /// It implements equality traits for sorting in decreasing order
+#[derive(Clone,Debug)]
 struct IndividualClaim<E> {
     // the index in which this individual claim has been committed to in the aggregated poly
     // Note given the index is given by the context, it's already by decreasing order.
@@ -366,6 +396,38 @@ fn beta_matrix_mle<E: ExtensionField>(ris: &[Vec<E>], ais: &[E]) -> DenseMultili
     DenseMultilinearExtension::from_evaluations_ext_vec(betas.len().ilog2() as usize, betas)
 }
 
+/// Compute multilinear identity test between two points: returns 1 if points are equal, 0 if different.
+/// Used as equality checker in polynomial commitment verification.
+/// Compute Beta(r1,r2) = prod_{i \in [n]}((1-r1[i])(1-r2[i]) + r1[i]r2[i])
+fn identity_eval<E: ExtensionField>(r1: &[E], r2: &[E]) -> E {
+    assert_eq!(r1.len(), r2.len(), "vectors must have same length");
+    r1.iter()
+        .zip(r2)
+        .fold(E::ONE, |eval, (r1_i, r2_i)| {
+            let one = E::ONE;
+            eval * (*r1_i * r2_i + (one - r1_i) * (one - r2_i))
+        })
+}
+
+/// Computes the product of offset terms for a given position and random vector
+fn get_offset_product<E: ExtensionField>(size: usize, mut pos: usize, r: &[E]) -> E {
+    // 1. Convert 'pos' into its binary representation
+    let mut bits = vec![E::ZERO; r.len()];
+    // Convert position to binary representation in little-endian order
+    for i in (0..r.len()).rev() {  // Changed: iterate in reverse
+        bits[i] = if pos & 1 == 1 { E::ONE } else { E::ZERO };
+        pos >>= 1;
+    }
+    
+    let num_vars_needed = r.len() - size.ilog2() as usize;
+    // Compute product for the required number of variables
+    (0..num_vars_needed).fold(E::ONE, |prod, i| {
+        let bit = bits[r.len() - 1 - i];
+        let r_i = r[r.len() - 1 - i];
+        prod * (bit * r_i + (E::ONE - bit) * (E::ONE - r_i))
+    })
+}
+
 #[cfg(test)]
 mod test {
     use ark_std::rand::{Rng, thread_rng};
@@ -375,7 +437,7 @@ mod test {
     use multilinear_extensions::mle::MultilinearExtension;
 
     use crate::{
-        commit::compute_betas_eval,
+        commit::{compute_betas_eval, get_offset_product, identity_eval},
         model::test::{random_bool_vector, random_vector},
         pad_vector,
         prover::default_transcript,
@@ -414,34 +476,6 @@ mod test {
         }
         verifier.verify(&ctx, proof, &mut t)?;
 
-        // let fs_challenges = t.read_challenges(nclaims);
-        // let y_agg = aggregated_rlc(&full_y, &fs_challenges);
-        //// construct the matrix with the betas scaled
-        // let beta_mle = beta_matrix_mle(&full_r, &fs_challenges);
-        // let mut full_poly =
-        //    VirtualPolynomial::new(std::cmp::max(beta_mle.num_vars(), full_witness.num_vars()));
-
-        // full_poly.add_mle_list(vec![beta_mle.into(), full_witness.clone().into()], F::ONE);
-
-        // let (sumcheck_proof, state) =
-        //    IOPProverState::<F>::prove_parallel(full_poly.clone(), &mut t);
-        //// now we need to produce a proof of opening the witness MLE at the requested point
-        //// 1 because first poly is the betas poly, second is the witness one and we are only
-        ////   interested in producing a PCS opening proof for the witness one.
-        // let eval = state.get_mle_final_evaluations()[1];
-        // let point = sumcheck_proof.point.clone();
-        // let pcs_proof = Pcs::open(&pp, &full_witness, &comm, &point, &eval, &mut t)
-        //    .expect("not able to commit");
-
-        //// VERIFIER part
-        // let mut t = default_transcript();
-        // Pcs::write_commitment(&Pcs::get_pure_commitment(&comm), &mut t)
-        //    .expect("can't write commitment");
-
-        //// claimed_sum = y_agg
-        // let subclaim =
-        //    IOPVerifierState::<F>::verify(y_agg, &sumcheck_proof, &full_poly.aux_info, &mut t);
-        //// now check the pcs opening proof
         Ok(())
     }
 
@@ -455,5 +489,37 @@ mod test {
         let r2 = random_bool_vector::<F>(n / 2);
         assert_ne!(beta_mle.evaluate(&r2), F::ONE);
         assert_eq!(beta_mle.evaluate(&r2), F::ZERO);
+    }
+
+    #[test]
+    fn test_identity_eval() {
+        let n = 4;
+        let r1 = random_bool_vector::<F>(n);
+        
+        // When vectors are identical, should return 1
+        let r2 = r1.clone();
+        let result = identity_eval(&r1, &r2);
+        assert_eq!(result, F::ONE);
+    
+        // When vectors are different, should return 0
+        let r2 = random_bool_vector::<F>(n);
+        let result = identity_eval(&r1, &r2);
+        assert_eq!(result, F::ZERO);
+    }
+
+    #[test]
+    fn test_get_offset_product() {
+        let size = 4;  // Original polynomial of size 4 (2^2 variables)
+        let n = 4;     // Total variables in concatenated space
+        let r = vec![F::ONE, F::ZERO, F::ONE, F::ZERO];  // Some test point
+        
+        // When evaluating at position 0 (first slice)
+        let result0 = get_offset_product(size, 0, &r);
+        
+        // When evaluating at position 4 (second slice)
+        let result4 = get_offset_product(size, 4, &r);
+        
+        // Results will be different because they're enforcing different slices
+        assert_ne!(result0, result4);
     }
 }
