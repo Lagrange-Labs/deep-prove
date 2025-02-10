@@ -30,28 +30,16 @@ crossbeam-channel = "0.5"
 ff = "0.13"
 goldilocks = { git = "https://github.com/scroll-tech/ceno-Goldilocks" }
 itertools = "0.13"
-num-derive = "0.4"
-num-traits = "0.2"
-paste = "1"
 plonky2 = "0.2"
 poseidon = { path = "./poseidon" }
-pprof2 = { version = "0.13", features = ["flamegraph"] }
-prettytable-rs = "^0.10"
-proptest = "1"
 rand = "0.8"
 rand_chacha = { version = "0.3", features = ["serde1"] }
-rand_core = "0.6"
-rand_xorshift = "0.3"
 rayon = "1.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-strum = "0.26"
-strum_macros = "0.26"
-tiny-keccak = { version = "2.0.2", features = ["keccak"] }
 tracing = { version = "0.1", features = [
   "attributes",
 ] }
-tracing-forest = { version = "0.1.6" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [profile.dev]

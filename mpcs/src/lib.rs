@@ -113,7 +113,7 @@ pub trait PolynomialCommitmentScheme<E: ExtensionField>: Clone + Debug {
     type Param: Clone + Debug + Serialize + DeserializeOwned;
     type ProverParam: Clone + Debug + Serialize + DeserializeOwned;
     type VerifierParam: Clone + Debug + Serialize + DeserializeOwned;
-    type CommitmentWithWitness: Clone + Debug;
+    type CommitmentWithWitness: Clone + Debug + Serialize + DeserializeOwned;
     type Commitment: Clone + Debug + Default + Serialize + DeserializeOwned;
     type CommitmentChunk: Clone + Debug + Default;
     type Proof: Clone + Debug + Serialize + DeserializeOwned;
@@ -299,17 +299,28 @@ impl<F> Evaluation<F> {
     }
 }
 
-#[derive(Clone, Debug)]
+use thiserror::Error;
+#[derive(Clone, Debug, Error)]
 pub enum Error {
+    #[error("invalid sumcheck")]
     InvalidSumcheck(String),
+    #[error("invalid pcs params")]
     InvalidPcsParam(String),
+    #[error("invalid pcs open")]
     InvalidPcsOpen(String),
+    #[error("invalid snark")]
     InvalidSnark(String),
+    #[error("invalid serialization")]
     Serialization(String),
+    #[error("invalid transcript")]
     Transcript(String),
+    #[error("extension field not correct")]
     ExtensionFieldElementNotFit,
+    #[error("too large polynomial to handle")]
     PolynomialTooLarge(usize),
+    #[error("inconsistency in poly sizes")]
     PolynomialSizesNotEqual,
+    #[error("merkle root mismatch")]
     MerkleRootMismatch,
 }
 

@@ -3,6 +3,9 @@ use multilinear_extensions::mle::DenseMultilinearExtension;
 
 use crate::matrix::Matrix;
 
+/// A layer has a unique ID associated to it in the model
+pub type PolyID = usize;
+
 #[derive(Clone, Debug)]
 pub enum Layer<E> {
     // TODO: replace this with a Tensor based implementation
@@ -30,6 +33,12 @@ impl<E: ExtensionField> Layer<E> {
             Layer::Dense(ref matrix) => matrix.to_mle(),
         }
     }
+
+    pub fn evals(&self) -> Vec<E> {
+        match self {
+            Layer::Dense(ref matrix) => matrix.evals(),
+        }
+    }
 }
 
 /// NOTE: this doesn't handle dynamism in the model with loops for example for LLMs where it
@@ -48,6 +57,7 @@ impl<E: ExtensionField> Model<E> {
     pub fn add_layer(&mut self, l: Layer<E>) {
         self.layers.push(l);
     }
+
     pub fn run<'a>(&'a self, input: Vec<E>) -> InferenceTrace<'a, E> {
         let mut trace = InferenceTrace::new(input);
         for layer in &self.layers {
@@ -58,8 +68,17 @@ impl<E: ExtensionField> Model<E> {
         }
         trace
     }
-    pub fn layers(&self) -> &[Layer<E>] {
-        &self.layers
+
+    pub fn layers(&self) -> impl DoubleEndedIterator<Item = (PolyID, &Layer<E>)> {
+        self.layers.iter().enumerate()
+    }
+
+    pub fn nlayers(&self) -> usize {
+        self.layers.len()
+    }
+
+    pub fn layer(&self, idx: usize) -> Option<(PolyID, &Layer<E>)> {
+        self.layers.get(idx).map(|l| (idx, l))
     }
 }
 
@@ -187,6 +206,7 @@ pub(crate) mod test {
         let mut rng = thread_rng();
         (0..n).map(|_| E::random(&mut rng)).collect_vec()
     }
+
     pub fn random_bool_vector<E: ExtensionField>(n: usize) -> Vec<E> {
         let mut rng = thread_rng();
         (0..n)

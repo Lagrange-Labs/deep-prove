@@ -18,7 +18,7 @@ pub struct Challenge<F> {
 use ff_ext::ExtensionField;
 use goldilocks::SmallField;
 /// The Transcript trait
-pub trait Transcript<E: ExtensionField> {
+pub trait Transcript<E: ExtensionField>: Clone {
     /// Append a slice of base field elemets to the transcript.
     ///
     /// An implementation has to provide at least one of

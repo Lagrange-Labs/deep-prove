@@ -1,5 +1,4 @@
 #![feature(iter_next_chunk)]
-use rayon::iter::IntoParallelIterator;
 
 use derive_more::{Deref, From};
 use ff_ext::ExtensionField;
@@ -29,10 +28,16 @@ pub(crate) fn scale_vector<E: ExtensionField, I: IntoIterator<Item = E>>(
     v.into_iter().map(|v_i| scaling * v_i).collect_vec()
 }
 
+pub fn pad_vector<E: ExtensionField>(mut v: Vec<E>) -> Vec<E> {
+    if !v.len().is_power_of_two() {
+        v.resize(v.len().next_power_of_two(), E::ZERO);
+    }
+    v
+}
 /// Returns a MLE out of the given vector, of the right length
 // TODO : make that part of tensor somehow?
-pub(crate) fn vector_to_mle<E: ExtensionField>(mut v: Vec<E>) -> DenseMultilinearExtension<E> {
-    v.resize(v.len().next_power_of_two(), E::ZERO);
+pub(crate) fn vector_to_mle<E: ExtensionField>(v: Vec<E>) -> DenseMultilinearExtension<E> {
+    let v = pad_vector(v);
     DenseMultilinearExtension::from_evaluation_vec_smart(v.len().ilog2() as usize, v)
 }
 
