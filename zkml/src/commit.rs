@@ -41,7 +41,7 @@ where
     // value is a tuple:
     //  * 0: the index of the poly in the vector of poly when ordered by decreasing order
     //  * 1: the size of the poly - needed by verifier to efficiently compute the beta MLE eval at random point
-    poly_info: HashMap<PolyID, (usize,usize)>,
+    poly_info: HashMap<PolyID, usize>,
     // 
     // VERIFIER PART
     vp: <Pcs<E> as PolynomialCommitmentScheme<E>>::VerifierParam,
@@ -74,10 +74,8 @@ where
         // sort in decreasing order
         polys.sort_by(|(_, w_i), (_, y_i)| y_i.len().cmp(&w_i.len()));
         let sorted_ids = polys.iter().map(|(id, poly)| (id,poly.len()));
-        println!("CONTEXT: sorted_ids: {:?}",sorted_ids);
         let id_order =
-            HashMap::from_iter(sorted_ids.into_iter().enumerate().map(|(i, (id,poly_len))| (*id, (i,poly_len))));
-        println!("CONTEXT: id_order: {:?}",id_order);
+            HashMap::from_iter(sorted_ids.into_iter().map(|(id,poly_len)| (*id, poly_len)));
 
         let flattened = polys
             .into_iter()
@@ -115,7 +113,7 @@ where
 /// Structure that can prove the opening of multiple polynomials at different points.
 struct CommitProver<E: ExtensionField> {
     /// all individual claims accumulated so far ordered by decreasing size of the poly
-    claims: BTreeSet<IndividualClaim<E>>,
+    claims: Vec<IndividualClaim<E>>,
 }
 
 impl<E: ExtensionField> CommitProver<E>
@@ -134,33 +132,30 @@ where
     /// corresponding poly.
     pub fn add_claim(
         &mut self,
-        ctx: &Context<E>,
         id: PolyID,
         point: Vec<E>,
         // Note this one is not necessary and should be removed down the line for the prover
         eval: E,
     ) -> anyhow::Result<()> {
-        let index = ctx
-            .poly_info
-            .get(&id)
-            .context("no layer saved in ctx for {layer}")?.0;
         let claim = IndividualClaim {
-            index_order: index,
             poly_id: id,
             point,
             eval,
         };
-        self.claims.insert(claim);
+        self.claims.push(claim);
         Ok(())
     }
 
     pub fn prove<T: Transcript<E>>(
-        self,
+        mut self,
         ctx: &Context<E>,
         t: &mut T,
     ) -> anyhow::Result<CommitProof<E>> {
-        println!("\n");
-        println!("PROVER: claims: {:?}",self.claims);
+        self.claims.sort_by(|a,b| {
+            // decreasing order so b > a
+           ctx.poly_info.get(&b.poly_id).unwrap().cmp(ctx.poly_info.get(&a.poly_id).unwrap())
+        });
+
         ctx.write_to_transcript(t)?;
         let mut debug_transcript = t.clone();
         let fs_challenges = t.read_challenges(self.claims.len());
@@ -170,8 +165,6 @@ where
             .map(|c| (c.point, c.eval))
             .multiunzip();
 
-        println!("PROVER: fs_challenges: {:?}",fs_challenges);
-        println!("PROVER: full_r: {:?}",full_r);
         // construct the matrix with the betas scaled
         let beta_mle = beta_matrix_mle(&full_r, &fs_challenges);
         assert_eq!(beta_mle.num_vars(), ctx.polys.num_vars());
@@ -195,7 +188,6 @@ where
                 IOPVerifierState::<E>::verify(y_agg, &sumcheck_proof, &ctx.poly_aux, &mut t);
             let computed = full_poly.evaluate(&subclaim.point_flat());
             debug_assert_eq!(computed, subclaim.expected_evaluation);
-            println!("PROVER: final_beta_eval(r) {:?}",state.get_mle_final_evaluations()[0]);
             true
         });
         // now we need to produce a proof of opening the witness MLE at the requested point
@@ -215,7 +207,7 @@ where
 }
 
 struct CommitVerifier<E> {
-    claims: BTreeSet<IndividualClaim<E>>,
+    claims: Vec<IndividualClaim<E>>,
 }
 
 impl<E: ExtensionField> CommitVerifier<E>
@@ -230,37 +222,32 @@ where
     }
     pub fn add_claim(
         &mut self,
-        ctx: &Context<E>,
         id: PolyID,
         point: Vec<E>,
         eval: E,
     ) -> anyhow::Result<()> {
-        let index = ctx
-            .poly_info
-            .get(&id)
-            .context("no layer saved in ctx for {layer}")?.0;
         let claim = IndividualClaim {
-            index_order: index,
             poly_id: id,
             point,
             eval,
         };
-        self.claims.insert(claim);
+        self.claims.push(claim);
         Ok(())
     }
 
     pub fn verify<T: Transcript<E>>(
-        self,
+        mut self,
         ctx: &Context<E>,
         proof: CommitProof<E>,
         t: &mut T,
     ) -> anyhow::Result<()> {
-        println!("\n");
-        println!("VERIFIER: claims: {:?}",self.claims);
+        self.claims.sort_by(|a,b| {
+            // decreasing order so b > a
+           ctx.poly_info.get(&b.poly_id).unwrap().cmp(ctx.poly_info.get(&a.poly_id).unwrap())
+        });
         ctx.write_to_transcript(t)?;
         // 1. verify sumcheck proof
         let fs_challenges = t.read_challenges(self.claims.len());
-        println!("VERIFIER: fs_challenge: {:?}",fs_challenges);
         // pairs of (r,y) = (point,eval) claims
         // these are ordered in the decreasing order of the corresponding poly
         let (full_r, full_y): (Vec<Vec<_>>, Vec<_>) = self
@@ -269,7 +256,6 @@ where
             .cloned()
             .map(|c| (c.point, c.eval))
             .multiunzip();
-        println!("VERIFIER: full_r: {:?}",full_r);
         let y_agg = aggregated_rlc(&full_y, &fs_challenges);
         let subclaim = IOPVerifierState::<E>::verify(y_agg, &proof.sumcheck, &ctx.poly_aux, t);
 
@@ -282,36 +268,35 @@ where
         // 3. Manually evaluate the beta matrix MLE to get the output to check the final sumcheck
         //    claim
 
-        // index of the poly and size
-        let pairs: Vec<(usize, usize)> = self.claims
+        // Size of each poly, ORDERED by decreasing size of poly
+        let pairs: Vec<usize> = self.claims
         .iter()
         .enumerate()
         .map(|(idx,claim)| {
             let info = *ctx.poly_info.get(&claim.poly_id).expect("invalid layer - this is a bug");
-            assert_eq!(info.0,idx);
             info
         })
         .collect();
-        println!("VERIFIER: pairs: {:?}",pairs);
 
-        // Final verification step
         let mut beta_evals = fs_challenges.iter()
             .zip(&full_r)
             .map(|(&x_i, r_i)| x_i * identity_eval(r_i, &proof.sumcheck.point))
             .collect::<Vec<_>>();
 
         let mut pos = 0;
-        for (idx, poly_size) in pairs.iter() {
+        for (idx, poly_size) in pairs.iter().enumerate() {
             let prod = get_offset_product(*poly_size, pos, &proof.sumcheck.point);
             pos += poly_size;
-            beta_evals[*idx] *= prod;
-            println!("VERIFIER: adding prod from {} poly_size to idx {}",poly_size,idx);
+            beta_evals[idx] *= prod;
         }
 
         let computed = beta_evals.iter().fold(E::ZERO, |acc, &eval| acc + eval);
+        // 0 since poly is f_beta(..) * f_w(..) so beta comes firt
         let expected = proof.individual_evals[0];
-        println!("VERIFIER: computed final beta(r) : {:?}", computed);
         ensure!(computed == expected, "Error in beta evaluation check");
+        // 4. just make sure the final claim of the sumcheck is consistent with f_beta(r) * f_w(r)
+        let full_eval = proof.individual_evals[0] * proof.individual_evals[1];
+        ensure!(full_eval == subclaim.expected_evaluation,"Error in final evaluation check");
         Ok(())
     }
 }
@@ -335,32 +320,9 @@ where
 /// It implements equality traits for sorting in decreasing order
 #[derive(Clone,Debug)]
 struct IndividualClaim<E> {
-    // the index in which this individual claim has been committed to in the aggregated poly
-    // it's used to order the claims and polynomials by decreasing size
-    index_order: usize,
     poly_id: PolyID,
     point: Vec<E>,
     eval: E,
-}
-
-impl<E: ExtensionField> PartialEq for IndividualClaim<E> {
-    fn eq(&self, other: &Self) -> bool {
-        self.index_order == other.index_order
-    }
-}
-
-impl<E: ExtensionField> Eq for IndividualClaim<E> {}
-
-impl<E: ExtensionField> PartialOrd for IndividualClaim<E> {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.index_order.partial_cmp(&other.index_order)
-    }
-}
-
-impl<E: ExtensionField> Ord for IndividualClaim<E> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.index_order.cmp(&other.index_order)
-    }
 }
 
 /// Random linear combination of claims and random elements derived from transcript
@@ -440,20 +402,60 @@ fn identity_eval<E: ExtensionField>(r1: &[E], r2: &[E]) -> E {
 }
 
 /// Computes the product of offset terms for a given position and random vector
-fn get_offset_product<E: ExtensionField>(size: usize, mut pos: usize, r: &[E]) -> E {
-    // 1. Convert 'pos' into its binary representation
-    let mut bits = vec![E::ZERO; r.len()];
-    // Convert position to binary representation in little-endian order
-    for i in (0..r.len()).rev() {  // Changed: iterate in reverse
+/// fn get_offset_product<E: ExtensionField>(size: usize, mut pos: usize, r: &[E]) -> E {
+///    // 1. Convert 'pos' into its binary representation
+///    let mut bits = vec![E::ZERO; r.len()];
+///    // Convert position to binary representation in little-endian order
+///    for i in (0..r.len()).rev() {  // Changed: iterate in reverse
+///        bits[i] = if pos & 1 == 1 { E::ONE } else { E::ZERO };
+///        pos >>= 1;
+///    }
+///    
+///    let num_vars_needed = r.len() - size.ilog2() as usize;
+///    // Compute product for the required number of variables
+///    (0..num_vars_needed).fold(E::ONE, |prod, i| {
+///        let bit = bits[r.len() - 1 - i];
+///        let r_i = r[r.len() - 1 - i];
+///        prod * (bit * r_i + (E::ONE - bit) * (E::ONE - r_i))
+///    })
+/// }
+/// 
+/// Computes the offset product for a given claim.
+/// 
+/// # Parameters
+/// - `claim_size`: The size (number of entries) corresponding to the claim.
+/// - `mut pos`: The position (an integer) whose binary representation will be used.
+/// - `rand_vec`: The vector of random field elements (corresponding to `r` in the C++ code).
+///
+/// # Returns
+/// The product computed from the bits of `pos` and corresponding values in `rand_vec`.
+fn get_offset_product<E: ExtensionField>(
+    claim_size: usize,
+    mut pos: usize,
+    rand_vec: &[E],
+) -> E {
+    // Create a vector to hold the bits.
+    // In the C++ code, bits are pushed in LSB-first order;
+    // here we fill the vector in reverse so that the most significant end of the vector
+    // contains what C++ would later pick from bits[r.size()-1 - i].
+    let mut bits = vec![E::ZERO; rand_vec.len()];
+    
+    // Fill 'bits' such that bits[0] becomes the LSB, bits[len-1] the MSB.
+    // By iterating in reverse, we mimic the eventual reversal in the C++ code.
+    for i in (0..rand_vec.len()) {
         bits[i] = if pos & 1 == 1 { E::ONE } else { E::ZERO };
         pos >>= 1;
     }
     
-    let num_vars_needed = r.len() - size.ilog2() as usize;
-    // Compute product for the required number of variables
+    // The number of variables to be “folded” is determined by log2(claim_size).
+    // This is equivalent to 'r.size() - (int)log2(size)' in C++.
+    let num_vars_needed = rand_vec.len() - claim_size.ilog2() as usize;
+    
+    // Now, accumulate the product similar to the C++ loop.
     (0..num_vars_needed).fold(E::ONE, |prod, i| {
-        let bit = bits[r.len() - 1 - i];
-        let r_i = r[r.len() - 1 - i];
+        // Access from the end of the vector (i.e. effectively reversing the bits again)
+        let bit = bits[rand_vec.len() - 1 - i];
+        let r_i = rand_vec[rand_vec.len() - 1 - i];
         prod * (bit * r_i + (E::ONE - bit) * (E::ONE - r_i))
     })
 }
@@ -479,9 +481,10 @@ mod test {
 
     #[test]
     fn test_commit_batch() -> anyhow::Result<()> {
-        let n_poly = 2;
+        let n_poly = 7;
+        //let range = thread_rng().gen_range(3..15);
         let polys = (0..n_poly)
-            .map(|_| pad_vector(random_vector::<F>(thread_rng().gen_range(3..15))))
+            .map(|_| pad_vector(random_vector::<F>(thread_rng().gen_range(3..24))))
             .enumerate()
             .collect_vec();
         let ctx = Context::generate(polys.clone())?;
@@ -492,7 +495,7 @@ mod test {
             let p = random_bool_vector(poly.len().ilog2() as usize);
             let eval = vector_to_mle(poly.clone()).evaluate(&p);
             claims.push((id, p.clone(), eval.clone()));
-            prover.add_claim(&ctx, id, p, eval)?;
+            prover.add_claim( id, p, eval)?;
         }
 
         let mut t = default_transcript();
@@ -502,7 +505,7 @@ mod test {
         let mut verifier = CommitVerifier::new();
         let mut t = default_transcript();
         for (id, point, eval) in claims {
-            verifier.add_claim(&ctx, id, point, eval)?;
+            verifier.add_claim(id, point, eval)?;
         }
         verifier.verify(&ctx, proof, &mut t)?;
 
