@@ -21,7 +21,7 @@ type Pcs<E> = Basefold<E, BasefoldBasecodeParams>;
 // TODO: separate context into verifier and prover ctx once thing is working
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
-struct Context<E: ExtensionField>
+pub struct Context<E: ExtensionField>
 where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
@@ -38,9 +38,7 @@ where
     // keeps track of which layer do we layout first in the sequence of witness/poly we commit to
     // key is the id of the polynomial (we associated each polynomial to an "ID" so verifier and prover can 
     // add any claim about any polynomial before proving/verifying)
-    // value is a tuple:
-    //  * 0: the index of the poly in the vector of poly when ordered by decreasing order
-    //  * 1: the size of the poly - needed by verifier to efficiently compute the beta MLE eval at random point
+    // value is the index of the poly in the vector of poly when ordered by decreasing order
     poly_info: HashMap<PolyID, usize>,
     // 
     // VERIFIER PART
@@ -106,12 +104,13 @@ where
     pub fn write_to_transcript<T: Transcript<E>>(&self, t: &mut T) -> anyhow::Result<()> {
         Pcs::write_commitment(&Pcs::get_pure_commitment(&self.commitment), t)
             .context("can't write commtiment")?;
+        // TODO: write the rest of the struct
         Ok(())
     }
 }
 
 /// Structure that can prove the opening of multiple polynomials at different points.
-struct CommitProver<E: ExtensionField> {
+pub struct CommitProver<E: ExtensionField> {
     /// all individual claims accumulated so far ordered by decreasing size of the poly
     claims: Vec<IndividualClaim<E>>,
 }
@@ -156,6 +155,13 @@ where
            ctx.poly_info.get(&b.poly_id).unwrap().cmp(ctx.poly_info.get(&a.poly_id).unwrap())
         });
 
+        // verify the consistency of the individual polys lens with the claims
+        for (idx,claim) in self.claims.iter().enumerate() {
+            let poly_size = *ctx.poly_info.get(&claim.poly_id).context("claim refers to unknown poly")?;
+            let given_size = 1 << claim.point.len() as usize;
+            ensure!(poly_size == given_size,format!("claim {idx} doesn't have right format: poly {} has size {poly_size} vs input {given_size}",claim.poly_id));
+        }
+
         ctx.write_to_transcript(t)?;
         let mut debug_transcript = t.clone();
         let fs_challenges = t.read_challenges(self.claims.len());
@@ -170,6 +176,7 @@ where
         assert_eq!(beta_mle.num_vars(), ctx.polys.num_vars());
         let mut full_poly = VirtualPolynomial::new(ctx.polys.num_vars());
 
+        // TODO: remove that clone
         full_poly.add_mle_list(vec![beta_mle.into(), ctx.polys.clone().into()], E::ONE);
         assert_eq!(full_poly.aux_info, ctx.poly_aux);
 
@@ -206,7 +213,7 @@ where
     }
 }
 
-struct CommitVerifier<E> {
+pub struct CommitVerifier<E> {
     claims: Vec<IndividualClaim<E>>,
 }
 
@@ -272,7 +279,7 @@ where
         let pairs: Vec<usize> = self.claims
         .iter()
         .enumerate()
-        .map(|(idx,claim)| {
+        .map(|(_idx,claim)| {
             let info = *ctx.poly_info.get(&claim.poly_id).expect("invalid layer - this is a bug");
             info
         })
@@ -295,6 +302,7 @@ where
         let expected = proof.individual_evals[0];
         ensure!(computed == expected, "Error in beta evaluation check");
         // 4. just make sure the final claim of the sumcheck is consistent with f_beta(r) * f_w(r)
+        // now that we've verified both individually we can just multiply and compare
         let full_eval = proof.individual_evals[0] * proof.individual_evals[1];
         ensure!(full_eval == subclaim.expected_evaluation,"Error in final evaluation check");
         Ok(())
@@ -305,7 +313,7 @@ where
 /// vector of (point,eval) claims.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
-struct CommitProof<E: ExtensionField>
+pub struct CommitProof<E: ExtensionField>
 where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,

@@ -987,6 +987,7 @@ dependencies = [
  "rayon",
  "serde",
  "tracing",
+ "transcript",
 ]
 
 [[package]]

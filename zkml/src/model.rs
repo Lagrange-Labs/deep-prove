@@ -54,16 +54,20 @@ impl<E: ExtensionField> Model<E> {
             layers: Default::default(),
         }
     }
-    pub fn add_layer(&mut self, l: Layer<E>) {
+    fn add_layer(&mut self, l: Layer<E>) {
         self.layers.push(l);
     }
 
     pub fn run<'a>(&'a self, input: Vec<E>) -> InferenceTrace<'a, E> {
         let mut trace = InferenceTrace::new(input);
-        for layer in &self.layers {
+        for (id,layer) in self.layers() {
             let input = trace.last_input();
             let output = layer.op(input);
-            let step = InferenceStep { layer, output };
+            let step = InferenceStep { 
+                layer, 
+                output,
+                id,
+            };
             trace.push_step(step);
         }
         trace
@@ -183,6 +187,7 @@ impl<'t, 'a, E> DoubleEndedIterator for InferenceTraceIterator<'t, 'a, E> {
 }
 
 pub struct InferenceStep<'a, E> {
+    pub id: PolyID,
     /// Reference to the layer that produced this step
     pub layer: &'a Layer<E>,
     /// Output produced by this layer

@@ -18,6 +18,7 @@ itertools.workspace = true
 rayon.workspace = true
 serde.workspace = true
 tracing.workspace = true
+transcript = { version = "0.1.0", path = "../transcript" }
 
 [dev-dependencies]
 env_logger = "0.11"
