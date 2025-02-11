@@ -305,12 +305,13 @@ where
             let prod = get_offset_product(*poly_size, pos, &proof.sumcheck.point);
             pos += poly_size;
             beta_evals[*idx] *= prod;
+            println!("VERIFIER: adding prod from {} poly_size to idx {}",poly_size,idx);
         }
 
         let computed = beta_evals.iter().fold(E::ZERO, |acc, &eval| acc + eval);
         let expected = proof.individual_evals[0];
         println!("VERIFIER: computed final beta(r) : {:?}", computed);
-        ensure!(computed == expected, "Error in final check");
+        ensure!(computed == expected, "Error in beta evaluation check");
         Ok(())
     }
 }
