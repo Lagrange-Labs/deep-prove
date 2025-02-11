@@ -7,7 +7,7 @@ use crate::{
 use anyhow::{ensure, Context as CC};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use mpcs::{Basefold, BasefoldBasecodeParams, PolynomialCommitmentScheme, util::arithmetic::sum};
+use mpcs::{Basefold, BasefoldBasecodeParams, PolynomialCommitmentScheme};
 use multilinear_extensions::{
     mle::{DenseMultilinearExtension, MultilinearExtension},
     virtual_poly::{VPAuxInfo, VirtualPolynomial},
@@ -15,8 +15,6 @@ use multilinear_extensions::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
 use transcript::Transcript;
-
-use crate::vector_to_mle;
 
 type Pcs<E> = Basefold<E, BasefoldBasecodeParams>;
 
@@ -28,16 +26,26 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
+    // PROVER PART
     pp: <Pcs<E> as PolynomialCommitmentScheme<E>>::ProverParam,
-    vp: <Pcs<E> as PolynomialCommitmentScheme<E>>::VerifierParam,
     commitment: <Pcs<E> as PolynomialCommitmentScheme<E>>::CommitmentWithWitness,
-    vcommitment: <Pcs<E> as PolynomialCommitmentScheme<E>>::Commitment,
     /// already flattened out polys evals by decreasing order
     polys: DenseMultilinearExtension<E>,
+    //
+    // COMMON PART
     /// Needed to verify the sumcheck proof
     poly_aux: VPAuxInfo<E>,
     // keeps track of which layer do we layout first in the sequence of witness/poly we commit to
-    id_order: HashMap<PolyID, usize>,
+    // key is the id of the polynomial (we associated each polynomial to an "ID" so verifier and prover can 
+    // add any claim about any polynomial before proving/verifying)
+    // value is a tuple:
+    //  * 0: the index of the poly in the vector of poly when ordered by decreasing order
+    //  * 1: the size of the poly - needed by verifier to efficiently compute the beta MLE eval at random point
+    poly_info: HashMap<PolyID, (usize,usize)>,
+    // 
+    // VERIFIER PART
+    vp: <Pcs<E> as PolynomialCommitmentScheme<E>>::VerifierParam,
+    vcommitment: <Pcs<E> as PolynomialCommitmentScheme<E>>::Commitment,
 }
 
 impl<E: ExtensionField> Context<E>
@@ -55,20 +63,23 @@ where
     /// It also orders the polys by decreasing size and keep the ordering information.
     /// NOTE: it assumes each individual poly is padded to a power of two (they don't need to be of
     /// equal size)
-    pub fn generate(mut evals: Vec<(PolyID, Vec<E>)>) -> anyhow::Result<Self> {
-        assert!(evals.iter().all(|(_, w_i)| w_i.len().is_power_of_two()));
+    pub fn generate(mut polys: Vec<(PolyID, Vec<E>)>) -> anyhow::Result<Self> {
+        assert!(polys.iter().all(|(_, w_i)| w_i.len().is_power_of_two()));
         // we pad the concatenated evals to the next power of two as well
-        let padded_size = evals
+        let padded_size = polys
             .iter()
             .map(|(_, w_i)| w_i.len())
             .sum::<usize>()
             .next_power_of_two();
         // sort in decreasing order
-        evals.sort_by(|(_, w_i), (_, y_i)| y_i.len().cmp(&w_i.len()));
-        let sorted_ids = evals.iter().map(|(id, _)| id);
+        polys.sort_by(|(_, w_i), (_, y_i)| y_i.len().cmp(&w_i.len()));
+        let sorted_ids = polys.iter().map(|(id, poly)| (id,poly.len()));
+        println!("CONTEXT: sorted_ids: {:?}",sorted_ids);
         let id_order =
-            HashMap::from_iter(sorted_ids.into_iter().enumerate().map(|(i, id)| (*id, i)));
-        let flattened = evals
+            HashMap::from_iter(sorted_ids.into_iter().enumerate().map(|(i, (id,poly_len))| (*id, (i,poly_len))));
+        println!("CONTEXT: id_order: {:?}",id_order);
+
+        let flattened = polys
             .into_iter()
             .map(|(_, w_i)| w_i)
             .flatten()
@@ -89,7 +100,7 @@ where
             commitment: comm,
             vcommitment,
             polys: mle,
-            id_order,
+            poly_info: id_order,
         })
     }
 
@@ -130,11 +141,12 @@ where
         eval: E,
     ) -> anyhow::Result<()> {
         let index = ctx
-            .id_order
+            .poly_info
             .get(&id)
-            .context("no layer saved in ctx for {layer}")?;
+            .context("no layer saved in ctx for {layer}")?.0;
         let claim = IndividualClaim {
-            index_order: *index,
+            index_order: index,
+            poly_id: id,
             point,
             eval,
         };
@@ -147,6 +159,8 @@ where
         ctx: &Context<E>,
         t: &mut T,
     ) -> anyhow::Result<CommitProof<E>> {
+        println!("\n");
+        println!("PROVER: claims: {:?}",self.claims);
         ctx.write_to_transcript(t)?;
         let mut debug_transcript = t.clone();
         let fs_challenges = t.read_challenges(self.claims.len());
@@ -156,11 +170,12 @@ where
             .map(|c| (c.point, c.eval))
             .multiunzip();
 
+        println!("PROVER: fs_challenges: {:?}",fs_challenges);
+        println!("PROVER: full_r: {:?}",full_r);
         // construct the matrix with the betas scaled
         let beta_mle = beta_matrix_mle(&full_r, &fs_challenges);
-        let mut full_poly =
-            VirtualPolynomial::new(std::cmp::max(beta_mle.num_vars(), ctx.polys.num_vars()));
         assert_eq!(beta_mle.num_vars(), ctx.polys.num_vars());
+        let mut full_poly = VirtualPolynomial::new(ctx.polys.num_vars());
 
         full_poly.add_mle_list(vec![beta_mle.into(), ctx.polys.clone().into()], E::ONE);
         assert_eq!(full_poly.aux_info, ctx.poly_aux);
@@ -180,6 +195,7 @@ where
                 IOPVerifierState::<E>::verify(y_agg, &sumcheck_proof, &ctx.poly_aux, &mut t);
             let computed = full_poly.evaluate(&subclaim.point_flat());
             debug_assert_eq!(computed, subclaim.expected_evaluation);
+            println!("PROVER: final_beta_eval(r) {:?}",state.get_mle_final_evaluations()[0]);
             true
         });
         // now we need to produce a proof of opening the witness MLE at the requested point
@@ -220,11 +236,12 @@ where
         eval: E,
     ) -> anyhow::Result<()> {
         let index = ctx
-            .id_order
+            .poly_info
             .get(&id)
-            .context("no layer saved in ctx for {layer}")?;
+            .context("no layer saved in ctx for {layer}")?.0;
         let claim = IndividualClaim {
-            index_order: *index,
+            index_order: index,
+            poly_id: id,
             point,
             eval,
         };
@@ -238,55 +255,62 @@ where
         proof: CommitProof<E>,
         t: &mut T,
     ) -> anyhow::Result<()> {
+        println!("\n");
+        println!("VERIFIER: claims: {:?}",self.claims);
         ctx.write_to_transcript(t)?;
         // 1. verify sumcheck proof
         let fs_challenges = t.read_challenges(self.claims.len());
+        println!("VERIFIER: fs_challenge: {:?}",fs_challenges);
         // pairs of (r,y) = (point,eval) claims
+        // these are ordered in the decreasing order of the corresponding poly
         let (full_r, full_y): (Vec<Vec<_>>, Vec<_>) = self
             .claims
             .iter()
             .cloned()
             .map(|c| (c.point, c.eval))
             .multiunzip();
+        println!("VERIFIER: full_r: {:?}",full_r);
         let y_agg = aggregated_rlc(&full_y, &fs_challenges);
         let subclaim = IOPVerifierState::<E>::verify(y_agg, &proof.sumcheck, &ctx.poly_aux, t);
 
         // 2. verify PCS opening proof on the committed poly.
         let point = proof.sumcheck.point.clone();
         let eval = proof.individual_evals[1];
-        let pcs_proof = Pcs::verify(&ctx.vp, &ctx.vcommitment, &point, &eval, &proof.opening, t)
+        Pcs::verify(&ctx.vp, &ctx.vcommitment, &point, &eval, &proof.opening, t)
             .context("invalid pcs opening")?;
 
         // 3. Manually evaluate the beta matrix MLE to get the output to check the final sumcheck
         //    claim
 
-        // Dummy values - to be replaced with actual values
-        let pairs: Vec<(usize, E)> = self.claims
+        // index of the poly and size
+        let pairs: Vec<(usize, usize)> = self.claims
         .iter()
-        .map(|claim| {
-            let size = 1 << claim.point.len(); // Size of polynomial for this claim
-            (size, claim.eval)                 // Pair of (size, evaluation)
+        .enumerate()
+        .map(|(idx,claim)| {
+            let info = *ctx.poly_info.get(&claim.poly_id).expect("invalid layer - this is a bug");
+            assert_eq!(info.0,idx);
+            info
         })
         .collect();
+        println!("VERIFIER: pairs: {:?}",pairs);
 
         // Final verification step
         let mut beta_evals = fs_challenges.iter()
             .zip(&full_r)
-            //  x_i == sumcheck point <=> r_i * 1 == r_i, otherwise r_i * 0 = 0
-            // Q: why would sumcheck point ever be == r_i ??
-            .map(|(&r_i, x_i)| r_i * identity_eval(x_i, &proof.sumcheck.point))
+            .map(|(&x_i, r_i)| x_i * identity_eval(r_i, &proof.sumcheck.point))
             .collect::<Vec<_>>();
 
         let mut pos = 0;
-        for (i, (size, _)) in pairs.iter().enumerate() {
-            let prod = get_offset_product(*size, pos, &proof.sumcheck.point);
-            pos += size;
-            beta_evals[i] *= prod;
+        for (idx, poly_size) in pairs.iter() {
+            let prod = get_offset_product(*poly_size, pos, &proof.sumcheck.point);
+            pos += poly_size;
+            beta_evals[*idx] *= prod;
         }
 
-        let vr = beta_evals.iter().fold(E::ZERO, |acc, &eval| acc - eval);
-
-        ensure!(vr == E::ZERO, "Error in final check");
+        let computed = beta_evals.iter().fold(E::ZERO, |acc, &eval| acc + eval);
+        let expected = proof.individual_evals[0];
+        println!("VERIFIER: computed final beta(r) : {:?}", computed);
+        ensure!(computed == expected, "Error in final check");
         Ok(())
     }
 }
@@ -311,8 +335,9 @@ where
 #[derive(Clone,Debug)]
 struct IndividualClaim<E> {
     // the index in which this individual claim has been committed to in the aggregated poly
-    // Note given the index is given by the context, it's already by decreasing order.
+    // it's used to order the claims and polynomials by decreasing size
     index_order: usize,
+    poly_id: PolyID,
     point: Vec<E>,
     eval: E,
 }
@@ -399,10 +424,14 @@ fn beta_matrix_mle<E: ExtensionField>(ris: &[Vec<E>], ais: &[E]) -> DenseMultili
 /// Compute multilinear identity test between two points: returns 1 if points are equal, 0 if different.
 /// Used as equality checker in polynomial commitment verification.
 /// Compute Beta(r1,r2) = prod_{i \in [n]}((1-r1[i])(1-r2[i]) + r1[i]r2[i])
+/// NOTE: the two vectors don't need to be of equal size. It compute the identity eval on the 
+/// minimum size between the two vector
 fn identity_eval<E: ExtensionField>(r1: &[E], r2: &[E]) -> E {
-    assert_eq!(r1.len(), r2.len(), "vectors must have same length");
-    r1.iter()
-        .zip(r2)
+    let max_elem = std::cmp::min(r1.len(),r2.len());
+    let v1 = &r1[..max_elem];
+    let v2 = &r2[..max_elem];
+    v1.iter()
+        .zip(v2)
         .fold(E::ONE, |eval, (r1_i, r2_i)| {
             let one = E::ONE;
             eval * (*r1_i * r2_i + (one - r1_i) * (one - r2_i))
@@ -440,10 +469,10 @@ mod test {
         commit::{compute_betas_eval, get_offset_product, identity_eval},
         model::test::{random_bool_vector, random_vector},
         pad_vector,
-        prover::default_transcript,
+        prover::default_transcript, vector_to_mle,
     };
 
-    use super::{CommitProver, CommitVerifier, Context, vector_to_mle};
+    use super::{CommitProver, CommitVerifier, Context};
 
     type F = GoldilocksExt2;
 
