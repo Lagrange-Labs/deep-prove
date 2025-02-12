@@ -203,6 +203,7 @@ where
             // asserted_sum in this case is the output MLE evaluated at the random point
             let mle_output = vector_to_mle(output.to_vec());
             let claimed_sum = mle_output.evaluate(&random_vars_to_fix);
+            debug_assert_eq!(claimed_sum, proof.extract_sum(),"sumcheck output weird");
 
             debug!("prover: claimed sum: {:?}", claimed_sum);
             let subclaim = IOPVerifierState::<E>::verify(claimed_sum, &proof, &vp.aux_info, &mut t);

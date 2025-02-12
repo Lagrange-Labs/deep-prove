@@ -156,6 +156,7 @@ where
         });
 
         // verify the consistency of the individual polys lens with the claims
+        // TODO: do that for verifier as well
         for (idx,claim) in self.claims.iter().enumerate() {
             let poly_size = *ctx.poly_info.get(&claim.poly_id).context("claim refers to unknown poly")?;
             let given_size = 1 << claim.point.len() as usize;
@@ -163,7 +164,7 @@ where
         }
 
         ctx.write_to_transcript(t)?;
-        let mut debug_transcript = t.clone();
+        let debug_transcript = t.clone();
         let fs_challenges = t.read_challenges(self.claims.len());
         let (full_r, full_y): (Vec<Vec<_>>, Vec<_>) = self
             .claims
@@ -184,9 +185,11 @@ where
         let (sumcheck_proof, state) = IOPProverState::<E>::prove_parallel(full_poly.clone(), t);
 
         debug_assert!({
+            println!("PROVER: DEBUGGING");
+            let computed_result = aggregated_rlc(&full_y, &fs_challenges);
             debug_assert_eq!(
                 sumcheck_proof.extract_sum(),
-                aggregated_rlc(&full_y, &fs_challenges)
+                computed_result,
             );
 
             let mut t = debug_transcript;
@@ -477,15 +480,50 @@ mod test {
     use multilinear_extensions::mle::MultilinearExtension;
 
     use crate::{
-        commit::{compute_betas_eval, get_offset_product, identity_eval},
-        model::test::{random_bool_vector, random_vector},
-        pad_vector,
-        prover::default_transcript, vector_to_mle,
+        commit::{compute_betas_eval, get_offset_product, identity_eval}, matrix::Matrix, model::test::{random_bool_vector, random_vector}, pad_vector, prover::default_transcript, vector_to_mle
     };
 
     use super::{CommitProver, CommitVerifier, Context};
 
     type F = GoldilocksExt2;
+
+    #[test]
+    fn test_commit_matrix() -> anyhow::Result<()> {
+        let mut rng = thread_rng();
+        let n_poly = 2;
+        //let range = thread_rng().gen_range(3..15);
+        let matrices = (0..n_poly)
+            .map(|_| Matrix::<F>::random((rng.gen_range(3..24),rng.gen_range(3..24))).pad_next_power_of_two())
+            .enumerate()
+            .collect_vec();
+        let claims = (0..n_poly).map(|i| {
+            let point = matrices[i].1.random_eval_point();
+            let eval = matrices[i].1.to_mle().evaluate(&point);
+            (matrices[i].0,point,eval)
+        }).collect_vec();
+
+        let polys = matrices.iter().map(|(id,m)| (*id,m.evals()) ).collect_vec();
+        let ctx = Context::generate(polys.clone())?;
+
+        let mut prover = CommitProver::new();
+        for (id, point,eval) in claims.iter() {
+            prover.add_claim(*id, point.clone(), eval.clone())?;
+        }
+
+        let mut t = default_transcript();
+        let proof = prover.prove(&ctx, &mut t)?;
+
+        // VERIFIER
+        let mut verifier = CommitVerifier::new();
+        let mut t = default_transcript();
+        for (id, point, eval) in claims {
+            verifier.add_claim(id, point, eval)?;
+        }
+        verifier.verify(&ctx, proof, &mut t)?;
+
+        Ok(())
+
+    }
 
     #[test]
     fn test_commit_batch() -> anyhow::Result<()> {
