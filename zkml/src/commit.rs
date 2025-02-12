@@ -38,8 +38,10 @@ where
     // keeps track of which layer do we layout first in the sequence of witness/poly we commit to
     // key is the id of the polynomial (we associated each polynomial to an "ID" so verifier and prover can 
     // add any claim about any polynomial before proving/verifying)
-    // value is the index of the poly in the vector of poly when ordered by decreasing order
-    poly_info: HashMap<PolyID, usize>,
+    // value is a tuple:
+    //  * the index of the poly in the vector of poly when ordered by decreasing order
+    // .* the length of the polynomial
+    poly_info: HashMap<PolyID, (usize,usize)>,
     // 
     // VERIFIER PART
     vp: <Pcs<E> as PolynomialCommitmentScheme<E>>::VerifierParam,
@@ -73,7 +75,7 @@ where
         polys.sort_by(|(_, w_i), (_, y_i)| y_i.len().cmp(&w_i.len()));
         let sorted_ids = polys.iter().map(|(id, poly)| (id,poly.len()));
         let id_order =
-            HashMap::from_iter(sorted_ids.into_iter().map(|(id,poly_len)| (*id, poly_len)));
+            HashMap::from_iter(sorted_ids.into_iter().enumerate(). map(|(idx,(id,poly_len))| (*id, (idx,poly_len))));
 
         let flattened = polys
             .into_iter()
@@ -107,6 +109,24 @@ where
         // TODO: write the rest of the struct
         Ok(())
     }
+    pub fn sort_claims(&self, claims: Vec<IndividualClaim<E>>) -> anyhow::Result<Vec<IndividualClaim<E>>> {
+        assert_eq!(claims.len(), self.poly_info.len(), 
+            "claims.len() = {} vs poly.len() = {}", 
+            claims.len(), 
+            self.poly_info.len()
+        );
+        let mut sorted_claims = claims.clone();
+        for (idx,claim ) in claims.into_iter().enumerate() {
+            let (sorted_idx,poly_size) = self.poly_info.get(&claim.poly_id).context("claim refers to unknown poly")?;
+            let given_size = 1 << claim.point.len() as usize;
+            // verify the consistency of the individual polys lens with the claims
+            ensure!(*poly_size == given_size,format!("claim {idx} doesn't have right format: poly {} has size {poly_size} vs input {given_size}",claim.poly_id));
+            // order the claims according to the order of the poly defined in the setup phase
+            sorted_claims[*sorted_idx] = claim;
+        }
+       Ok(sorted_claims)
+    }
+
 }
 
 /// Structure that can prove the opening of multiple polynomials at different points.
@@ -150,24 +170,12 @@ where
         ctx: &Context<E>,
         t: &mut T,
     ) -> anyhow::Result<CommitProof<E>> {
-        self.claims.sort_by(|a,b| {
-            // decreasing order so b > a
-           ctx.poly_info.get(&b.poly_id).unwrap().cmp(ctx.poly_info.get(&a.poly_id).unwrap())
-        });
-
-        // verify the consistency of the individual polys lens with the claims
-        // TODO: do that for verifier as well
-        for (idx,claim) in self.claims.iter().enumerate() {
-            let poly_size = *ctx.poly_info.get(&claim.poly_id).context("claim refers to unknown poly")?;
-            let given_size = 1 << claim.point.len() as usize;
-            ensure!(poly_size == given_size,format!("claim {idx} doesn't have right format: poly {} has size {poly_size} vs input {given_size}",claim.poly_id));
-        }
+        let sorted_claims = ctx.sort_claims(self.claims)?;
 
         ctx.write_to_transcript(t)?;
         let debug_transcript = t.clone();
-        let fs_challenges = t.read_challenges(self.claims.len());
-        let (full_r, full_y): (Vec<Vec<_>>, Vec<_>) = self
-            .claims
+        let fs_challenges = t.read_challenges(sorted_claims.len());
+        let (full_r, full_y): (Vec<Vec<_>>, Vec<_>) = sorted_claims
             .into_iter()
             .map(|c| (c.point, c.eval))
             .multiunzip();
@@ -185,7 +193,6 @@ where
         let (sumcheck_proof, state) = IOPProverState::<E>::prove_parallel(full_poly.clone(), t);
 
         debug_assert!({
-            println!("PROVER: DEBUGGING");
             let computed_result = aggregated_rlc(&full_y, &fs_challenges);
             debug_assert_eq!(
                 sumcheck_proof.extract_sum(),
@@ -251,17 +258,13 @@ where
         proof: CommitProof<E>,
         t: &mut T,
     ) -> anyhow::Result<()> {
-        self.claims.sort_by(|a,b| {
-            // decreasing order so b > a
-           ctx.poly_info.get(&b.poly_id).unwrap().cmp(ctx.poly_info.get(&a.poly_id).unwrap())
-        });
+        let sorted_claims = ctx.sort_claims(self.claims)?; 
         ctx.write_to_transcript(t)?;
         // 1. verify sumcheck proof
-        let fs_challenges = t.read_challenges(self.claims.len());
+        let fs_challenges = t.read_challenges(sorted_claims.len());
         // pairs of (r,y) = (point,eval) claims
         // these are ordered in the decreasing order of the corresponding poly
-        let (full_r, full_y): (Vec<Vec<_>>, Vec<_>) = self
-            .claims
+        let (full_r, full_y): (Vec<Vec<_>>, Vec<_>) = sorted_claims
             .iter()
             .cloned()
             .map(|c| (c.point, c.eval))
@@ -279,12 +282,12 @@ where
         //    claim
 
         // Size of each poly, ORDERED by decreasing size of poly
-        let pairs: Vec<usize> = self.claims
+        let pairs: Vec<usize> = sorted_claims
         .iter()
         .enumerate()
         .map(|(_idx,claim)| {
-            let info = *ctx.poly_info.get(&claim.poly_id).expect("invalid layer - this is a bug");
-            info
+            let (_,poly_len) = *ctx.poly_info.get(&claim.poly_id).expect("invalid layer - this is a bug");
+            poly_len
         })
         .collect();
 
@@ -458,7 +461,7 @@ fn get_offset_product<E: ExtensionField>(
         pos >>= 1;
     }
     
-    // The number of variables to be “folded” is determined by log2(claim_size).
+    // The number of variables to be "folded" is determined by log2(claim_size).
     // This is equivalent to 'r.size() - (int)log2(size)' in C++.
     let num_vars_needed = rand_vec.len() - claim_size.ilog2() as usize;
     
