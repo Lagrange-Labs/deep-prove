@@ -3,13 +3,12 @@ on:
   push:
   pull_request:
 
-env:
-  RUSTFLAGS: "-W warnings"  # Change -D to -W to make warnings non-fatal
-
 jobs:
   test:
     name: cargo test
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "-W warnings"  # Change -D to
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
