@@ -1,4 +1,5 @@
-use std::collections::{BTreeSet, HashMap};
+
+use std::collections::HashMap;
 
 use crate::{
     VectorTranscript,
@@ -109,7 +110,7 @@ where
         // TODO: write the rest of the struct
         Ok(())
     }
-    pub fn sort_claims(&self, claims: Vec<IndividualClaim<E>>) -> anyhow::Result<Vec<IndividualClaim<E>>> {
+    fn sort_claims(&self, claims: Vec<IndividualClaim<E>>) -> anyhow::Result<Vec<IndividualClaim<E>>> {
         assert_eq!(claims.len(), self.poly_info.len(), 
             "claims.len() = {} vs poly.len() = {}", 
             claims.len(), 
@@ -166,7 +167,7 @@ where
     }
 
     pub fn prove<T: Transcript<E>>(
-        mut self,
+        self,
         ctx: &Context<E>,
         t: &mut T,
     ) -> anyhow::Result<CommitProof<E>> {
@@ -253,7 +254,7 @@ where
     }
 
     pub fn verify<T: Transcript<E>>(
-        mut self,
+        self,
         ctx: &Context<E>,
         proof: CommitProof<E>,
         t: &mut T,
@@ -456,7 +457,7 @@ fn get_offset_product<E: ExtensionField>(
     
     // Fill 'bits' such that bits[0] becomes the LSB, bits[len-1] the MSB.
     // By iterating in reverse, we mimic the eventual reversal in the C++ code.
-    for i in (0..rand_vec.len()) {
+    for i in 0..rand_vec.len() {
         bits[i] = if pos & 1 == 1 { E::ONE } else { E::ZERO };
         pos >>= 1;
     }
@@ -592,7 +593,6 @@ mod test {
     #[test]
     fn test_get_offset_product() {
         let size = 4;  // Original polynomial of size 4 (2^2 variables)
-        let n = 4;     // Total variables in concatenated space
         let r = vec![F::ONE, F::ZERO, F::ONE, F::ZERO];  // Some test point
         
         // When evaluating at position 0 (first slice)

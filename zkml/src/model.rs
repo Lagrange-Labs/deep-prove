@@ -1,5 +1,4 @@
 use ff_ext::ExtensionField;
-use multilinear_extensions::mle::DenseMultilinearExtension;
 
 use crate::matrix::Matrix;
 
@@ -25,12 +24,6 @@ impl<E: ExtensionField> Layer<E> {
     pub fn op(&self, input: &[E]) -> Vec<E> {
         match self {
             Layer::Dense(ref matrix) => matrix.matmul(input),
-        }
-    }
-
-    pub fn mle(&self) -> DenseMultilinearExtension<E> {
-        match self {
-            Layer::Dense(ref matrix) => matrix.to_mle(),
         }
     }
 
@@ -77,13 +70,6 @@ impl<E: ExtensionField> Model<E> {
         self.layers.iter().enumerate()
     }
 
-    pub fn nlayers(&self) -> usize {
-        self.layers.len()
-    }
-
-    pub fn layer(&self, idx: usize) -> Option<(PolyID, &Layer<E>)> {
-        self.layers.get(idx).map(|l| (idx, l))
-    }
 }
 
 /// Keeps track of all input and outputs of each layer, with a reference to the layer.
@@ -112,10 +98,6 @@ impl<'a, E> InferenceTrace<'a, E> {
         }
     }
 
-    /// Returns the input that led to this inference trace
-    pub fn input(&self) -> &[E] {
-        &self.input
-    }
 
     /// Returns the final output of the whole trace
     pub fn final_output(&self) -> &[E] {

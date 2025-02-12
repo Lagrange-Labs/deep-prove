@@ -21,13 +21,6 @@ impl<E: ExtensionField> Tensor<E> {
     }
 }
 
-pub(crate) fn scale_vector<E: ExtensionField, I: IntoIterator<Item = E>>(
-    v: I,
-    scaling: E,
-) -> Vec<E> {
-    v.into_iter().map(|v_i| scaling * v_i).collect_vec()
-}
-
 pub fn pad_vector<E: ExtensionField>(mut v: Vec<E>) -> Vec<E> {
     if !v.len().is_power_of_two() {
         v.resize(v.len().next_power_of_two(), E::ZERO);

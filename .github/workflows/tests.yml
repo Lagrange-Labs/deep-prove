@@ -1,46 +1,29 @@
-name: Tests
-
+name: "Test Suite"
 on:
-  merge_group:
-  pull_request:
-    types: [synchronize, opened, reopened, ready_for_review]
   push:
-    branches:
-      - master
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
+  pull_request:
 
 jobs:
-  tests:
-    name: Run Tests
-    timeout-minutes: 30
-    runs-on: ubuntu-24.04
-
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          targets: riscv32im-unknown-none-elf
-          # TODO(Matthias): see whether we can keep this in sync with rust-toolchain.toml automatically?
-          toolchain: nightly-2024-12-06
-      - name: Cargo cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-            ceno_rt/target/
-            example/target/
-          key: tests-${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: tests-${{ runner.os }}-cargo-
+          toolchain: nightly
+      - run: cargo test --all-features
 
-      - name: Install cargo make
-        run: |
-          cargo make --version || cargo install cargo-make
-      - name: run test
-        run: cargo make tests
+  # Check formatting with rustfmt
+  formatting:
+    name: cargo fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Ensure rustfmt is installed and setup problem matcher
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt
+          toolchain: nightly
+      - name: Rustfmt Check
+        uses: actions-rust-lang/rustfmt@v1

@@ -58,9 +58,6 @@ where
     pub fn num_vars(&self) -> (usize, usize) {
         (self.nrows().ilog2() as usize, self.ncols().ilog2() as usize)
     }
-    pub fn dims(&self) -> (usize, usize) {
-        (self.nrows(), self.ncols())
-    }
 
     /// Returns a MLE of the matrix that can be evaluated.
     pub fn to_mle(&self) -> DenseMultilinearExtension<E> {
