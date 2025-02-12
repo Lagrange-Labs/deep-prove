@@ -58,7 +58,7 @@ pub struct BasefoldVerifierParams<E: ExtensionField, Spec: BasefoldSpec<E>> {
 
 /// A polynomial commitment together with all the data (e.g., the codeword, and Merkle tree)
 /// used to generate this commitment and for assistant in opening
-#[derive(Clone, Debug, Default,Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct BasefoldCommitmentWithWitness<E: ExtensionField>
 where

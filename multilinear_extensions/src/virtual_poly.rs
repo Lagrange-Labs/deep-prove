@@ -70,11 +70,13 @@ pub struct VPAuxInfo<E> {
 }
 impl<E: ExtensionField> VPAuxInfo<E> {
     pub fn write_to_transcript<T: Transcript<E>>(&self, t: &mut T) {
-        t.append_field_elements(&[E::BaseField::from(self.max_degree as u64),E::BaseField::from(self.max_num_variables as u64)]); 
+        t.append_field_elements(&[
+            E::BaseField::from(self.max_degree as u64),
+            E::BaseField::from(self.max_num_variables as u64),
+        ]);
     }
 }
 impl<E> VPAuxInfo<E> {
-    
     /// List of list of MLEs num_vars (f1*f2 + f1*f3*f4 + ... )
     pub fn from_mle_list_dimensions(product_list: &[Vec<usize>]) -> Self {
         let mut max_num_vars = 0;

@@ -1,11 +1,10 @@
-
 use std::collections::HashMap;
 
 use crate::{
     VectorTranscript,
     model::{Model, PolyID},
 };
-use anyhow::{ensure, Context as CC};
+use anyhow::{Context as CC, ensure};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use mpcs::{Basefold, BasefoldBasecodeParams, PolynomialCommitmentScheme};
@@ -32,18 +31,16 @@ where
     commitment: <Pcs<E> as PolynomialCommitmentScheme<E>>::CommitmentWithWitness,
     /// already flattened out polys evals by decreasing order
     polys: DenseMultilinearExtension<E>,
-    //
     // COMMON PART
     /// Needed to verify the sumcheck proof
     poly_aux: VPAuxInfo<E>,
     // keeps track of which layer do we layout first in the sequence of witness/poly we commit to
-    // key is the id of the polynomial (we associated each polynomial to an "ID" so verifier and prover can 
+    // key is the id of the polynomial (we associated each polynomial to an "ID" so verifier and prover can
     // add any claim about any polynomial before proving/verifying)
     // value is a tuple:
     //  * the index of the poly in the vector of poly when ordered by decreasing order
     // .* the length of the polynomial
-    poly_info: HashMap<PolyID, (usize,usize)>,
-    // 
+    poly_info: HashMap<PolyID, (usize, usize)>,
     // VERIFIER PART
     vp: <Pcs<E> as PolynomialCommitmentScheme<E>>::VerifierParam,
     vcommitment: <Pcs<E> as PolynomialCommitmentScheme<E>>::Commitment,
@@ -74,9 +71,13 @@ where
             .next_power_of_two();
         // sort in decreasing order
         polys.sort_by(|(_, w_i), (_, y_i)| y_i.len().cmp(&w_i.len()));
-        let sorted_ids = polys.iter().map(|(id, poly)| (id,poly.len()));
-        let id_order =
-            HashMap::from_iter(sorted_ids.into_iter().enumerate(). map(|(idx,(id,poly_len))| (*id, (idx,poly_len))));
+        let sorted_ids = polys.iter().map(|(id, poly)| (id, poly.len()));
+        let id_order = HashMap::from_iter(
+            sorted_ids
+                .into_iter()
+                .enumerate()
+                .map(|(idx, (id, poly_len))| (*id, (idx, poly_len))),
+        );
 
         let flattened = polys
             .into_iter()
@@ -110,24 +111,37 @@ where
         // TODO: write the rest of the struct
         Ok(())
     }
-    fn sort_claims(&self, claims: Vec<IndividualClaim<E>>) -> anyhow::Result<Vec<IndividualClaim<E>>> {
-        assert_eq!(claims.len(), self.poly_info.len(), 
-            "claims.len() = {} vs poly.len() = {}", 
-            claims.len(), 
+    fn sort_claims(
+        &self,
+        claims: Vec<IndividualClaim<E>>,
+    ) -> anyhow::Result<Vec<IndividualClaim<E>>> {
+        assert_eq!(
+            claims.len(),
+            self.poly_info.len(),
+            "claims.len() = {} vs poly.len() = {}",
+            claims.len(),
             self.poly_info.len()
         );
         let mut sorted_claims = claims.clone();
-        for (idx,claim ) in claims.into_iter().enumerate() {
-            let (sorted_idx,poly_size) = self.poly_info.get(&claim.poly_id).context("claim refers to unknown poly")?;
+        for (idx, claim) in claims.into_iter().enumerate() {
+            let (sorted_idx, poly_size) = self
+                .poly_info
+                .get(&claim.poly_id)
+                .context("claim refers to unknown poly")?;
             let given_size = 1 << claim.point.len() as usize;
             // verify the consistency of the individual polys lens with the claims
-            ensure!(*poly_size == given_size,format!("claim {idx} doesn't have right format: poly {} has size {poly_size} vs input {given_size}",claim.poly_id));
+            ensure!(
+                *poly_size == given_size,
+                format!(
+                    "claim {idx} doesn't have right format: poly {} has size {poly_size} vs input {given_size}",
+                    claim.poly_id
+                )
+            );
             // order the claims according to the order of the poly defined in the setup phase
             sorted_claims[*sorted_idx] = claim;
         }
-       Ok(sorted_claims)
+        Ok(sorted_claims)
     }
-
 }
 
 /// Structure that can prove the opening of multiple polynomials at different points.
@@ -195,10 +209,7 @@ where
 
         debug_assert!({
             let computed_result = aggregated_rlc(&full_y, &fs_challenges);
-            debug_assert_eq!(
-                sumcheck_proof.extract_sum(),
-                computed_result,
-            );
+            debug_assert_eq!(sumcheck_proof.extract_sum(), computed_result,);
 
             let mut t = debug_transcript;
             let y_agg = aggregated_rlc(&full_y, &fs_challenges);
@@ -238,12 +249,7 @@ where
             claims: Default::default(),
         }
     }
-    pub fn add_claim(
-        &mut self,
-        id: PolyID,
-        point: Vec<E>,
-        eval: E,
-    ) -> anyhow::Result<()> {
+    pub fn add_claim(&mut self, id: PolyID, point: Vec<E>, eval: E) -> anyhow::Result<()> {
         let claim = IndividualClaim {
             poly_id: id,
             point,
@@ -259,7 +265,7 @@ where
         proof: CommitProof<E>,
         t: &mut T,
     ) -> anyhow::Result<()> {
-        let sorted_claims = ctx.sort_claims(self.claims)?; 
+        let sorted_claims = ctx.sort_claims(self.claims)?;
         ctx.write_to_transcript(t)?;
         // 1. verify sumcheck proof
         let fs_challenges = t.read_challenges(sorted_claims.len());
@@ -284,15 +290,19 @@ where
 
         // Size of each poly, ORDERED by decreasing size of poly
         let pairs: Vec<usize> = sorted_claims
-        .iter()
-        .enumerate()
-        .map(|(_idx,claim)| {
-            let (_,poly_len) = *ctx.poly_info.get(&claim.poly_id).expect("invalid layer - this is a bug");
-            poly_len
-        })
-        .collect();
+            .iter()
+            .enumerate()
+            .map(|(_idx, claim)| {
+                let (_, poly_len) = *ctx
+                    .poly_info
+                    .get(&claim.poly_id)
+                    .expect("invalid layer - this is a bug");
+                poly_len
+            })
+            .collect();
 
-        let mut beta_evals = fs_challenges.iter()
+        let mut beta_evals = fs_challenges
+            .iter()
             .zip(&full_r)
             .map(|(&x_i, r_i)| x_i * identity_eval(r_i, &proof.sumcheck.point))
             .collect::<Vec<_>>();
@@ -311,7 +321,10 @@ where
         // 4. just make sure the final claim of the sumcheck is consistent with f_beta(r) * f_w(r)
         // now that we've verified both individually we can just multiply and compare
         let full_eval = proof.individual_evals[0] * proof.individual_evals[1];
-        ensure!(full_eval == subclaim.expected_evaluation,"Error in final evaluation check");
+        ensure!(
+            full_eval == subclaim.expected_evaluation,
+            "Error in final evaluation check"
+        );
         Ok(())
     }
 }
@@ -333,7 +346,7 @@ where
 
 /// Individual claim to accumulate with others in a single sumcheck + PCS opening
 /// It implements equality traits for sorting in decreasing order
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 struct IndividualClaim<E> {
     poly_id: PolyID,
     point: Vec<E>,
@@ -402,18 +415,16 @@ fn beta_matrix_mle<E: ExtensionField>(ris: &[Vec<E>], ais: &[E]) -> DenseMultili
 /// Compute multilinear identity test between two points: returns 1 if points are equal, 0 if different.
 /// Used as equality checker in polynomial commitment verification.
 /// Compute Beta(r1,r2) = prod_{i \in [n]}((1-r1[i])(1-r2[i]) + r1[i]r2[i])
-/// NOTE: the two vectors don't need to be of equal size. It compute the identity eval on the 
+/// NOTE: the two vectors don't need to be of equal size. It compute the identity eval on the
 /// minimum size between the two vector
 fn identity_eval<E: ExtensionField>(r1: &[E], r2: &[E]) -> E {
-    let max_elem = std::cmp::min(r1.len(),r2.len());
+    let max_elem = std::cmp::min(r1.len(), r2.len());
     let v1 = &r1[..max_elem];
     let v2 = &r2[..max_elem];
-    v1.iter()
-        .zip(v2)
-        .fold(E::ONE, |eval, (r1_i, r2_i)| {
-            let one = E::ONE;
-            eval * (*r1_i * r2_i + (one - r1_i) * (one - r2_i))
-        })
+    v1.iter().zip(v2).fold(E::ONE, |eval, (r1_i, r2_i)| {
+        let one = E::ONE;
+        eval * (*r1_i * r2_i + (one - r1_i) * (one - r2_i))
+    })
 }
 
 /// Computes the product of offset terms for a given position and random vector
@@ -434,9 +445,9 @@ fn identity_eval<E: ExtensionField>(r1: &[E], r2: &[E]) -> E {
 ///        prod * (bit * r_i + (E::ONE - bit) * (E::ONE - r_i))
 ///    })
 /// }
-/// 
+///
 /// Computes the offset product for a given claim.
-/// 
+///
 /// # Parameters
 /// - `claim_size`: The size (number of entries) corresponding to the claim.
 /// - `mut pos`: The position (an integer) whose binary representation will be used.
@@ -444,28 +455,24 @@ fn identity_eval<E: ExtensionField>(r1: &[E], r2: &[E]) -> E {
 ///
 /// # Returns
 /// The product computed from the bits of `pos` and corresponding values in `rand_vec`.
-fn get_offset_product<E: ExtensionField>(
-    claim_size: usize,
-    mut pos: usize,
-    rand_vec: &[E],
-) -> E {
+fn get_offset_product<E: ExtensionField>(claim_size: usize, mut pos: usize, rand_vec: &[E]) -> E {
     // Create a vector to hold the bits.
     // In the C++ code, bits are pushed in LSB-first order;
     // here we fill the vector in reverse so that the most significant end of the vector
     // contains what C++ would later pick from bits[r.size()-1 - i].
     let mut bits = vec![E::ZERO; rand_vec.len()];
-    
+
     // Fill 'bits' such that bits[0] becomes the LSB, bits[len-1] the MSB.
     // By iterating in reverse, we mimic the eventual reversal in the C++ code.
     for i in 0..rand_vec.len() {
         bits[i] = if pos & 1 == 1 { E::ONE } else { E::ZERO };
         pos >>= 1;
     }
-    
+
     // The number of variables to be "folded" is determined by log2(claim_size).
     // This is equivalent to 'r.size() - (int)log2(size)' in C++.
     let num_vars_needed = rand_vec.len() - claim_size.ilog2() as usize;
-    
+
     // Now, accumulate the product similar to the C++ loop.
     (0..num_vars_needed).fold(E::ONE, |prod, i| {
         // Access from the end of the vector (i.e. effectively reversing the bits again)
@@ -484,7 +491,12 @@ mod test {
     use multilinear_extensions::mle::MultilinearExtension;
 
     use crate::{
-        commit::{compute_betas_eval, get_offset_product, identity_eval}, matrix::Matrix, model::test::{random_bool_vector, random_vector}, pad_vector, prover::default_transcript, vector_to_mle
+        commit::{compute_betas_eval, get_offset_product, identity_eval},
+        matrix::Matrix,
+        model::test::{random_bool_vector, random_vector},
+        pad_vector,
+        prover::default_transcript,
+        vector_to_mle,
     };
 
     use super::{CommitProver, CommitVerifier, Context};
@@ -495,22 +507,30 @@ mod test {
     fn test_commit_matrix() -> anyhow::Result<()> {
         let mut rng = thread_rng();
         let n_poly = 2;
-        //let range = thread_rng().gen_range(3..15);
+        // let range = thread_rng().gen_range(3..15);
         let matrices = (0..n_poly)
-            .map(|_| Matrix::<F>::random((rng.gen_range(3..24),rng.gen_range(3..24))).pad_next_power_of_two())
+            .map(|_| {
+                Matrix::<F>::random((rng.gen_range(3..24), rng.gen_range(3..24)))
+                    .pad_next_power_of_two()
+            })
             .enumerate()
             .collect_vec();
-        let claims = (0..n_poly).map(|i| {
-            let point = matrices[i].1.random_eval_point();
-            let eval = matrices[i].1.to_mle().evaluate(&point);
-            (matrices[i].0,point,eval)
-        }).collect_vec();
+        let claims = (0..n_poly)
+            .map(|i| {
+                let point = matrices[i].1.random_eval_point();
+                let eval = matrices[i].1.to_mle().evaluate(&point);
+                (matrices[i].0, point, eval)
+            })
+            .collect_vec();
 
-        let polys = matrices.iter().map(|(id,m)| (*id,m.evals()) ).collect_vec();
+        let polys = matrices
+            .iter()
+            .map(|(id, m)| (*id, m.evals()))
+            .collect_vec();
         let ctx = Context::generate(polys.clone())?;
 
         let mut prover = CommitProver::new();
-        for (id, point,eval) in claims.iter() {
+        for (id, point, eval) in claims.iter() {
             prover.add_claim(*id, point.clone(), eval.clone())?;
         }
 
@@ -526,13 +546,12 @@ mod test {
         verifier.verify(&ctx, proof, &mut t)?;
 
         Ok(())
-
     }
 
     #[test]
     fn test_commit_batch() -> anyhow::Result<()> {
         let n_poly = 7;
-        //let range = thread_rng().gen_range(3..15);
+        // let range = thread_rng().gen_range(3..15);
         let polys = (0..n_poly)
             .map(|_| pad_vector(random_vector::<F>(thread_rng().gen_range(3..24))))
             .enumerate()
@@ -545,7 +564,7 @@ mod test {
             let p = random_bool_vector(poly.len().ilog2() as usize);
             let eval = vector_to_mle(poly.clone()).evaluate(&p);
             claims.push((id, p.clone(), eval.clone()));
-            prover.add_claim( id, p, eval)?;
+            prover.add_claim(id, p, eval)?;
         }
 
         let mut t = default_transcript();
@@ -578,12 +597,12 @@ mod test {
     fn test_identity_eval() {
         let n = 4;
         let r1 = random_bool_vector::<F>(n);
-        
+
         // When vectors are identical, should return 1
         let r2 = r1.clone();
         let result = identity_eval(&r1, &r2);
         assert_eq!(result, F::ONE);
-    
+
         // When vectors are different, should return 0
         let r2 = random_bool_vector::<F>(n);
         let result = identity_eval(&r1, &r2);
@@ -592,15 +611,15 @@ mod test {
 
     #[test]
     fn test_get_offset_product() {
-        let size = 4;  // Original polynomial of size 4 (2^2 variables)
-        let r = vec![F::ONE, F::ZERO, F::ONE, F::ZERO];  // Some test point
-        
+        let size = 4; // Original polynomial of size 4 (2^2 variables)
+        let r = vec![F::ONE, F::ZERO, F::ONE, F::ZERO]; // Some test point
+
         // When evaluating at position 0 (first slice)
         let result0 = get_offset_product(size, 0, &r);
-        
+
         // When evaluating at position 4 (second slice)
         let result4 = get_offset_product(size, 4, &r);
-        
+
         // Results will be different because they're enforcing different slices
         assert_ne!(result0, result4);
     }

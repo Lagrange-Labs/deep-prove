@@ -53,14 +53,10 @@ impl<E: ExtensionField> Model<E> {
 
     pub fn run<'a>(&'a self, input: Vec<E>) -> InferenceTrace<'a, E> {
         let mut trace = InferenceTrace::new(input);
-        for (id,layer) in self.layers() {
+        for (id, layer) in self.layers() {
             let input = trace.last_input();
             let output = layer.op(input);
-            let step = InferenceStep { 
-                layer, 
-                output,
-                id,
-            };
+            let step = InferenceStep { layer, output, id };
             trace.push_step(step);
         }
         trace
@@ -69,7 +65,6 @@ impl<E: ExtensionField> Model<E> {
     pub fn layers(&self) -> impl DoubleEndedIterator<Item = (PolyID, &Layer<E>)> {
         self.layers.iter().enumerate()
     }
-
 }
 
 /// Keeps track of all input and outputs of each layer, with a reference to the layer.
@@ -97,7 +92,6 @@ impl<'a, E> InferenceTrace<'a, E> {
             &self.steps.last().unwrap().output
         }
     }
-
 
     /// Returns the final output of the whole trace
     pub fn final_output(&self) -> &[E] {
