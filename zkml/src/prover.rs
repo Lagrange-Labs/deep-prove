@@ -249,7 +249,7 @@ where
             .read_challenges(trace.final_output().len().ilog2() as usize);
         // we start by the output to prove up to the input, GKR style
         for (i, (input, step)) in trace.iter().rev().enumerate() {
-            info!(
+            debug!(
                 "prover: step {}: input.len = {:?}, step.matrix {:?}, step.output.len() = {:?}",
                 i,
                 input.len(),
@@ -325,7 +325,7 @@ where
 
     // 2. Verify each proof sequentially
     for (i, (step, (id,aux))) in proof.steps.iter().zip(ctx.polys_aux).enumerate() {
-        info!("verify {}: aux {:?}", i, aux);
+        debug!("verify {}: aux {:?}", i, aux);
         // TODO: currently that API can panic - should remove panic for error
         let subclaim =
             IOPVerifierState::<E>::verify(claimed_sum, &step.proof, &aux, transcript);
