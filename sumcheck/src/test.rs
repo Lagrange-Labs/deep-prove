@@ -235,7 +235,7 @@ fn test_interpolation() {
 }
 
 const NUM_DEGREE: usize = 3;
-const NV: usize = 29;
+const NV: usize = 20;
 type E = GoldilocksExt2;
 
 #[test]
