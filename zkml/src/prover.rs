@@ -343,15 +343,6 @@ where
         // step.
         let pcs_eval_output = step.individual_claims[0];
         commit_verifier.add_claim(id, pcs_eval_input, pcs_eval_output)?;
-        // TODO : replace via PCS
-       // {
-       //     let computed_output = layers[nlayers - 1 - i].1.mle().evaluate(&pcs_eval_input);
-       //     ensure!(
-       //         pcs_eval_output == computed_output,
-       //         "step {}: matrix PCS evaluation failed",
-       //         i
-       //     );
-       // }
 
         // SUMCHECK verification part
         // Instead of computing the polynomial at the random point requested like this
