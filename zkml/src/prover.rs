@@ -3,7 +3,7 @@ use std::cmp::max;
 use anyhow::{Context as CContext, ensure};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use log::{debug, info};
+use log::debug;
 use multilinear_extensions::{
     mle::MultilinearExtension,
     virtual_poly::{VPAuxInfo, VirtualPolynomial},

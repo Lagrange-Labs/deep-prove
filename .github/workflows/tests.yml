@@ -3,6 +3,9 @@ on:
   push:
   pull_request:
 
+env:
+  RUSTFLAGS: "-W warnings"  # Change -D to -W to make warnings non-fatal
+
 jobs:
   test:
     name: cargo test
@@ -24,6 +27,6 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: rustfmt
-          # toolchain: nightly
+          toolchain: nightly
       - name: Rustfmt Check
         uses: actions-rust-lang/rustfmt@v1
