@@ -27,5 +27,5 @@ jobs:
         with:
           components: rustfmt
           toolchain: nightly
-      - name: Rustfmt Check
-        uses: actions-rust-lang/rustfmt@v1
+      - run: cargo fmt --all
+        
