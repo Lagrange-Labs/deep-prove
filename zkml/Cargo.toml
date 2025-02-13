@@ -1,26 +1,28 @@
 [package]
-name = "zkml"
 categories.workspace = true
 edition.workspace = true
 keywords.workspace = true
 license.workspace = true
+name = "zkml"
 readme.workspace = true
 repository.workspace = true
 version.workspace = true
 
 [dependencies]
+anyhow.workspace = true
 ark-std.workspace = true
+derive_more = { version = "2.0.1", features = ["full"] }
 ff.workspace = true
 ff_ext = { version = "0.1.0", path = "../ff_ext" }
-itertools.workspace = true
-rayon.workspace = true
+gkr = { version = "0.1.0", path = "../gkr" }
 goldilocks.workspace = true
-multilinear_extensions = { version = "0.1.0", path = "../multilinear_extensions" , features = ["parallel"]}
-anyhow.workspace = true
-sumcheck = { version = "0.1.0", path = "../sumcheck" }
-derive_more = { version = "2.0.1", features = ["full"] }
-transcript = { version = "0.1.0", path = "../transcript" }
-tracing-subscriber.workspace = true
+itertools.workspace = true
 log = "0.4.25"
-serde.workspace = true
 mpcs = { version = "0.1.0", path = "../mpcs" }
+multilinear_extensions = { version = "0.1.0", path = "../multilinear_extensions", features = ["parallel"] }
+rayon.workspace = true
+serde.workspace = true
+simple-frontend = { path = "../simple-frontend" }
+sumcheck = { version = "0.1.0", path = "../sumcheck" }
+tracing-subscriber.workspace = true
+transcript = { version = "0.1.0", path = "../transcript" }
