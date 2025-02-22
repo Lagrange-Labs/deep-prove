@@ -397,8 +397,11 @@ where
 #[cfg(test)]
 mod test {
     use goldilocks::GoldilocksExt2;
+    use itertools::Itertools;
+    use multilinear_extensions::{mle::{IntoMLE, MultilinearExtension}, virtual_poly::VirtualPolynomial};
+    use sumcheck::structs::IOPProverState;
 
-    use crate::model::Model;
+    use crate::model::{test::random_bool_vector, Layer, Model};
 
     use super::{Context, IO, Prover, default_transcript, verify};
 
@@ -418,6 +421,33 @@ mod test {
         let proof = prover.prove(&ctx, trace).expect("unable to generate proof");
         let mut verifier_transcript = default_transcript();
         verify(ctx, proof, io, &mut verifier_transcript).expect("invalid proof");
+    }
+
+    use ff::Field;
+    #[test]
+    fn test_model_sequential() {
+        let (model,input) = Model::<F>::random(2);
+        let bb = model.clone();
+        let trace = bb.run(input.clone());
+        let matrices = model.layers().flat_map(|(_id,l)| {
+            match l {
+                Layer::Dense(ref matrix) => Some(matrix.clone()),
+                _ => None,
+            }
+        }).collect_vec();
+        let matrices_mle = matrices.iter().map(|m| m.to_mle()).collect_vec();
+        let point1 = random_bool_vector(matrices[1].nrows().ilog2() as usize);
+        let computed_eval1 = trace.final_output().to_vec().into_mle().evaluate(&point1);
+        let flatten_mat1 = matrices_mle[1].fix_high_variables(&point1);
+        let input_vector = trace.steps[trace.steps.len()-2].output.clone();
+        // y(r) = SUM_i m(r,i) x(i)
+        let full_poly = vec![flatten_mat1.clone().into(),input_vector.into_mle().into()];
+        let mut vp = VirtualPolynomial::new(flatten_mat1.num_vars());
+        vp.add_mle_list(full_poly, F::ONE);
+        #[allow(deprecated)]
+        let (proof, state) = IOPProverState::<F>::prove_parallel(vp, &mut default_transcript());
+        let given_eval1 = proof.extract_sum();
+        assert_eq!(computed_eval1,given_eval1);
     }
 
     //#[test]

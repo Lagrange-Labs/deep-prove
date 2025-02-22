@@ -69,7 +69,7 @@ impl<E: ExtensionField> Model<E> {
 
 /// Keeps track of all input and outputs of each layer, with a reference to the layer.
 pub struct InferenceTrace<'a, E> {
-    steps: Vec<InferenceStep<'a, E>>,
+    pub steps: Vec<InferenceStep<'a, E>>,
     /// The initial input to the model
     input: Vec<E>,
 }
