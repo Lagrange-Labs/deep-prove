@@ -571,12 +571,6 @@ where
                                 discarded_chunk[index] = field_elem.as_bases()[0];
                                 remainder_vals >>= requant.after_range.ilog2();
                             });
-
-                        debug_assert_eq!(remainder_vals, 0i128);
-                    });
-
-                    discarded_chunks.insert(0, relu_input);
-
                     // Debug check the recombination
                     debug_assert!({
                         let mut checker = true;
