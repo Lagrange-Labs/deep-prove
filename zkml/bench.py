@@ -18,6 +18,16 @@ import platform
 
 logging.basicConfig(level=logging.INFO)
 
+# Constants for CSV column headers
+CONFIG = "config"
+RUN = "run"
+SETUP = "setup (ms)"
+INFERENCE = "inference (ms)"
+PROVING = "proving (ms)"
+VERIFYING = "verifying (ms)"
+ACCURACY = "accuracy (bool)"
+PROOF_SIZE = "proof size (KB)"
+
 class CSVBencher:
     def __init__(self, headers: List[str]):
         self.headers = headers
@@ -136,14 +146,6 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose):
     ensure_command_exists("ezkl")
     
     try:
-        SETUP = "setup (ms)" 
-        INFERENCE = "inference (ms)"
-        PROVING = "proving (ms)"
-        VERIFYING = "verifying (ms)"
-        ACCURACY = "accuracy (bool)"
-        PROOF_SIZE = "proof size (KB)"
-        CONFIG = "config"
-        RUN = "run"
         LOGROWS = 24
         
         bencher = CSVBencher([CONFIG, RUN, SETUP, INFERENCE, PROVING, VERIFYING, ACCURACY, PROOF_SIZE])
@@ -164,6 +166,7 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose):
         # Capture the time for gen-witness
         witness_result = ex(["ezkl", "gen-witness", "-D", INPUT], verbose=verbose)
         witness_time_ms = witness_result["elapsed_time_ms"]
+        bencher.set(INFERENCE, str(witness_time_ms))  # Ensure inference time is recorded
         
         # For proving, extract the specific timing
         proving_result = ex(["ezkl", "prove", "--srs-path", EZKL_KZG_PARAMS], verbose=verbose)
@@ -180,7 +183,7 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose):
         
         # Sum the witness and proof times
         total_proving_time_ms = witness_time_ms + proof_time_ms
-        bencher.set(PROVING, str(total_proving_time_ms))
+        bencher.set(PROVING, f"{total_proving_time_ms:.2f}")  # Format to 2 decimal places
         
         bencher.r(VERIFYING, ["ezkl", "verify", "--srs-path", EZKL_KZG_PARAMS])
         
@@ -237,6 +240,7 @@ def run_benchmark(num_dense, layer_width, run_index, output_dir, verbose, run_ez
     else:
         print(f"Results saved to {zkml_csv} (EZKL comparison skipped)")
 
+    return zkml_csv, ezkl_csv if run_ezkl else None
 
 def set_cpu_affinity(max_threads: int):
     """Set CPU affinity to limit the process and its children to `max_threads` logical CPUs."""
@@ -263,7 +267,34 @@ def set_cpu_affinity(max_threads: int):
     else:
         print("⚠️ Warning: CPU affinity setting is not supported on this platform. Proceeding without restriction.")
 
-def main():
+def delete_csv_files(output_dir, config_name):
+    """Delete existing CSV files for the given configuration."""
+    zkml_csv = output_dir / f"zkml_{config_name}.csv"
+    ezkl_csv = output_dir / f"ezkl_{config_name}.csv"
+    
+    for csv_file in [zkml_csv, ezkl_csv]:
+        if csv_file.exists():
+            csv_file.unlink()
+            print(f"Deleted existing file: {csv_file}")
+
+def calculate_average_accuracy(csv_file):
+    """Calculate the average accuracy from a CSV file."""
+    if not csv_file.exists():
+        return None
+
+    total_accuracy = 0
+    row_count = 0
+
+    with csv_file.open("r") as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            total_accuracy += int(row[ACCURACY])
+            row_count += 1
+
+    return total_accuracy / row_count if row_count > 0 else None
+
+def parse_arguments():
+    """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Run multiple MLP benchmarks")
     parser.add_argument("--configs", type=str, default="3,4:4,8", 
                         help="Configurations to run as 'dense1,width1:dense2,width2:...'")
@@ -277,12 +308,50 @@ def main():
                         help="Enable EZKL comparison (off by default)")
     parser.add_argument("--num-threads", type=int, default=None,
                         help="Limit the number of threads used (default: no limit)")
-    
-    args = parser.parse_args()
-    
-    # Set CPU affinity if num-threads is specified
+    return parser.parse_args()
+
+def setup_environment(args):
+    """Setup the environment based on the provided arguments."""
     if args.num_threads is not None:
         set_cpu_affinity(args.num_threads)
+
+def run_configurations(configs, args):
+    """Run benchmarks for all configurations."""
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    zkml_csv_files = []
+    ezkl_csv_files = []
+    for config_idx, (num_dense, layer_width) in enumerate(configs):
+        config_name = f"d{num_dense}_w{layer_width}"
+        delete_csv_files(output_dir, config_name)  # Delete CSV files once per configuration
+        for run_idx in range(args.repeats):
+            print(f"\nRunning configuration {config_idx+1}/{len(configs)}, "
+                  f"repeat {run_idx+1}/{args.repeats}")
+            zkml_csv, ezkl_csv = run_benchmark(num_dense, layer_width, run_idx, output_dir, args.verbose, args.run_ezkl)
+            zkml_csv_files.append(zkml_csv)
+            if ezkl_csv:
+                ezkl_csv_files.append(ezkl_csv)
+    return zkml_csv_files, ezkl_csv_files
+
+def calculate_and_print_results(configs, zkml_csv_files, ezkl_csv_files, args):
+    """Calculate and print average accuracy for all runs."""
+    for config_name in configs:
+        zkml_csv = Path(args.output_dir) / f"zkml_d{config_name[0]}_w{config_name[1]}.csv"
+        ezkl_csv = Path(args.output_dir) / f"ezkl_d{config_name[0]}_w{config_name[1]}.csv"
+        
+        zkml_accuracy = calculate_average_accuracy(zkml_csv)
+        ezkl_accuracy = calculate_average_accuracy(ezkl_csv) if args.run_ezkl else None
+        
+        if zkml_accuracy is not None:
+            print(f"Average accuracy for ZKML (d{config_name[0]}_w{config_name[1]}): {zkml_accuracy:.2f}")
+        
+        if ezkl_accuracy is not None:
+            print(f"Average accuracy for EZKL (d{config_name[0]}_w{config_name[1]}): {ezkl_accuracy:.2f}")
+
+def main():
+    args = parse_arguments()
+    setup_environment(args)
     
     # Parse configurations
     configs = []
@@ -301,16 +370,8 @@ def main():
     
     print(f"Running {len(configs)} configurations, each repeated {args.repeats} times")
     
-    # Create output directory
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Run all configurations
-    for config_idx, (num_dense, layer_width) in enumerate(configs):
-        for run_idx in range(args.repeats):
-            print(f"\nRunning configuration {config_idx+1}/{len(configs)}, "
-                  f"repeat {run_idx+1}/{args.repeats}")
-            run_benchmark(num_dense, layer_width, run_idx, output_dir, args.verbose, args.run_ezkl)
+    zkml_csv_files, ezkl_csv_files = run_configurations(configs, args)
+    calculate_and_print_results(configs, zkml_csv_files, ezkl_csv_files, args)
 
 if __name__ == "__main__":
     main()

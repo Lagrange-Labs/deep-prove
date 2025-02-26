@@ -104,8 +104,8 @@ fn run(args: Args) -> anyhow::Result<()> {
         CSV_INFERENCE,
         CSV_PROVING,
         CSV_VERIFYING,
-        CSV_ACCURACY,
         CSV_PROOF_SIZE,
+        CSV_ACCURACY,
     ]);
     info!("[+] Reading onnx model");
     let model = bencher
