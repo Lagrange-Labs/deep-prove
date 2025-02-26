@@ -22,6 +22,8 @@ use zkml::{
     verify,
 };
 
+use rmp_serde::encode::to_vec_named;
+
 type F = GoldilocksExt2;
 
 #[derive(Parser, Debug)]
@@ -93,6 +95,7 @@ const CSV_INFERENCE: &str = "inference (ms)";
 const CSV_PROVING: &str = "proving (ms)";
 const CSV_VERIFYING: &str = "verifying (ms)";
 const CSV_ACCURACY: &str = "accuracy (bool)";
+const CSV_PROOF_SIZE: &str = "proof size (KB)";
 
 fn run(args: Args) -> anyhow::Result<()> {
     let mut bencher = CSVBencher::from_headers(vec![
@@ -102,6 +105,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         CSV_PROVING,
         CSV_VERIFYING,
         CSV_ACCURACY,
+        CSV_PROOF_SIZE,
     ]);
     info!("[+] Reading onnx model");
     let model = bencher
@@ -132,6 +136,11 @@ fn run(args: Args) -> anyhow::Result<()> {
     let proof = bencher.r(CSV_PROVING, move || {
         prover.prove(trace).expect("unable to generate proof")
     });
+
+    // Serialize proof using MessagePack and calculate size in KB
+    let proof_bytes = to_vec_named(&proof)?;
+    let proof_size_kb = proof_bytes.len() as f64 / 1024.0;
+    bencher.set(CSV_PROOF_SIZE, format!("{:.3}", proof_size_kb));
 
     info!("[+] Running verifier");
     let mut verifier_transcript = default_transcript();

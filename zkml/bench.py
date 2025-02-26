@@ -139,11 +139,12 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose):
         PROVING = "proving (ms)"
         VERIFYING = "verifying (ms)"
         ACCURACY = "accuracy (bool)"
+        PROOF_SIZE = "proof size (KB)"
         CONFIG = "config"
         RUN = "run"
         LOGROWS = 22
         
-        bencher = CSVBencher([CONFIG, RUN, SETUP, INFERENCE, PROVING, VERIFYING, ACCURACY])
+        bencher = CSVBencher([CONFIG, RUN, SETUP, INFERENCE, PROVING, VERIFYING, ACCURACY, PROOF_SIZE])
         bencher.set(CONFIG, config_name)
         bencher.set(RUN, str(run_index))
         
@@ -193,6 +194,11 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose):
         is_correct = 1 if ezkl_argmax == pytorch_argmax else 0
         bencher.set(ACCURACY, str(is_correct))
         print(f"Correctness check: {'PASS' if is_correct else 'FAIL'}")
+        
+        # Extract proof size in KB
+        proof_size_kb = len(proof_data["proof"]) / 1024.0
+        bencher.set(PROOF_SIZE, f"{proof_size_kb:.3f}")
+        print(f"Proof size: {proof_size_kb:.3f} KB")
         
         # Use absolute path for CSV file
         bencher.flush(absolute_ezkl_csv)

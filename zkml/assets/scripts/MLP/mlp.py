@@ -45,9 +45,11 @@ class MLP(nn.Module):
         layers = []
         input_size = 4  # Assuming input size is 4 for the Iris dataset
         for _ in range(num_dense):
-            layers.append(nn.Linear(input_size, layer_width, bias=use_bias))
+            layers.append(nn.Linear(input_size, layer_width))
+            layers.append(nn.ReLU())
             input_size = layer_width
-        layers.append(nn.Linear(layer_width, 3, bias=use_bias))  # Assuming 3 output classes
+        layers.append(nn.Linear(layer_width, 3))  # Assuming 3 output classes
+        layers.append(nn.ReLU())
         self.layers = nn.ModuleList(layers)
 
     def forward(self, x):
