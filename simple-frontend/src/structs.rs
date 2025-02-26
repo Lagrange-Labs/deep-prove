@@ -1,6 +1,6 @@
 use ff::Field;
 use ff_ext::ExtensionField;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{hash::Hash, marker::PhantomData};
 
 // We make use of the following identifiers.
@@ -13,19 +13,19 @@ pub type WitnessId = u16;
 pub type LayerId = u32;
 pub type CellId = usize;
 
-#[derive(Clone, Copy, Debug, Serialize, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Serialize, Eq, PartialEq, Hash, Deserialize)]
 pub struct ChallengeConst {
     pub challenge: ChallengeId,
     pub exp: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ConstantType<Ext: ExtensionField> {
-    Field(Ext::BaseField),
+    Field(#[serde(skip)] Ext::BaseField),
     /// ChallengeConst is an extension field element represents a power of ChallengeId.
     /// The usize here denotes the `usize`-th base field element of the const.
     Challenge(ChallengeConst, usize),
-    ChallengeScaled(ChallengeConst, usize, Ext::BaseField),
+    ChallengeScaled(ChallengeConst, usize, #[serde(skip)] Ext::BaseField),
 }
 
 /// Represent a gate in the circuit. The inner variables denote the input

@@ -3,12 +3,14 @@ use core::num;
 use crate::{
     activation::{Activation, ActivationCtx, Relu},
     iop::precommit::{self, PolyID},
+    lookup::Context as LookupContext,
     model::{Layer, Model},
     quantization::Requant,
 };
 use anyhow::Context as CC;
 use ff_ext::ExtensionField;
 use itertools::Itertools;
+use mpcs::BasefoldCommitment;
 use multilinear_extensions::virtual_poly::VPAuxInfo;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use transcript::Transcript;
@@ -18,10 +20,16 @@ use transcript::Transcript;
 /// cheating on this.
 /// NOTE: The context automatically appends a requant step after each dense layer.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum StepInfo<E> {
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
+pub enum StepInfo<E>
+where
+    E: ExtensionField + DeserializeOwned,
+    E::BaseField: Serialize + DeserializeOwned,
+{
     Dense(DenseInfo<E>),
     Activation(ActivationInfo),
     Requant(RequantInfo),
+    Table(TableInfo<E>),
 }
 
 /// Holds the poly info for the polynomials representing each matrix in the dense layers
@@ -46,12 +54,38 @@ pub struct RequantInfo {
     pub num_vars: usize,
 }
 
-impl<E> StepInfo<E> {
+/// Info related to the lookup protocol tables.
+/// Here `poly_id` is the multiplicity poly for this table.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
+pub struct TableInfo<E>
+where
+    E: ExtensionField + DeserializeOwned,
+    E::BaseField: Serialize + DeserializeOwned,
+{
+    pub poly_id: PolyID,
+    pub num_vars: usize,
+    pub table_commitment: BasefoldCommitment<E>,
+}
+
+impl<E> StepInfo<E>
+where
+    E: ExtensionField + DeserializeOwned,
+    E::BaseField: Serialize + DeserializeOwned,
+{
     pub fn variant_name(&self) -> String {
         match self {
             Self::Dense(_) => "Dense".to_string(),
             Self::Activation(_) => "Activation".to_string(),
             Self::Requant(_) => "Requant".to_string(),
+            Self::Table(..) => "Table".to_string(),
+        }
+    }
+
+    pub fn requires_lookup(&self) -> bool {
+        match self {
+            Self::Dense(..) => false,
+            _ => true,
         }
     }
 }
@@ -75,6 +109,9 @@ where
     /// Context holding the lookup tables for activation, e.g. the MLEs of the input and output columns for
     /// RELU for example
     pub activation: ActivationCtx<E>,
+
+    /// Context holding all lookup related inforamtion
+    pub lookup: LookupContext<E>,
 }
 
 impl<E: ExtensionField> Context<E>
@@ -131,10 +168,14 @@ where
         println!("CTX STEP C");
         let activation = ActivationCtx::new();
         println!("CTX STEP D");
+
+        let mut steps_info = auxs.into_iter().rev().collect_vec();
+        let lookup = LookupContext::<E>::generate(&mut steps_info)?;
         Ok(Self {
-            steps_info: auxs.into_iter().rev().collect_vec(),
+            steps_info,
             weights: commit_ctx,
             activation,
+            lookup,
         })
     }
 
@@ -152,6 +193,11 @@ where
                 StepInfo::Activation(info) => {
                     t.append_field_element(&E::BaseField::from(info.poly_id as u64));
                     t.append_field_element(&E::BaseField::from(info.num_vars as u64));
+                }
+                StepInfo::Table(info) => {
+                    t.append_field_element(&E::BaseField::from(info.poly_id as u64));
+                    t.append_field_element(&E::BaseField::from(info.num_vars as u64));
+                    t.append_field_elements(info.table_commitment.root().0.as_slice());
                 }
             }
         }

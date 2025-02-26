@@ -48,7 +48,7 @@ where
     /// The prover related to proving multiple claims about different witness polyy (io of lookups etc)
     witness_prover: precommit::CommitProver<E>,
     /// The context for the lookups
-    lookup_ctx: lookup::Context<'a, E>,
+    lookup_witness: lookup::WitnessContext<'a, E>,
     _phantom: PhantomData<L>,
 }
 
@@ -69,7 +69,7 @@ where
             // at this step, we can't build the ctx since we don't know the individual polys
             witness_ctx: None,
             witness_prover: precommit::CommitProver::new(),
-            lookup_ctx: lookup::Context::<E>::generate(ctx),
+            lookup_witness: lookup::WitnessContext::default(),
             _phantom: PhantomData,
         }
     }
@@ -88,11 +88,9 @@ where
                 // This is the case here since we treat each matrix as a different poly
                 self.prove_dense_step(last_claim, input, &step.output, info, matrix)
             }
-            (Layer::Activation(Activation::Relu(relu)), StepInfo::Activation(info)) => {
-                self.prove_relu(last_claim, input, &step.output, info)
-            }
-            (Layer::Requant(info), StepInfo::Requant(info2)) => {
-                self.prove_requant(last_claim, input, &step.output, info)
+            (Layer::Activation(Activation::Relu(..)), StepInfo::Activation(..))
+            | (Layer::Requant(..), StepInfo::Requant(..)) => {
+                self.prove_lookup(&last_claim, &step.output, info)
             }
             _ => bail!(
                 "inconsistent proof step {} and info step {} from ctx",
@@ -104,115 +102,119 @@ where
         claim
     }
 
-    fn prove_requant(
+    fn prove_lookup(
         &mut self,
-        last_claim: Claim<E>,
-        input: &[E],
+        last_claim: &Claim<E>,
         output: &[E],
-        info: &Requant,
+        step: &StepInfo<E>,
     ) -> anyhow::Result<Claim<E>> {
-        // Because we pad with zero columns (GKR prover needs a power of two number of instances)
-        // we work out how many of the claims we actually claim about.
-        let output_range_log = info.range.ilog2() as usize;
-        let after_op_range_log = info.after_range.ilog2() as usize;
-        let num_actual_claims = ((output_range_log - 1) / after_op_range_log) + 1;
-        let lookup_proof = L::prove(&self.lookup_ctx, self.transcript)?;
+        // First we check that the step requires lookup
+        if !step.requires_lookup() {
+            return Err(anyhow!(
+                "A step of type: {} does not require a lookup proof",
+                step.variant_name()
+            ));
+        }
+
+        // Run the lookup protocol and return the lookup proof
+        let lookup_proof = L::prove(&self.ctx.lookup, &self.lookup_witness, self.transcript)?;
 
         // We need to prove that the output of this step is the input to following activation function
         let mut same_poly_prover = same_poly::Prover::<E>::new(output.to_vec().into_mle());
-        same_poly_prover.add_claim(last_claim)?;
+        let same_poly_ctx = same_poly::Context::<E>::new(last_claim.point.len());
+        same_poly_prover.add_claim(last_claim.clone())?;
 
-        let total_claims = lookup_proof.claims().len();
-        // The actual claims that we care about
-        let actual_claims = &lookup_proof.claims()[total_claims - 1 - num_actual_claims..];
+        match step {
+            StepInfo::Activation(info) => {
+                // Activation proofs have two columns, input and output
 
-        let point = actual_claims[0].point.clone();
+                let input_claim = lookup_proof.claims()[0].clone();
+                let output_claim = lookup_proof.claims()[1].clone();
 
-        // Need to work out the constant values to add/subtract for this step
-        let max_bit = info.range << 1;
-        let max_bit = max_bit as u64;
-        let subtract = max_bit >> info.right_shift;
+                same_poly_prover.add_claim(output_claim)?;
+                let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, self.transcript)?;
+                // order is (output,mult)
+                self.witness_prover
+                    .add_claim(info.poly_id, claim_acc_proof.extract_claim())?;
 
-        let first_claim = actual_claims.first().ok_or(anyhow!("No claims found"))?;
-        // Add the claim used in the activation function
-        let same_poly_ctx = same_poly::Context::<E>::new(point.len().ilog2() as usize);
-        same_poly_prover.add_claim(first_claim.clone())?;
-        let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, self.transcript)?;
+                // Add the proof in
+                self.proofs.push(StepProof::Activation(ActivationProof {
+                    io_accumulation: claim_acc_proof,
+                    lookup: lookup_proof,
+                }));
+                Ok(input_claim)
+            }
+            StepInfo::Requant(requant_info) => {
+                let info = requant_info.requant;
+                // For requant layers we have to extract the correct "chunk" from the list of claims
+                let step = self.lookup_witness.current_step;
+                let (lookup_type, _) = self.ctx.lookup.get_circuit_and_type(step)?;
 
-        let eval = E::from(info.right_shift as u64) * (first_claim.eval + E::from(subtract))
-            - E::from(max_bit)
-            + actual_claims
-                .iter()
-                .skip(1)
-                .rev()
-                .enumerate()
-                .fold(E::ZERO, |acc, (i, claim)| {
-                    acc + E::from(1u64 << i) * (claim.eval + E::from(128u64))
-                });
+                let num_actual_claims = lookup_type.number_of_columns();
 
-        self.proofs.push(StepProof::Requant(RequantProof {
-            io_accumulation: claim_acc_proof,
-            lookup: lookup_proof,
-        }));
-        Ok(Claim { point, eval })
+                let total_claims = lookup_proof.claims().len();
+
+                // The actual claims that we care about
+                let actual_claims = &lookup_proof.claims()[total_claims - num_actual_claims..];
+
+                let point = actual_claims[0].point.clone();
+
+                // Need to work out the constant values to add/subtract for this step
+                let max_bit = info.range << 1;
+                let max_bit = max_bit as u64;
+                let subtract = max_bit >> info.right_shift;
+
+                let first_claim = actual_claims.first().ok_or(anyhow!("No claims found"))?;
+
+                // Add the claim used in the activation function
+                same_poly_prover.add_claim(first_claim.clone())?;
+                let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, self.transcript)?;
+
+                self.witness_prover
+                    .add_claim(requant_info.poly_id, claim_acc_proof.extract_claim())?;
+
+                let tmp_eval = E::from(1 << info.right_shift as u64)
+                    * (first_claim.eval + E::from(subtract))
+                    + actual_claims.iter().skip(1).rev().enumerate().fold(
+                        E::ZERO,
+                        |acc, (i, claim)| {
+                            acc + E::from((info.after_range.pow(i as u32)) as u64)
+                                * (claim.eval + E::from(128u64))
+                        },
+                    );
+                let eval = tmp_eval - E::from(max_bit);
+                self.proofs.push(StepProof::Requant(RequantProof {
+                    io_accumulation: claim_acc_proof,
+                    lookup: lookup_proof,
+                }));
+
+                Ok(Claim { point, eval })
+            }
+            _ => Err(anyhow!(
+                "Should not be in prove_lookup function for step: {}",
+                step.variant_name()
+            )),
+        }
     }
 
-    fn prove_relu(
-        &mut self,
-        last_claim: Claim<E>,
-        // input to the relu
-        input: &[E],
-        // output of the relu
-        output: &[E],
-        info: &ActivationInfo,
-    ) -> anyhow::Result<Claim<E>> {
-        assert_eq!(
-            input.len(),
-            output.len(),
-            "input/output of lookup don't have same size"
-        );
+    fn prove_table(&mut self) -> anyhow::Result<()> {
+        let poly_id = self.lookup_witness.current_step;
+        let (lt, _) = self
+            .ctx
+            .lookup
+            .get_circuit_and_type(self.lookup_witness.current_step)?;
+        println!("PROVING table of type: {:?}", lt);
+        // Make the proof for the table
+        let table_proof = L::prove(&self.ctx.lookup, &self.lookup_witness, self.transcript)?;
 
-        // Debug check to see that all the pairs looked up are rows in the table
-        debug_assert!({
-            let (relu_one, relu_two) = Relu::to_mle::<E>();
-
-            let mut bool_out = true;
-            for (in_val, out_val) in input.iter().zip(output.iter()) {
-                let pos = relu_one
-                    .iter()
-                    .position(|relu_one_val| *relu_one_val == *in_val)
-                    .ok_or(anyhow!("Input value was not in the table: {:?}", in_val))?;
-                debug_assert_eq!(relu_two[pos], *out_val);
-
-                bool_out ^= relu_two[pos] == *out_val;
-            }
-            bool_out
-        });
-
-        // First call the lookup with the right arguments:
-        let lookup_proof = L::prove(&self.lookup_ctx, self.transcript)?;
-        // in our case, the output of the RELU is ALSO the same poly that previous proving
-        // step (likely dense) has "outputted" to evaluate at a random point. So here we accumulate the two claims,
-        // the one from previous proving step and the one given by the lookup protocol into one. Since they're claims
-        // about the same poly, we can use the "same_poly" protocol.
-        let same_poly_ctx = same_poly::Context::<E>::new(info.num_vars);
-        let mut same_poly_prover = same_poly::Prover::<E>::new(output.to_vec().into_mle());
-        same_poly_prover.add_claim(last_claim)?;
-        let input_claim = lookup_proof.claims()[0].clone();
-        let output_claim = lookup_proof.claims()[1].clone();
-
-        same_poly_prover.add_claim(output_claim)?;
-        let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, self.transcript)?;
-        // order is (output,mult)
+        // Add the multiplicity poly claim
         self.witness_prover
-            .add_claim(info.poly_id, claim_acc_proof.extract_claim())?;
+            .add_claim(poly_id, table_proof.claims().last().unwrap().clone())?;
 
-        // Add the proof in
-        self.proofs.push(StepProof::Activation(ActivationProof {
-            io_accumulation: claim_acc_proof,
-            lookup: lookup_proof,
+        self.proofs.push(StepProof::Table(super::TableProof {
+            lookup: table_proof,
         }));
-        Ok(input_claim)
+        Ok(())
     }
 
     fn prove_dense_step(
@@ -317,11 +319,10 @@ where
 
     pub fn prove<'b>(mut self, trace: InferenceTrace<'b, E>) -> anyhow::Result<Proof<E>> {
         // First, create the context for the witness polys -
-        self.instantiate_witness_ctx(&trace, &self.ctx.steps_info)?;
+        self.instantiate_witness_ctx(&trace)?;
         // write commitments and polynomials info to transcript
         self.ctx.write_to_transcript(self.transcript)?;
-        // Create the witness context for the lookups
-        self.lookup_ctx.initialise_witness_ctx(&trace)?;
+
         // this is the random set of variables to fix at each step derived as the output of
         // sumcheck.
         // For the first step, so before the first sumcheck, we generate it from FS.
@@ -335,6 +336,7 @@ where
             point: r_i,
             eval: y_i,
         };
+        let trace_size = trace.last_step().id;
         // we start by the output to prove up to the input, GKR style
         for (i, ((input, step), info)) in trace
             .iter()
@@ -342,9 +344,18 @@ where
             .zip(self.ctx.steps_info.iter())
             .enumerate()
         {
-            self.lookup_ctx.witness_ctx.current_step = i;
+            self.lookup_witness.current_step = trace_size - i;
             last_claim = self.prove_step(last_claim, input, step, &info)?;
         }
+
+        // Now we have to make the table proofs
+        self.lookup_witness.current_step = trace_size + 1;
+
+        while self.lookup_witness.continue_proving() {
+            self.prove_table()?;
+            self.lookup_witness.current_step += 1;
+        }
+
         // now provide opening proofs for all claims accumulated during the proving steps
         let commit_proof = self
             .commit_prover
@@ -362,52 +373,10 @@ where
     }
 
     /// Looks at all the individual polys to accumulate from the witnesses and create the context from that.
-    fn instantiate_witness_ctx<'b>(
-        &mut self,
-        trace: &InferenceTrace<'b, E>,
-        step_infos: &[StepInfo<E>],
-    ) -> anyhow::Result<()> {
-        let polys = trace
-            .iter()
-            .rev()
-            .zip(step_infos.iter())
-            .filter_map(|((input, step), info)| {
-                match (step.layer, info) {
-                    (Layer::Activation(Activation::Relu(_)), StepInfo::Activation(info)) => {
-                        let (table_in, table_out) = Relu::to_mle::<E>();
-                        let table_columns = [table_in, table_out].map(|evals| {
-                            DenseMultilinearExtension::from_evaluations_vec(
-                                Relu::num_vars(),
-                                evals
-                                    .iter()
-                                    .map(|val| val.as_bases()[0])
-                                    .collect::<Vec<E::BaseField>>(),
-                            )
-                        });
-                        let lookup_columns = [input, step.output.as_slice()].map(|evals| {
-                            DenseMultilinearExtension::<E>::from_evaluations_vec(
-                                info.num_vars,
-                                evals
-                                    .iter()
-                                    .map(|val| val.as_bases()[0])
-                                    .collect::<Vec<E::BaseField>>(),
-                            )
-                        });
+    fn instantiate_witness_ctx<'b>(&mut self, trace: &InferenceTrace<'b, E>) -> anyhow::Result<()> {
+        let (lookup_witness, polys) =
+            lookup::WitnessContext::<E>::initialise_witness_ctx(&self.ctx.lookup, trace)?;
 
-                        let merged_table = merge_columns(&table_columns, E::ONE);
-                        let merged_lookup = merge_columns(&lookup_columns, E::ONE);
-
-                        let m_poly = compute_multiplicity_poly::<E>(&merged_table, &merged_lookup);
-                        let multiplicity_poly_evals = field_type_to_ext_vec(m_poly.evaluations());
-
-                        Some(vec![(info.poly_id, step.output.clone())])
-                    }
-                    // the dense layer is handling everything "on its own"
-                    _ => None,
-                }
-            })
-            .flatten()
-            .collect_vec();
         if !polys.is_empty() {
             let ctx = precommit::Context::generate(polys)
                 .context("unable to generate ctx for witnesses")?;
@@ -415,23 +384,44 @@ where
         } else {
             warn!("no activation functions found - no witness commitment");
         }
+        self.lookup_witness = lookup_witness;
         Ok(())
     }
 }
 
-/// Pad all inner vectors to the given size
-fn pad2<E: Clone>(a: Vec<Vec<E>>, nsize: usize, with: E) -> Vec<Vec<E>> {
-    // check vectors inside are all of the same length respectively
-    assert_eq!(
-        a.iter().map(|v| v.len()).sum::<usize>(),
-        a.len() * a[0].len()
-    );
-    // make sure we're not doing anything wrong
-    assert!(a.iter().all(|v| v.len() <= nsize));
-    a.into_iter()
-        .map(|mut v| {
-            v.resize(nsize, with.clone());
-            v
-        })
-        .collect_vec()
+#[cfg(test)]
+mod test {
+
+    use goldilocks::GoldilocksExt2;
+    use itertools::Itertools;
+    use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
+
+    use crate::{
+        Claim,
+        testing::{random_field_vector, random_vector},
+    };
+
+    use ff::Field;
+    type F = GoldilocksExt2;
+
+    #[test]
+    fn test_padding_prover() {
+        let num_vars = 7;
+        let poly_size = 1 << num_vars;
+        let padded_num_vars = 10;
+        let padded_size = 1 << padded_num_vars;
+        let poly = random_field_vector(1 << num_vars);
+        let padded_poly = poly
+            .iter()
+            .chain(std::iter::repeat(&F::ZERO))
+            .take(padded_size)
+            .cloned()
+            .collect_vec();
+        let padded_point = random_field_vector::<F>(padded_num_vars);
+        let padded_eval = padded_poly.into_mle().evaluate(&padded_point);
+        // now resize the claim to the original poly size (emulating what next dense layer proving is doing)
+        let reduced_point = padded_point.iter().take(num_vars).cloned().collect_vec();
+        let eval = poly.into_mle().evaluate(&reduced_point);
+        assert_eq!(padded_eval, eval);
+    }
 }

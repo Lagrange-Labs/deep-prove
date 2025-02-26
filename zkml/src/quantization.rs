@@ -130,7 +130,7 @@ impl<const BIT_LEN: usize> QuantRange<BIT_LEN> {
         let output_range = Self {
             max_range: (ind_range.pow(2) + m.ncols() as usize * ind_range).next_power_of_two(),
         };
-        let shift = Self::default().mult_shift(&Self::default(), &Self::default());
+        let shift = output_range.max_range.ilog2() as usize - BIT_LEN;
         Requant {
             range: output_range.max_range,
             right_shift: shift,
@@ -195,8 +195,8 @@ impl Requant {
     /// TODO: have a "cache" of lookups for similar ranges
     pub fn to_mle<E: ExtensionField>(&self) -> Vec<E> {
         // TODO: make a +1 or -1 somewhere
-        let min_range = -(self.range as Element) / 2;
-        let max_range = (self.range as Element) / 2 - 1;
+        let min_range = -(self.after_range as Element) / 2;
+        let max_range = (self.after_range as Element) / 2 - 1;
         (min_range..=max_range)
             .map(|i| i.to_field())
             .collect::<Vec<E>>()

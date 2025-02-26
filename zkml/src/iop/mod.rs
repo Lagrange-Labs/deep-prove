@@ -36,6 +36,7 @@ where
     Dense(DenseProof<E>),
     Activation(ActivationProof<E>),
     Requant(RequantProof<E>),
+    Table(TableProof<E>),
 }
 
 impl<E: ExtensionField> StepProof<E>
@@ -47,6 +48,20 @@ where
             Self::Dense(_) => "Dense".to_string(),
             Self::Activation(_) => "Activation".to_string(),
             Self::Requant(_) => "Requant".to_string(),
+            Self::Table(..) => "Table".to_string(),
+        }
+    }
+
+    pub fn get_lookup_data(&self) -> Option<(Vec<E::BaseField>, Vec<E>, Vec<E>)> {
+        match self {
+            StepProof::Dense(..) => None,
+            StepProof::Activation(ActivationProof { lookup, .. })
+            | StepProof::Requant(RequantProof { lookup, .. })
+            | StepProof::Table(TableProof { lookup }) => Some((
+                lookup.get_digest().0.to_vec(),
+                lookup.numerators(),
+                lookup.denominators(),
+            )),
         }
     }
 }
@@ -94,6 +109,15 @@ where
     lookup: lookup::Proof<E>,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct TableProof<E: ExtensionField>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+{
+    /// the lookup protocol proof for the table fractional sumcheck
+    lookup: lookup::Proof<E>,
+}
+
 #[cfg(test)]
 mod test {
     use goldilocks::GoldilocksExt2;
@@ -112,7 +136,7 @@ mod test {
     #[test]
     fn test_prover_steps() {
         tracing_subscriber::fmt::init();
-        let (model, input) = Model::random(2);
+        let (model, input) = Model::random(4);
         model.describe();
         let trace = model.run::<F>(input.clone());
         let output = trace.final_output();

@@ -1,0 +1,5 @@
+load (ms),setup (ms),inference (ms),proving (ms),verifying (ms),accuracy (bool)
+4,14,0,38,17,0
+4,23,0,53,23,0
+0,23,0,53,23,0
+1,26,0,54,22,0

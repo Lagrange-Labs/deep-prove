@@ -6,7 +6,7 @@ use std::{
 use ff_ext::ExtensionField;
 use goldilocks::SmallField;
 use multilinear_extensions::virtual_poly::ArcMultilinearExtension;
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 use simple_frontend::structs::{CellId, ChallengeConst, ConstantType, LayerId};
 
 pub(crate) type SumcheckProof<F> = sumcheck::structs::IOPProof<F>;
@@ -116,7 +116,7 @@ pub struct GKRInputClaims<E: ExtensionField> {
     pub point_and_evals: Vec<PointAndEval<E>>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) enum SumcheckStepType {
     OutputPhase1Step1,
     Phase1Step1,
@@ -135,7 +135,7 @@ pub(crate) enum Step {
     Step3,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Layer<E: ExtensionField> {
     pub(crate) layer_id: u32,
     pub(crate) sumcheck_steps: Vec<SumcheckStepType>,
@@ -184,7 +184,7 @@ impl<E: ExtensionField> Default for Layer<E> {
     }
 }
 
-#[derive(Clone, Serialize, Default)]
+#[derive(Clone, Serialize, Default, Deserialize)]
 pub struct Circuit<E: ExtensionField> {
     pub layers: Vec<Layer<E>>,
 
@@ -207,22 +207,31 @@ pub type Gate1In<C> = Gate<C, 1>;
 pub type Gate2In<C> = Gate<C, 2>;
 pub type Gate3In<C> = Gate<C, 3>;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// Macro struct for Gate
 pub struct Gate<C, const FAN_IN: usize> {
+    #[serde(
+        serialize_with = "serialize_array",
+        deserialize_with = "deserialize_array"
+    )]
     pub(crate) idx_in: [CellId; FAN_IN],
     pub(crate) idx_out: CellId,
     pub(crate) scalar: C,
 }
 
-impl<C, const FAN_IN: usize> Serialize for Gate<C, FAN_IN> {
-    fn serialize<S>(&self, _: S) -> Result<<S as Serializer>::Ok, <S as Serializer>::Error>
-    where
-        S: Serializer,
-    {
-        // TODO!
-        todo!()
-    }
+fn serialize_array<T: Clone + Serialize, S: Serializer, const N: usize>(
+    input: &[T; N],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    input.to_vec().serialize(serializer)
+}
+
+fn deserialize_array<'a, T: Deserialize<'a>, D: Deserializer<'a>, const N: usize>(
+    deserializer: D,
+) -> Result<[T; N], D::Error> {
+    Vec::<T>::deserialize(deserializer)?
+        .try_into()
+        .map_err(|_| D::Error::custom("failed to deserialize array: wrong number of items found"))
 }
 
 #[derive(Clone)]

@@ -60,7 +60,7 @@ impl InputJSON {
     }
     // poor's man validation
     fn validate(&self) -> anyhow::Result<()> {
-        let rrange = (-1.0..=1.0);
+        let rrange = -1.0..=1.0;
         ensure!(self.input_data.len() == 1);
         let input_isreal = self.input_data[0].iter().all(|v| rrange.contains(v));
         // let output_isreal = self.output_data[0].iter().all(|v| rrange.contains(v));
