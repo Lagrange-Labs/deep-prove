@@ -5,3 +5,4 @@ scikit-learn
 numpy
 torch
 tqdm
+psutil

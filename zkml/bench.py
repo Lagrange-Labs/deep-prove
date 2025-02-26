@@ -13,6 +13,8 @@ from typing import Callable, Dict, List, Union
 import re
 import json
 import itertools
+import psutil  # Import psutil for CPU affinity
+import platform
 
 logging.basicConfig(level=logging.INFO)
 
@@ -142,7 +144,7 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose):
         PROOF_SIZE = "proof size (KB)"
         CONFIG = "config"
         RUN = "run"
-        LOGROWS = 22
+        LOGROWS = 24
         
         bencher = CSVBencher([CONFIG, RUN, SETUP, INFERENCE, PROVING, VERIFYING, ACCURACY, PROOF_SIZE])
         bencher.set(CONFIG, config_name)
@@ -158,7 +160,10 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose):
         
         # Run benchmarks
         bencher.r(SETUP, ["ezkl", "setup", "--srs-path", EZKL_KZG_PARAMS])
-        bencher.r(INFERENCE, ["ezkl", "gen-witness", "-D", INPUT])
+        
+        # Capture the time for gen-witness
+        witness_result = ex(["ezkl", "gen-witness", "-D", INPUT], verbose=verbose)
+        witness_time_ms = witness_result["elapsed_time_ms"]
         
         # For proving, extract the specific timing
         proving_result = ex(["ezkl", "prove", "--srs-path", EZKL_KZG_PARAMS], verbose=verbose)
@@ -169,10 +174,13 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose):
             proof_time_seconds = float(proof_time_match.group(1))
             proof_time_ms = int(proof_time_seconds * 1000)
             print(f"Extracted proof time: {proof_time_ms}ms")
-            bencher.set(PROVING, str(proof_time_ms))
         else:
             print("Could not extract proof time, using full command time")
-            bencher.set(PROVING, str(int(proving_result["elapsed_time_ms"])))
+            proof_time_ms = proving_result["elapsed_time_ms"]
+        
+        # Sum the witness and proof times
+        total_proving_time_ms = witness_time_ms + proof_time_ms
+        bencher.set(PROVING, str(total_proving_time_ms))
         
         bencher.r(VERIFYING, ["ezkl", "verify", "--srs-path", EZKL_KZG_PARAMS])
         
@@ -229,6 +237,32 @@ def run_benchmark(num_dense, layer_width, run_index, output_dir, verbose, run_ez
     else:
         print(f"Results saved to {zkml_csv} (EZKL comparison skipped)")
 
+
+def set_cpu_affinity(max_threads: int):
+    """Set CPU affinity to limit the process and its children to `max_threads` logical CPUs."""
+    num_logical_processors = psutil.cpu_count(logical=True)
+
+    # Check if the requested number of threads is valid
+    if max_threads < 1:
+        print("❌ Error: The number of threads must be at least 1.")
+        sys.exit(1)
+    if max_threads > num_logical_processors:
+        print(f"❌ Error: Requested {max_threads} threads, but only {num_logical_processors} logical processors are available.")
+        sys.exit(1)
+
+    # Check if the platform supports setting CPU affinity
+    if platform.system() in ["Linux", "Windows"]:
+        # Select up to `max_threads` available logical CPUs
+        selected_cpus = list(range(max_threads))
+
+        # Apply CPU affinity
+        p = psutil.Process(os.getpid())
+        p.cpu_affinity(selected_cpus)
+
+        print(f"Restricted to CPUs: {selected_cpus}")
+    else:
+        print("⚠️ Warning: CPU affinity setting is not supported on this platform. Proceeding without restriction.")
+
 def main():
     parser = argparse.ArgumentParser(description="Run multiple MLP benchmarks")
     parser.add_argument("--configs", type=str, default="3,4:4,8", 
@@ -241,8 +275,14 @@ def main():
                         help="Enable verbose output for each command")
     parser.add_argument("--run-ezkl", action="store_true",
                         help="Enable EZKL comparison (off by default)")
+    parser.add_argument("--num-threads", type=int, default=None,
+                        help="Limit the number of threads used (default: no limit)")
     
     args = parser.parse_args()
+    
+    # Set CPU affinity if num-threads is specified
+    if args.num_threads is not None:
+        set_cpu_affinity(args.num_threads)
     
     # Parse configurations
     configs = []
