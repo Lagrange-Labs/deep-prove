@@ -15,7 +15,6 @@ pub use iop::{
 };
 
 pub mod lookup;
-// mod matrix;
 pub mod model;
 mod onnx_parse;
 pub mod quantization;

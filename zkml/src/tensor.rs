@@ -447,39 +447,6 @@ impl PartialEq for Tensor<Element> {
     }
 }
 
-// impl Tensor<GoldilocksExt2> {
-// /// Creates a random matrix with a given number of rows and cols.
-// /// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
-// /// sync which is not true for basic rng core.
-// pub fn random(shape: Vec<usize>) -> Self {
-//     let mut rng = thread_rng();
-//     let size = shape.iter().product();
-//     let data = (0..size)
-//         .map(|_| GoldilocksExt2::random(&mut rng))
-//         .collect_vec();
-
-//     Self { data, shape }
-// }
-
-/// Creates a random matrix with a given number of rows and cols.
-/// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
-/// sync which is not true for basic rng core.
-// pub fn random_seed(shape: Vec<usize>, seed: Option<u64>) -> Self {
-//     let seed = seed.unwrap_or(rand::random::<u64>()); // Use provided seed or default
-
-//     let size = shape.iter().product();
-//     let data = (0..size)
-//         .into_par_iter()
-//         .map(|i| {
-//             let mut rng = StdRng::seed_from_u64(seed + i as u64);
-//             GoldilocksExt2::random(&mut rng)
-//         })
-//         .collect::<Vec<GoldilocksExt2>>();
-
-//     Self { data, shape }
-// }
-// }
-
 impl PartialEq for Tensor<GoldilocksExt2> {
     fn eq(&self, other: &Self) -> bool {
         self.shape == other.shape && self.data == other.data
