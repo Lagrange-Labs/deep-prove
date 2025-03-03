@@ -17,6 +17,7 @@ pub use iop::{
 pub mod lookup;
 pub mod model;
 mod onnx_parse;
+pub mod pooling;
 pub mod quantization;
 pub use onnx_parse::load_mlp;
 
