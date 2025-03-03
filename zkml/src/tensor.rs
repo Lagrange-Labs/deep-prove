@@ -431,6 +431,69 @@ impl Tensor<Element> {
     }
 }
 
+impl<T> Tensor<T>
+where
+    T: PartialOrd + Clone,
+    T: std::default::Default,
+{
+    pub fn maxpool2d(&self, kernel_size: usize, stride: usize) -> Tensor<T> {
+        let dims = self.dims().len();
+        assert!(dims >= 2, "Input tensor must have at least 2 dimensions.");
+
+        let (h, w) = (self.shape[dims - 2], self.shape[dims - 1]);
+
+        // https://pytorch.org/docs/stable/generated/torch.nn.MaxPool2d.html
+        // Assumes dilation = 1
+        assert!(
+            h >= kernel_size,
+            "Kernel size ({}) is larger than input dimensions ({}, {})",
+            kernel_size,
+            h,
+            w
+        );
+        let out_h = (h - kernel_size) / stride + 1;
+        let out_w = (w - kernel_size) / stride + 1;
+
+        println!("(out_h, out_w): ({}, {})", out_h, out_w);
+
+        let outer_dims: usize = self.shape[..dims - 2].iter().product();
+        let mut output = vec![T::default(); outer_dims * out_h * out_w];
+
+        for n in 0..outer_dims {
+            let matrix_idx = n * (h * w);
+            for i in 0..out_h {
+                for j in 0..out_w {
+                    let src_idx = matrix_idx + (i * stride) * w + (j * stride);
+                    let mut max_val = self.data[src_idx].clone();
+
+                    for ki in 0..kernel_size {
+                        for kj in 0..kernel_size {
+                            let src_idx = matrix_idx + (i * stride + ki) * w + (j * stride + kj);
+                            let value = self.data[src_idx].clone();
+
+                            if value > max_val {
+                                max_val = value;
+                            }
+                        }
+                    }
+
+                    let out_idx = n * out_h * out_w + i * out_w + j;
+                    output[out_idx] = max_val;
+                }
+            }
+        }
+
+        let mut new_shape = self.shape.clone();
+        new_shape[dims - 2] = out_h;
+        new_shape[dims - 1] = out_w;
+
+        Tensor {
+            data: output,
+            shape: new_shape,
+        }
+    }
+}
+
 impl<T> fmt::Display for Tensor<T>
 where
     T: std::fmt::Debug + std::fmt::Display,
@@ -649,5 +712,17 @@ mod test {
         let result = matrix_a.matmul(&matrix_b);
 
         assert_eq!(result, matrix_c, "Matrix-matrix multiplication failed.");
+    }
+
+    #[test]
+    fn test_tensor_max_pool2d() {
+        let input = Tensor::<Element>::new(vec![1, 3, 3, 4], vec![
+            99, -35, 18, 104, -26, -48, -80, 106, 10, 8, 79, -7, -128, -45, 24, -91, -7, 88, -119,
+            -37, -38, -113, -84, 86, 116, 72, -83, 100, 83, 81, 87, 58, -109, -13, -123, 102,
+        ]);
+        let expected = Tensor::<Element>::new(vec![1, 3, 1, 2], vec![99, 106, 88, 24, 116, 100]);
+
+        let result = input.maxpool2d(2, 2);
+        assert_eq!(result, expected, "Conv2D (Element) failed.");
     }
 }
