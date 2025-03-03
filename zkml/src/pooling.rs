@@ -2,7 +2,7 @@ use crate::{Element, tensor::Tensor};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 
-const MAXPOOL2D_KERNEL_SIZE: usize = 2;
+pub const MAXPOOL2D_KERNEL_SIZE: usize = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Copy)]
 pub enum Pooling {
