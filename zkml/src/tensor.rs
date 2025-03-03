@@ -21,6 +21,7 @@ use std::{
 
 use crate::{
     Element,
+    pooling::MAXPOOL2D_KERNEL_SIZE,
     quantization::Fieldizer,
     testing::{VecInto, random_vector, random_vector_seed},
     to_bit_sequence_le,
@@ -454,8 +455,6 @@ where
         let out_h = (h - kernel_size) / stride + 1;
         let out_w = (w - kernel_size) / stride + 1;
 
-        println!("(out_h, out_w): ({}, {})", out_h, out_w);
-
         let outer_dims: usize = self.shape[..dims - 2].iter().product();
         let mut output = vec![T::default(); outer_dims * out_h * out_w];
 
@@ -492,6 +491,59 @@ where
             shape: new_shape,
         }
     }
+
+    pub fn padded_maxpool2d(&self) -> (Tensor<T>, Tensor<T>) {
+        let kernel_size = MAXPOOL2D_KERNEL_SIZE;
+        let stride = MAXPOOL2D_KERNEL_SIZE;
+
+        let maxpool_result = self.maxpool2d(kernel_size, stride);
+
+        let dims: usize = self.dims().len();
+        assert!(dims >= 2, "Input tensor must have at least 2 dimensions.");
+
+        let (h, w) = (self.shape[dims - 2], self.shape[dims - 1]);
+
+        assert!(
+            h % MAXPOOL2D_KERNEL_SIZE == 0,
+            "Currently works only with kernel size {}",
+            MAXPOOL2D_KERNEL_SIZE
+        );
+        assert!(
+            w % MAXPOOL2D_KERNEL_SIZE == 0,
+            "Currently works only with stride size {}",
+            MAXPOOL2D_KERNEL_SIZE
+        );
+
+        let mut padded_maxpool_data = vec![T::default(); self.shape.iter().product()];
+
+        let outer_dims: usize = self.shape[..dims - 2].iter().product();
+        let maxpool_h = (h - kernel_size) / stride + 1;
+        let maxpool_w = (w - kernel_size) / stride + 1;
+
+        for n in 0..outer_dims {
+            let matrix_idx = n * (h * w);
+            for i in 0..maxpool_h {
+                for j in 0..maxpool_w {
+                    let maxpool_idx = n * maxpool_h * maxpool_w + i * maxpool_w + j;
+                    let maxpool_value = maxpool_result.data[maxpool_idx].clone();
+
+                    for ki in 0..kernel_size {
+                        for kj in 0..kernel_size {
+                            let out_idx = matrix_idx + (i * stride + ki) * w + (j * stride + kj);
+                            padded_maxpool_data[out_idx] = maxpool_value.clone();
+                        }
+                    }
+                }
+            }
+        }
+
+        let padded_maxpool_tensor = Tensor {
+            data: padded_maxpool_data,
+            shape: self.dims(),
+        };
+
+        (maxpool_result, padded_maxpool_tensor)
+    }
 }
 
 impl<T> fmt::Display for Tensor<T>
@@ -499,20 +551,41 @@ where
     T: std::fmt::Debug + std::fmt::Display,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let shape = &self.shape;
-        if shape.len() != 2 {
-            return write!(f, "Tensor(shape={:?}, data={:?})", shape, self.data);
+        let shape = self.shape.clone();
+        let mut shape = shape.into_iter().rev().collect_vec();
+
+        while shape.len() < 4 {
+            shape.push(1);
         }
 
-        let (rows, cols) = (shape[0], shape[1]);
-        writeln!(f, "Matrix [{}x{}]:", rows, cols)?;
-        for i in 0..rows {
-            let row_data: Vec<String> = (0..cols)
-                .map(|j| format!("{:>4.2}", self.data[i * cols + j])) // Format for better alignment
-                .collect();
-            writeln!(f, "{:>3}: [{}]", i, row_data.join(", "))?;
+        if shape.len() == 4 {
+            let (batches, channels, height, width) =
+                (self.shape[0], self.shape[1], self.shape[2], self.shape[3]);
+            let channel_size = height * width;
+            let batch_size = channels * channel_size;
+
+            for b in 0..batches {
+                writeln!(
+                    f,
+                    "Batch {} [{} channels, {}x{}]:",
+                    b, channels, height, width
+                )?;
+                for c in 0..channels {
+                    writeln!(f, "  Channel {}:", c)?;
+                    let offset = b * batch_size + c * channel_size;
+                    for i in 0..height {
+                        let row_start = offset + i * width;
+                        let row_data: Vec<String> = (0..width)
+                            .map(|j| format!("{:>4.2}", self.data[row_start + j]))
+                            .collect();
+                        writeln!(f, "    {:>3}: [{}]", i, row_data.join(", "))?;
+                    }
+                }
+            }
+            write!(f, "Shape: {:?}", self.shape)
+        } else {
+            write!(f, "Tensor(shape={:?}, data={:?})", self.shape, self.data) // Fallback
         }
-        Ok(())
     }
 }
 
@@ -715,7 +788,7 @@ mod test {
     }
 
     #[test]
-    fn test_tensor_max_pool2d() {
+    fn test_tensor_maxpool2d() {
         let input = Tensor::<Element>::new(vec![1, 3, 3, 4], vec![
             99, -35, 18, 104, -26, -48, -80, 106, 10, 8, 79, -7, -128, -45, 24, -91, -7, 88, -119,
             -37, -38, -113, -84, 86, 116, 72, -83, 100, 83, 81, 87, 58, -109, -13, -123, 102,
@@ -723,6 +796,31 @@ mod test {
         let expected = Tensor::<Element>::new(vec![1, 3, 1, 2], vec![99, 106, 88, 24, 116, 100]);
 
         let result = input.maxpool2d(2, 2);
-        assert_eq!(result, expected, "Conv2D (Element) failed.");
+        assert_eq!(result, expected, "Maxpool (Element) failed.");
+    }
+
+    #[test]
+    fn test_tensor_pad_maxpool2d() {
+        let input = Tensor::<Element>::new(vec![1, 3, 4, 4], vec![
+            93, 56, -3, -1, 104, -68, -71, -96, 5, -16, 3, -8, 74, -34, -16, -31, -42, -59, -64,
+            70, -77, 19, -17, -114, 79, 55, 4, -26, -7, -17, -94, 21, 59, -116, -113, 47, 8, 112,
+            65, -99, 35, 3, -126, -52, 28, 69, 105, 33,
+        ]);
+        let expected = Tensor::<Element>::new(vec![1, 3, 2, 2], vec![
+            104, -1, 74, 3, 19, 70, 79, 21, 112, 65, 69, 105,
+        ]);
+
+        let padded_expected = Tensor::<Element>::new(vec![1, 3, 4, 4], vec![
+            104, 104, -1, -1, 104, 104, -1, -1, 74, 74, 3, 3, 74, 74, 3, 3, 19, 19, 70, 70, 19, 19,
+            70, 70, 79, 79, 21, 21, 79, 79, 21, 21, 112, 112, 65, 65, 112, 112, 65, 65, 69, 69,
+            105, 105, 69, 69, 105, 105,
+        ]);
+
+        let (result, padded_result) = input.padded_maxpool2d();
+        assert_eq!(result, expected, "Maxpool (Element) failed.");
+        assert_eq!(
+            padded_result, padded_expected,
+            "Padded Maxpool (Element) failed."
+        );
     }
 }
