@@ -7,6 +7,7 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use crate::{
     Element,
     activation::{Activation, Relu},
+    pooling::Pooling,
     quantization::{Requant, TensorFielder},
     tensor::Tensor,
 };
@@ -22,6 +23,7 @@ pub enum Layer {
     // this is the output quant info. Since we always do a requant layer after each dense,
     // then we assume the inputs requant info are default()
     Requant(Requant),
+    Pooling(Pooling),
 }
 
 impl std::fmt::Display for Layer {
@@ -42,6 +44,7 @@ impl Layer {
                 // NOTE: we assume we have default quant structure as input
                 info.op(input)
             }
+            Layer::Pooling(info) => info.op(input),
         }
     }
 
@@ -50,6 +53,7 @@ impl Layer {
             Layer::Dense(ref matrix) => vec![matrix.nrows_2d(), matrix.ncols_2d()],
             Layer::Activation(Activation::Relu(_)) => Relu::shape(),
             Layer::Requant(info) => info.shape(),
+            Layer::Pooling(Pooling::Maxpool2D(info)) => unimplemented!(),
         }
     }
     pub fn describe(&self) -> String {
@@ -68,6 +72,7 @@ impl Layer {
             Layer::Requant(info) => {
                 format!("Requant: {}", info.shape()[1])
             }
+            Layer::Pooling(Pooling::Maxpool2D(_)) => unimplemented!(),
         }
     }
     /// Prepare the input to return it in the right format expected for the first layer.

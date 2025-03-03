@@ -3,6 +3,7 @@ use crate::{
     iop::precommit::{self, PolyID},
     lookup::Context as LookupContext,
     model::{Layer, Model},
+    pooling::Pooling,
     quantization::Requant,
 };
 use anyhow::Context as CC;
@@ -152,6 +153,7 @@ where
                         poly_id: id,
                         num_vars: last_output_size.ilog2() as usize,
                     }),
+                    Layer::Pooling(Pooling::Maxpool2D(_)) => unimplemented!(),
                 }
             })
             .collect_vec();
