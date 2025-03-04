@@ -7,6 +7,8 @@ use gkr::{
     util::ceil_log2,
 };
 
+use rayon::prelude::*;
+
 use mpcs::{BasefoldCommitment, PolynomialCommitmentScheme};
 use poseidon::digest::Digest;
 use std::collections::{HashMap, HashSet};
@@ -19,7 +21,7 @@ use crate::{
     iop::context::StepInfo,
     model::{InferenceTrace, StepIdx},
     pooling::Maxpool2D,
-    quantization::{Fieldizer, Requant},
+    quantization::{BIT_LEN, Fieldizer, Requant},
     tensor::Tensor,
 };
 use gkr_circuits::{
@@ -225,8 +227,8 @@ impl LookupType {
             LookupType::Relu(..) | LookupType::ReluTable => "Relu".to_string(),
             LookupType::RequantTable(num_vars) => format!("Requant_{}", *num_vars),
             // Maxpool update
-            LookupType::Maxpool2D(.., num_vars) | LookupType::Maxpool2DTable(num_vars) => {
-                format!("Maxpool2D_{}", *num_vars)
+            LookupType::Maxpool2D(..) | LookupType::Maxpool2DTable(..) => {
+                format!("Maxpool2D")
             }
             LookupType::NoLookup => "NoLookup".to_string(),
         }
@@ -253,8 +255,11 @@ impl LookupType {
                 ])
             }
             // Maxpool update
-            LookupType::Maxpool2DTable(_) => {
-                unimplemented!()
+            LookupType::Maxpool2DTable(..) => {
+                let mle = (0..1u64 << BIT_LEN)
+                    .map(|i| E::BaseField::from(i))
+                    .collect::<Vec<E::BaseField>>();
+                Some(vec![mle])
             }
             _ => None,
         }
@@ -303,7 +308,9 @@ impl LookupType {
             }
             LookupType::Requant(info, ..) => info.prep_for_requantize::<E>(input.get_data()),
             // Maxpool update
-            LookupType::Maxpool2D(..) => unimplemented!(),
+            LookupType::Maxpool2D(info, ..) => {
+                vec![info.compute_diff_poly::<E>(input)]
+            }
             _ => vec![],
         }
     }
@@ -497,7 +504,44 @@ where
                     Ok(())
                 }
                 // Maxpool update
-                StepInfo::Pooling(_) => unimplemented!(),
+                StepInfo::Pooling(..) => {
+                    let lookup_type = LookupType::from(step);
+                    let circuit = lookup_type.make_circuit::<E>();
+                    let vec_position = lookup_circuits.len();
+                    step_index_map.insert(idx, vec_position);
+                    lookup_circuits.push((lookup_type, circuit));
+
+                    if tables_used.insert(LookupType::Maxpool2DTable(BIT_LEN)) {
+                        let lookup_type = LookupType::Maxpool2DTable(BIT_LEN);
+                        let circuit = lookup_type.make_circuit::<E>();
+                        let mles = lookup_type
+                            .get_mles::<E>()
+                            .ok_or(anyhow!(
+                                "Got none table LookupType when only tables should be made: {:?}",
+                                lookup_type
+                            ))?
+                            .into_iter()
+                            .map(|evaluations| {
+                                DenseMultilinearExtension::<E>::from_evaluations_vec(
+                                    BIT_LEN,
+                                    evaluations,
+                                )
+                            })
+                            .collect::<Vec<DenseMultilinearExtension<E>>>();
+                        let (pp, _) = Pcs::<E>::trim(params.clone(), 1 << BIT_LEN)?;
+                        let commit = Pcs::<E>::batch_commit(&pp, &mles)?.to_commitment();
+                        let table_info = TableInfo {
+                            poly_id: table_poly_id,
+                            num_vars: BIT_LEN,
+                            table_commitment: commit,
+                            circuit,
+                            lookup_type,
+                        };
+                        table_circuits.push(table_info);
+                        table_poly_id += 1;
+                    }
+                    Ok(())
+                }
                 _ => unreachable!(),
             })?;
 

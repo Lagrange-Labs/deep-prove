@@ -1,11 +1,11 @@
 use super::{
     Context, Proof, RequantProof, StepProof, TableProof,
-    context::{DenseInfo, StepInfo},
+    context::{DenseInfo, PoolingInfo, StepInfo},
 };
 use crate::{
     Claim, Element, VectorTranscript,
     activation::Activation,
-    commit::{precommit, same_poly},
+    commit::{compute_betas_eval, identity_eval, precommit, same_poly},
     iop::{ActivationProof, DenseProof},
     lookup::{self, LookupProtocol},
     model::{InferenceStep, InferenceTrace, Layer},
@@ -16,8 +16,8 @@ use ff_ext::ExtensionField;
 
 use log::{debug, warn};
 use multilinear_extensions::{
-    mle::{IntoMLE, MultilinearExtension},
-    virtual_poly::VirtualPolynomial,
+    mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension, IntoMLE, MultilinearExtension},
+    virtual_poly::{VPAuxInfo, VirtualPolynomial},
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::marker::PhantomData;
@@ -206,6 +206,51 @@ where
                 });
                 Ok(())
             })
+    }
+
+    fn prove_pooling(
+        &mut self,
+        // last random claim made
+        last_claim: Claim<E>,
+        // input to the dense layer
+        input: &Tensor<E>,
+        // output of dense layer evaluation
+        output: &Tensor<E>,
+        info: &PoolingInfo,
+    ) -> anyhow::Result<Claim<E>> {
+        // Create the range check proof for the diff
+        let prover_info = self
+            .lookup_witness
+            .next()
+            .ok_or(anyhow!("No more lookup witness!"))?;
+        // Run the lookup protocol and return the lookup proof
+
+        let diff_poly = prover_info.circuit_witness.witness_in_ref()[0].clone();
+        let lookup_proof = L::prove(&self.ctx.lookup, &prover_info, self.transcript)?;
+
+        let mut vp = VirtualPolynomial::<E>::new(info.num_vars);
+
+        // Squeeze some randomness from the transcript to
+        let challenge_point = (0..info.num_vars)
+            .map(|_| {
+                self.transcript
+                    .get_and_append_challenge(b"zerocheck_challenge")
+                    .elements
+            })
+            .collect::<Vec<E>>();
+
+        // Comput the identity poly
+        let beta_eval = compute_betas_eval(&challenge_point);
+        let beta_poly: ArcDenseMultilinearExtension<E> =
+            DenseMultilinearExtension::<E>::from_evaluations_ext_vec(info.num_vars, beta_eval)
+                .into();
+
+        vp.add_mle_list(vec![beta_poly.clone()], E::ONE);
+
+        // last_claim will contain info about the output y, since y' (used in the zerocheck which calculates (y' - x)^4) is just 4 copies of y
+        // we use its evaluation from the zerocheck to link it to the next round.
+
+        todo!()
     }
 
     fn prove_dense_step(

@@ -38,6 +38,7 @@ where
     Dense(DenseProof<E>),
     Activation(ActivationProof<E>),
     Requant(RequantProof<E>),
+    Pooling(PoolingProof<E>),
 }
 
 impl<E: ExtensionField> StepProof<E>
@@ -49,6 +50,7 @@ where
             Self::Dense(_) => "Dense".to_string(),
             Self::Activation(_) => "Activation".to_string(),
             Self::Requant(_) => "Requant".to_string(),
+            Self::Pooling(_) => "Pooling".to_string(),
         }
     }
 
@@ -56,7 +58,8 @@ where
         match self {
             StepProof::Dense(..) => None,
             StepProof::Activation(ActivationProof { lookup, .. })
-            | StepProof::Requant(RequantProof { lookup, .. }) => Some((
+            | StepProof::Requant(RequantProof { lookup, .. })
+            | StepProof::Pooling(PoolingProof { lookup, .. }) => Some((
                 lookup.get_digest().0.to_vec(),
                 lookup.numerators(),
                 lookup.denominators(),
@@ -94,6 +97,20 @@ impl<E: ExtensionField> DenseProof<E> {
     pub fn individual_to_virtual_claim(&self) -> E {
         self.individual_claims.iter().fold(E::ONE, |acc, e| acc * e)
     }
+}
+
+/// Contains proof material related to one step of the inference
+#[derive(Clone, Serialize, Deserialize)]
+pub struct PoolingProof<E: ExtensionField>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+{
+    /// the actual sumcheck proof proving that the product of correct terms is always zero
+    sumcheck: IOPProof<E>,
+    /// The lookup proof showing that the diff is always in the correct range
+    lookup: lookup::Proof<E>,
+    /// proof for the accumulation of the claim from the zerocheck + claim from lookup for the same poly
+    io_accumulation: same_poly::Proof<E>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
