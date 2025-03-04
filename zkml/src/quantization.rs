@@ -135,7 +135,19 @@ impl<const BIT_LEN: usize> QuantRange<BIT_LEN> {
             .into_iter()
             .map(|row| {
                 let row_range = row
-                    .map(|weight| (weight * MIN, weight * MAX))
+                    .map(|weight| {
+                        let min = if weight.is_negative() {
+                            weight * MAX as Element
+                        } else {
+                            weight * MIN as Element
+                        };
+                        let max = if weight.is_negative() {
+                            weight * MIN as Element
+                        } else {
+                            weight * MAX as Element
+                        };
+                        (min, max)
+                    })
                     .fold((0, 0), |(min, max), (wmin, wmax)| (min + wmin, max + wmax));
                 // weight * MIN can be positive and higher then MAX*weight if weight's negative
                 // so we take the absolute value of the difference
