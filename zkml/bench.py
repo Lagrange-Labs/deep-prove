@@ -167,7 +167,11 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples)
         
         # Run setup steps once (these don't depend on the input data)
         ex(["ezkl", "gen-settings", "-K", str(LOGROWS),"-M", MODEL], verbose=verbose)
-        ex(["ezkl", "calibrate-settings", "-M", MODEL, "-D", INPUT,"--max-logrows", str(LOGROWS)], verbose=verbose)
+        
+        # Use the timing from ex() function directly
+        calibration_result = ex(["ezkl", "calibrate-settings", "-M", MODEL, "-D", INPUT,"--max-logrows", str(LOGROWS)], verbose=verbose)
+        calibration_time = calibration_result["elapsed_time_ms"]
+        
         if not Path(EZKL_KZG_PARAMS).exists():
             print("Downloading SRS params")
             ex(["ezkl", "get-srs", "--logrows", str(LOGROWS),"--srs-path", EZKL_KZG_PARAMS], verbose=verbose)
