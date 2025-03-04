@@ -78,7 +78,6 @@ where
     /// NOTE: it assumes each individual poly is padded to a power of two (they don't need to be of
     /// equal size)
     pub fn generate(mut polys: Vec<(PolyID, Vec<E>)>) -> anyhow::Result<Self> {
-        println!("COMMIT STEP A");
         assert!(polys.iter().all(|(_, w_i)| w_i.len().is_power_of_two()));
         // we pad the concatenated evals to the next power of two as well
         let padded_size = polys
@@ -86,10 +85,8 @@ where
             .map(|(_, w_i)| w_i.len())
             .sum::<usize>()
             .next_power_of_two();
-        println!("COMMIT STEP B");
         // sort in decreasing order
         polys.sort_by(|(_, w_i), (_, y_i)| y_i.len().cmp(&w_i.len()));
-        println!("COMMIT STEP C");
         let sorted_ids = polys.iter().map(|(id, poly)| (id, poly.len()));
         let id_order = HashMap::from_iter(
             sorted_ids
@@ -97,7 +94,6 @@ where
                 .enumerate()
                 .map(|(idx, (id, poly_len))| (*id, (idx, poly_len))),
         );
-        println!("COMMIT STEP D");
         let lenlens = polys.iter().map(|(_, w_i)| w_i.len()).collect_vec();
         let sum_lenlens = lenlens.iter().sum::<usize>().ilog2();
         let flattened = polys
@@ -109,22 +105,11 @@ where
             .collect_vec();
         assert!(flattened.len().is_power_of_two());
         let num_vars = flattened.len().ilog2() as usize;
-        println!(
-            "COMMIT STEP E: individual lengths: {:?}, sum.ilog2() = {}, flattened.len() = {}",
-            lenlens,
-            sum_lenlens,
-            flattened.len()
-        );
         let params = Pcs::setup(flattened.len()).expect("unable to setup commitment");
-        println!("COMMIT STEP F");
         let (pp, vp) = Pcs::trim(params, flattened.len()).unwrap();
-        println!("COMMIT STEP G");
         let mle = DenseMultilinearExtension::from_evaluations_ext_vec(num_vars, flattened);
-        println!("COMMIT STEP H");
         let comm = Pcs::commit(&pp, &mle).context("unable to commit")?;
-        println!("COMMIT STEP I");
         let vcommitment = Pcs::get_pure_commitment(&comm);
-        println!("COMMIT STEP J");
         Ok(Self {
             pp,
             poly_aux: VPAuxInfo::from_mle_list_dimensions(&[vec![num_vars, num_vars]]),
@@ -396,7 +381,7 @@ mod test {
 
     use super::compute_betas_eval;
     use crate::{
-        Claim, Element, default_transcript, pad_vector,
+        Claim, default_transcript, pad_vector,
         quantization::QuantInteger,
         tensor::Tensor,
         testing::{random_bool_vector, random_field_vector},

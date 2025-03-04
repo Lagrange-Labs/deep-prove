@@ -158,17 +158,24 @@ mod test {
         Ok(())
     }
 
-    fn test_model_run_helper<L: LookupProtocol<E>>() -> anyhow::Result<()> {
-        let filepath = "zkml/assets/model.onnx";
+    use std::path::PathBuf;
 
-        let model = load_mlp::<Element>(&filepath).unwrap();
+    fn workspace_root() -> PathBuf {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+        PathBuf::from(manifest_dir).parent().unwrap().to_path_buf()
+    }
+
+    fn test_model_run_helper<L: LookupProtocol<E>>() -> anyhow::Result<()> {
+        let filepath = workspace_root().join("zkml/assets/model.onnx");
+
+        let model = load_mlp::<Element>(&filepath.to_string_lossy()).unwrap();
         println!("[+] Loaded onnx file");
         let ctx = Context::<E>::generate(&model).expect("unable to generate context");
         println!("[+] Setup parameters");
 
         let shape = model.input_shape();
         assert_eq!(shape.len(), 1);
-        let input = Tensor::random::<QuantInteger>(vec![shape[0]]);
+        let input = Tensor::random::<QuantInteger>(vec![shape[0] - 1]);
         let input = model.prepare_input(input);
 
         let trace = model.run(input.clone());
@@ -201,4 +208,18 @@ mod test {
         let output = mle.evaluate(&eval);
         assert_eq!(output, v[random_index]);
     }
+}
+
+#[cfg(test)]
+use std::sync::Once;
+
+#[cfg(test)]
+static INIT: Once = Once::new();
+
+#[cfg(test)]
+pub fn init_test_logging() {
+    INIT.call_once(|| {
+        // Initialize your logger only once
+        env_logger::try_init().ok(); // The .ok() ignores if it's already been initialized
+    });
 }

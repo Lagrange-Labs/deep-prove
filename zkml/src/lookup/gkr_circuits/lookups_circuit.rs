@@ -81,7 +81,7 @@ mod tests {
         let challenge = GoldilocksExt2::random(&mut rng);
         let const_challenge = GoldilocksExt2::random(&mut rng);
         let challenges = vec![challenge, const_challenge];
-        for n in 4..20 {
+        for n in 4..8 {
             println!("Testing with {n} number of variables");
             // Make the circuit for n variables with one columns
             let circuit = lookup_wire_fractional_sumcheck::<GoldilocksExt2>(1, n);

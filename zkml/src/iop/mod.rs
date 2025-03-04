@@ -121,7 +121,10 @@ where
 mod test {
     use goldilocks::GoldilocksExt2;
 
-    use crate::{default_transcript, lookup::LogUp, model::Model, quantization::TensorFielder};
+    use crate::{
+        default_transcript, init_test_logging, lookup::LogUp, model::Model,
+        quantization::TensorFielder,
+    };
 
     use super::{
         Context,
@@ -134,7 +137,7 @@ mod test {
 
     #[test]
     fn test_prover_steps() {
-        tracing_subscriber::fmt::init();
+        init_test_logging();
         let (model, input) = Model::random(4);
         model.describe();
         let trace = model.run(input.clone());

@@ -166,8 +166,6 @@ fn compare<A: PartialOrd, B: PartialOrd>(given_output: &[A], computed_output: &[
     if a_max == b_max { 1 } else { 0 }
 }
 
-type Ms = u128;
-
 struct CSVBencher {
     data: HashMap<String, String>,
     headers: Vec<String>,

@@ -80,20 +80,20 @@ mod test {
 
     #[test]
     fn test_activation_relu_apply() {
-        struct testCase {
+        struct TestCase {
             input: Element,
             output: Element,
         }
 
-        impl testCase {
+        impl TestCase {
             pub fn from(input: Element, output: Element) -> Self {
                 Self { input, output }
             }
         }
         for case in [
-            testCase::from(-24, 0),
-            testCase::from(0, 0),
-            testCase::from(124, 124),
+            TestCase::from(-24, 0),
+            TestCase::from(0, 0),
+            TestCase::from(124, 124),
         ] {
             assert_eq!(Relu::apply(case.input), case.output);
         }

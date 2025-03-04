@@ -29,9 +29,10 @@ impl Quantizer<Element> for Element {
     fn from_f32_unsafe(e: &f32) -> Self {
         // even tho we are requantizing starting from Element, we only want to requantize for QuantInteger
         // the reason we have these two types is to handle overflow
-        let max = QuantInteger::MAX;
+        let max = QuantInteger::MAX as Element;
+        let min = QuantInteger::MIN as Element;
         // (a -b) / 2^Q
-        let scale = (1.0 - (-1.0)) / max as f64;
+        let scale = (1.0 - (-1.0)) / (max - min) as f64;
         let zero_point = 0;
 
         // formula is q = round(r/S) + z
@@ -118,21 +119,34 @@ impl<const BIT_LEN: usize> QuantRange<BIT_LEN> {
     /// NOTE2: It is using the simplfiication of finding the max range which is a power of two
     /// so we only need to "right shift" during requant
     fn compute_matvec_quant(m: &crate::tensor::Tensor<Element>) -> Requant {
-        // NOTE this way below is correct but is taking a huge loss
-        // BIT_LEN * 2 because of multiplication
-        // log because of additions
-        // let bit_len = BIT_LEN * 2  + m.ncols().ilog2() as usize;
-        // let output_range = Self {
-        //    max_range: (2 as usize).pow(bit_len as u32),
-        //};
-        // NOTE 2: this way is more precise
-        let ind_range = (MAX as i64 - MIN as i64) as usize;
-        let output_range = Self {
-            max_range: (ind_range.pow(2) + m.ncols_2d() as usize * ind_range).next_power_of_two(),
-        };
-        let shift = output_range.max_range.ilog2() as usize - BIT_LEN;
+        // Instead of using the max range possible without looking at the matrices weight, we actually trim down to
+        // the max range that the matrix can produce when multiplied by any input vector.
+        // We still assume a single range for the whole matrix (vs one for each row or each weight)
+        // In this case, we need to compute the max range for y[i] = SUM_j M[i,j] * x[j]
+        // For multiplication, we take value of the weight and produce (min, max) possible
+        // For additions, we add the max range of all ranges of the multiplications involved in y[i]
+        // Then we just take the maximum
+        let nrows = m.nrows_2d();
+        let ncols = m.ncols_2d();
+        let max_output_range = m
+            .get_data()
+            .iter()
+            .chunks(ncols)
+            .into_iter()
+            .map(|row| {
+                let row_range = row
+                    .map(|weight| (weight * MIN as Element, weight * MAX as Element))
+                    .fold((0, 0), |(min, max), (wmin, wmax)| (min + wmin, max + wmax));
+                // weight * MIN can be positive and higher then MAX*weight if weight's negative
+                // so we take the absolute value of the difference
+                (row_range.1 - row_range.0).unsigned_abs() as usize
+            })
+            .max()
+            .expect("No max range found")
+            .next_power_of_two();
+        let shift = max_output_range.ilog2() as usize - BIT_LEN;
         Requant {
-            range: output_range.max_range,
+            range: max_output_range,
             right_shift: shift,
             after_range: 1 << BIT_LEN,
         }
@@ -301,8 +315,6 @@ impl Requant {
 #[cfg(test)]
 mod test {
     use crate::quantization::Fieldizer;
-    use ff_ext::ExtensionField;
-    use goldilocks::SmallField;
 
     use crate::Element;
     type F = goldilocks::GoldilocksExt2;

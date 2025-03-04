@@ -6,7 +6,7 @@ on:
 jobs:
   test:
     name: cargo test
-    runs-on: ubuntu-latest
+    runs-on: ['hostname:hetzner-dedicated-6']
     env:
       RUSTFLAGS: "-W warnings"  # Change -D to
     steps:
