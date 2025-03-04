@@ -15,7 +15,11 @@ use log::info;
 
 use serde::{Deserialize, Serialize};
 use zkml::{
-    argmax, default_transcript, load_mlp, lookup::LogUp, quantization::{from_f32_unsafe, TensorFielder}, tensor::Tensor, verify, Context, Element, Prover, IO
+    Context, Element, IO, Prover, argmax, default_transcript, load_mlp,
+    lookup::LogUp,
+    quantization::{TensorFielder, from_f32_unsafe},
+    tensor::Tensor,
+    verify,
 };
 
 use rmp_serde::encode::to_vec_named;

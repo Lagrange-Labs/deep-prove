@@ -5,7 +5,10 @@ use std::{collections::HashMap, i8, path::Path};
 use tract_onnx::{pb::NodeProto, prelude::*};
 
 use crate::{
-    activation::{Activation, Relu}, model::{Layer, Model}, quantization::from_f32_unsafe, Element
+    Element,
+    activation::{Activation, Relu},
+    model::{Layer, Model},
+    quantization::from_f32_unsafe,
 };
 
 #[derive(Debug, Clone)]
@@ -204,7 +207,7 @@ pub fn load_mlp(filepath: &str) -> Result<Model> {
                 // Create matrix and transpose (PyTorch stores as output_size x input_size)
                 let matrix = crate::tensor::Tensor::<Element>::from_coeffs_2d(matrix).unwrap();
                 debug!("layer idx {} -> unprocessed matrix {:?}", i, matrix.dims());
-                // Here we simply convert it to a padded tensor even though the padding happens 
+                // Here we simply convert it to a padded tensor even though the padding happens
                 // at the next iteration
                 layers.push(Layer::Dense(matrix.into()));
             }
@@ -296,7 +299,7 @@ mod tests {
         let model = load_mlp(&filepath).unwrap();
         // -1 because we expect input to be the real input of the model. However the matrices are already handled for bias
         // so they have one more column
-        let input = crate::tensor::Tensor::random(vec![model.input_shape()[0]-1]);
+        let input = crate::tensor::Tensor::random(vec![model.input_shape()[0] - 1]);
         // here we add the one for the bias
         let input = model.prepare_input(input);
         // random_vector::<QuantInteger>(model.input_shape()[0])
@@ -312,30 +315,10 @@ mod tests {
     fn test_quantize() {
         let input = [0.09039914, -0.07716653];
 
-        println!(
-            "Result: {} => {:?}",
-            input[0],
-            from_f32_unsafe(&input[0])
-        );
-        println!(
-            "Result: {} => {:?}",
-            input[1],
-            from_f32_unsafe(&input[1])
-        );
-        println!(
-            "Result: {} => {:?}",
-            0,
-            from_f32_unsafe(&0.0)
-        );
-        println!(
-            "Result: {} => {:?}",
-            -1.0,
-            from_f32_unsafe(&-1.0)
-        );
-        println!(
-            "Result: {} => {:?}",
-            1.0,
-            from_f32_unsafe(&1.0)
-        );
+        println!("Result: {} => {:?}", input[0], from_f32_unsafe(&input[0]));
+        println!("Result: {} => {:?}", input[1], from_f32_unsafe(&input[1]));
+        println!("Result: {} => {:?}", 0, from_f32_unsafe(&0.0));
+        println!("Result: {} => {:?}", -1.0, from_f32_unsafe(&-1.0));
+        println!("Result: {} => {:?}", 1.0, from_f32_unsafe(&1.0));
     }
 }

@@ -34,7 +34,7 @@ pub struct Tensor<T> {
     shape: Vec<usize>,
 }
 
-#[derive(Clone, Debug, Deref, DerefMut )]
+#[derive(Clone, Debug, Deref, DerefMut)]
 pub struct PaddedTensor<T> {
     #[deref]
     #[deref_mut]
@@ -45,11 +45,12 @@ pub struct PaddedTensor<T> {
 impl<T> From<Tensor<T>> for PaddedTensor<T> {
     fn from(tensor: Tensor<T>) -> Self {
         let shape = tensor.shape.clone();
-        PaddedTensor { tensor, original_shape: shape }
+        PaddedTensor {
+            tensor,
+            original_shape: shape,
+        }
     }
 }
-
-
 
 impl<T> Tensor<T> {
     /// Create a new tensor with given shape and data
@@ -60,7 +61,6 @@ impl<T> Tensor<T> {
         );
         Self { data, shape }
     }
-
 
     /// Get the dimensions of the tensor
     pub fn dims(&self) -> Vec<usize> {
@@ -466,7 +466,11 @@ where
     T: std::fmt::Debug + std::fmt::Display,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "(orig shape: {:?}) tensor: {}", self.original_shape, self.tensor)
+        write!(
+            f,
+            "(orig shape: {:?}) tensor: {}",
+            self.original_shape, self.tensor
+        )
     }
 }
 

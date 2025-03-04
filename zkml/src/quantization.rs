@@ -329,7 +329,7 @@ impl Requant {
 }
 
 /// Rounds a float to the nearest integer in a const context
-/// 
+///
 /// This function implements rounding behavior where:
 /// - Values >= x.5 round up to the next integer
 /// - Values < x.5 round down to the previous integer
@@ -338,18 +338,18 @@ impl Requant {
 /// Can be used in const contexts for compile-time calculations.
 pub const fn round(x: f64) -> Element {
     // Handle the integer part
-    let int_part = if x >= 0.0 { x as Element } else { (x - 1.0) as Element + 1 };
-    
+    let int_part = if x >= 0.0 {
+        x as Element
+    } else {
+        (x - 1.0) as Element + 1
+    };
+
     // Get the fractional part (always positive)
     let frac_part = x.abs() - (int_part as f64).abs();
-    
+
     // Round based on fractional part
     if frac_part >= 0.5 {
-        if x >= 0.0 {
-            int_part + 1
-        } else {
-            int_part - 1
-        }
+        if x >= 0.0 { int_part + 1 } else { int_part - 1 }
     } else {
         int_part
     }
@@ -357,7 +357,7 @@ pub const fn round(x: f64) -> Element {
 
 #[cfg(test)]
 mod test {
-    use crate::quantization::{round, Fieldizer};
+    use crate::quantization::{Fieldizer, round};
 
     use crate::Element;
     type F = goldilocks::GoldilocksExt2;
@@ -419,7 +419,7 @@ mod test {
         assert_eq!(round(1.5), 2);
         assert_eq!(round(1.9), 2);
         assert_eq!(round(2.0), 2);
-        
+
         // Test negative numbers
         assert_eq!(round(-0.1), 0);
         assert_eq!(round(-0.5), -1);
@@ -428,18 +428,18 @@ mod test {
         assert_eq!(round(-1.5), -2);
         assert_eq!(round(-1.9), -2);
         assert_eq!(round(-2.0), -2);
-        
+
         // Test edge cases
         assert_eq!(round(0.49999999), 0);
         assert_eq!(round(0.50000001), 1);
         assert_eq!(round(-0.49999999), 0);
         assert_eq!(round(-0.50000001), -1);
     }
-    
+
     // Test that the constant expressions work at compile time
     const TEST_CONST_POSITIVE: Element = round(3.7);
     const TEST_CONST_NEGATIVE: Element = round(-2.6);
-    
+
     #[test]
     fn test_const_context() {
         assert_eq!(TEST_CONST_POSITIVE, 4);

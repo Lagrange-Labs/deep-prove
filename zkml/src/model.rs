@@ -1,12 +1,15 @@
+use crate::tensor::PaddedTensor;
 use derive_more::Deref;
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use log::debug;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use crate::tensor::PaddedTensor;
 
 use crate::{
-    activation::{Activation, Relu}, quantization::{self, Requant, TensorFielder}, tensor::Tensor, Element
+    Element,
+    activation::{Activation, Relu},
+    quantization::{self, Requant, TensorFielder},
+    tensor::Tensor,
 };
 
 // The index of the step, starting from the input layer. (proving is done in the opposite flow)
@@ -74,11 +77,11 @@ impl Layer {
         match self {
             Layer::Dense(ref matrix) => {
                 if input.get_data().len() == matrix.ncols_2d() {
-                    // In this case, we know the input is already padded so we just need to change 
+                    // In this case, we know the input is already padded so we just need to change
                     // one element to ONE such that the bias is taken into account
                     input[matrix.original_shape[1]] = quantization::ONE;
                     input
-                } else if input.get_data().len() == matrix.original_shape[1] - 1{
+                } else if input.get_data().len() == matrix.original_shape[1] - 1 {
                     // in this case, this is the first input, it hasn't been padded yet
                     let data = input
                         .get_data()
@@ -90,10 +93,11 @@ impl Layer {
                         .collect_vec();
                     Tensor::new(vec![matrix.ncols_2d()], data)
                 } else {
-                    panic!("Input tensor {:?} is not the right size vs matrix {:?} (padded {:?})", 
-                            input.dims(), 
-                            matrix.original_shape, 
-                            matrix.tensor.dims()
+                    panic!(
+                        "Input tensor {:?} is not the right size vs matrix {:?} (padded {:?})",
+                        input.dims(),
+                        matrix.original_shape,
+                        matrix.tensor.dims()
                     );
                 }
             }
