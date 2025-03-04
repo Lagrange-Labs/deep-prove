@@ -1,13 +1,12 @@
+use derive_more::Deref;
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use log::debug;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use crate::tensor::PaddedTensor;
 
 use crate::{
-    Element,
-    activation::{Activation, Relu},
-    quantization::{Requant, TensorFielder},
-    tensor::Tensor,
+    activation::{Activation, Relu}, quantization::{self, Requant, TensorFielder}, tensor::Tensor, Element
 };
 
 // The index of the step, starting from the input layer. (proving is done in the opposite flow)
@@ -16,7 +15,7 @@ pub type StepIdx = usize;
 #[derive(Clone, Debug)]
 pub enum Layer {
     // TODO: replace this with a Tensor based implementation
-    Dense(Tensor<Element>),
+    Dense(PaddedTensor<Element>),
     Activation(Activation),
     // this is the output quant info. Since we always do a requant layer after each dense,
     // then we assume the inputs requant info are default()
@@ -71,23 +70,31 @@ impl Layer {
     }
     /// Prepare the input to return it in the right format expected for the first layer.
     /// for the bias
-    pub fn prepare_input(&self, input: Tensor<Element>) -> Tensor<Element> {
+    pub fn prepare_input(&self, mut input: Tensor<Element>) -> Tensor<Element> {
         match self {
             Layer::Dense(ref matrix) => {
                 if input.get_data().len() == matrix.ncols_2d() {
-                    // no need to do anything if it's already at the right format
+                    // In this case, we know the input is already padded so we just need to change 
+                    // one element to ONE such that the bias is taken into account
+                    input[matrix.original_shape[1]] = quantization::ONE;
                     input
-                } else {
-                    // append 1 for the bias factor and pad to right size
+                } else if input.get_data().len() == matrix.original_shape[1] - 1{
+                    // in this case, this is the first input, it hasn't been padded yet
                     let data = input
                         .get_data()
                         .to_vec()
                         .into_iter()
-                        .chain(std::iter::once(1))
+                        .chain(std::iter::once(quantization::ONE))
                         .chain(std::iter::repeat(0))
                         .take(matrix.ncols_2d())
                         .collect_vec();
                     Tensor::new(vec![matrix.ncols_2d()], data)
+                } else {
+                    panic!("Input tensor {:?} is not the right size vs matrix {:?} (padded {:?})", 
+                            input.dims(), 
+                            matrix.original_shape, 
+                            matrix.tensor.dims()
+                    );
                 }
             }
             _ => panic!("Layer {:?} should not be a first layer", self.describe()),
@@ -150,7 +157,7 @@ impl Model {
         let Layer::Dense(mat) = &self.layers[0] else {
             panic!("layer is not starting with a dense layer?");
         };
-        vec![mat.ncols_2d()]
+        vec![mat.original_shape[1]]
     }
 
     pub fn first_output_shape(&self) -> Vec<usize> {

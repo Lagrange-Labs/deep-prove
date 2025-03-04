@@ -5,10 +5,7 @@ use std::{collections::HashMap, i8, path::Path};
 use tract_onnx::{pb::NodeProto, prelude::*};
 
 use crate::{
-    Element,
-    activation::{Activation, Relu},
-    model::{Layer, Model},
-    quantization::Quantizer,
+    activation::{Activation, Relu}, model::{Layer, Model}, quantization::from_f32_unsafe, Element
 };
 
 #[derive(Debug, Clone)]
@@ -126,7 +123,7 @@ fn concat_column(
     Ok(new_matrix)
 }
 
-fn fetch_weight_bias_as_mat<Q: Quantizer<Element>>(
+fn fetch_weight_bias_as_mat(
     weight_or_bias: &str,
     node: &NodeProto,
     initializers: &HashMap<String, Tensor>,
@@ -157,7 +154,7 @@ fn fetch_weight_bias_as_mat<Q: Quantizer<Element>>(
     let tensor_t = tensor_vec[0].clone();
     let tensor_t_f32 = tensor_t.as_slice::<f32>().unwrap().to_vec();
     let tensor_t_f32 = tensor_t_f32.iter().map(|x| x * alpha_or_beta).collect_vec();
-    let tensor_f = tensor_t_f32.iter().map(Q::from_f32_unsafe).collect_vec();
+    let tensor_f = tensor_t_f32.iter().map(from_f32_unsafe).collect_vec();
 
     let (rows, cols) = match tensor_t.shape().len() {
         1 => (tensor_t.shape()[0], 1),
@@ -170,7 +167,7 @@ fn fetch_weight_bias_as_mat<Q: Quantizer<Element>>(
     Ok(field_matrix)
 }
 
-pub fn load_mlp<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
+pub fn load_mlp(filepath: &str) -> Result<Model> {
     if !Path::new(filepath).exists() {
         return Err(Error::msg(format!("File '{}' does not exist", filepath)));
     }
@@ -198,8 +195,8 @@ pub fn load_mlp<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
     for (i, node) in graph.node.iter().enumerate() {
         match node.op_type.as_str() {
             "Gemm" => {
-                let matrix_weight = fetch_weight_bias_as_mat::<Q>("weight", node, &initializers)?;
-                let matrix_bias = fetch_weight_bias_as_mat::<Q>("bias", node, &initializers)?;
+                let matrix_weight = fetch_weight_bias_as_mat("weight", node, &initializers)?;
+                let matrix_bias = fetch_weight_bias_as_mat("bias", node, &initializers)?;
 
                 // Concatenate bias as an extra column
                 let matrix = concat_column(matrix_weight, matrix_bias)?;
@@ -207,9 +204,9 @@ pub fn load_mlp<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                 // Create matrix and transpose (PyTorch stores as output_size x input_size)
                 let matrix = crate::tensor::Tensor::<Element>::from_coeffs_2d(matrix).unwrap();
                 debug!("layer idx {} -> unprocessed matrix {:?}", i, matrix.dims());
-                //.transpose();
-                //.pad_next_power_of_two();
-                layers.push(Layer::Dense(matrix));
+                // Here we simply convert it to a padded tensor even though the padding happens 
+                // at the next iteration
+                layers.push(Layer::Dense(matrix.into()));
             }
             "Relu" => {
                 let layer = Layer::Activation(Activation::Relu(Relu::new()));
@@ -287,17 +284,21 @@ mod tests {
     #[test]
     fn test_tract() {
         let filepath = "assets/model.onnx";
-        let result = load_mlp::<Element>(&filepath);
+        let result = load_mlp(&filepath);
 
         assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
     }
 
     #[test]
-    fn test_model_run() {
+    fn test_onnx_model_run() {
         let filepath = "assets/model.onnx";
 
-        let model = load_mlp::<Element>(&filepath).unwrap();
-        let input = crate::tensor::Tensor::random(vec![model.input_shape()[0]]);
+        let model = load_mlp(&filepath).unwrap();
+        // -1 because we expect input to be the real input of the model. However the matrices are already handled for bias
+        // so they have one more column
+        let input = crate::tensor::Tensor::random(vec![model.input_shape()[0]-1]);
+        // here we add the one for the bias
+        let input = model.prepare_input(input);
         // random_vector::<QuantInteger>(model.input_shape()[0])
         //     .into_iter()
         //     .map(|x| x as Element)
@@ -314,27 +315,27 @@ mod tests {
         println!(
             "Result: {} => {:?}",
             input[0],
-            <Element as Quantizer<Element>>::from_f32_unsafe(&input[0])
+            from_f32_unsafe(&input[0])
         );
         println!(
             "Result: {} => {:?}",
             input[1],
-            <Element as Quantizer<Element>>::from_f32_unsafe(&input[1])
+            from_f32_unsafe(&input[1])
         );
         println!(
             "Result: {} => {:?}",
             0,
-            <Element as Quantizer<Element>>::from_f32_unsafe(&0.0)
+            from_f32_unsafe(&0.0)
         );
         println!(
             "Result: {} => {:?}",
             -1.0,
-            <Element as Quantizer<Element>>::from_f32_unsafe(&-1.0)
+            from_f32_unsafe(&-1.0)
         );
         println!(
             "Result: {} => {:?}",
             1.0,
-            <Element as Quantizer<Element>>::from_f32_unsafe(&1.0)
+            from_f32_unsafe(&1.0)
         );
     }
 }

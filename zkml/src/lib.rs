@@ -168,13 +168,15 @@ mod test {
     fn test_model_run_helper<L: LookupProtocol<E>>() -> anyhow::Result<()> {
         let filepath = workspace_root().join("zkml/assets/model.onnx");
 
-        let model = load_mlp::<Element>(&filepath.to_string_lossy()).unwrap();
+        let model = load_mlp(&filepath.to_string_lossy()).unwrap();
         println!("[+] Loaded onnx file");
         let ctx = Context::<E>::generate(&model).expect("unable to generate context");
         println!("[+] Setup parameters");
 
         let shape = model.input_shape();
         assert_eq!(shape.len(), 1);
+        // -1 because we expect input to be the real input of the model. However the matrices are already handled for bias
+        // so they have one more column
         let input = Tensor::random(vec![shape[0] - 1]);
         let input = model.prepare_input(input);
 

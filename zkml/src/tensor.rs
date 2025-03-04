@@ -2,6 +2,7 @@ use anyhow::bail;
 use ark_std::rand::{
     self, SeedableRng, distributions::Standard, prelude::Distribution, rngs::StdRng, thread_rng,
 };
+use derive_more::{Deref, DerefMut};
 use ff::Field;
 use ff_ext::ExtensionField;
 use goldilocks::GoldilocksExt2;
@@ -17,6 +18,7 @@ use rayon::{
 use std::{
     cmp::PartialEq,
     fmt::{self},
+    ops::{Index, IndexMut},
 };
 
 use crate::{
@@ -32,6 +34,23 @@ pub struct Tensor<T> {
     shape: Vec<usize>,
 }
 
+#[derive(Clone, Debug, Deref, DerefMut )]
+pub struct PaddedTensor<T> {
+    #[deref]
+    #[deref_mut]
+    pub tensor: Tensor<T>,
+    pub original_shape: Vec<usize>,
+}
+
+impl<T> From<Tensor<T>> for PaddedTensor<T> {
+    fn from(tensor: Tensor<T>) -> Self {
+        let shape = tensor.shape.clone();
+        PaddedTensor { tensor, original_shape: shape }
+    }
+}
+
+
+
 impl<T> Tensor<T> {
     /// Create a new tensor with given shape and data
     pub fn new(shape: Vec<usize>, data: Vec<T>) -> Self {
@@ -41,6 +60,7 @@ impl<T> Tensor<T> {
         );
         Self { data, shape }
     }
+
 
     /// Get the dimensions of the tensor
     pub fn dims(&self) -> Vec<usize> {
@@ -196,7 +216,7 @@ where
         }
     }
 
-    pub fn pad_next_power_of_two_2d(mut self) -> Self {
+    pub fn pad_next_power_of_two_2d(self) -> PaddedTensor<T> {
         assert!(self.is_matrix(), "Tensor is not a matrix");
         // assume the matrix is already well formed and there is always n_rows and n_cols
         // this is because we control the creation of the matrix in the first place
@@ -235,10 +255,10 @@ where
                     row[..cols].copy_from_slice(&self.data[i * cols..(i + 1) * cols]);
                 }
             });
-
-        self = padded;
-
-        self
+        PaddedTensor {
+            tensor: padded,
+            original_shape: self.shape.clone(),
+        }
     }
 
     /// Perform matrix-matrix multiplication
@@ -441,6 +461,15 @@ where
     }
 }
 
+impl<T> fmt::Display for PaddedTensor<T>
+where
+    T: std::fmt::Debug + std::fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "(orig shape: {:?}) tensor: {}", self.original_shape, self.tensor)
+    }
+}
+
 impl PartialEq for Tensor<Element> {
     fn eq(&self, other: &Self) -> bool {
         self.shape == other.shape && self.data == other.data
@@ -486,7 +515,46 @@ impl PartialEq for Tensor<GoldilocksExt2> {
     }
 }
 
-mod test {
+// Move the implementations before the tests section
+
+impl<T> Index<usize> for Tensor<T> {
+    type Output = T;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.data[index]
+    }
+}
+
+impl<T> IndexMut<usize> for Tensor<T> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.data[index]
+    }
+}
+
+// For matrices, we can add 2D indexing with tuples
+// Using the format tensor[(row, col)] where row is the row index and col is the column index
+impl<T> Index<(usize, usize)> for Tensor<T> {
+    type Output = T;
+
+    fn index(&self, index: (usize, usize)) -> &Self::Output {
+        let (row, col) = index; // First element is row, second is column
+        assert!(self.is_matrix(), "Tensor is not a matrix");
+        let ncols = self.ncols_2d();
+        &self.data[row * ncols + col]
+    }
+}
+
+impl<T> IndexMut<(usize, usize)> for Tensor<T> {
+    fn index_mut(&mut self, index: (usize, usize)) -> &mut Self::Output {
+        let (row, col) = index; // First element is row, second is column
+        assert!(self.is_matrix(), "Tensor is not a matrix");
+        let ncols = self.ncols_2d();
+        &mut self.data[row * ncols + col]
+    }
+}
+
+#[cfg(test)]
+mod tests {
     use ark_std::rand::{Rng, thread_rng};
     use goldilocks::GoldilocksExt2;
     use multilinear_extensions::mle::MultilinearExtension;

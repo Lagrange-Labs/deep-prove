@@ -155,10 +155,8 @@ where
                 }
             })
             .collect_vec();
-        println!("CTX STEP B");
         let commit_ctx = precommit::Context::generate_from_model(model)
             .context("can't generate context for commitment part")?;
-        println!("CTX STEP C");
 
         let lookup = LookupContext::<E>::generate(&auxs)?;
 

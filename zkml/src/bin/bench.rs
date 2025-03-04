@@ -15,11 +15,7 @@ use log::info;
 
 use serde::{Deserialize, Serialize};
 use zkml::{
-    Context, Element, IO, Prover, argmax, default_transcript, load_mlp,
-    lookup::LogUp,
-    quantization::{Quantizer, TensorFielder},
-    tensor::Tensor,
-    verify,
+    argmax, default_transcript, load_mlp, lookup::LogUp, quantization::{from_f32_unsafe, TensorFielder}, tensor::Tensor, verify, Context, Element, Prover, IO
 };
 
 use rmp_serde::encode::to_vec_named;
@@ -77,13 +73,13 @@ impl InputJSON {
             .input_data
             .remove(0)
             .into_iter()
-            .map(|e| Element::from_f32_unsafe(&(e as f32)))
+            .map(|e| from_f32_unsafe(&(e as f32)))
             .collect_vec();
         let outputs = self
             .output_data
             .remove(0)
             .into_iter()
-            .map(|e| Element::from_f32_unsafe(&(e as f32)))
+            .map(|e| from_f32_unsafe(&(e as f32)))
             .collect_vec();
         (inputs, outputs)
     }
@@ -109,7 +105,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     ]);
     info!("[+] Reading onnx model");
     let model = bencher
-        .r(CSV_LOAD, || load_mlp::<Element>(&args.onnx))
+        .r(CSV_LOAD, || load_mlp(&args.onnx))
         .context("loading model:")?;
     model.describe();
     info!("[+] Reading input/output from pytorch");
