@@ -69,6 +69,7 @@ impl InputJSON {
         let rrange = -1.0..=1.0;
         ensure!(self.input_data.len() > 0);
         let input_isreal = self.input_data.iter().all(|v| v.iter().all(|&x| rrange.contains(&x)));
+        assert_eq!(self.input_data.len(), self.output_data.len());
         ensure!(
             input_isreal,
             "can only support real model so far (input at least)"
@@ -76,21 +77,21 @@ impl InputJSON {
         Ok(())
     }
     fn to_elements(mut self, num_samples: usize) -> (Vec<Vec<Element>>, Vec<Vec<Element>>) {
+        let len = std::cmp::min(self.input_data.len(), num_samples);
         let inputs = self
             .input_data
-            .drain(..num_samples)
+            .drain(..len)
             .map(|input| input.into_iter().map(|e| from_f32_unsafe(&(e as f32))).collect())
             .collect();
         let outputs = self
             .output_data
-            .drain(..num_samples)
+            .drain(..len)
             .map(|output| output.into_iter().map(|e| from_f32_unsafe(&(e as f32))).collect())
             .collect();
         (inputs, outputs)
     }
 }
 
-const CSV_LOAD: &str = "load (ms)";
 const CSV_SETUP: &str = "setup (ms)";
 const CSV_INFERENCE: &str = "inference (ms)";
 const CSV_PROVING: &str = "proving (ms)";
@@ -114,7 +115,6 @@ fn run(args: Args) -> anyhow::Result<()> {
 
     for (input, given_output) in inputs.into_iter().zip(given_outputs.into_iter()) {
         let mut bencher = CSVBencher::from_headers(vec![
-            CSV_LOAD,
             CSV_SETUP,
             CSV_INFERENCE,
             CSV_PROVING,
@@ -127,7 +127,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         bencher.set(CSV_SETUP, setup_time);
 
         let input_tensor = Tensor::<Element>::new(vec![input.len()], input);
-        let input_tensor = model.prepare_input(&input_tensor);
+        let input_tensor = model.prepare_input(input_tensor);
 
         info!("[+] Running inference");
         let trace = bencher.r(CSV_INFERENCE, || model.run(input_tensor.clone()));

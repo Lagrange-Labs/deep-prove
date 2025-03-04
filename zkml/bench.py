@@ -15,6 +15,8 @@ import json
 import itertools
 import psutil  # Import psutil for CPU affinity
 import platform
+import pandas as pd
+import tabulate
 
 logging.basicConfig(level=logging.INFO)
 
@@ -275,6 +277,7 @@ def run_benchmark(num_dense, layer_width, run_index, output_dir, verbose, run_ez
         print(f"Results saved to {zkml_csv} and {ezkl_csv}")
     else:
         print(f"Results saved to {zkml_csv} (EZKL comparison skipped)")
+        ezkl_csv = None
 
     return zkml_csv, ezkl_csv if run_ezkl else None
 
@@ -328,6 +331,120 @@ def calculate_average_accuracy(csv_file):
             row_count += 1
 
     return total_accuracy / row_count if row_count > 0 else None
+
+def compute_summary_statistics(output_dir, configs, run_ezkl):
+    """Compute summary statistics for all configurations and return a DataFrame."""
+    summary_data = []
+    
+    for num_dense, layer_width in configs:
+        config_name = f"d{num_dense}_w{layer_width}"
+        config_data = {
+            "num_dense": num_dense,
+            "layer_width": layer_width,
+        }
+        
+        # Load ZKML data
+        zkml_csv = output_dir / f"zkml_{config_name}.csv"
+        if not zkml_csv.exists():
+            print(f"❌ Error: ZKML CSV file {zkml_csv} does not exist.")
+            sys.exit(1)
+            
+        try:
+            zkml_df = pd.read_csv(zkml_csv)
+            if not zkml_df.empty:
+                config_data["zkml_accuracy"] = zkml_df[ACCURACY].mean()
+                config_data["zkml_proving_time"] = zkml_df[PROVING].astype(float).mean()
+                config_data["zkml_verifying_time"] = zkml_df[VERIFYING].astype(float).mean()
+                if PROOF_SIZE in zkml_df.columns:
+                    config_data["zkml_proof_size"] = zkml_df[PROOF_SIZE].astype(float).mean()
+        except Exception as e:
+            print(f"❌ Error processing ZKML data for {config_name}: {e}")
+            sys.exit(1)
+        
+        # Load EZKL data if requested
+        if run_ezkl:
+            ezkl_csv = output_dir / f"ezkl_{config_name}.csv"
+            if not ezkl_csv.exists():
+                print(f"❌ Error: EZKL CSV file {ezkl_csv} does not exist.")
+                sys.exit(1)
+                
+            try:
+                ezkl_df = pd.read_csv(ezkl_csv)
+                if not ezkl_df.empty:
+                    config_data["ezkl_accuracy"] = ezkl_df[ACCURACY].mean()
+                    config_data["ezkl_proving_time"] = ezkl_df[PROVING].astype(float).mean()
+                    config_data["ezkl_verifying_time"] = ezkl_df[VERIFYING].astype(float).mean()
+                    if PROOF_SIZE in ezkl_df.columns:
+                        config_data["ezkl_proof_size"] = ezkl_df[PROOF_SIZE].astype(float).mean()
+            except Exception as e:
+                print(f"❌ Error processing EZKL data for {config_name}: {e}")
+                sys.exit(1)
+        
+        summary_data.append(config_data)
+    
+    return pd.DataFrame(summary_data)
+
+def save_summary_csv(summary_df, output_dir):
+    """Save summary statistics to a CSV file."""
+    summary_path = output_dir / "benchmark_summary.csv"
+    summary_df.to_csv(summary_path, index=False)
+    print(f"\nSummary statistics saved to {summary_path}")
+    return summary_path
+
+def print_summary_table(summary_df, run_ezkl):
+    """Print a nicely formatted summary table."""
+    print("\n" + "="*80)
+    print("BENCHMARK SUMMARY")
+    print("="*80)
+    
+    # Format the dataframe for display
+    display_df = summary_df.copy()
+    
+    # Format accuracy as percentage
+    if "zkml_accuracy" in display_df.columns:
+        display_df["zkml_accuracy"] = display_df["zkml_accuracy"].apply(lambda x: f"{x*100:.1f}%" if pd.notnull(x) else "N/A")
+    if "ezkl_accuracy" in display_df.columns:
+        display_df["ezkl_accuracy"] = display_df["ezkl_accuracy"].apply(lambda x: f"{x*100:.1f}%" if pd.notnull(x) else "N/A")
+    
+    # Format times in ms
+    for col in display_df.columns:
+        if col.endswith("_time"):
+            display_df[col] = display_df[col].apply(lambda x: f"{x:.1f} ms" if pd.notnull(x) else "N/A")
+    
+    # Format proof sizes in KB
+    if "zkml_proof_size" in display_df.columns:
+        display_df["zkml_proof_size"] = display_df["zkml_proof_size"].apply(lambda x: f"{x:.2f} KB" if pd.notnull(x) else "N/A")
+    if "ezkl_proof_size" in display_df.columns:
+        display_df["ezkl_proof_size"] = display_df["ezkl_proof_size"].apply(lambda x: f"{x:.2f} KB" if pd.notnull(x) else "N/A")
+    
+    # Rename columns for better display
+    column_renames = {
+        "num_dense": "Dense Layers",
+        "layer_width": "Width",
+        "zkml_accuracy": "ZKML Accuracy",
+        "zkml_proving_time": "ZKML Proving Time",
+        "zkml_verifying_time": "ZKML Verifying Time",
+        "zkml_proof_size": "ZKML Proof Size",
+        "ezkl_accuracy": "EZKL Accuracy",
+        "ezkl_proving_time": "EZKL Proving Time",
+        "ezkl_verifying_time": "EZKL Verifying Time",
+        "ezkl_proof_size": "EZKL Proof Size"
+    }
+    display_df = display_df.rename(columns=column_renames)
+    
+    # Select columns based on what's available
+    columns_to_show = ["Dense Layers", "Width", 
+                      "ZKML Accuracy", "ZKML Proving Time", "ZKML Verifying Time", "ZKML Proof Size"]
+    
+    if run_ezkl:
+        columns_to_show.extend(["EZKL Accuracy", "EZKL Proving Time", "EZKL Verifying Time", "EZKL Proof Size"])
+    
+    # Only include columns that actually exist in the dataframe
+    columns_to_show = [col for col in columns_to_show if col in display_df.columns]
+    
+    # Print the table
+    print(tabulate.tabulate(display_df[columns_to_show], headers="keys", tablefmt="grid"))
+    print("\n")
 
 def parse_arguments():
     """Parse command-line arguments."""
@@ -420,6 +537,11 @@ def main():
     
     zkml_csv_files, ezkl_csv_files = run_configurations(configs, args)
     calculate_and_print_results(configs, zkml_csv_files, ezkl_csv_files, args)
+    
+    # Generate and print summary statistics
+    summary_df = compute_summary_statistics(args.output_dir, configs, args.run_ezkl)
+    summary_path = save_summary_csv(summary_df, args.output_dir)
+    print_summary_table(summary_df, args.run_ezkl)
 
 if __name__ == "__main__":
     main()
