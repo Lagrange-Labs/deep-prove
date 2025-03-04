@@ -21,7 +21,7 @@ parser.add_argument("--num-dense", type=int, required=True, help="Number of dens
 parser.add_argument("--layer-width", type=int, required=True, help="Width of each layer")
 parser.add_argument("--export", type=Path, required=False, default=Path("."), help="folder where to export model and input")
 parser.add_argument("--no-bias", action="store_true", help="Disable bias in linear layers")
-
+parser.add_argument("--num-samples", type=int, default=100, help="Number of test samples to export")
 
 args = parser.parse_args()
 print(f"num_dense: {args.num_dense}, layer_width: {args.layer_width}")
@@ -148,12 +148,30 @@ torch.onnx.export(model,
 
 print(f"Model onnx exported to {model_path}")
 
-data_array = ((x).detach().numpy()).reshape([-1]).tolist()
-output_array = ((y_pred).detach().numpy()).reshape([-1]).tolist()
+# Use the first `num_samples` test samples
+num_samples = min(args.num_samples, len(test_X))
 
-data = dict(input_data=[data_array], output_data=[output_array])
+# Prepare data arrays
+input_data = []
+output_data = []
+
+# Process each selected test sample
+for i in range(num_samples):
+    x = test_X[i]
+    true_label = test_y[i].item()
+    
+    # Get input data
+    input_data.append(x.detach().numpy().reshape([-1]).tolist())
+    
+    # Create one-hot encoded ground truth output
+    one_hot_output = [0.0, 0.0, 0.0]  # For 3 classes in Iris
+    one_hot_output[true_label] = 1.0
+    output_data.append(one_hot_output)
+
+# Save multiple input/output pairs to JSON
+data = {"input_data": input_data, "output_data": output_data}
 json.dump(data, open(data_path, 'w'), indent=2)
-print(f"Input/Output to model exported to {data_path}")
+print(f"Input/Output data for {num_samples} samples exported to {data_path}")
 
 def tensor_to_vecvec(tensor):
     """Convert a PyTorch tensor to a Vec<Vec<_>> format and print it."""
