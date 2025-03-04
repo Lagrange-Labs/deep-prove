@@ -18,6 +18,7 @@ use crate::{
     commit::{Pcs, precommit::PolyID},
     iop::context::StepInfo,
     model::{InferenceTrace, StepIdx},
+    pooling::Maxpool2D,
     quantization::{Fieldizer, Requant},
     tensor::Tensor,
 };
@@ -127,6 +128,8 @@ pub enum LookupType {
     Requant(Requant, usize),
     RequantTable(usize),
     ReluTable,
+    Maxpool2D(Maxpool2D, usize), // Maxpool update
+    Maxpool2DTable(usize),       // Maxpool update
     NoLookup,
 }
 
@@ -139,6 +142,8 @@ where
         match value {
             StepInfo::Requant(info) => LookupType::Requant(info.requant, info.num_vars),
             StepInfo::Activation(info) => LookupType::Relu(info.num_vars),
+            StepInfo::Pooling(info) => LookupType::Maxpool2D(info.poolinfo, info.num_vars),
+            // Maxpool update
             _ => LookupType::NoLookup,
         }
     }
@@ -151,6 +156,9 @@ impl LookupType {
             LookupType::Relu(num_vars) => lookup_wire_fractional_sumcheck(2, *num_vars),
             LookupType::ReluTable => table_fractional_sumcheck(2, 8),
             LookupType::RequantTable(num_vars) => table_fractional_sumcheck(1, *num_vars),
+            // Maxpool update
+            LookupType::Maxpool2D(_, num_vars) => lookup_wire_fractional_sumcheck(1, *num_vars),
+            LookupType::Maxpool2DTable(num_vars) => table_fractional_sumcheck(1, *num_vars),
             LookupType::NoLookup => Circuit::<E>::default(),
         }
     }
@@ -168,6 +176,9 @@ impl LookupType {
             LookupType::Relu(..) => 2,
             LookupType::ReluTable => 2,
             LookupType::RequantTable(..) => 1,
+            // Maxpool update
+            LookupType::Maxpool2D(..) => 1,
+            LookupType::Maxpool2DTable(..) => 1,
             LookupType::NoLookup => 0,
         }
     }
@@ -178,6 +189,9 @@ impl LookupType {
             LookupType::Relu(..) => 2,
             LookupType::ReluTable => 3,
             LookupType::RequantTable(..) => 2,
+            // Maxpool update
+            LookupType::Maxpool2D(..) => 1,
+            LookupType::Maxpool2DTable(..) => 1,
             LookupType::NoLookup => 0,
         }
     }
@@ -188,6 +202,9 @@ impl LookupType {
             LookupType::Relu(num_vars) => *num_vars,
             LookupType::ReluTable => 8,
             LookupType::RequantTable(num_vars) => *num_vars,
+            // Maxpool update
+            LookupType::Maxpool2D(.., num_vars) => *num_vars,
+            LookupType::Maxpool2DTable(num_vars) => *num_vars,
             LookupType::NoLookup => 0,
         }
     }
@@ -207,6 +224,10 @@ impl LookupType {
             }
             LookupType::Relu(..) | LookupType::ReluTable => "Relu".to_string(),
             LookupType::RequantTable(num_vars) => format!("Requant_{}", *num_vars),
+            // Maxpool update
+            LookupType::Maxpool2D(.., num_vars) | LookupType::Maxpool2DTable(num_vars) => {
+                format!("Maxpool2D_{}", *num_vars)
+            }
             LookupType::NoLookup => "NoLookup".to_string(),
         }
     }
@@ -231,6 +252,10 @@ impl LookupType {
                         .collect::<Vec<E::BaseField>>(),
                 ])
             }
+            // Maxpool update
+            LookupType::Maxpool2DTable(_) => {
+                unimplemented!()
+            }
             _ => None,
         }
     }
@@ -249,6 +274,9 @@ impl LookupType {
                 LookupType::RequantTable(info.after_range.ilog2() as usize)
             }
             LookupType::RequantTable(..) => *self,
+            // Maxpool update
+            LookupType::Maxpool2D(..) => *self,
+            LookupType::Maxpool2DTable(..) => *self,
             LookupType::NoLookup => LookupType::NoLookup,
         }
     }
@@ -274,6 +302,8 @@ impl LookupType {
                     .collect::<Vec<Vec<E::BaseField>>>()
             }
             LookupType::Requant(info, ..) => info.prep_for_requantize::<E>(input.get_data()),
+            // Maxpool update
+            LookupType::Maxpool2D(..) => unimplemented!(),
             _ => vec![],
         }
     }
@@ -466,6 +496,8 @@ where
                     }
                     Ok(())
                 }
+                // Maxpool update
+                StepInfo::Pooling(_) => unimplemented!(),
                 _ => unreachable!(),
             })?;
 
