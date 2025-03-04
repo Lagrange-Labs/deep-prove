@@ -13,26 +13,32 @@ use crate::{Element, tensor::Tensor};
 
 /// The type of integer we do arithmetics over. Note this is NOT the type we run the inference over actually
 /// We run it over `[Element]` since we need to handle overflows. But all the quantization and requantization
-pub const BIT_LEN: usize = 8;
-pub const MIN: Element = -(1 << (BIT_LEN - 1));
-pub const MAX: Element = (1 << (BIT_LEN - 1)) - 1;
-pub const ZERO: Element = 0;
-pub const ONE: Element = from_f32_unsafe(&1.0);
+/// is done over this QuantInteger.
+pub type QuantInteger = i8;
+pub const BIT_LEN: usize = QuantInteger::BITS as usize;
+pub const MAX: QuantInteger = QuantInteger::MAX;
+pub const MIN: QuantInteger = QuantInteger::MIN;
+pub const ZERO: QuantInteger = 0;
 
-pub const fn from_f32_unsafe(e: &f32) -> Element {
-    assert!(
-        *e >= -1.0 && *e <= 1.0,
-        "Input value must be between -1.0 and 1.0"
-    );
-    // even tho we are requantizing starting from Element, we only want to requantize for QuantInteger
-    // the reason we have these two types is to handle overflow
-    // (a -b) / 2^Q
-    let scale = (1.0 - (-1.0)) / (1 << BIT_LEN) as f64;
-    let zero_point = 0;
+/// Trait used to quantize original floating point number to integer
+pub trait Quantizer<Output> {
+    fn from_f32_unsafe(e: &f32) -> Output;
+}
 
-    // formula is q = round(r/S) + z
-    let scaled = round(*e as f64 / scale) + zero_point;
-    scaled as Element
+impl Quantizer<Element> for Element {
+    fn from_f32_unsafe(e: &f32) -> Self {
+        // even tho we are requantizing starting from Element, we only want to requantize for QuantInteger
+        // the reason we have these two types is to handle overflow
+        let max = QuantInteger::MAX as Element;
+        let min = QuantInteger::MIN as Element;
+        // (a -b) / 2^Q
+        let scale = (1.0 - (-1.0)) / (max - min) as f64;
+        let zero_point = 0;
+
+        // formula is q = round(r/S) + z
+        let scaled = (*e as f64 / scale).round() as Element + zero_point;
+        scaled as Element
+    }
 }
 
 pub(crate) trait Fieldizer<F> {
@@ -44,6 +50,19 @@ impl<F: ExtensionField> Fieldizer<F> for Element {
         if self.is_negative() {
             // Doing wrapped arithmetic : p-128 ... p-1 means negative number
             F::from(<F::BaseField as SmallField>::MODULUS_U64 - self.unsigned_abs() as u64)
+        } else {
+            // for positive and zero, it's just the number
+            F::from(*self as u64)
+        }
+    }
+}
+
+impl<F: ExtensionField> Fieldizer<F> for QuantInteger {
+    fn to_field(&self) -> F {
+        if self.is_negative() {
+            // Doing wrapped arithmetic : p-128 ... p-1 means negative number
+
+            -F::from(self.unsigned_abs() as u64)
         } else {
             // for positive and zero, it's just the number
             F::from(*self as u64)
@@ -100,26 +119,6 @@ impl<const BIT_LEN: usize> QuantRange<BIT_LEN> {
     /// NOTE2: It is using the simplfiication of finding the max range which is a power of two
     /// so we only need to "right shift" during requant
     fn compute_matvec_quant(m: &crate::tensor::Tensor<Element>) -> Requant {
-        // NOTE this way below is correct but is taking a huge loss
-        // BIT_LEN * 2 because of multiplication
-        // log because of additions
-        // let bit_len = BIT_LEN * 2  + m.ncols().ilog2() as usize;
-        // let output_range = Self {
-        //    max_range: (2 as usize).pow(bit_len as u32),
-        //};
-        // NOTE 2: this way is more precise
-        let ind_range = (MAX - MIN) as usize;
-        let output_range = Self {
-            max_range: (ind_range.pow(2) + m.ncols_2d() as usize * ind_range).next_power_of_two(),
-        };
-        let shift = output_range.max_range.ilog2() as usize - BIT_LEN;
-        // Instead of using the max range possible without looking at the matrices weight, we actually trim down to
-        // the max range that the matrix can produce when multiplied by any input vector.
-        // We still assume a single range for the whole matrix (vs one for each row or each weight)
-        // In this case, we need to compute the max range for y[i] = SUM_j M[i,j] * x[j]
-        // For multiplication, we take value of the weight and produce (min, max) possible
-        // For additions, we add the max range of all ranges of the multiplications involved in y[i]
-        // Then we just take the maximum
         let nrows = m.nrows_2d();
         let ncols = m.ncols_2d();
         let max_output_range = m
@@ -196,15 +195,6 @@ impl Requant {
         )
     }
 
-    /// Applies requantization to a single element.
-    ///
-    /// This function performs the following steps:
-    /// 1. Adds a large offset (max_bit) to ensure all values are positive
-    /// 2. Right-shifts by the specified amount to reduce the bit width
-    /// 3. Subtracts the shifted offset to restore the correct value range
-    ///
-    /// The result is a value that has been scaled down to fit within the
-    /// target bit width while preserving the relative magnitudes.
     #[inline(always)]
     pub fn apply(&self, e: &Element) -> Element {
         let max_bit = (self.range << 1) as i128;
@@ -328,36 +318,9 @@ impl Requant {
     }
 }
 
-/// Rounds a float to the nearest integer in a const context
-///
-/// This function implements rounding behavior where:
-/// - Values >= x.5 round up to the next integer
-/// - Values < x.5 round down to the previous integer
-/// - Special care is taken to handle both positive and negative values correctly
-///
-/// Can be used in const contexts for compile-time calculations.
-pub const fn round(x: f64) -> Element {
-    // Handle the integer part
-    let int_part = if x >= 0.0 {
-        x as Element
-    } else {
-        (x - 1.0) as Element + 1
-    };
-
-    // Get the fractional part (always positive)
-    let frac_part = x.abs() - (int_part as f64).abs();
-
-    // Round based on fractional part
-    if frac_part >= 0.5 {
-        if x >= 0.0 { int_part + 1 } else { int_part - 1 }
-    } else {
-        int_part
-    }
-}
-
 #[cfg(test)]
 mod test {
-    use crate::quantization::{Fieldizer, round};
+    use crate::quantization::Fieldizer;
 
     use crate::Element;
     type F = goldilocks::GoldilocksExt2;
@@ -406,43 +369,5 @@ mod test {
             let expected = case.res.to_field();
             assert_eq!(res, expected, "test case {}: {:?}", i, case);
         }
-    }
-
-    #[test]
-    fn test_round_function() {
-        // Test positive numbers
-        assert_eq!(round(0.0), 0);
-        assert_eq!(round(0.1), 0);
-        assert_eq!(round(0.5), 1);
-        assert_eq!(round(1.0), 1);
-        assert_eq!(round(1.1), 1);
-        assert_eq!(round(1.5), 2);
-        assert_eq!(round(1.9), 2);
-        assert_eq!(round(2.0), 2);
-
-        // Test negative numbers
-        assert_eq!(round(-0.1), 0);
-        assert_eq!(round(-0.5), -1);
-        assert_eq!(round(-1.0), -1);
-        assert_eq!(round(-1.1), -1);
-        assert_eq!(round(-1.5), -2);
-        assert_eq!(round(-1.9), -2);
-        assert_eq!(round(-2.0), -2);
-
-        // Test edge cases
-        assert_eq!(round(0.49999999), 0);
-        assert_eq!(round(0.50000001), 1);
-        assert_eq!(round(-0.49999999), 0);
-        assert_eq!(round(-0.50000001), -1);
-    }
-
-    // Test that the constant expressions work at compile time
-    const TEST_CONST_POSITIVE: Element = round(3.7);
-    const TEST_CONST_NEGATIVE: Element = round(-2.6);
-
-    #[test]
-    fn test_const_context() {
-        assert_eq!(TEST_CONST_POSITIVE, 4);
-        assert_eq!(TEST_CONST_NEGATIVE, -3);
     }
 }

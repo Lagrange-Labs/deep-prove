@@ -382,6 +382,7 @@ mod test {
     use super::compute_betas_eval;
     use crate::{
         Claim, default_transcript, pad_vector,
+        quantization::QuantInteger,
         tensor::Tensor,
         testing::{random_bool_vector, random_field_vector},
     };
@@ -397,7 +398,7 @@ mod test {
         // let range = thread_rng().gen_range(3..15);
         let matrices = (0..n_poly)
             .map(|_| {
-                Tensor::random(vec![
+                Tensor::random::<QuantInteger>(vec![
                     rng.gen_range(3..24) as usize,
                     rng.gen_range(3..24) as usize,
                 ])

@@ -12,14 +12,12 @@ use csv::WriterBuilder;
 use goldilocks::GoldilocksExt2;
 use itertools::Itertools;
 use log::info;
+use zkml::quantization::Quantizer;
 
 use serde::{Deserialize, Serialize};
 use zkml::{
-    Context, Element, IO, Prover, argmax, default_transcript, load_mlp,
-    lookup::LogUp,
-    quantization::{TensorFielder, from_f32_unsafe},
-    tensor::Tensor,
-    verify,
+    Context, Element, IO, Prover, argmax, default_transcript, load_mlp, lookup::LogUp,
+    quantization::TensorFielder, tensor::Tensor, verify,
 };
 
 use rmp_serde::encode::to_vec_named;
@@ -57,7 +55,10 @@ struct InputJSON {
 
 impl InputJSON {
     /// Returns (input,output) from the path
-    pub fn from(path: &str, num_samples: usize) -> anyhow::Result<(Vec<Vec<Element>>, Vec<Vec<Element>>)> {
+    pub fn from(
+        path: &str,
+        num_samples: usize,
+    ) -> anyhow::Result<(Vec<Vec<Element>>, Vec<Vec<Element>>)> {
         let file = File::open(path)?;
         let reader = BufReader::new(file);
         let u: Self = serde_json::from_reader(reader)?;
@@ -68,7 +69,10 @@ impl InputJSON {
     fn validate(&self) -> anyhow::Result<()> {
         let rrange = -1.0..=1.0;
         ensure!(self.input_data.len() > 0);
-        let input_isreal = self.input_data.iter().all(|v| v.iter().all(|&x| rrange.contains(&x)));
+        let input_isreal = self
+            .input_data
+            .iter()
+            .all(|v| v.iter().all(|&x| rrange.contains(&x)));
         assert_eq!(self.input_data.len(), self.output_data.len());
         ensure!(
             input_isreal,
@@ -81,12 +85,22 @@ impl InputJSON {
         let inputs = self
             .input_data
             .drain(..len)
-            .map(|input| input.into_iter().map(|e| from_f32_unsafe(&(e as f32))).collect())
+            .map(|input| {
+                input
+                    .into_iter()
+                    .map(|e| Element::from_f32_unsafe(&(e as f32)))
+                    .collect()
+            })
             .collect();
         let outputs = self
             .output_data
             .drain(..len)
-            .map(|output| output.into_iter().map(|e| from_f32_unsafe(&(e as f32))).collect())
+            .map(|output| {
+                output
+                    .into_iter()
+                    .map(|e| Element::from_f32_unsafe(&(e as f32)))
+                    .collect()
+            })
             .collect();
         (inputs, outputs)
     }
@@ -101,10 +115,11 @@ const CSV_PROOF_SIZE: &str = "proof size (KB)";
 
 fn run(args: Args) -> anyhow::Result<()> {
     info!("[+] Reading onnx model");
-    let model = load_mlp(&args.onnx).context("loading model:")?;
+    let model = load_mlp::<Element>(&args.onnx).context("loading model:")?;
     model.describe();
     info!("[+] Reading input/output from pytorch");
-    let (inputs, given_outputs) = InputJSON::from(&args.io, args.num_samples).context("loading input:")?;
+    let (inputs, given_outputs) =
+        InputJSON::from(&args.io, args.num_samples).context("loading input:")?;
 
     // Generate context once and measure the time
     info!("[+] Generating context for proving");
@@ -122,7 +137,7 @@ fn run(args: Args) -> anyhow::Result<()> {
             CSV_PROOF_SIZE,
             CSV_ACCURACY,
         ]);
-        
+
         // Store the setup time in the bencher (without re-running setup)
         bencher.set(CSV_SETUP, setup_time);
 
@@ -153,7 +168,8 @@ fn run(args: Args) -> anyhow::Result<()> {
         let mut verifier_transcript = default_transcript();
         let io = IO::new(input_tensor.to_fields(), output.to_fields());
         bencher.r(CSV_VERIFYING, || {
-            verify::<_, _, LogUp>(ctx.clone(), proof, io, &mut verifier_transcript).expect("invalid proof")
+            verify::<_, _, LogUp>(ctx.clone(), proof, io, &mut verifier_transcript)
+                .expect("invalid proof")
         });
         info!("[+] Verify proof: valid");
 

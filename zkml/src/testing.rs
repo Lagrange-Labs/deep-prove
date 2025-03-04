@@ -1,4 +1,3 @@
-use crate::quantization;
 use ark_std::rand::{
     self, Rng, SeedableRng,
     distributions::{Standard, uniform::SampleUniform},
@@ -10,13 +9,26 @@ use ff_ext::ExtensionField;
 use itertools::Itertools;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
-use crate::Element;
+pub trait VecInto<U> {
+    fn vec_into(self) -> Vec<U>;
+}
 
-pub fn random_vector(n: usize) -> Vec<Element> {
+impl<T, U> VecInto<U> for Vec<T>
+where
+    T: Send + Sync + Into<U>,
+    U: Send + Sync,
+{
+    fn vec_into(self) -> Vec<U> {
+        self.into_par_iter().map(Into::into).collect()
+    }
+}
+
+pub fn random_vector<T>(n: usize) -> Vec<T>
+where
+    Standard: Distribution<T>,
+{
     let mut rng = thread_rng();
-    (0..n)
-        .map(|_| rng.gen_range(quantization::MIN..quantization::MAX))
-        .collect_vec()
+    (0..n).map(|_| rng.gen::<T>()).collect_vec()
 }
 
 pub fn random_field_vector<E: ExtensionField>(n: usize) -> Vec<E> {
@@ -31,18 +43,25 @@ pub fn random_bool_vector<E: ExtensionField>(n: usize) -> Vec<E> {
         .collect_vec()
 }
 
-pub fn random_vector_seed(n: usize, seed: Option<u64>) -> Vec<Element> {
+pub fn random_vector_seed<T>(n: usize, seed: Option<u64>) -> Vec<T>
+where
+    Standard: Distribution<T>,
+{
     let seed = seed.unwrap_or(rand::random::<u64>()); // Use provided seed or default
 
     (0..n)
         .map(|i| {
             let mut rng = StdRng::seed_from_u64(seed + i as u64);
-            rng.gen_range(quantization::MIN..quantization::MAX)
+            rng.gen::<T>()
         })
         .collect_vec()
 }
 
-pub fn random_ranged_vector(n: usize, range: std::ops::Range<Element>) -> Vec<Element> {
+pub fn random_ranged_vector<T>(n: usize, range: std::ops::Range<T>) -> Vec<T>
+where
+    Standard: Distribution<T>,
+    T: SampleUniform + PartialOrd + Clone,
+{
     let mut rng = thread_rng();
     (0..n).map(|_| rng.gen_range(range.clone())).collect_vec()
 }

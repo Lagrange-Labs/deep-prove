@@ -1,5 +1,4 @@
-use crate::tensor::PaddedTensor;
-use derive_more::Deref;
+use crate::quantization::Quantizer;
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use log::debug;
@@ -8,7 +7,7 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use crate::{
     Element,
     activation::{Activation, Relu},
-    quantization::{self, Requant, TensorFielder},
+    quantization::{Requant, TensorFielder},
     tensor::Tensor,
 };
 
@@ -18,7 +17,7 @@ pub type StepIdx = usize;
 #[derive(Clone, Debug)]
 pub enum Layer {
     // TODO: replace this with a Tensor based implementation
-    Dense(PaddedTensor<Element>),
+    Dense(Tensor<Element>),
     Activation(Activation),
     // this is the output quant info. Since we always do a requant layer after each dense,
     // then we assume the inputs requant info are default()
@@ -73,32 +72,23 @@ impl Layer {
     }
     /// Prepare the input to return it in the right format expected for the first layer.
     /// for the bias
-    pub fn prepare_input(&self, mut input: Tensor<Element>) -> Tensor<Element> {
+    pub fn prepare_input(&self, input: Tensor<Element>) -> Tensor<Element> {
         match self {
             Layer::Dense(ref matrix) => {
                 if input.get_data().len() == matrix.ncols_2d() {
-                    // In this case, we know the input is already padded so we just need to change
-                    // one element to ONE such that the bias is taken into account
-                    input[matrix.original_shape[1]] = quantization::ONE;
+                    // no need to do anything if it's already at the right format
                     input
-                } else if input.get_data().len() == matrix.original_shape[1] - 1 {
-                    // in this case, this is the first input, it hasn't been padded yet
+                } else {
+                    // append 1 for the bias factor and pad to right size
                     let data = input
                         .get_data()
                         .to_vec()
                         .into_iter()
-                        .chain(std::iter::once(quantization::ONE))
+                        .chain(std::iter::once(Element::from_f32_unsafe(&1.0)))
                         .chain(std::iter::repeat(0))
                         .take(matrix.ncols_2d())
                         .collect_vec();
                     Tensor::new(vec![matrix.ncols_2d()], data)
-                } else {
-                    panic!(
-                        "Input tensor {:?} is not the right size vs matrix {:?} (padded {:?})",
-                        input.dims(),
-                        matrix.original_shape,
-                        matrix.tensor.dims()
-                    );
                 }
             }
             _ => panic!("Layer {:?} should not be a first layer", self.describe()),
@@ -161,7 +151,7 @@ impl Model {
         let Layer::Dense(mat) = &self.layers[0] else {
             panic!("layer is not starting with a dense layer?");
         };
-        vec![mat.original_shape[1]]
+        vec![mat.ncols_2d()]
     }
 
     pub fn first_output_shape(&self) -> Vec<usize> {
@@ -328,7 +318,7 @@ pub(crate) mod test {
         activation::{Activation, Relu},
         default_transcript,
         model::Layer,
-        quantization::{Requant, TensorFielder},
+        quantization::{QuantInteger, Requant, TensorFielder},
         tensor::Tensor,
         testing::random_bool_vector,
     };
@@ -351,7 +341,8 @@ pub(crate) mod test {
                     // last row becomes new column
                     let (nrows, ncols) = (rng.gen_range(3..15), last_row);
                     last_row = nrows;
-                    let mat = Tensor::random(vec![nrows, ncols]).pad_next_power_of_two_2d();
+                    let mat = Tensor::random::<QuantInteger>(vec![nrows, ncols])
+                        .pad_next_power_of_two_2d();
                     model.add_layer(Layer::Dense(mat));
                 } else if selector % MOD_SELECTOR == SELECTOR_RELU {
                     model.add_layer(Layer::Activation(Activation::Relu(Relu::new())));
@@ -363,7 +354,7 @@ pub(crate) mod test {
             }
             let input_dims = model.layers.first().unwrap().shape();
             // ncols since matrix2vector is summing over the columns
-            let input = Tensor::random(vec![input_dims[1]]);
+            let input = Tensor::random::<QuantInteger>(vec![input_dims[1]]);
             (model, input)
         }
     }
@@ -376,9 +367,10 @@ pub(crate) mod test {
 
     #[test]
     fn test_model_run() {
-        let mat1 = Tensor::random(vec![10, 11]).pad_next_power_of_two_2d();
-        let mat2 = Tensor::random(vec![7, mat1.ncols_2d()]).pad_next_power_of_two_2d();
-        let input = Tensor::random(vec![mat1.ncols_2d()]);
+        let mat1 = Tensor::random::<QuantInteger>(vec![10, 11]).pad_next_power_of_two_2d();
+        let mat2 =
+            Tensor::random::<QuantInteger>(vec![7, mat1.ncols_2d()]).pad_next_power_of_two_2d();
+        let input = Tensor::random::<QuantInteger>(vec![mat1.ncols_2d()]);
         let output1 = mat1.matvec(&input);
         let requant = Requant::from_matrix_default(&mat1);
         let requantized_output1 = requant.op(&output1);
@@ -403,11 +395,12 @@ pub(crate) mod test {
 
     #[test]
     fn test_inference_trace_iterator() {
-        let mat1 = Tensor::random(vec![10, 11]).pad_next_power_of_two_2d();
+        let mat1 = Tensor::random::<QuantInteger>(vec![10, 11]).pad_next_power_of_two_2d();
         // let relu1 = Activation::Relu(Relu);
-        let mat2 = Tensor::random(vec![7, mat1.ncols_2d()]).pad_next_power_of_two_2d();
+        let mat2 =
+            Tensor::random::<QuantInteger>(vec![7, mat1.ncols_2d()]).pad_next_power_of_two_2d();
         // let relu2 = Activation::Relu(Relu);
-        let input = Tensor::random(vec![mat1.ncols_2d()]);
+        let input = Tensor::random::<QuantInteger>(vec![mat1.ncols_2d()]);
 
         let mut model = Model::new();
         model.add_layer(Layer::Dense(mat1));
@@ -444,9 +437,9 @@ pub(crate) mod test {
 
     #[test]
     fn test_inference_trace_reverse_iterator() {
-        let mat1 = Tensor::random(vec![10, 11]).pad_next_power_of_two_2d();
+        let mat1 = Tensor::random::<QuantInteger>(vec![10, 11]).pad_next_power_of_two_2d();
 
-        let input = Tensor::random(vec![mat1.ncols_2d()]);
+        let input = Tensor::random::<QuantInteger>(vec![mat1.ncols_2d()]);
 
         let mut model = Model::new();
         model.add_layer(Layer::Dense(mat1));
