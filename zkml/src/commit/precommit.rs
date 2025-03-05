@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use crate::{
     Claim, VectorTranscript,
     commit::{aggregated_rlc, compute_beta_eval_poly, compute_betas_eval},
+    iop::context::BIAS_POLY_ID,
     model::{Layer, Model},
 };
 use anyhow::{Context as CC, ensure};
@@ -65,9 +66,13 @@ where
         Self::generate(
             m.layers()
                 .flat_map(|(id, l)| match l {
-                    Layer::Dense(m) => Some((id, m.evals_2d())),
-                    _ => None,
+                    Layer::Dense(dense) => vec![
+                        Some((id, dense.matrix.evals_2d())),
+                        Some((BIAS_POLY_ID + id, dense.bias.evals_flat())),
+                    ],
+                    _ => vec![None],
                 })
+                .flatten()
                 .collect_vec(),
         )
     }

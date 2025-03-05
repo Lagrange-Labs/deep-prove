@@ -1,3 +1,4 @@
+use crate::dense::Dense;
 use anyhow::{Error, Result, bail, ensure};
 use itertools::Itertools;
 use log::debug;
@@ -103,29 +104,6 @@ fn reshape<T: Clone>(flat_vec: Vec<T>, rows: usize, cols: usize) -> Option<Vec<V
     Some(flat_vec.chunks(cols).map(|chunk| chunk.to_vec()).collect())
 }
 
-fn concat_column(
-    matrix: Vec<Vec<Element>>,
-    column: Vec<Vec<Element>>,
-) -> Result<Vec<Vec<Element>>> {
-    if matrix.len() != column.len() {
-        bail!("Column length must match matrix row count");
-    }
-
-    let new_matrix: Vec<Vec<Element>> = matrix
-        .into_iter()
-        .zip(column.into_iter())
-        .map(|(mut row, col_val)| {
-            if col_val.len() != 1 {
-                bail!("Column vector must have a single value per row");
-            }
-            row.push(col_val[0]); // Append the single column value
-            Ok(row)
-        })
-        .collect::<Result<Vec<_>>>()?; // Collect results into Vec<Vec<u64>>
-
-    Ok(new_matrix)
-}
-
 fn fetch_weight_bias_as_mat<Q: Quantizer<Element>>(
     weight_or_bias: &str,
     node: &NodeProto,
@@ -199,17 +177,20 @@ pub fn load_mlp<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
         match node.op_type.as_str() {
             "Gemm" => {
                 let matrix_weight = fetch_weight_bias_as_mat::<Q>("weight", node, &initializers)?;
-                let matrix_bias = fetch_weight_bias_as_mat::<Q>("bias", node, &initializers)?;
+                let mut matrix_bias = fetch_weight_bias_as_mat::<Q>("bias", node, &initializers)?;
+                assert_eq!(matrix_bias.len(), 1);
 
                 // Concatenate bias as an extra column
-                let matrix = concat_column(matrix_weight, matrix_bias)?;
+                // let matrix = concat_column(matrix_weight, matrix_bias)?;
+                let ncols = matrix_weight[0].len();
 
                 // Create matrix and transpose (PyTorch stores as output_size x input_size)
-                let matrix = crate::tensor::Tensor::<Element>::from_coeffs_2d(matrix).unwrap();
+                let matrix =
+                    crate::tensor::Tensor::<Element>::from_coeffs_2d(matrix_weight).unwrap();
+                let bias =
+                    crate::tensor::Tensor::<Element>::new(vec![ncols], matrix_bias.remove(0));
                 debug!("layer idx {} -> unprocessed matrix {:?}", i, matrix.dims());
-                //.transpose();
-                //.pad_next_power_of_two();
-                layers.push(Layer::Dense(matrix));
+                layers.push(Layer::Dense(Dense::new(matrix, bias)));
             }
             "Relu" => {
                 let layer = Layer::Activation(Activation::Relu(Relu::new()));
@@ -224,7 +205,8 @@ pub fn load_mlp<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
     let mut prev_layer_shape: Option<Vec<usize>> = None;
     let last = layers.len() - 1;
     for (i, layer) in layers.into_iter().enumerate() {
-        if let Layer::Dense(mut matrix) = layer {
+        if let Layer::Dense(dense) = layer {
+            let Dense { mut matrix, bias } = dense;
             let mut new_cols = matrix.ncols_2d();
             if let Some(prev_shape) = prev_layer_shape {
                 assert!(prev_shape.iter().all(|d| d.is_power_of_two()));
@@ -244,23 +226,19 @@ pub fn load_mlp<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                 }
             }
 
-            let nrows = if i == last {
-                matrix.nrows_2d()
-            } else {
-                matrix.nrows_2d() + 1
-            };
+            let ncols = new_cols.next_power_of_two();
+            let nrows = matrix.nrows_2d().next_power_of_two();
+
             // println!("layer idx {} -> from ({:?} to ({},{})",i,matrix.shape(),
             //                 nrows.next_power_of_two(),
             //                 new_cols.next_power_of_two());
             // Pad to power of two dimensions
-            matrix.reshape_to_fit_inplace_2d(vec![
-                nrows.next_power_of_two(),
-                new_cols.next_power_of_two(),
-            ]);
+            matrix.reshape_to_fit_inplace_2d(vec![nrows, ncols]);
+            let bias = bias.pad_1d(ncols);
             // Update prev_output_size to reflect the padded size
             prev_layer_shape = Some(matrix.dims());
             debug!("layer idx {} -> final shape {:?}", i, matrix.dims());
-            processed_layers.push(Layer::Dense(matrix));
+            processed_layers.push(Layer::Dense(Dense::new(matrix, bias)));
         } else {
             // prev_layer_shape = Some(layer.shape()); // TODO: Need to double check
             processed_layers.push(layer);

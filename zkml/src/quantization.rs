@@ -5,9 +5,9 @@ use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
 use goldilocks::SmallField;
 use itertools::Itertools;
-use std::env;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
+use std::env;
 use transcript::Transcript;
 
 use crate::{Element, tensor::Tensor};
@@ -21,7 +21,7 @@ pub static BIT_LEN: Lazy<usize> = Lazy::new(|| {
 });
 
 // These values depend on BIT_LEN and need to be computed at runtime
-pub static MIN: Lazy<Element> = Lazy::new(|| -(1 << (*BIT_LEN - 1))); 
+pub static MIN: Lazy<Element> = Lazy::new(|| -(1 << (*BIT_LEN - 1)));
 pub static MAX: Lazy<Element> = Lazy::new(|| (1 << (*BIT_LEN - 1)) - 1);
 pub static ZERO: Lazy<Element> = Lazy::new(|| 0);
 
@@ -89,67 +89,18 @@ where
     }
 }
 
-/// QuantRange is an intermediary struct to compute the final quantization information.
-/// This struct is gonna be useful down the road to handle more precise requantization techniques.
-/// BIT_LEN is the target bit length we want to reduce any number to
-#[derive(Clone, Debug)]
-struct QuantRange {
-    // a - b: at the beginning a power of two to simplify requantization
-    pub(crate) max_range: usize,
-}
-
-impl Default for QuantRange {
-    fn default() -> Self {
-        QuantRange { max_range: 2 }
-    }
-}
-
-impl QuantRange {
-    /// Computes the quantization info that a matrix x vec will produce
-    /// self should be the quant info of the matrix
-    /// The quantization info is depending on the number of columns in the matrix
-    /// NOTE: this is assuming the vector has the same quantization factor as the matrix coeff
-    ///       and it assumes these are the default range.
-    /// NOTE2: It is using the simplfiication of finding the max range which is a power of two
-    /// so we only need to "right shift" during requant
-    fn compute_matvec_quant(m: &crate::tensor::Tensor<Element>) -> Requant {
-        let ncols = m.ncols_2d();
-        let max_output_range = m
-            .get_data()
-            .iter()
-            .chunks(ncols)
-            .into_iter()
-            .map(|row| {
-                let row_range = row
-                    .map(|weight| {
-                        let min = if weight.is_negative() {
-                            weight * *MAX as Element
-                        } else {
-                            weight * *MIN as Element
-                        };
-                        let max = if weight.is_negative() {
-                            weight * *MIN as Element
-                        } else {
-                            weight * *MAX as Element
-                        };
-                        (min, max)
-                    })
-                    .fold((0, 0), |(min, max), (wmin, wmax)| (min + wmin, max + wmax));
-                // weight * MIN can be positive and higher then MAX*weight if weight's negative
-                // so we take the absolute value of the difference
-                (row_range.1 - row_range.0).unsigned_abs() as usize
-            })
-            .max()
-            .expect("No max range found")
-            .next_power_of_two();
-        // trace!("max_output_range: {} - ilog2: {}", max_output_range, max_output_range.ilog2());
-        let shift = max_output_range.ilog2() as usize - *BIT_LEN;
-        Requant {
-            range: max_output_range,
-            right_shift: shift,
-            after_range: 1 << *BIT_LEN,
-        }
-    }
+pub fn range_from_weight(weight: &Element) -> (Element, Element) {
+    let min = if weight.is_negative() {
+        weight * *MAX as Element
+    } else {
+        weight * *MIN as Element
+    };
+    let max = if weight.is_negative() {
+        weight * *MIN as Element
+    } else {
+        weight * *MAX as Element
+    };
+    (min, max)
 }
 
 /// Information about a requantization step:
@@ -166,10 +117,6 @@ pub struct Requant {
 }
 
 impl Requant {
-    pub fn from_matrix_default(m: &crate::tensor::Tensor<Element>) -> Self {
-        QuantRange::compute_matvec_quant(m)
-    }
-
     pub fn op(&self, input: &crate::tensor::Tensor<Element>) -> crate::tensor::Tensor<Element> {
         crate::tensor::Tensor::<Element>::new(
             input.dims(),

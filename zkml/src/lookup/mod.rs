@@ -36,7 +36,7 @@ pub use logup::LogUp;
 
 type MLE<E> = DenseMultilinearExtension<E>;
 fn max_poly_size() -> usize {
-    (*BIT_LEN*2) + 1
+    (*BIT_LEN * 2) + 1
 }
 /// Proof from a GKR based lookup.
 /// The commitment is a batch commitment to all of the witness wires.
