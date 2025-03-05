@@ -95,6 +95,16 @@ where
     T: std::ops::Add<Output = T> + std::ops::Sub<Output = T> + std::ops::Mul<Output = T>,
     T: std::default::Default,
 {
+    ///
+    pub fn flatten(&self) -> Self {
+        let new_data = self.get_data().to_vec();
+        let new_shape = vec![new_data.len()];
+        Self {
+            data: new_data,
+            shape: new_shape,
+        }
+    }
+
     /// Element-wise addition
     pub fn add(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(self.shape == other.shape, "Shape mismatch for addition.");
@@ -534,6 +544,84 @@ where
     }
 }
 
+impl<T> Tensor<T>
+where
+    T: Copy + Default + std::ops::Mul<Output = T> + std::iter::Sum,
+    T: std::ops::Add<Output = T> + std::ops::Sub<Output = T> + std::ops::Mul<Output = T>,
+{
+    pub fn get4d(&self) -> (usize, usize, usize, usize) {
+        let n_size = self.shape.get(0).cloned().unwrap_or(1);
+        let c_size = self.shape.get(1).cloned().unwrap_or(1);
+        let h_size = self.shape.get(2).cloned().unwrap_or(1);
+        let w_size = self.shape.get(3).cloned().unwrap_or(1);
+
+        (n_size, c_size, h_size, w_size)
+    }
+
+    /// Retrieves an element using (N, C, H, W) indexing
+    pub fn get(&self, n: usize, c: usize, h: usize, w: usize) -> T {
+        assert!(self.shape.len() <= 4);
+
+        let (n_size, c_size, h_size, w_size) = self.get4d();
+
+        assert!(n < n_size);
+        let flat_index = n * (c_size * h_size * w_size) + c * (h_size * w_size) + h * w_size + w;
+        self.data[flat_index]
+    }
+
+    pub fn conv2d(&self, kernels: &Tensor<T>, bias: &Tensor<T>, stride: usize) -> Tensor<T> {
+        let (n_size, c_size, h_size, w_size) = self.get4d();
+        let (k_n, k_c, k_h, k_w) = kernels.get4d();
+
+        // Validate shapes
+        assert_eq!(c_size, k_c, "Input and kernel channels must match!");
+        assert_eq!(
+            bias.shape,
+            vec![k_n],
+            "Bias shape must match number of kernels!"
+        );
+
+        let out_h = (h_size - k_h) / stride + 1;
+        let out_w = (w_size - k_w) / stride + 1;
+        let out_shape = vec![n_size, k_n, out_h, out_w];
+
+        let mut output = vec![T::default(); n_size * k_n * out_h * out_w];
+
+        for n in 0..n_size {
+            for o in 0..k_n {
+                for oh in 0..out_h {
+                    for ow in 0..out_w {
+                        let mut sum = T::default();
+
+                        // Convolution
+                        for c in 0..c_size {
+                            for kh in 0..k_h {
+                                for kw in 0..k_w {
+                                    let h = oh * stride + kh;
+                                    let w = ow * stride + kw;
+                                    sum = sum + self.get(n, c, h, w) * kernels.get(o, c, kh, kw);
+                                }
+                            }
+                        }
+
+                        // Add bias for this output channel (o)
+                        sum = sum + bias.data[o];
+
+                        let output_index =
+                            n * (k_n * out_h * out_w) + o * (out_h * out_w) + oh * out_w + ow;
+                        output[output_index] = sum;
+                    }
+                }
+            }
+        }
+
+        Tensor {
+            data: output,
+            shape: out_shape,
+        }
+    }
+}
+
 impl<T> fmt::Display for Tensor<T>
 where
     T: std::fmt::Debug + std::fmt::Display,
@@ -685,7 +773,8 @@ mod test {
     }
 
     impl Tensor<Element> {
-        pub fn get(&self, i: usize, j: usize) -> Element {
+        pub fn get_2d(&self, i: usize, j: usize) -> Element {
+            assert!(self.is_matrix() == true);
             self.data[i * self.dims()[1] + j]
         }
 
@@ -708,7 +797,7 @@ mod test {
             thread_rng().gen_range(0..shape[0]),
             thread_rng().gen_range(0..shape[1]),
         );
-        let elem = mat.get(chosen_row, chosen_col);
+        let elem = mat.get_2d(chosen_row, chosen_col);
         let elem_field: E = elem.to_field();
         println!("(x,y) = ({},{}) ==> {:?}", chosen_row, chosen_col, elem);
         let inputs = mat.position_to_boolean_2d(chosen_row, chosen_col);
@@ -808,5 +897,24 @@ mod test {
             padded_result, padded_expected,
             "Padded Maxpool (Element) failed."
         );
+    }
+
+    #[test]
+    fn test_tensor_conv2d() {
+        let input = Tensor::<Element>::new(vec![1, 3, 3, 3], vec![
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 8, 7, 6, 5, 4, 3, 2, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3,
+        ]);
+
+        let weights = Tensor::<Element>::new(vec![2, 3, 2, 2], vec![
+            1, 0, -1, 2, 0, 1, -1, 1, 1, -1, 0, 2, -1, 1, 2, 0, 1, 0, 2, -1, 0, -1, 1, 1,
+        ]);
+
+        let bias = Tensor::<Element>::new(vec![2], vec![3, -3]);
+
+        let expected =
+            Tensor::<Element>::new(vec![1, 2, 2, 2], vec![21, 22, 26, 27, 25, 25, 26, 26]);
+
+        let result = input.conv2d(&weights, &bias, 1);
+        assert_eq!(result, expected, "Conv2D (Element) failed.");
     }
 }
