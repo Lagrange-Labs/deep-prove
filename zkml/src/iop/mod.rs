@@ -1,4 +1,5 @@
 use crate::{
+    Claim,
     commit::{precommit, same_poly},
     lookup,
 };
@@ -109,8 +110,12 @@ where
     sumcheck: IOPProof<E>,
     /// The lookup proof showing that the diff is always in the correct range
     lookup: lookup::Proof<E>,
-    /// proof for the accumulation of the claim from the zerocheck + claim from lookup for the same poly
-    io_accumulation: same_poly::Proof<E>,
+    /// proof for the accumulation of the claim from the zerocheck + claim from lookup for the same poly for both input and output
+    io_accumulation: [same_poly::Proof<E>; 2],
+    /// The claims that are accumulated for the output of this step
+    output_claims: Vec<Claim<E>>,
+    /// The claim that are accumulated for the input of this step
+    input_claims: Vec<Claim<E>>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -155,7 +160,7 @@ mod test {
     #[test]
     fn test_prover_steps() {
         init_test_logging();
-        let (model, input) = Model::random(4);
+        let (model, input) = Model::random(6);
         model.describe();
         let trace = model.run(input.clone());
         let output = trace.final_output();

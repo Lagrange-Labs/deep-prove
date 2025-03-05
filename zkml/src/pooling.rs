@@ -1,5 +1,12 @@
-use crate::{Element, quantization::Fieldizer, tensor::Tensor};
+use crate::{
+    Element,
+    quantization::{Fieldizer, TensorFielder},
+    tensor::Tensor,
+};
 use ff_ext::ExtensionField;
+use gkr::util::ceil_log2;
+use itertools::Itertools;
+use multilinear_extensions::mle::{DenseMultilinearExtension, MultilinearExtension};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +32,15 @@ pub struct Maxpool2D {
     pub stride: usize,
 }
 
+impl Default for Maxpool2D {
+    fn default() -> Self {
+        Maxpool2D {
+            kernel_size: MAXPOOL2D_KERNEL_SIZE,
+            stride: MAXPOOL2D_KERNEL_SIZE,
+        }
+    }
+}
+
 impl Maxpool2D {
     pub fn op(&self, input: &Tensor<Element>) -> Tensor<Element> {
         assert!(
@@ -40,46 +56,161 @@ impl Maxpool2D {
         input.maxpool2d(self.kernel_size, self.stride)
     }
 
-    pub fn compute_diff_poly<E: ExtensionField>(
+    /// Computes MLE evaluations related to proving Maxpool function.
+    /// The outputs of this function are ordered as follows
+    /// 1) Maxpool output
+    /// 2) four polynomials corresponding to the input to the Maxpool, each with two variables fixed
+    /// so that PROD (Output - poly_i) == 0 at every evaluation point.
+    pub fn compute_polys<E: ExtensionField>(
         &self,
         input: &Tensor<Element>,
-    ) -> Vec<E::BaseField> {
-        let shape = input.dims();
+    ) -> Vec<Vec<E::BaseField>> {
+        let output: Tensor<E> = self.op(&input).to_fields();
+        let input: Tensor<E> = input.clone().to_fields();
 
-        let (_, padded) = input.padded_maxpool2d();
+        self.compute_polys_field(&input, &output)
+    }
 
-        let diff = padded
-            .get_data()
-            .par_iter()
-            .zip(input.get_data().par_iter())
-            .map(|(a, b)| {
-                let field_elem: E = (a - b).to_field();
-                field_elem.as_bases()[0]
+    pub fn compute_polys_field<E: ExtensionField>(
+        &self,
+        input: &Tensor<E>,
+        output: &Tensor<E>,
+    ) -> Vec<Vec<E::BaseField>> {
+        let padded_input = input.pad_next_power_of_two();
+
+        let padded_output = output.pad_next_power_of_two();
+
+        let padded_input_shape = padded_input.dims();
+
+        let num_vars = padded_input.get_data().len().ilog2() as usize;
+
+        let mle = DenseMultilinearExtension::<E>::from_evaluations_vec(
+            num_vars,
+            padded_input
+                .get_data()
+                .iter()
+                .map(|val| val.as_bases()[0])
+                .collect::<Vec<E::BaseField>>(),
+        );
+
+        // This should give all possible combinations of fixing the lowest three bits in ascending order
+
+        let fixed_mles = (0..padded_input_shape[3] << 1)
+            .map(|i| {
+                let point = (0..ceil_log2(padded_input_shape[3]) + 1)
+                    .map(|n| E::from((i as u64 >> n) & 1))
+                    .collect::<Vec<E>>();
+
+                mle.fix_variables(&point)
             })
+            .collect::<Vec<DenseMultilinearExtension<E>>>();
+        // f(0,x,0,..) = x * f(0,1,0,...) + (1 - x) * f(0,0,0,...)
+        let even_mles = fixed_mles
+            .iter()
+            .cloned()
+            .step_by(2)
+            .collect::<Vec<DenseMultilinearExtension<E>>>();
+        let odd_mles = fixed_mles
+            .iter()
+            .cloned()
+            .skip(1)
+            .step_by(2)
+            .collect::<Vec<DenseMultilinearExtension<E>>>();
+
+        let even_merged = even_mles
+            .chunks(padded_input_shape[3] >> 1)
+            .map(|mle_chunk| {
+                let mut mles_vec = mle_chunk
+                    .iter()
+                    .map(|m| {
+                        m.get_ext_field_vec()
+                            .iter()
+                            .map(|e| e.as_bases()[0])
+                            .collect::<Vec<E::BaseField>>()
+                    })
+                    .collect::<Vec<Vec<E::BaseField>>>();
+                while mles_vec.len() > 1 {
+                    let half = mles_vec.len() / 2;
+
+                    mles_vec = mles_vec[..half]
+                        .iter()
+                        .zip(mles_vec[half..].iter())
+                        .map(|(l, h)| {
+                            l.iter()
+                                .interleave(h.iter())
+                                .copied()
+                                .collect::<Vec<E::BaseField>>()
+                        })
+                        .collect::<Vec<Vec<E::BaseField>>>();
+                }
+
+                mles_vec[0].clone()
+            })
+            .collect::<Vec<Vec<E::BaseField>>>();
+
+        let odd_merged = odd_mles
+            .chunks(padded_input_shape[3] >> 1)
+            .map(|mle_chunk| {
+                let mut mles_vec = mle_chunk
+                    .iter()
+                    .map(|m| {
+                        m.get_ext_field_vec()
+                            .iter()
+                            .map(|e| e.as_bases()[0])
+                            .collect::<Vec<E::BaseField>>()
+                    })
+                    .collect::<Vec<Vec<E::BaseField>>>();
+                while mles_vec.len() > 1 {
+                    let half = mles_vec.len() / 2;
+
+                    mles_vec = mles_vec[..half]
+                        .iter()
+                        .zip(mles_vec[half..].iter())
+                        .map(|(l, h)| {
+                            l.iter()
+                                .interleave(h.iter())
+                                .copied()
+                                .collect::<Vec<E::BaseField>>()
+                        })
+                        .collect::<Vec<Vec<E::BaseField>>>();
+                }
+
+                mles_vec[0].clone()
+            })
+            .collect::<Vec<Vec<E::BaseField>>>();
+
+        let output_mle = padded_output
+            .get_data()
+            .iter()
+            .map(|val| val.as_bases()[0])
             .collect::<Vec<E::BaseField>>();
 
-        let basefield_tensor = Tensor::<E::BaseField>::new(shape, diff);
-
-        basefield_tensor.pad_next_power_of_two().get_data().to_vec()
+        [&[output_mle], even_merged.as_slice(), odd_merged.as_slice()].concat()
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::{commit::compute_betas_eval, default_transcript};
+
     use super::*;
     use ark_std::rand::{Rng, thread_rng};
     use ff::Field;
+    use gkr::util::ceil_log2;
     use goldilocks::{Goldilocks, GoldilocksExt2, SmallField};
-    use itertools::izip;
-    use multilinear_extensions::mle::{DenseMultilinearExtension, MultilinearExtension};
+    use itertools::{Itertools, izip};
+    use multilinear_extensions::{
+        mle::{DenseMultilinearExtension, MultilinearExtension},
+        virtual_poly::{ArcMultilinearExtension, VirtualPolynomial},
+    };
+    use sumcheck::structs::{IOPProverState, IOPVerifierState};
 
     type F = GoldilocksExt2;
+
     #[test]
-    fn test_diff_poly() {
-        println!("goldilocks modulus: {}", Goldilocks::MODULUS_U64);
-        println!("18446744069423824321");
+    fn test_max_pool_zerocheck() {
         let mut rng = thread_rng();
-        for _ in 0..10 {
+        for _ in 0..50 {
             let random_shape = (0..4)
                 .map(|i| {
                     if i < 2 {
@@ -93,31 +224,218 @@ mod tests {
             let data = (0..input_data_size)
                 .map(|_| rng.gen_range(-128i128..128))
                 .collect::<Vec<Element>>();
-            let input = Tensor::<Element>::new(random_shape, data);
+            let input = Tensor::<Element>::new(random_shape.clone(), data);
 
             let info = Maxpool2D {
                 kernel_size: MAXPOOL2D_KERNEL_SIZE,
                 stride: MAXPOOL2D_KERNEL_SIZE,
             };
 
-            let diff_evals = info.compute_diff_poly::<F>(&input);
-            let num_vars = diff_evals.len().ilog2() as usize;
+            let output = info.op(&input);
 
-            let mle = DenseMultilinearExtension::<F>::from_evaluations_vec(num_vars, diff_evals);
+            let padded_input = input.pad_next_power_of_two();
 
-            let mle_00 = mle.fix_high_variables(&[F::ZERO, F::ZERO]);
-            let mle_01 = mle.fix_high_variables(&[F::ZERO, F::ONE]);
-            let mle_10 = mle.fix_high_variables(&[F::ONE, F::ZERO]);
-            let mle_11 = mle.fix_high_variables(&[F::ONE, F::ONE]);
+            let padded_output = output.pad_next_power_of_two();
 
-            // Check that their product is zero
-            izip!(
-                mle_00.get_ext_field_vec(),
-                mle_01.get_ext_field_vec(),
-                mle_10.get_ext_field_vec(),
-                mle_11.get_ext_field_vec()
-            )
-            .for_each(|(&m00, &m01, &m10, &m11)| assert_eq!(m00 * m01 * m10 * m11, F::ZERO));
+            let padded_input_shape = padded_input.dims();
+
+            let padded_column_size = padded_input_shape[3];
+            let log_padded_column_size = ceil_log2(padded_column_size);
+
+            let num_vars = padded_input.get_data().len().ilog2() as usize;
+            let output_num_vars = padded_output.get_data().len().ilog2() as usize;
+
+            let mle = DenseMultilinearExtension::<F>::from_evaluations_vec(
+                num_vars,
+                padded_input
+                    .get_data()
+                    .iter()
+                    .map(|val_i128| {
+                        let field: F = val_i128.to_field();
+                        field.as_bases()[0]
+                    })
+                    .collect::<Vec<Goldilocks>>(),
+            );
+
+            // This should give all possible combinations of fixing the lowest three bits in ascending order
+
+            let fixed_mles = (0..padded_input_shape[3] << 1)
+                .map(|i| {
+                    let point = (0..ceil_log2(padded_input_shape[3]) + 1)
+                        .map(|n| F::from((i as u64 >> n) & 1))
+                        .collect::<Vec<F>>();
+
+                    mle.fix_variables(&point)
+                })
+                .collect::<Vec<DenseMultilinearExtension<F>>>();
+            // f(0,x,0,..) = x * f(0,1,0,...) + (1 - x) * f(0,0,0,...)
+            let even_mles = fixed_mles
+                .iter()
+                .cloned()
+                .step_by(2)
+                .collect::<Vec<DenseMultilinearExtension<F>>>();
+            let odd_mles = fixed_mles
+                .iter()
+                .cloned()
+                .skip(1)
+                .step_by(2)
+                .collect::<Vec<DenseMultilinearExtension<F>>>();
+
+            let even_merged = even_mles
+                .chunks(padded_input_shape[3] >> 1)
+                .map(|mle_chunk| {
+                    let mut mles_vec = mle_chunk
+                        .iter()
+                        .map(|m| m.get_ext_field_vec().to_vec())
+                        .collect::<Vec<Vec<F>>>();
+                    while mles_vec.len() > 1 {
+                        let half = mles_vec.len() / 2;
+
+                        mles_vec = mles_vec[..half]
+                            .iter()
+                            .zip(mles_vec[half..].iter())
+                            .map(|(l, h)| {
+                                l.iter().interleave(h.iter()).copied().collect::<Vec<F>>()
+                            })
+                            .collect::<Vec<Vec<F>>>();
+                    }
+
+                    DenseMultilinearExtension::<F>::from_evaluations_ext_slice(
+                        output_num_vars,
+                        &mles_vec[0],
+                    )
+                })
+                .collect::<Vec<DenseMultilinearExtension<F>>>();
+
+            let odd_merged = odd_mles
+                .chunks(padded_input_shape[3] >> 1)
+                .map(|mle_chunk| {
+                    let mut mles_vec = mle_chunk
+                        .iter()
+                        .map(|m| m.get_ext_field_vec().to_vec())
+                        .collect::<Vec<Vec<F>>>();
+                    while mles_vec.len() > 1 {
+                        let half = mles_vec.len() / 2;
+
+                        mles_vec = mles_vec[..half]
+                            .iter()
+                            .zip(mles_vec[half..].iter())
+                            .map(|(l, h)| {
+                                l.iter().interleave(h.iter()).copied().collect::<Vec<F>>()
+                            })
+                            .collect::<Vec<Vec<F>>>();
+                    }
+
+                    DenseMultilinearExtension::<F>::from_evaluations_ext_slice(
+                        output_num_vars,
+                        &mles_vec[0],
+                    )
+                })
+                .collect::<Vec<DenseMultilinearExtension<F>>>();
+
+            let merged_input_mles = [even_merged, odd_merged].concat();
+
+            let output_mle = DenseMultilinearExtension::<F>::from_evaluations_ext_vec(
+                output_num_vars,
+                padded_output
+                    .get_data()
+                    .iter()
+                    .map(|val_i128| {
+                        let field: F = val_i128.to_field();
+                        field
+                    })
+                    .collect::<Vec<F>>(),
+            );
+
+            let mut vp = VirtualPolynomial::<F>::new(output_num_vars);
+
+            let diff_mles = merged_input_mles
+                .iter()
+                .map(|in_mle| {
+                    DenseMultilinearExtension::<F>::from_evaluations_ext_vec(
+                        output_num_vars,
+                        in_mle
+                            .get_ext_field_vec()
+                            .iter()
+                            .zip(output_mle.get_ext_field_vec().iter())
+                            .map(|(input, output)| *output - *input)
+                            .collect::<Vec<F>>(),
+                    )
+                    .into()
+                })
+                .collect::<Vec<ArcMultilinearExtension<F>>>();
+
+            (0..1 << output_num_vars).for_each(|j| {
+                let values = diff_mles
+                    .iter()
+                    .map(|mle| mle.get_ext_field_vec()[j])
+                    .collect::<Vec<F>>();
+                assert_eq!(values.iter().product::<F>(), F::ZERO)
+            });
+
+            vp.add_mle_list(diff_mles, F::ONE);
+
+            let random_point = (0..output_num_vars)
+                .map(|_| F::random(&mut rng))
+                .collect::<Vec<F>>();
+
+            let beta_evals = compute_betas_eval(&random_point);
+
+            let beta_mle: ArcMultilinearExtension<F> =
+                DenseMultilinearExtension::<F>::from_evaluations_ext_vec(
+                    output_num_vars,
+                    beta_evals,
+                )
+                .into();
+            vp.mul_by_mle(beta_mle.clone(), Goldilocks::ONE);
+
+            let aux_info = vp.aux_info.clone();
+
+            let mut prover_transcript = default_transcript::<F>();
+
+            #[allow(deprecated)]
+            let (proof, state) = IOPProverState::<F>::prove_parallel(vp, &mut prover_transcript);
+
+            let mut verifier_transcript = default_transcript::<F>();
+
+            let subclaim =
+                IOPVerifierState::<F>::verify(F::ZERO, &proof, &aux_info, &mut verifier_transcript);
+
+            let point = subclaim
+                .point
+                .iter()
+                .map(|chal| chal.elements)
+                .collect::<Vec<F>>();
+
+            let fixed_points = [[F::ZERO, F::ZERO], [F::ZERO, F::ONE], [F::ONE, F::ZERO], [
+                F::ONE,
+                F::ONE,
+            ]]
+            .map(|pair| {
+                [
+                    &[pair[0]],
+                    &point[..padded_input_shape[3] >> 2],
+                    &[pair[1]],
+                    &point[padded_input_shape[3] >> 2..],
+                ]
+                .concat()
+            });
+
+            let output_eval = output_mle.evaluate(&point);
+            let input_evals = fixed_points
+                .iter()
+                .map(|p| mle.evaluate(p))
+                .collect::<Vec<F>>();
+
+            let eq_eval = beta_mle.evaluate(&point);
+
+            let calc_eval = input_evals
+                .iter()
+                .map(|ie| output_eval - *ie)
+                .product::<F>()
+                * eq_eval;
+
+            assert_eq!(calc_eval, subclaim.expected_evaluation);
         }
     }
 }

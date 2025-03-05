@@ -58,6 +58,7 @@ pub struct RequantInfo {
 // Maxpool update
 pub struct PoolingInfo {
     pub poolinfo: Maxpool2D,
+    pub poly_id: PolyID,
     pub num_vars: usize,
 }
 
@@ -165,6 +166,7 @@ where
                     Layer::Pooling(Pooling::Maxpool2D(info)) => StepInfo::Pooling(PoolingInfo {
                         // Maxpool update
                         poolinfo: *info,
+                        poly_id: id,
                         num_vars: last_output_size.ilog2() as usize,
                     }),
                 }

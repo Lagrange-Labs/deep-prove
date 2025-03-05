@@ -6,7 +6,7 @@ use crate::{
     Claim, Element, VectorTranscript,
     activation::Activation,
     commit::{compute_betas_eval, identity_eval, precommit, same_poly},
-    iop::{ActivationProof, DenseProof},
+    iop::{ActivationProof, DenseProof, PoolingProof},
     lookup::{self, LookupProtocol},
     model::{InferenceStep, InferenceTrace, Layer},
     tensor::Tensor,
@@ -17,10 +17,10 @@ use ff_ext::ExtensionField;
 use log::{debug, warn};
 use multilinear_extensions::{
     mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension, IntoMLE, MultilinearExtension},
-    virtual_poly::{VPAuxInfo, VirtualPolynomial},
+    virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial},
 };
 use serde::{Serialize, de::DeserializeOwned};
-use std::marker::PhantomData;
+use std::{marker::PhantomData, sync::Arc};
 use sumcheck::structs::{IOPProverState, IOPVerifierState};
 use transcript::Transcript;
 
@@ -88,6 +88,9 @@ where
             (Layer::Activation(Activation::Relu(..)), StepInfo::Activation(..))
             | (Layer::Requant(..), StepInfo::Requant(..)) => {
                 self.prove_lookup(&last_claim, &step.output.get_data(), info)
+            }
+            (Layer::Pooling(..), StepInfo::Pooling(info)) => {
+                self.prove_pooling(last_claim, input, &step.output, info)
             }
             _ => bail!(
                 "inconsistent proof step {} and info step {} from ctx",
@@ -224,10 +227,26 @@ where
             .next()
             .ok_or(anyhow!("No more lookup witness!"))?;
         // Run the lookup protocol and return the lookup proof
-
-        let diff_poly = prover_info.circuit_witness.witness_in_ref()[0].clone();
         let lookup_proof = L::prove(&self.ctx.lookup, &prover_info, self.transcript)?;
 
+        let max_pool_polys = info.poolinfo.compute_polys_field::<E>(input, output);
+        // These are the polys that get passed to the zero check make sure their product is zero at every evaluation point
+        let diff_polys = max_pool_polys[1..]
+            .iter()
+            .map(|fixed_input| {
+                DenseMultilinearExtension::<E>::from_evaluations_vec(
+                    info.num_vars,
+                    max_pool_polys[0]
+                        .iter()
+                        .zip(fixed_input.iter())
+                        .map(|(output, input)| *output - *input)
+                        .collect::<Vec<E::BaseField>>(),
+                )
+                .into()
+            })
+            .collect::<Vec<ArcMultilinearExtension<E>>>();
+
+        // Run the Zerocheck that checks enforces that output does contain the maximum value for the kernel
         let mut vp = VirtualPolynomial::<E>::new(info.num_vars);
 
         // Squeeze some randomness from the transcript to
@@ -245,12 +264,120 @@ where
             DenseMultilinearExtension::<E>::from_evaluations_ext_vec(info.num_vars, beta_eval)
                 .into();
 
-        vp.add_mle_list(vec![beta_poly.clone()], E::ONE);
+        vp.add_mle_list(diff_polys.clone(), E::ONE);
+        vp.mul_by_mle(beta_poly.clone(), E::BaseField::from(1));
 
-        // last_claim will contain info about the output y, since y' (used in the zerocheck which calculates (y' - x)^4) is just 4 copies of y
-        // we use its evaluation from the zerocheck to link it to the next round.
+        #[allow(deprecated)]
+        let (proof, _) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
 
-        todo!()
+        // We need to prove that the output of this step is the input to following activation function
+        let mles = max_pool_polys
+            .iter()
+            .map(|evals| {
+                DenseMultilinearExtension::<E>::from_evaluations_slice(info.num_vars, evals)
+            })
+            .collect::<Vec<DenseMultilinearExtension<E>>>();
+        let mut same_poly_prover = same_poly::Prover::<E>::new(mles[0].clone());
+
+        let zerocheck_point = &proof.point;
+        let output_zerocheck_eval = mles[0].evaluate(zerocheck_point);
+
+        let lookup_point = &lookup_proof.claims()[0].point;
+        let output_lookup_eval = mles[0].evaluate(lookup_point);
+
+        // Accumulate claims about the output polynomial in each of the protocols we ran together with the final claim from the previous proof.
+        let mut output_claims = Vec::<Claim<E>>::new();
+        let same_poly_ctx = same_poly::Context::<E>::new(last_claim.point.len());
+        same_poly_prover.add_claim(last_claim.clone())?;
+
+        let zerocheck_claim = Claim {
+            point: zerocheck_point.clone(),
+            eval: output_zerocheck_eval,
+        };
+        same_poly_prover.add_claim(zerocheck_claim.clone())?;
+        output_claims.push(zerocheck_claim);
+
+        let lookup_claim = Claim {
+            point: lookup_point.clone(),
+            eval: output_lookup_eval,
+        };
+
+        same_poly_prover.add_claim(lookup_claim.clone())?;
+
+        output_claims.push(lookup_claim);
+
+        // This is the proof for the output poly
+        let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, self.transcript)?;
+
+        let output_claim = claim_acc_proof.extract_claim();
+
+        self.commit_prover
+            .add_claim(info.poly_id, output_claim)
+            .context("unable to add claim")?;
+        // Now we must do the samething accumulating evals for the input poly as we fix variables on the input poly.
+        // The point length is 2 longer because for now we only support MaxPool2D.
+        let mut input_claims = Vec::<Claim<E>>::new();
+        let same_poly_ctx = same_poly::Context::<E>::new(last_claim.point.len() + 2);
+        let input_mle = DenseMultilinearExtension::<E>::from_evaluations_ext_slice(
+            last_claim.point.len() + 2,
+            input.get_data(),
+        );
+        let mut same_poly_prover = same_poly::Prover::<E>::new(input_mle.clone());
+        let padded_input_shape = input.dims();
+        [[E::ZERO, E::ZERO], [E::ZERO, E::ONE], [E::ONE, E::ZERO], [
+            E::ONE,
+            E::ONE,
+        ]]
+        .iter()
+        .try_for_each(|pair| {
+            let point_1 = [
+                &[pair[0]],
+                &zerocheck_point[..padded_input_shape[3] >> 2],
+                &[pair[1]],
+                &zerocheck_point[padded_input_shape[3] >> 2..],
+            ]
+            .concat();
+            let eval = input_mle.evaluate(&point_1);
+
+            let zerocheck_claim = Claim {
+                point: point_1,
+                eval,
+            };
+
+            same_poly_prover.add_claim(zerocheck_claim.clone())?;
+            input_claims.push(zerocheck_claim);
+            let point_2 = [
+                &[pair[0]],
+                &lookup_point[..padded_input_shape[3] >> 2],
+                &[pair[1]],
+                &lookup_point[padded_input_shape[3] >> 2..],
+            ]
+            .concat();
+            let eval = input_mle.evaluate(&point_2);
+
+            let lookup_claim = Claim {
+                point: point_2,
+                eval,
+            };
+
+            input_claims.push(lookup_claim.clone());
+            same_poly_prover.add_claim(lookup_claim)
+        })?;
+
+        // This is the proof for the input_poly
+        let input_claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, self.transcript)?;
+
+        let next_claim = input_claim_acc_proof.extract_claim();
+
+        // Push the step proof to the list
+        self.proofs.push(StepProof::Pooling(PoolingProof {
+            sumcheck: proof,
+            lookup: lookup_proof,
+            io_accumulation: [input_claim_acc_proof, claim_acc_proof],
+            output_claims,
+            input_claims,
+        }));
+        Ok(next_claim)
     }
 
     fn prove_dense_step(

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     Claim, VectorTranscript,
-    commit::{self, precommit, same_poly},
+    commit::{self, identity_eval, precommit, same_poly},
     iop::{StepProof, context::StepInfo},
     lookup::{self, LookupProtocol, TableInfo},
     tensor::Tensor,
@@ -10,17 +10,21 @@ use crate::{
 use anyhow::{anyhow, bail, ensure};
 use ff_ext::ExtensionField;
 
+use gkr::util::ceil_log2;
 use itertools::Itertools;
 use log::debug;
-use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
+use multilinear_extensions::{
+    mle::{IntoMLE, MultilinearExtension},
+    virtual_poly::VPAuxInfo,
+};
 
 use serde::{Serialize, de::DeserializeOwned};
 use sumcheck::structs::IOPVerifierState;
 use transcript::Transcript;
 
 use super::{
-    ActivationProof, Context, DenseProof, Proof, RequantProof, TableProof,
-    context::{ActivationInfo, DenseInfo, RequantInfo},
+    ActivationProof, Context, DenseProof, PoolingProof, Proof, RequantProof, TableProof,
+    context::{ActivationInfo, DenseInfo, PoolingInfo, RequantInfo},
 };
 
 /// What the verifier must have besides the proof
@@ -166,6 +170,25 @@ where
                     step,
                 )?
             }
+            (StepProof::Pooling(proof), StepInfo::Pooling(info)) => {
+                let step = total_steps - 1 - i;
+                let (lookup_type, _) = ctx.lookup.get_circuit_and_type(step)?;
+                let challenges = lookup_challenges.get(&lookup_type.name()).ok_or(anyhow!(
+                    "Couldn't get challenges at Requant verification, LookupType was: {:?}",
+                    lookup_type
+                ))?;
+
+                verify_pooling::<_, _, L>(
+                    output_claim,
+                    proof,
+                    info,
+                    &mut witness_verifier,
+                    &ctx.lookup,
+                    transcript,
+                    challenges,
+                    step,
+                )?
+            }
             _ => bail!(
                 "Step proof: {} and step info: {} did not match",
                 proof_and_step.0.variant_name(),
@@ -225,6 +248,80 @@ where
     );
 
     Ok(())
+}
+
+fn verify_pooling<E: ExtensionField, T: Transcript<E>, L: LookupProtocol<E>>(
+    last_claim: Claim<E>,
+    proof: &PoolingProof<E>,
+    info: &PoolingInfo,
+    witness_verifier: &mut commit::precommit::CommitVerifier<E>,
+    lookup_ctx: &lookup::Context<E>,
+    t: &mut T,
+    challenges: &[E],
+    step: usize,
+) -> anyhow::Result<Claim<E>>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+    E: Serialize + DeserializeOwned,
+{
+    // 1. Verify the lookup proof
+    let verifier_claims = L::verify(lookup_ctx, challenges, step, proof.lookup.clone(), t)?;
+
+    // 2. Verify the sumcheck proof
+    // Squeeze some randomness from the transcript to
+    let challenge_point = (0..info.num_vars)
+        .map(|_| t.get_and_append_challenge(b"zerocheck_challenge").elements)
+        .collect::<Vec<E>>();
+    let poly_aux = VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![info.num_vars; 5]]);
+    let subclaim = IOPVerifierState::<E>::verify(E::ZERO, &proof.sumcheck, &poly_aux, t);
+
+    // Run the same poly verifier for the output claims
+    let sp_ctx = same_poly::Context::<E>::new(info.num_vars);
+    let mut sp_verifier = same_poly::Verifier::<E>::new(&sp_ctx);
+
+    sp_verifier.add_claim(last_claim)?;
+
+    let output_claims = &proof.output_claims;
+    output_claims
+        .iter()
+        .try_for_each(|claim| sp_verifier.add_claim(claim.clone()))?;
+
+    let [input_proof, output_proof] = &proof.io_accumulation;
+
+    let commit_claim = sp_verifier.verify(output_proof, t)?;
+
+    // Add the result of the same poly verifier to the commitment verifier.
+    witness_verifier.add_claim(info.poly_id, commit_claim)?;
+
+    // Now we do the same poly verifiaction claims for the input poly
+    let sp_ctx = same_poly::Context::<E>::new(info.num_vars + ceil_log2(info.poolinfo.kernel_size));
+    let mut sp_verifier = same_poly::Verifier::<E>::new(&sp_ctx);
+
+    let input_claims = &proof.input_claims;
+    input_claims
+        .iter()
+        .try_for_each(|claim| sp_verifier.add_claim(claim.clone()))?;
+
+    // Run the same poly verifier, the output claim from this is what we pass to the next step of verification.
+    let out_claim = sp_verifier.verify(input_proof, t)?;
+
+    // Now we check consistency between the lookup/sumcheck proof claims and the claims passed to the same poly verifiers.
+    let zerocheck_claim_no_beta = input_claims
+        .iter()
+        .step_by(2)
+        .map(|claim| output_claims[0].eval - claim.eval)
+        .product::<E>();
+
+    let beta_eval = identity_eval(&output_claims[0].point, &challenge_point);
+
+    let computed_zerocheck_claim = beta_eval * zerocheck_claim_no_beta;
+
+    ensure!(
+        computed_zerocheck_claim == subclaim.expected_evaluation,
+        "Computed zerocheck claim did not line up with output of sumcheck verification"
+    );
+
+    Ok(out_claim)
 }
 
 fn verify_activation<E: ExtensionField, T: Transcript<E>, L: LookupProtocol<E>>(

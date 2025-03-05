@@ -52,7 +52,7 @@ impl Layer {
             Layer::Dense(ref matrix) => vec![matrix.nrows_2d(), matrix.ncols_2d()],
             Layer::Activation(Activation::Relu(_)) => Relu::shape(),
             Layer::Requant(info) => info.shape(),
-            Layer::Pooling(Pooling::Maxpool2D(info)) => unimplemented!(),
+            Layer::Pooling(Pooling::Maxpool2D(info)) => vec![info.kernel_size, info.kernel_size],
         }
     }
     pub fn describe(&self) -> String {
@@ -71,7 +71,10 @@ impl Layer {
             Layer::Requant(info) => {
                 format!("Requant: {}", info.shape()[1])
             }
-            Layer::Pooling(Pooling::Maxpool2D(_)) => unimplemented!(),
+            Layer::Pooling(Pooling::Maxpool2D(info)) => format!(
+                "MaxPool2D{{ kernel size: {}, stride: {} }}",
+                info.kernel_size, info.stride
+            ),
         }
     }
     /// Prepare the input to return it in the right format expected for the first layer.
@@ -322,6 +325,7 @@ pub(crate) mod test {
         activation::{Activation, Relu},
         default_transcript,
         model::Layer,
+        pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
         quantization::{QuantInteger, Requant, TensorFielder},
         tensor::Tensor,
         testing::random_bool_vector,
@@ -332,6 +336,8 @@ pub(crate) mod test {
     type F = GoldilocksExt2;
     const SELECTOR_DENSE: usize = 0;
     const SELECTOR_RELU: usize = 1;
+    const SELECTOR_POOLING: usize = 2;
+    // TODO: change to be 3 when `Model` is updated to work with higher dimensional tensors as input.
     const MOD_SELECTOR: usize = 2;
 
     impl Model {
@@ -352,6 +358,11 @@ pub(crate) mod test {
                     model.add_layer(Layer::Activation(Activation::Relu(Relu::new())));
                     // no need to change the `last_row` since RELU layer keeps the same shape
                     // of outputs
+                } else if selector % MOD_SELECTOR == SELECTOR_POOLING {
+                    // Currently unreachable until Model is updated to work with higher dimensional tensors
+                    // TODO: Implement higher dimensional tensor functionality.
+                    model.add_layer(Layer::Pooling(Pooling::Maxpool2D(Maxpool2D::default())));
+                    last_row -= MAXPOOL2D_KERNEL_SIZE - 1;
                 } else {
                     panic!("random selection shouldn't be in that case");
                 }

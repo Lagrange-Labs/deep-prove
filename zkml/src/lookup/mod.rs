@@ -192,7 +192,7 @@ impl LookupType {
             LookupType::ReluTable => 3,
             LookupType::RequantTable(..) => 2,
             // Maxpool update
-            LookupType::Maxpool2D(..) => 1,
+            LookupType::Maxpool2D(..) => 4,
             LookupType::Maxpool2DTable(..) => 1,
             LookupType::NoLookup => 0,
         }
@@ -309,7 +309,18 @@ impl LookupType {
             LookupType::Requant(info, ..) => info.prep_for_requantize::<E>(input.get_data()),
             // Maxpool update
             LookupType::Maxpool2D(info, ..) => {
-                vec![info.compute_diff_poly::<E>(input)]
+                let max_pool_polys = info.compute_polys::<E>(input);
+
+                max_pool_polys[1..]
+                    .iter()
+                    .map(|fixed_input| {
+                        max_pool_polys[0]
+                            .iter()
+                            .zip(fixed_input.iter())
+                            .map(|(output, input)| *output - *input)
+                            .collect::<Vec<E::BaseField>>()
+                    })
+                    .collect::<Vec<Vec<E::BaseField>>>()
             }
             _ => vec![],
         }
