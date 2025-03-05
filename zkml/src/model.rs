@@ -316,8 +316,8 @@ pub(crate) mod test {
             let mut rng = thread_rng();
             let mut last_row = rng.gen_range(3..15);
             for selector in 0..num_dense_layers {
-                // if selector % MOD_SELECTOR == SELECTOR_DENSE {
-                if true {
+                if selector % MOD_SELECTOR == SELECTOR_DENSE {
+                //if true {
                     // last row becomes new column
                     let (nrows, ncols) = (rng.gen_range(3..15), last_row);
                     last_row = nrows;
