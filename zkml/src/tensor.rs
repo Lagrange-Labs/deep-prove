@@ -627,16 +627,16 @@ where
     T: std::fmt::Debug + std::fmt::Display,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let shape = self.shape.clone();
-        let mut shape = shape.into_iter().rev().collect_vec();
+        let mut shape = self.shape.clone();
 
         while shape.len() < 4 {
+            shape = shape.into_iter().rev().collect_vec();
             shape.push(1);
+            shape = shape.into_iter().rev().collect_vec();
         }
 
         if shape.len() == 4 {
-            let (batches, channels, height, width) =
-                (self.shape[0], self.shape[1], self.shape[2], self.shape[3]);
+            let (batches, channels, height, width) = (shape[0], shape[1], shape[2], shape[3]);
             let channel_size = height * width;
             let batch_size = channels * channel_size;
 
