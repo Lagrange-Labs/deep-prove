@@ -1,5 +1,5 @@
 use crate::dense::Dense;
-use anyhow::{Error, Result, bail, ensure};
+use anyhow::{bail, ensure, Context, Error, Result};
 use itertools::Itertools;
 use log::debug;
 use std::{collections::HashMap, i8, path::Path};
@@ -163,9 +163,7 @@ pub fn load_mlp<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
 
     let mut initializers: HashMap<String, Tensor> = HashMap::new();
     for item in graph.initializer {
-        let dt = tract_onnx::pb::tensor_proto::DataType::from_i32(item.data_type)
-            .unwrap()
-            .try_into()?;
+        let dt = tract_onnx::pb::tensor_proto::DataType::from_i32(item.data_type).context("can't load from onnx")?.try_into()?;
         let shape: Vec<usize> = item.dims.iter().map(|&i| i as usize).collect();
         let value = create_tensor(shape, dt, &item.raw_data).unwrap();
         let key = item.name.to_string();
@@ -177,18 +175,17 @@ pub fn load_mlp<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
         match node.op_type.as_str() {
             "Gemm" => {
                 let matrix_weight = fetch_weight_bias_as_mat::<Q>("weight", node, &initializers)?;
-                let mut matrix_bias = fetch_weight_bias_as_mat::<Q>("bias", node, &initializers)?;
-                assert_eq!(matrix_bias.len(), 1);
-
-                // Concatenate bias as an extra column
-                // let matrix = concat_column(matrix_weight, matrix_bias)?;
-                let ncols = matrix_weight[0].len();
+                let matrix_bias = fetch_weight_bias_as_mat::<Q>("bias", node, &initializers)?;
+                ensure!(matrix_bias.iter().all(|r| r.len() == 1), "bias is not a vector");
+                let flat_bias = matrix_bias.into_iter().map(|r| r[0]).collect_vec();
+                let nrows = matrix_weight.len();
+                ensure!(flat_bias.len() == nrows, "bias length {} does not match matrix width {}", flat_bias.len(), nrows);
 
                 // Create matrix and transpose (PyTorch stores as output_size x input_size)
                 let matrix =
                     crate::tensor::Tensor::<Element>::from_coeffs_2d(matrix_weight).unwrap();
                 let bias =
-                    crate::tensor::Tensor::<Element>::new(vec![ncols], matrix_bias.remove(0));
+                    crate::tensor::Tensor::<Element>::new(vec![nrows], flat_bias);
                 debug!("layer idx {} -> unprocessed matrix {:?}", i, matrix.dims());
                 layers.push(Layer::Dense(Dense::new(matrix, bias)));
             }
@@ -200,6 +197,7 @@ pub fn load_mlp<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
         };
     }
 
+    println!(" DONE READING LAYERS - MOVING ON TO PADDING");
     // Process the layers to ensure consistent dimensions
     let mut processed_layers: Vec<Layer> = Vec::new();
     let mut prev_layer_shape: Option<Vec<usize>> = None;
@@ -234,7 +232,7 @@ pub fn load_mlp<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
             //                 new_cols.next_power_of_two());
             // Pad to power of two dimensions
             matrix.reshape_to_fit_inplace_2d(vec![nrows, ncols]);
-            let bias = bias.pad_1d(ncols);
+            let bias = bias.pad_1d(nrows);
             // Update prev_output_size to reflect the padded size
             prev_layer_shape = Some(matrix.dims());
             debug!("layer idx {} -> final shape {:?}", i, matrix.dims());
