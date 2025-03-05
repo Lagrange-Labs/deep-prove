@@ -477,8 +477,8 @@ pub(crate) mod test {
             .evaluate(&point1);
         let computed_eval1_no_bias = computed_eval1 - bias_eval;
         let input_vector = trace.input.clone();
-        // since y = SUM M(j,i) x(i) + B(j)      
-        // then 
+        // since y = SUM M(j,i) x(i) + B(j)
+        // then
         // y(r) - B(r) = SUM_i m(r,i) x(i)
         let full_poly = vec![
             flatten_mat1.clone().into(),
@@ -489,11 +489,17 @@ pub(crate) mod test {
         #[allow(deprecated)]
         let (proof, _state) =
             IOPProverState::<F>::prove_parallel(vp.clone(), &mut default_transcript());
-        let (p2, _s2) = IOPProverState::prove_batch_polys(1, vec![vp.clone()], &mut default_transcript());
+        let (p2, _s2) =
+            IOPProverState::prove_batch_polys(1, vec![vp.clone()], &mut default_transcript());
         let given_eval1 = proof.extract_sum();
         assert_eq!(p2.extract_sum(), proof.extract_sum());
         assert_eq!(computed_eval1_no_bias, given_eval1);
-        
-        let _subclaim = IOPVerifierState::<F>::verify(computed_eval1_no_bias, &proof, &vp.aux_info, &mut default_transcript());
+
+        let _subclaim = IOPVerifierState::<F>::verify(
+            computed_eval1_no_bias,
+            &proof,
+            &vp.aux_info,
+            &mut default_transcript(),
+        );
     }
 }

@@ -3,7 +3,14 @@ use super::{
     context::{DenseInfo, StepInfo},
 };
 use crate::{
-    activation::Activation, commit::{precommit, same_poly}, dense, iop::{ActivationProof, DenseProof}, lookup::{self, LookupProtocol}, model::{InferenceStep, InferenceTrace, Layer}, tensor::Tensor, Claim, Element, VectorTranscript
+    Claim, Element, VectorTranscript,
+    activation::Activation,
+    commit::{precommit, same_poly},
+    dense,
+    iop::{ActivationProof, DenseProof},
+    lookup::{self, LookupProtocol},
+    model::{InferenceStep, InferenceTrace, Layer},
+    tensor::Tensor,
 };
 use anyhow::{Context as CC, anyhow, bail};
 use ff_ext::ExtensionField;
@@ -234,8 +241,16 @@ where
         );
         // Evaluates the bias at the random point so verifier can substract the evaluation
         // from the sumcheck claim that is only about the matrix2vec product.
-        assert_eq!(dense.bias.get_data().len().ilog2() as usize, last_claim.point.len(), "something's wrong with the randomness");
-        let bias_eval= dense.bias.evals_flat::<E>().into_mle().evaluate(&last_claim.point);
+        assert_eq!(
+            dense.bias.get_data().len().ilog2() as usize,
+            last_claim.point.len(),
+            "something's wrong with the randomness"
+        );
+        let bias_eval = dense
+            .bias
+            .evals_flat::<E>()
+            .into_mle()
+            .evaluate(&last_claim.point);
         // contruct the MLE combining the input and the matrix
         let mut mat_mle = matrix.to_mle_2d();
         // fix the variables from the random input
@@ -267,10 +282,15 @@ where
             let claimed_sum = mle_output.evaluate(&last_claim.point);
             let claimed_sum_no_bias = claimed_sum - bias_eval;
             debug_assert_eq!(claimed_sum, last_claim.eval, "sumcheck eval weird");
-            debug_assert_eq!(claimed_sum_no_bias, proof.extract_sum(), "sumcheck output weird");
+            debug_assert_eq!(
+                claimed_sum_no_bias,
+                proof.extract_sum(),
+                "sumcheck output weird"
+            );
 
             debug!("prover: claimed sum: {:?}", claimed_sum);
-            let subclaim = IOPVerifierState::<E>::verify(claimed_sum_no_bias, &proof, &vp.aux_info, &mut t);
+            let subclaim =
+                IOPVerifierState::<E>::verify(claimed_sum_no_bias, &proof, &vp.aux_info, &mut t);
             // now assert that the polynomial evaluated at the random point of the sumcheck proof
             // is equal to last small poly sent by prover (`subclaim.expected_evaluation`). This
             // step can be done via PCS opening proofs for all steps but first (output of
@@ -299,7 +319,9 @@ where
             .context("unable to add matrix claim")?;
         // add the bias claim over the last claim input, since that is what is needed to "remove" the bias
         // to only verify the matrix2vec product via the sumcheck proof.
-        self.commit_prover.add_claim(info.bias_poly_id, Claim::new(last_claim.point,bias_eval)).context("unable to add bias claim")?;
+        self.commit_prover
+            .add_claim(info.bias_poly_id, Claim::new(last_claim.point, bias_eval))
+            .context("unable to add bias claim")?;
 
         // the claim that this proving step outputs is the claim about not the matrix but the vector poly.
         // at next step, that claim will be proven over this vector poly (either by the next dense layer proving, or RELU etc).

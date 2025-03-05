@@ -1,5 +1,5 @@
 use crate::dense::Dense;
-use anyhow::{bail, ensure, Context, Error, Result};
+use anyhow::{Context, Error, Result, bail, ensure};
 use itertools::Itertools;
 use log::debug;
 use std::{collections::HashMap, i8, path::Path};
@@ -163,7 +163,9 @@ pub fn load_mlp<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
 
     let mut initializers: HashMap<String, Tensor> = HashMap::new();
     for item in graph.initializer {
-        let dt = tract_onnx::pb::tensor_proto::DataType::from_i32(item.data_type).context("can't load from onnx")?.try_into()?;
+        let dt = tract_onnx::pb::tensor_proto::DataType::from_i32(item.data_type)
+            .context("can't load from onnx")?
+            .try_into()?;
         let shape: Vec<usize> = item.dims.iter().map(|&i| i as usize).collect();
         let value = create_tensor(shape, dt, &item.raw_data).unwrap();
         let key = item.name.to_string();
@@ -176,16 +178,23 @@ pub fn load_mlp<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
             "Gemm" => {
                 let matrix_weight = fetch_weight_bias_as_mat::<Q>("weight", node, &initializers)?;
                 let matrix_bias = fetch_weight_bias_as_mat::<Q>("bias", node, &initializers)?;
-                ensure!(matrix_bias.iter().all(|r| r.len() == 1), "bias is not a vector");
+                ensure!(
+                    matrix_bias.iter().all(|r| r.len() == 1),
+                    "bias is not a vector"
+                );
                 let flat_bias = matrix_bias.into_iter().map(|r| r[0]).collect_vec();
                 let nrows = matrix_weight.len();
-                ensure!(flat_bias.len() == nrows, "bias length {} does not match matrix width {}", flat_bias.len(), nrows);
+                ensure!(
+                    flat_bias.len() == nrows,
+                    "bias length {} does not match matrix width {}",
+                    flat_bias.len(),
+                    nrows
+                );
 
                 // Create matrix and transpose (PyTorch stores as output_size x input_size)
                 let matrix =
                     crate::tensor::Tensor::<Element>::from_coeffs_2d(matrix_weight).unwrap();
-                let bias =
-                    crate::tensor::Tensor::<Element>::new(vec![nrows], flat_bias);
+                let bias = crate::tensor::Tensor::<Element>::new(vec![nrows], flat_bias);
                 debug!("layer idx {} -> unprocessed matrix {:?}", i, matrix.dims());
                 layers.push(Layer::Dense(Dense::new(matrix, bias)));
             }
