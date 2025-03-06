@@ -5,7 +5,7 @@ use ark_std::rand::{
 use ff::Field;
 use ff_ext::ExtensionField;
 use goldilocks::GoldilocksExt2;
-use itertools::{Itertools, izip};
+use itertools::{Itertools, assert_equal, izip};
 use multilinear_extensions::mle::DenseMultilinearExtension;
 use rayon::{
     iter::{
@@ -27,10 +27,333 @@ use crate::{
     to_bit_sequence_le,
 };
 
+// Function testing the consistency between the actual convolution implementation and
+// the FFT one. Used for debugging purposes.
+pub fn check_tensor_consistency(real_tensor: Tensor<Element>, padded_tensor: Tensor<Element>) {
+    let n_x = padded_tensor.shape[1];
+    for i in 0..real_tensor.shape[0] {
+        for j in 0..real_tensor.shape[1] {
+            for k in 0..real_tensor.shape[1] {
+                // if(real_tensor.data[i*real_tensor.shape[1]*real_tensor.shape[1]+j*real_tensor.shape[1]+k] > 0){
+                assert!(
+                    real_tensor.data[i * real_tensor.shape[1] * real_tensor.shape[1]
+                        + j * real_tensor.shape[1]
+                        + k]
+                        == padded_tensor.data[i * n_x * n_x + j * n_x + k],
+                    "Error in tensor consistency"
+                );
+                //}else{
+                //   assert!(-E::from(-real_tensor.data[i*real_tensor.shape[1]*real_tensor.shape[1]+j*real_tensor.shape[1]+k] as u64) == E::from(padded_tensor.data[i*n_x*n_x + j*n_x + k] as u64) ,"Error in tensor consistency");
+                //}
+            }
+
+            // assert!(real_tensor.data[i*real_tensor.shape[1]*real_tensor.shape[1]+j ] == padded_tensor.data[i*n_x*n_x + j],"Error in tensor consistency");
+        }
+    }
+}
+
+pub fn getRootOfUnity<E: ExtensionField>(n: usize) -> E {
+    let mut rou = E::ROOT_OF_UNITY;
+
+    for i in 0..(32 - n) {
+        rou = rou * rou;
+    }
+
+    return rou;
+}
+
+// Properly pad a filter
+pub fn index_w<E: ExtensionField>(w: Vec<Element>, vec: &mut Vec<E>, n_real: usize, n: usize) {
+    // let mut vec = vec![E::ZERO;n*n];
+    for i in 0..n_real {
+        for j in 0..n_real {
+            if (w[i * n_real + j] < 0) {
+                vec[i * n + j] = -E::from((0 - w[i * n_real + j]) as u64);
+            } else {
+                vec[i * n + j] = E::from((w[i * n_real + j]) as u64);
+            }
+        }
+    }
+}
+
+// let u = [u[1],...,u[n*n]]
+// output vec = [u[n*n-1],u[n*n-2],...,u[n*n-n],....,u[0]]
+// Note that y_eval =  f_vec(r) = f_u(1-r)
+pub fn index_u<E: ExtensionField>(u: Vec<E>, n: usize) -> Vec<E> {
+    let mut vec = vec![E::ZERO; u.len() / 2];
+    for i in 0..n {
+        for j in 0..n {
+            vec[i * n + j] = u[n * n - 1 - i * n - j];
+        }
+    }
+    return vec;
+}
+
+// let x: [x[0][0],...,x[0][n],x[1][0],...,x[n][n]]
+// output vec = [x[n][n], x[n][n-1],...,x[n][0],x[n-1]x[n],...,x[0][0]]
+// Note that y_eval = f_vec(r) = f_x(1-r)
+pub fn index_x<E: ExtensionField>(x: Vec<Element>, vec: &mut Vec<E>, n: usize) {
+    for i in 0..n {
+        for j in 0..n {
+            if (x[n * (n - 1 - i) + n - 1 - j] < 0) {
+                vec[i * n + j] = -E::from((0 - x[n * (n - 1 - i) + n - 1 - j]) as u64);
+            } else {
+                vec[i * n + j] = E::from((x[n * (n - 1 - i) + n - 1 - j]) as u64);
+            }
+        }
+    }
+}
+
+// FFT implementation,
+// flag: false -> FFT
+// flag: true -> iFFT
+pub fn fft<E: ExtensionField>(v: &mut Vec<E>, flag: bool) {
+    let n = v.len();
+    let logn = ark_std::log2(n) as u32;
+    let mut rev: Vec<usize> = vec![0; n];
+    let mut w: Vec<E> = vec![E::ZERO; n];
+
+    rev[0] = 0;
+
+    for i in 1..n {
+        rev[i] = rev[i >> 1] >> 1 | ((i) & 1) << (logn - 1);
+    }
+    w[0] = E::ONE;
+
+    let rou: E = getRootOfUnity(logn as usize);
+    w[1] = rou;
+
+    if flag == true {
+        w[1] = w[1].invert().unwrap();
+    }
+
+    for i in 2..n {
+        w[i] = w[i - 1] * w[1];
+    }
+    for i in 0..n {
+        if rev[i] < (i) {
+            let temp = v[i];
+            v[i] = v[rev[i]];
+            v[rev[i]] = temp;
+        }
+    }
+    let mut u: E;
+    let mut l: E;
+    let mut i: usize = 2;
+    while (i <= n) {
+        for j in (0..n).step_by(i) {
+            for k in 0..(i >> 1) {
+                u = v[j + k];
+                l = v[j + k + (i >> 1)] * w[n / i * k];
+                v[j + k] = u + l;
+                v[j + k + (i >> 1)] = u - l;
+            }
+        }
+        i <<= 1;
+    }
+
+    if (flag == true) {
+        let mut ilen = E::from(n as u64);
+        ilen = ilen.invert().unwrap();
+        if (ilen * E::from(n as u64) != E::ONE) {
+            println!("Error in inv\n");
+        }
+        for i in 0..n {
+            v[i] = v[i] * ilen;
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Tensor<T> {
-    data: Vec<T>,
-    shape: Vec<usize>,
+    pub data: Vec<T>,
+    pub shape: Vec<usize>,
+    input_shape: Vec<usize>,
+}
+
+pub struct Conv_Data<E>
+where
+    E: Clone + ExtensionField,
+{
+    pub input: Vec<Vec<E>>,
+    pub input_fft: Vec<Vec<E>>,
+    pub prod: Vec<Vec<E>>,
+    pub output: Vec<Vec<E>>,
+}
+
+impl<E> Conv_Data<E>
+where
+    E: Copy + ExtensionField,
+{
+    pub fn new(
+        input: Vec<Vec<E>>,
+        input_fft: Vec<Vec<E>>,
+        prod: Vec<Vec<E>>,
+        output: Vec<Vec<E>>,
+    ) -> Self {
+        Self {
+            input,
+            input_fft,
+            prod,
+            output,
+        }
+    }
+}
+impl<E> Clone for Conv_Data<E>
+where
+    E: ExtensionField + Clone,
+{
+    fn clone(&self) -> Self {
+        Conv_Data {
+            input: self.input.clone(),
+            input_fft: self.input_fft.clone(),
+            prod: self.prod.clone(),
+            output: self.output.clone(),
+        }
+    }
+}
+
+impl Tensor<Element> {
+    // Create specifically a new convolution. The input shape is needed to compute the
+    // output and properly arrange the weights
+    pub fn new_conv(shape: Vec<usize>, input_shape: Vec<usize>, data: Vec<Element>) -> Self {
+        assert!(
+            shape.iter().product::<usize>() == data.len(),
+            "Shape does not match data length."
+        );
+        assert!(shape.len() == 4, "Shape does not match data length.");
+
+        let n_w = (input_shape[1] - shape[2] + 1).next_power_of_two();
+        let mut w_fft =
+            vec![
+                vec![vec![GoldilocksExt2::ZERO; n_w * n_w]; input_shape[0].next_power_of_two()];
+                shape[0].next_power_of_two()
+            ];
+        for i in 0..shape[0] {
+            for j in 0..input_shape[0] {
+                index_w(
+                    data[(i * input_shape[0] * shape[2] * shape[2] + j * shape[2] * shape[2])
+                        ..(i * input_shape[0] * shape[2] * shape[2]
+                            + (j + 1) * shape[2] * shape[2])]
+                        .to_vec(),
+                    &mut w_fft[i][j],
+                    shape[2],
+                    n_w,
+                );
+                w_fft[i][j].resize(2 * n_w * n_w, GoldilocksExt2::ZERO);
+                fft(&mut w_fft[i][j], false);
+            }
+        }
+        let mut w: Vec<Element> = vec![0; w_fft.len() * w_fft[0].len() * w_fft[0][0].len()];
+        let mut ctr = 0;
+        for i in 0..w_fft.len() {
+            for j in 0..w_fft[0].len() {
+                for k in 0..w_fft[0][0].len() {
+                    if (GoldilocksExt2::to_canonical_u64_vec(&w_fft[i][j][k])[0] as u64
+                        > (1 << 60 as u64))
+                    {
+                        w[ctr] = -(GoldilocksExt2::to_canonical_u64_vec(&(-w_fft[i][j][k]))[0]
+                            as Element);
+                    } else {
+                        w[ctr] =
+                            (GoldilocksExt2::to_canonical_u64_vec(&(w_fft[i][j][k]))[0] as Element);
+                    }
+                    ctr = ctr + 1;
+                }
+            }
+        }
+        Self {
+            data: w,
+            shape: vec![shape[0], shape[1], n_w, n_w],
+            input_shape,
+        }
+    }
+
+    // Convolution algorithm using FFTs.
+    // When invoking this algorithm the prover generates all withness/intermidiate evaluations
+    // needed to generate a convolution proof
+    pub fn fft_conv<F: ExtensionField>(
+        &self,
+        X: &Tensor<Element>,
+    ) -> (Tensor<Element>, Conv_Data<F>) {
+        let n_x = X.shape[1].next_power_of_two();
+        let mut x_vec = vec![vec![F::ZERO; n_x * n_x]; X.shape[0].next_power_of_two()];
+        let mut w_fft = vec![F::ZERO; self.data.len()];
+        for i in 0..w_fft.len() {
+            if (self.data[i] < 0) {
+                w_fft[i] = -F::from((-self.data[i]) as u64);
+            } else {
+                w_fft[i] = F::from((self.data[i]) as u64);
+            }
+        }
+
+        for i in 0..x_vec.len() {
+            index_x(
+                X.data[i * n_x * n_x..(i + 1) * n_x * n_x].to_vec(),
+                &mut x_vec[i],
+                n_x,
+            );
+        }
+
+        let mut input = x_vec.clone();
+        let n = 2 * x_vec[0].len();
+        for i in 0..x_vec.len() {
+            x_vec[i].resize(n, F::ZERO);
+            fft(&mut x_vec[i], false);
+        }
+
+        let mut input_fft = x_vec.clone();
+
+        // proving_data.x_fft = x_vec;
+        let mut out = vec![vec![F::ZERO; x_vec[0].len()]; self.shape[0]];
+        for i in 0..out.len() {
+            for j in 0..x_vec.len() {
+                for k in 0..out[i].len() {
+                    out[i][k] += x_vec[j][k] * w_fft[i * n * x_vec.len() + j * n + k];
+                }
+            }
+        }
+        let mut prod = out.clone();
+        // proving_data.prod = out;
+        for i in 0..out.len() {
+            fft(&mut out[i], true);
+        }
+        let mut output = out.clone();
+        for i in 0..out.len() {
+            out[i] = index_u(out[i].clone(), n_x);
+        }
+        let mut out_element: Vec<Element> = vec![0; out.len() * out[0].len()];
+        for i in 0..out.len() {
+            for j in 0..out[i].len() {
+                if (F::to_canonical_u64_vec(&out[i][j])[0] as u64 > (1 << 60 as u64)) {
+                    out_element[i * out[i].len() + j] =
+                        -(F::to_canonical_u64_vec(&(-out[i][j]))[0] as Element);
+                } else {
+                    out_element[i * out[i].len() + j] =
+                        (F::to_canonical_u64_vec(&(out[i][j]))[0] as Element);
+                }
+            }
+        }
+
+        return (
+            Tensor::new(vec![self.shape[0], n_x, n_x], out_element),
+            Conv_Data::new(input, input_fft, prod, output),
+        );
+    }
+
+    pub fn kx(&self) -> usize {
+        self.input_shape[0]
+    }
+    pub fn kw(&self) -> usize {
+        self.shape[0]
+    }
+    pub fn nw(&self) -> usize {
+        self.shape[2]
+    }
+    // Returns the size of an individual filter
+    pub fn filter_size(&self) -> usize {
+        self.shape[2] * self.shape[2]
+    }
 }
 
 impl<T> Tensor<T> {
@@ -40,7 +363,11 @@ impl<T> Tensor<T> {
             shape.iter().product::<usize>() == data.len(),
             "Shape does not match data length."
         );
-        Self { data, shape }
+        Self {
+            data,
+            shape,
+            input_shape: vec![0],
+        }
     }
 
     /// Get the dimensions of the tensor
@@ -53,7 +380,9 @@ impl<T> Tensor<T> {
     pub fn is_vector(&self) -> bool {
         self.dims().len() == 1
     }
-
+    pub fn is_convolution(&self) -> bool {
+        self.dims().len() == 4
+    }
     /// Is matrix
     pub fn is_matrix(&self) -> bool {
         self.dims().len() == 2
@@ -61,16 +390,31 @@ impl<T> Tensor<T> {
 
     /// Get the number of rows from the matrix
     pub fn nrows_2d(&self) -> usize {
-        assert!(self.is_matrix(), "Tensor is not a matrix");
+        let mut cols = 0;
         let dims = self.dims();
-        return dims[0];
+        if self.is_matrix() {
+            cols = dims[0];
+        } else if self.is_convolution() {
+            cols = dims[0] * dims[2] * dims[2];
+        }
+        assert!(cols != 0, "Tensor is not a matrix or convolution");
+        cols
     }
 
     /// Get the number of cols from the matrix
     pub fn ncols_2d(&self) -> usize {
-        assert!(self.is_matrix(), "Tensor is not a matrix");
+        let mut cols = 0;
         let dims = self.dims();
-        return dims[1];
+        if (self.is_matrix()) {
+            cols = dims[1];
+        } else if (self.is_convolution()) {
+            cols = dims[1] * dims[2] * dims[2];
+        }
+        assert!(cols != 0, "Tensor is not a matrix or convolution");
+        // assert!(self.is_matrix(), "Tensor is not a matrix");
+        // let dims = self.dims();
+
+        return cols;
     }
 
     /// Returns the number of boolean variables needed to address any row, and any columns
@@ -102,14 +446,19 @@ where
         Self {
             data: new_data,
             shape: new_shape,
+            input_shape: vec![0],
         }
     }
 
+    pub fn get_shape(&self) -> Vec<usize> {
+        return self.shape.clone();
+    }
     /// Element-wise addition
     pub fn add(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(self.shape == other.shape, "Shape mismatch for addition.");
         Tensor {
             shape: self.shape.clone(),
+            input_shape: vec![0],
             data: self
                 .data
                 .iter()
@@ -124,6 +473,7 @@ where
         assert!(self.shape == other.shape, "Shape mismatch for subtraction.");
         Tensor {
             shape: self.shape.clone(),
+            input_shape: vec![0],
             data: self
                 .data
                 .iter()
@@ -141,6 +491,7 @@ where
         );
         Tensor {
             shape: self.shape.clone(),
+            input_shape: vec![0],
             data: self
                 .data
                 .iter()
@@ -154,6 +505,7 @@ where
     pub fn scalar_mul(&self, scalar: &T) -> Tensor<T> {
         Tensor {
             shape: self.shape.clone(),
+            input_shape: vec![0],
             data: self.data.iter().map(|x| *x * *scalar).collect(),
         }
     }
@@ -168,7 +520,11 @@ where
             );
         };
         let shape = vec![n_rows, n_cols];
-        Ok(Self { data, shape })
+        Ok(Self {
+            data,
+            shape,
+            input_shape: vec![0],
+        })
     }
 
     /// Returns the boolean iterator indicating the given row in the right endianness to be
@@ -204,6 +560,7 @@ where
             // data: vec![T::zero(); size],
             data: vec![Default::default(); size],
             shape,
+            input_shape: vec![0],
         }
     }
 
@@ -365,6 +722,89 @@ where
         result
     }
 
+    pub fn conv_prod(&self, x: &Vec<Vec<T>>, w: &Vec<Vec<T>>, ii: usize, jj: usize) -> T {
+        let mut sum = Default::default();
+        for i in 0..w.len() {
+            for j in 0..w[i].len() {
+                sum = sum + w[i][j] * x[i + ii][j + jj];
+            }
+        }
+        return sum;
+    }
+
+    pub fn single_naive_conv(&self, w: Vec<Vec<T>>, x: Vec<Vec<T>>) -> Vec<Vec<T>> {
+        let mut out: Vec<Vec<T>> =
+            vec![vec![Default::default(); x[0].len() - w[0].len() + 1]; x.len() - w.len() + 1];
+        for i in 0..out.len() {
+            for j in 0..out[i].len() {
+                out[i][j] = self.conv_prod(&x, &w, i, j);
+            }
+        }
+        return out;
+    }
+
+    pub fn add_matrix(&self, M1: &mut Vec<Vec<T>>, M2: Vec<Vec<T>>) -> Vec<Vec<T>> {
+        let mut M = vec![vec![Default::default(); M1[0].len()]; M1.len()];
+        for i in 0..M.len() {
+            for j in 0..M[i].len() {
+                M[i][j] = M1[i][j] + M2[i][j];
+            }
+        }
+        return M;
+    }
+
+    // Implementation of the stadard convolution algorithm.
+    // This is needed mostly for debugging purposes
+    pub fn cnn_naive_convolution(&self, X: &Tensor<T>) -> Tensor<T> {
+        let k_w = self.shape[0];
+        let k_x = self.shape[1];
+        let n_w = self.shape[2];
+        let n = X.shape[0];
+        let mut ctr = 0;
+        assert!(n == k_x, "Inconsistency on filter/input vector");
+
+        let mut w: Vec<Vec<Vec<Vec<T>>>> =
+            vec![vec![vec![vec![Default::default(); n_w]; n_w]; k_x]; k_w];
+        let mut x: Vec<Vec<Vec<T>>> =
+            vec![vec![vec![Default::default(); X.shape[1]]; X.shape[1]]; n];
+        for k in 0..k_w {
+            for l in 0..k_x {
+                for i in 0..n_w {
+                    for j in 0..n_w {
+                        w[k][l][i][j] = self.data[ctr];
+                        ctr += 1;
+                    }
+                }
+            }
+        }
+        ctr = 0;
+        for k in 0..n {
+            for i in 0..X.shape[1] {
+                for j in 0..X.shape[1] {
+                    x[k][i][j] = X.data[ctr];
+                    ctr += 1;
+                }
+            }
+        }
+        let mut conv: Vec<Vec<Vec<T>>> =
+            vec![vec![vec![Default::default(); X.shape[1] - n_w + 1]; X.shape[1] - n_w + 1]; k_w];
+
+        for i in 0..k_w {
+            for j in 0..k_x {
+                let temp = self.single_naive_conv(w[i][j].clone(), x[j].clone());
+                conv[i] = self.add_matrix(&mut conv[i], temp);
+            }
+        }
+
+        return Tensor::new(
+            vec![k_w, X.shape[1] - n_w + 1, X.shape[1] - n_w + 1],
+            conv.into_iter()
+                .flat_map(|inner_vec| inner_vec.into_iter())
+                .flat_map(|inner_inner_vec| inner_inner_vec.into_iter())
+                .collect(),
+        );
+    }
+
     /// Transpose the matrix (2D tensor)
     pub fn transpose(&self) -> Tensor<T> {
         assert!(self.is_matrix(), "Tensor is not a matrix.");
@@ -406,7 +846,6 @@ where
 
         result
     }
-
     /// Reshapes the matrix to have at least the specified dimensions while preserving all data.
     pub fn reshape_to_fit_inplace_2d(&mut self, new_shape: Vec<usize>) {
         let old_rows = self.nrows_2d();
@@ -449,7 +888,11 @@ impl Tensor<Element> {
     pub fn random(shape: Vec<usize>) -> Self {
         let size = shape.iter().product();
         let data = random_vector(size);
-        Self { data, shape }
+        Self {
+            data,
+            shape,
+            input_shape: vec![0],
+        }
     }
 
     /// Creates a random matrix with a given number of rows and cols.
@@ -458,7 +901,11 @@ impl Tensor<Element> {
     pub fn random_seed(shape: Vec<usize>, seed: Option<u64>) -> Self {
         let size = shape.iter().product();
         let data = random_vector_seed(size, seed);
-        Self { data, shape }
+        Self {
+            data,
+            shape,
+            input_shape: vec![0],
+        }
     }
 
     /// Returns the evaluation point, in order for (row,col) addressing
@@ -466,8 +913,21 @@ impl Tensor<Element> {
         assert!(self.is_matrix(), "Tensor is not a matrix");
         self.evals_flat()
     }
+
     pub fn evals_flat<F: ExtensionField>(&self) -> Vec<F> {
         self.data.par_iter().map(|e| e.to_field()).collect()
+    }
+
+    pub fn get_conv_weights<F: ExtensionField>(&self) -> Vec<F> {
+        let mut data = vec![F::ZERO; self.data.len()];
+        for i in 0..data.len() {
+            if (self.data[i] < 0) {
+                data[i] = -F::from((-self.data[i]) as u64);
+            } else {
+                data[i] = F::from(self.data[i] as u64);
+            }
+        }
+        data
     }
 
     /// Returns a MLE of the matrix that can be evaluated.
@@ -546,6 +1006,7 @@ where
         Tensor {
             data: output,
             shape: new_shape,
+            input_shape: vec![0],
         }
     }
 
@@ -597,6 +1058,7 @@ where
         let padded_maxpool_tensor = Tensor {
             data: padded_maxpool_data,
             shape: self.dims(),
+            input_shape: vec![0],
         };
 
         (maxpool_result, padded_maxpool_tensor)
@@ -677,6 +1139,7 @@ where
         Tensor {
             data: output,
             shape: out_shape,
+            input_shape: vec![0],
         }
     }
 }
@@ -727,6 +1190,43 @@ where
 impl PartialEq for Tensor<Element> {
     fn eq(&self, other: &Self) -> bool {
         self.shape == other.shape && self.data == other.data
+    }
+}
+
+impl Tensor<GoldilocksExt2> {
+    // /// Creates a random matrix with a given number of rows and cols.
+    // /// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
+    // /// sync which is not true for basic rng core.
+    // pub fn random(shape: Vec<usize>) -> Self {
+    //     let mut rng = thread_rng();
+    //     let size = shape.iter().product();
+    //     let data = (0..size)
+    //         .map(|_| GoldilocksExt2::random(&mut rng))
+    //         .collect_vec();
+
+    //     Self { data, shape }
+    // }
+
+    /// Creates a random matrix with a given number of rows and cols.
+    /// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
+    /// sync which is not true for basic rng core.
+    pub fn random_seed(shape: Vec<usize>, seed: Option<u64>) -> Self {
+        let seed = seed.unwrap_or(rand::random::<u64>()); // Use provided seed or default
+
+        let size = shape.iter().product();
+        let data = (0..size)
+            .into_par_iter()
+            .map(|i| {
+                let mut rng = StdRng::seed_from_u64(seed + i as u64);
+                GoldilocksExt2::random(&mut rng)
+            })
+            .collect::<Vec<GoldilocksExt2>>();
+
+        Self {
+            data,
+            shape,
+            input_shape: vec![0],
+        }
     }
 }
 
@@ -820,7 +1320,7 @@ mod test {
     #[test]
     fn test_tensor_next_pow_of_two() {
         let shape = vec![3usize, 3];
-        let mat = Tensor::random_seed(shape.clone(), Some(213));
+        let mat = Tensor::<Element>::random_seed(shape.clone(), Some(213));
         // println!("{}", mat);
         let new_shape = vec![shape[0].next_power_of_two(), shape[1].next_power_of_two()];
         let new_mat = mat.pad_next_power_of_two_2d();
@@ -887,6 +1387,53 @@ mod test {
     }
 
     type E = GoldilocksExt2;
+
+    // pub fn random_vector<E: ExtensionField>(n: usize) -> Vec<E> {
+    // let mut rng = thread_rng();
+    // let mut arr = vec![E::ZERO; n];
+    // for i in 0..n{
+    // arr[i] = E::from(i as u64);
+    // }
+    // arr
+    // (0..n).map(|_| E::from(&mut rng)).collect_vec()
+    // (0..n).map(|_| E::random(&mut rng)).collect_vec()
+    // }
+
+    #[test]
+    fn test_conv() {
+        for i in (0)..(3) {
+            for j in (2)..(5) {
+                for l in (0)..(4) {
+                    for n in 1..(j-1){
+                        let n_w = 1<<n;
+                        let k_w = 1<<l;
+                        let n_x = 1<<j;
+                        let k_x = 1<<i;
+                        let F = random_vector(n_w*n_w*k_x*k_w);
+                        let mut Filter = Tensor::new_conv(vec![k_w,k_x,n_w,n_w], vec![k_x,n_x,n_x], F.iter().map(|&x| x as Element).collect());
+                        let mut Filter2 = Tensor::new(vec![k_w,k_x,n_w,n_w], F.iter().map(|&x| x as Element).collect());
+                        let mut X = Tensor::new(vec![k_x,n_x,n_x],vec![3;n_x*n_x*k_x]);//random_vector(n_x*n_x*k_x));
+                        let (Out2,_) = Filter.fft_conv::<GoldilocksExt2>(&X);
+                        let Out1 = Filter2.cnn_naive_convolution(&X);
+                        check_tensor_consistency(Out1,Out2);
+                        /*
+
+                        let mut Filter2 = Tensor::new(vec![k_w,k_x,n_w,n_w], F);
+                        let mut X = Tensor::new(vec![k_x,n_x,n_x],vec![3;n_x*n_x*k_x]);//random_vector(n_x*n_x*k_x));
+                        let Out1 = Filter2.cnn_naive_convolution(&X.clone());
+                        let mut data: Vec<Element> = vec![0;k_x*n_x*n_x];
+                        //for k in 0..data.len(){
+                        //    data[k] = E::to_canonical_u64_vec(&X.data[k])[0] as Element;
+                        //}
+                        let mut X2 = Tensor::new(vec![k_x,n_x,n_x],data);
+                        let Out2 = Filter.fft_conv(&X2);
+                        check_tensor_consistency(Out1,Out2);     */
+
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_tensor_ext_ops() {

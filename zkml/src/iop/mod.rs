@@ -37,6 +37,7 @@ where
     E::BaseField: Serialize + DeserializeOwned,
 {
     Dense(DenseProof<E>),
+    Convolution(ConvProof<E>),
     Activation(ActivationProof<E>),
     Requant(RequantProof<E>),
     Pooling(PoolingProof<E>),
@@ -49,6 +50,7 @@ where
     pub fn variant_name(&self) -> String {
         match self {
             Self::Dense(_) => "Dense".to_string(),
+            Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
             Self::Requant(_) => "Requant".to_string(),
             Self::Pooling(_) => "Pooling".to_string(),
@@ -58,6 +60,7 @@ where
     pub fn get_lookup_data(&self) -> Option<(Vec<E::BaseField>, Vec<E>, Vec<E>)> {
         match self {
             StepProof::Dense(..) => None,
+            StepProof::Convolution(..) => None,
             StepProof::Activation(ActivationProof { lookup, .. })
             | StepProof::Requant(RequantProof { lookup, .. })
             | StepProof::Pooling(PoolingProof { lookup, .. }) => Some((
@@ -82,6 +85,27 @@ where
 }
 
 /// Contains proof material related to one step of the inference
+
+#[derive(Default, Clone, Serialize, Deserialize)]
+pub struct ConvProof<E: ExtensionField>{
+    // Sumcheck proof for the FFT layer
+    fft_proof : IOPProof<E>,
+    // Proof for the evaluation delegation of the omegas matrix
+    // It consists of multiple sumcheck proofs
+    fft_delegation_proof: Vec<IOPProof<E>>,
+    // Likewise for fft, we define ifft proofs
+    ifft_proof : IOPProof<E>,
+    ifft_delegation_proof: Vec<IOPProof<E>>,
+    // Sumcheck proof for the hadamard product
+    hadamard_proof: IOPProof<E>,
+    // The evaluation claims produced by the corresponding sumchecks
+    fft_claims: Vec<E>,
+    ifft_claims: Vec<E>,
+    fft_delegation_claims: Vec<Vec<E>>,
+    ifft_delegation_claims: Vec<Vec<E>>,
+    hadamard_clams: Vec<E>
+
+}
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct DenseProof<E: ExtensionField> {
     /// the actual sumcheck proof proving the mat2vec protocol

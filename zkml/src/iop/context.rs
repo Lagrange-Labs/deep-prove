@@ -31,6 +31,8 @@ where
     E::BaseField: Serialize + DeserializeOwned,
 {
     Dense(DenseInfo<E>),
+    Convolution(ConvInfo<E>),
+    Traditional_Convolution(Traditional_ConvInfo<E>),
     Activation(ActivationInfo),
     Requant(RequantInfo),
     Pooling(PoolingInfo), // Maxpool update
@@ -39,6 +41,24 @@ where
 
 /// Holds the poly info for the polynomials representing each matrix in the dense layers
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ConvInfo<E> {
+    pub poly_id: PolyID,
+    pub fft_aux: VPAuxInfo<E>,
+    pub ifft_aux: VPAuxInfo<E>,
+    pub delegation_fft: Vec<VPAuxInfo<E>>,
+    pub delegation_ifft: Vec<VPAuxInfo<E>>,
+    pub hadamard: VPAuxInfo<E>,
+    pub kw: usize,
+    pub kx: usize,
+    pub filter_size: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Traditional_ConvInfo<E> {
+    pub dummy: E,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+
 pub struct DenseInfo<E> {
     pub matrix_poly_id: PolyID,
     pub matrix_poly_aux: VPAuxInfo<E>,
@@ -91,6 +111,8 @@ where
     pub fn variant_name(&self) -> String {
         match self {
             Self::Dense(_) => "Dense".to_string(),
+            Self::Traditional_Convolution(_) => "Traditional Convolution".to_string(),
+            Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
             Self::Requant(_) => "Requant".to_string(),
             Self::Pooling(_) => "Pooling".to_string(), // Maxpool update
@@ -138,7 +160,7 @@ where
         let auxs = model
             .layers()
             .map(|(id, layer)| {
-                match layer {
+                match &layer {
                     Layer::Dense(dense) => {
                         // construct dimension of the polynomial given to the sumcheck
                         let ncols = dense.matrix.ncols_2d();
@@ -177,6 +199,50 @@ where
                         poly_id: id,
                         num_vars: last_output_size.ilog2() as usize,
                     }),
+
+                    Layer::Convolution(filter) => {
+                        last_output_size = filter.nrows_2d();
+
+                        let mut delegation_fft: Vec<VPAuxInfo<E>> = Vec::new();
+                        let mut delegation_ifft: Vec<VPAuxInfo<E>> = Vec::new();
+                        for i in (0..(filter.filter_size().ilog2() as usize)).rev() {
+                            delegation_fft.push(VPAuxInfo::<E>::from_mle_list_dimensions(&vec![
+                                vec![i + 1, i + 1, i + 1],
+                            ]));
+                            delegation_ifft.push(VPAuxInfo::<E>::from_mle_list_dimensions(&vec![
+                                vec![i + 1, i + 1, i + 1],
+                            ]));
+                        }
+
+                        let conv_info = StepInfo::Convolution(ConvInfo {
+                            poly_id: id,
+                            ifft_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![
+                                ((filter.filter_size()).ilog2() as usize) + 1,
+                                ((filter.filter_size()).ilog2() as usize) + 1,
+                            ]]),
+                            fft_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![
+                                ((filter.filter_size()).ilog2() as usize) + 1,
+                                ((filter.filter_size()).ilog2() as usize) + 1,
+                            ]]),
+                            hadamard: VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![
+                                ((filter.kx() * filter.filter_size()).ilog2() as usize) + 1,
+                                ((filter.kx() * filter.filter_size()).ilog2() as usize) + 1,
+                                ((filter.kx() * filter.filter_size()).ilog2() as usize) + 1,
+                            ]]),
+                            delegation_fft,
+                            delegation_ifft,
+                            kw: filter.kw(),
+                            kx: filter.kx(),
+                            filter_size: filter.filter_size(),
+                        });
+                        conv_info
+                    }
+                    Layer::Traditional_Convolution(filter) => {
+                        let conv_info = StepInfo::Traditional_Convolution(Traditional_ConvInfo {
+                            dummy: E::ZERO,
+                        });
+                        conv_info
+                    }
                 }
             })
             .collect_vec();
@@ -217,6 +283,19 @@ where
                     t.append_field_element(&E::BaseField::from(info.num_vars as u64));
                     t.append_field_elements(info.table_commitment.root().0.as_slice());
                 }
+                StepInfo::Convolution(info) => {
+                    t.append_field_element(&E::BaseField::from(info.poly_id as u64));
+                    for i in 0..info.delegation_fft.len() {
+                        info.delegation_fft[i].write_to_transcript(t);
+                    }
+                    for i in 0..info.delegation_ifft.len() {
+                        info.delegation_ifft[i].write_to_transcript(t);
+                    }
+                    info.fft_aux.write_to_transcript(t);
+                    info.ifft_aux.write_to_transcript(t);
+                    info.hadamard.write_to_transcript(t);
+                }
+                StepInfo::Traditional_Convolution(info) => {}
             }
         }
         self.weights.write_to_transcript(t)?;

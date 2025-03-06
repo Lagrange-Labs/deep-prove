@@ -443,6 +443,7 @@ where
             .try_for_each::<_, Result<(), anyhow::Error>>(|(idx, step)| match step {
                 // Skip Dense steps
                 StepInfo::Dense(..) => Ok(()),
+                StepInfo::Convolution(..) => Ok(()),
                 StepInfo::Activation(..) => {
                     let lookup_type = LookupType::from(step);
                     let circuit = lookup_type.make_circuit::<E>();
@@ -588,7 +589,7 @@ where
     /// Initialises [`WitnessContext`] from an [`InferenceTrace`] and a [`Context`]
     pub fn initialise_witness_ctx<'b, T: Transcript<E>>(
         ctx: &'b Context<E>,
-        trace: &InferenceTrace<Element>,
+        trace: &InferenceTrace<Element, E>,
         t: &mut T,
     ) -> anyhow::Result<(WitnessContext<'a, E>, Vec<(usize, Vec<E>)>)>
     where

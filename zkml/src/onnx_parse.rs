@@ -385,6 +385,8 @@ mod tests {
 
     use goldilocks::GoldilocksExt2;
 
+    type F = GoldilocksExt2;
+
     // cargo test --release --package zkml -- onnx_parse::tests::test_tract --nocapture
 
     #[test]
@@ -401,7 +403,7 @@ mod tests {
 
         let model = load_mlp::<Element>(&filepath).unwrap();
         let input = crate::tensor::Tensor::random(vec![model.input_shape()[0]]);
-        let trace = model.run(input.clone());
+        let trace = model.run::<F>(input.clone());
         println!("Result: {:?}", trace.final_output());
     }
 

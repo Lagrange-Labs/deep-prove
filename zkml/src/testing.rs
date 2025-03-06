@@ -12,6 +12,11 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::Element;
 
+pub fn _random_vector<E: ExtensionField>(n: usize) -> Vec<E> {
+    let mut rng = thread_rng();
+    (0..n).map(|_| E::random(&mut rng)).collect_vec()
+}
+
 pub fn random_vector(n: usize) -> Vec<Element> {
     let mut rng = thread_rng();
     (0..n)

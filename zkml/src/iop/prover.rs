@@ -1,16 +1,58 @@
+// use super::{
+//     Context, Proof, RequantProof, StepProof, TableProof,
+//     context::{DenseInfo, PoolingInfo, StepInfo},
+// };
+// use crate::{
+//     Claim, Context, Element, Proof, RequantProof, StepProof, VectorTranscript,
+//     activation::Activation,
+//     commit::{compute_betas_eval, identity_eval, precommit, same_poly},
+//     context::{ConvInfo, DenseInfo, StepInfo},
+//     dense,
+//     iop::{ActivationProof, DenseProof, PoolingProof},
+//     lookup::{self, LookupProtocol},
+//     model::{InferenceStep, InferenceTrace, Layer},
+//     tensor::Tensor,
+// };
+// use anyhow::{Context as CC, anyhow, bail};
+// use ff_ext::ExtensionField;
+
+// use crate::{
+//     Claim, Element, VectorTranscript,
+//     activation::Activation,
+//     commit::{precommit, same_poly},
+//     iop::{ActivationProof, ConvProof, DenseProof},
+//     lookup::{self, LookupProtocol},
+//     model::{InferenceStep, InferenceTrace, Layer},
+//     tensor::{Conv_Data, Tensor, getRootOfUnity},
+// };
+// use anyhow::{Context as CC, anyhow, bail};
+// use ff_ext::ExtensionField;
+// use gkr::structs::IOPProof;
+// use goldilocks::GoldilocksExt2;
+// use itertools::{Itertools, assert_equal};
+// use log::{debug, warn};
+// use multilinear_extensions::{
+//     mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension, IntoMLE, MultilinearExtension},
+//     virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial},
+// };
+// use serde::{Serialize, de::DeserializeOwned};
+// use std::{marker::PhantomData, sync::Arc};
+// use sumcheck::structs::{IOPProverState, IOPVerifierState};
+// use transcript::Transcript;
+
 use super::{
     Context, Proof, RequantProof, StepProof, TableProof,
-    context::{DenseInfo, PoolingInfo, StepInfo},
+    context::{ConvInfo, DenseInfo, PoolingInfo, StepInfo},
 };
 use crate::{
     Claim, Element, VectorTranscript,
     activation::Activation,
     commit::{compute_betas_eval, identity_eval, precommit, same_poly},
     dense,
-    iop::{ActivationProof, DenseProof, PoolingProof},
+    iop::{ActivationProof, ConvProof, DenseProof, PoolingProof},
     lookup::{self, LookupProtocol},
     model::{InferenceStep, InferenceTrace, Layer},
-    tensor::Tensor,
+    tensor::{Conv_Data, Tensor, getRootOfUnity},
 };
 use anyhow::{Context as CC, anyhow, bail};
 use ff_ext::ExtensionField;
@@ -24,6 +66,24 @@ use serde::{Serialize, de::DeserializeOwned};
 use std::{marker::PhantomData, sync::Arc};
 use sumcheck::structs::{IOPProverState, IOPVerifierState};
 use transcript::Transcript;
+
+pub fn compute_betas<E: ExtensionField>(r: Vec<E>) -> Vec<E> {
+    let mut beta = vec![E::ZERO; 1 << r.len()];
+    beta[0] = E::ONE;
+    for i in 0..r.len() {
+        let mut beta_temp = vec![E::ZERO; 1 << i];
+        for j in 0..(1 << i) {
+            beta_temp[j] = beta[j];
+        }
+        for j in 0..(1 << i) {
+            let num = j << 1;
+            let temp = r[r.len() - 1 - i] * beta_temp[j];
+            beta[num] = beta_temp[j] - temp;
+            beta[num + 1] = temp;
+        }
+    }
+    return beta;
+}
 
 /// Prover generates a series of sumcheck proofs to prove the inference of a model
 pub struct Prover<'a, E: ExtensionField, T: Transcript<E>, L: LookupProtocol<E>>
@@ -75,7 +135,7 @@ where
         &mut self,
         last_claim: Claim<E>,
         input: &Tensor<E>,
-        step: &InferenceStep<'b, E>,
+        step: &InferenceStep<'b, E, E>,
         info: &StepInfo<E>,
     ) -> anyhow::Result<Claim<E>> {
         println!("PROVER: proving layer {}", step.layer.to_string());
@@ -85,6 +145,9 @@ where
                 // about these IDs being unique, so as long as the mapping between poly <-> id is correct, all good.
                 // This is the case here since we treat each matrix as a different poly
                 self.prove_dense_step(last_claim, input, &step.output, info, dense)
+            }
+            (Layer::Convolution(filter), StepInfo::Convolution(info)) => {
+                self.prove_convolution_step(last_claim, &step.output, &step.conv_data, info, filter)
             }
             (Layer::Activation(Activation::Relu(..)), StepInfo::Activation(..))
             | (Layer::Requant(..), StepInfo::Requant(..)) => {
@@ -381,6 +444,455 @@ where
         Ok(next_claim)
     }
 
+    // Protocol for proving the correct computation of the FFT/iFFT matrix.
+    // For more details look at the zkCNN paper.
+    // F_middle : all intermidiate evaluations retrieved by the phiGinit algorithm
+    // r1: the initial random point used to reduce the matrix into vector
+    // r2: the random point produced by the sumcheck
+    pub fn delegate_matrix_evaluation(
+        &mut self,
+        F_middle: &mut Vec<Vec<E>>,
+        r1: Vec<E>,
+        mut r2: Vec<E>,
+        isIFFT: bool,
+    ) -> (Vec<sumcheck::structs::IOPProof<E>>, Vec<Vec<E>>) {
+        let mut omegas = vec![E::ZERO; 1 << r1.len() as usize];
+        self.phiPowInit(&mut omegas, r1.len(), isIFFT);
+
+        let mut proofs: Vec<sumcheck::structs::IOPProof<E>> = Vec::new();
+        let mut claims: Vec<Vec<E>> = Vec::new();
+
+        for l in (0..(r1.len() - 1)).rev() {
+            let mut phi = vec![E::ZERO; F_middle[l].len()];
+            let beta = compute_betas(r2[0..(r2.len() - 1)].to_vec().clone());
+
+            for i in 0..(phi.len()) {
+                if (!isIFFT && l == F_middle.len() - 1) {
+                    phi[i] = (E::ONE - r2[r2.len() - 1])
+                        * (E::ONE - r1[(F_middle.len() - 1) - l]
+                            + r1[(F_middle.len() - 1) - l]
+                                * omegas[i << ((F_middle.len() - 1) - l)]);
+                } else {
+                    phi[i] = (E::ONE - r1[(F_middle.len() - 1) - l]
+                        + (E::ONE - E::from(2) * r2[r2.len() - 1])
+                            * r1[(F_middle.len() - 1) - l]
+                            * omegas[i << ((F_middle.len() - 1) - l)]);
+                }
+            }
+
+            let f1 = beta.into_mle();
+            let f2 = phi.into_mle();
+            let f3 = F_middle[l].clone().into_mle();
+
+            let mut vp = VirtualPolynomial::<E>::new(f1.num_vars);
+            vp.add_mle_list(
+                vec![f1.clone().into(), f2.clone().into(), f3.clone().into()],
+                E::ONE,
+            );
+            let (proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
+            let mut claim: Vec<E> = state.get_mle_final_evaluations();
+            r2 = proof.point.clone();
+            proofs.push(proof);
+            claims.push(claim);
+        }
+        (proofs, claims)
+    }
+
+    // Compute powers of roots of unity
+    pub fn phiPowInit(&mut self, phi_mul: &mut Vec<E>, n: usize, isIFFT: bool) {
+        let N = 1 << n;
+        let rou: E = getRootOfUnity(n);
+
+        let mut phi = rou;
+        if (isIFFT) {
+            phi = phi.invert().unwrap();
+        }
+        phi_mul[0] = E::ONE;
+        for i in 1..N {
+            phi_mul[i] = phi_mul[i - 1] * phi;
+        }
+    }
+
+    // Efficiently compute the omegas of FFT/iFFT matrix reduced at rx
+    // This is a copy-paste implementation from zkCNN paper
+    pub fn phiGInit(
+        &mut self,
+        phi_g: &mut Vec<E>,
+        mid_phi_g: &mut Vec<Vec<E>>,
+        rx: Vec<E>,
+        scale: E,
+        n: usize,
+        isIFFT: bool,
+    ) {
+        let mut phi_mul = vec![E::ZERO; (1 << n)];
+        self.phiPowInit(&mut phi_mul, n, isIFFT);
+        if (isIFFT == true) {
+            phi_g[0] = scale;
+            phi_g[1] = scale;
+            for i in 1..(n + 1) {
+                for b in 0..(1 << (i - 1)) {
+                    let l = b;
+                    let r = b ^ (1 << (i - 1));
+                    let m = n - i;
+                    let tmp1 = E::ONE - rx[m];
+                    let tmp2 = rx[m] * phi_mul[b << m];
+                    phi_g[r] = phi_g[l] * (tmp1 - tmp2);
+                    phi_g[l] = phi_g[l] * (tmp1 + tmp2);
+                }
+                if (i < n) {
+                    mid_phi_g[i - 1] = vec![E::ZERO; 1 << (i) as usize];
+                    for b in 0..(1 << (i)) {
+                        mid_phi_g[i - 1][b] = phi_g[b];
+                    }
+                }
+            }
+        } else {
+            phi_g[0] = scale;
+            for i in 1..n {
+                for b in 0..(1 << (i - 1)) {
+                    let l = b;
+                    let r = b ^ (1 << (i - 1));
+                    let m = n - i;
+
+                    let tmp1 = E::ONE - rx[m];
+                    let tmp2 = rx[m] * phi_mul[b << m];
+                    // printf("%d,%d\n",r,l );
+                    phi_g[r] = phi_g[l] * (tmp1 - tmp2);
+                    phi_g[l] = phi_g[l] * (tmp1 + tmp2);
+                }
+                mid_phi_g[i - 1] = vec![E::ZERO; 1 << (i) as usize];
+                for b in 0..(1 << (i)) {
+                    mid_phi_g[i - 1][b] = phi_g[b];
+                }
+            }
+            for b in 0..(1 << (n - 1)) {
+                let l = b;
+                let tmp1 = E::ONE - rx[0];
+                let tmp2 = rx[0] * phi_mul[b];
+                phi_g[l] = phi_g[l] * (tmp1 + tmp2);
+            }
+        }
+    }
+    // The prove_batch_fft and prove_batch_ifft are extensions of prove_fft and prove_ifft but in the batch setting.
+    // Namely when we want to proof fft or ifft for MORE THAN ONE INSTANCES.
+    // In particular, instead of proving y = Wx we want to prove Y = WX where Y,X are matrixes.
+    // Following the matrix to matrix multiplication protocol, let y_eval = Y(r1,r2).
+    // Then we want to prove a sumcheck instance of the form y_eval = sum_{i \in [n]}W(r1,i)X(i,r2).
+    pub fn prove_batch_fft(
+        &mut self,
+        r: Vec<E>,
+        x: &mut Vec<Vec<E>>,
+    ) -> (
+        sumcheck::structs::IOPProof<E>,
+        Vec<E>,
+        (Vec<sumcheck::structs::IOPProof<E>>, Vec<Vec<E>>),
+    ) {
+        let padded_rows = 2 * x[0].len();
+        for i in 0..x.len() {
+            x[i].resize(padded_rows, E::ZERO);
+        }
+        // Partition r in (r1,r2)
+        let mut r1 = vec![E::ZERO; x[0].len().ilog2() as usize];
+        let mut r2 = vec![E::ZERO; x.len().ilog2() as usize];
+        for i in 0..r1.len() {
+            r1[i] = r[i];
+        }
+        for i in 0..r2.len() {
+            r2[i] = r[i + r1.len()];
+        }
+        // compute W(r1,i)
+        let mut W_red: Vec<E> = vec![E::ZERO; x[0].len()];
+        let mut F_middle: Vec<Vec<E>> = vec![Vec::new(); r1.len() - 1];
+        self.phiGInit(
+            &mut W_red,
+            &mut F_middle,
+            r1.clone(),
+            E::from(1),
+            x[0].len().ilog2() as usize,
+            false,
+        );
+        // compute X(i,r2)
+
+        let mut f_M = x
+            .clone()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .into_mle();
+
+        f_M.fix_high_variables_in_place(&r2);
+
+        let beta = compute_betas(r2);
+        let mut M_red = vec![E::ZERO; x[0].len()];
+        for i in 0..x.len() {
+            for j in 0..x[i].len() {
+                M_red[j] += x[i][j] * beta[i];
+            }
+        }
+
+        // Construct the virtual polynomial and run the sumcheck prover
+
+        let mut f_red = W_red.into_mle();
+
+        let mut vp = VirtualPolynomial::<E>::new(f_M.num_vars);
+        vp.add_mle_list(vec![f_M.clone().into(), f_red.clone().into()], E::ONE);
+        let (proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
+
+        let mut claims = state.get_mle_final_evaluations();
+        let mut v = (E::ONE - proof.point[proof.point.len() - 1])
+            .invert()
+            .unwrap(); //(E::ONE - proof.point[proof.point.len()-1]).invert();
+        claims[0] = claims[0] * v;
+
+        (
+            proof.clone(),
+            claims,
+            self.delegate_matrix_evaluation(&mut F_middle, r1.clone(), proof.point.clone(), false),
+        )
+    }
+
+    pub fn prove_batch_ifft(
+        &mut self,
+        r: Vec<E>,
+        prod: &Vec<Vec<E>>,
+    ) -> (
+        sumcheck::structs::IOPProof<E>,
+        Vec<E>,
+        (Vec<sumcheck::structs::IOPProof<E>>, Vec<Vec<E>>),
+    ) {
+        let scale: E = E::from(prod[0].len() as u64).invert().unwrap();
+
+        // Partition r in (r1,r2)
+        let mut r1 = vec![E::ZERO; prod[0].len().ilog2() as usize];
+        let mut r2 = vec![E::ZERO; prod.len().ilog2() as usize];
+        for i in 0..r1.len() {
+            r1[i] = r[i];
+        }
+        for i in 0..r2.len() {
+            r2[i] = r[i + r1.len()];
+        }
+        // compute W(r1,i)
+        let mut W_red: Vec<E> = vec![E::ZERO; prod[0].len()];
+        let mut F_middle: Vec<Vec<E>> = vec![Vec::new(); r1.len() - 1];
+        self.phiGInit(
+            &mut W_red,
+            &mut F_middle,
+            r1.clone(),
+            scale,
+            prod[0].len().ilog2() as usize,
+            true,
+        );
+        let mut f_red = W_red.into_mle();
+        // compute X(i,r2)
+        let mut f_M = prod
+            .clone()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .into_mle();
+        f_M.fix_high_variables_in_place(&r2);
+
+        // Construct the virtual polynomial and run the sumcheck prover
+        let mut vp = VirtualPolynomial::<E>::new(f_M.num_vars);
+        vp.add_mle_list(vec![f_M.clone().into(), f_red.clone().into()], E::ONE);
+        let (proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
+
+        let mut claims = state.get_mle_final_evaluations();
+
+        (
+            proof.clone(),
+            claims,
+            self.delegate_matrix_evaluation(&mut F_middle, r1.clone(), proof.point.clone(), true),
+        )
+        // return Proof;
+    }
+
+    // Prove convolution of a CNN network. This is a convolution between in a 3D matrix X of dimension k_x * n_x * n_x
+    // and a 4D filter matrix W of dimension k_w * k_x * n_w * n_w. The output is a 3D matrix Y of dimension k_w * n_x * n_x
+    // We want to batch prove the following: Y[i] = iFFT(sum_{j \in [n_x]}(FFT(X[j]) o FFT(W[i][j])).
+
+    fn prove_convolution_step(
+        &mut self,
+        // last random claim made
+        last_claim: Claim<E>,
+        // Struct containing all necessary information
+        // to generate a convolution proof
+        output: &Tensor<E>,
+        proving_data: &Conv_Data<E>,
+        info: &ConvInfo<E>,
+        filter: &Tensor<Element>,
+    ) -> anyhow::Result<Claim<E>> {
+        assert_eq!(
+            filter.filter_size() * filter.kw() * 2,
+            proving_data.output.len() * proving_data.output[0].len(),
+            "Inconsistent output size"
+        );
+        assert_eq!(
+            (filter.filter_size() * filter.kw()).ilog2() as usize,
+            last_claim.point.len(),
+            "Inconsistent random point size. Expected : {}, got: {}",
+            ((filter.filter_size() * filter.kw()).ilog2()),
+            last_claim.point.len()
+        );
+        let mut r = vec![E::ZERO; last_claim.point.len() + 1];
+        for i in 0..(filter.filter_size().ilog2() as usize) {
+            r[i] = E::ONE - last_claim.point[i];
+        }
+        for i in 0..(filter.kw().ilog2() as usize) {
+            r[i + (filter.filter_size().ilog2() as usize) + 1] =
+                last_claim.point[i + (filter.filter_size().ilog2() as usize)];
+        }
+        debug_assert!({
+            let y = proving_data
+                .output
+                .clone()
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .into_mle()
+                .evaluate(&r);
+            debug_assert_eq!(last_claim.eval, y, "Error in Conv 1");
+            last_claim.eval == y
+        });
+        let (iFFT_proof, iFFT_claim, iFFT_Del_proof) =
+            self.prove_batch_ifft(r.clone(), &proving_data.prod);
+        // After this point, the verifier holds an evaluation claim of proving_data.prod at P1.randomness[0][i]
+        // Let r' = P1.randomness[0][i] and y is the evaluation claim of prod = proving_data.prod
+        // What we want to do now is to prove that prod has been correctly computed from X_fft and w (= proving_data.w)
+        // In other words we want to show that prod[i] = sum_{j \in [k_x]} x[j] o w[i][j] for each i in [k_w]
+        // For this let r1 be the last log(k_w) elements of r and r2 the first log(n_x^2) elements
+        // Compute the arrays beta1,beta2 such that beta1[i] = beta(i,r1) and beta2[i] = beta(i,r2)
+
+        let mut r_ifft: Vec<E> = iFFT_proof.point.clone();
+        for i in (proving_data.output[0].len().ilog2() as usize)..r.len() {
+            r_ifft.push(r[i]);
+        }
+
+        debug_assert!({
+            let eval1 = proving_data
+                .prod
+                .clone()
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .into_mle()
+                .evaluate(&r_ifft);
+            let eval2 = iFFT_claim[0];
+            debug_assert_eq!(
+                proving_data
+                    .prod
+                    .clone()
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .into_mle()
+                    .evaluate(&r_ifft),
+                iFFT_claim[0],
+                "Error in Conv 1"
+            );
+            eval1 == eval2
+        });
+
+        let r1: Vec<E> = r_ifft[(proving_data.output[0].len().ilog2() as usize)..].to_vec();
+        let r2: Vec<E> = r_ifft[..(proving_data.output[0].len().ilog2() as usize)].to_vec();
+        let beta1 = compute_betas(r1.clone());
+        let beta2 = compute_betas(r2.clone());
+        // Given beta1,beta2 observe that :
+        // \sum_{i \in [k_w]} beta1[i]prod[i] = \sum_{i \in [k_w]}sum_{j \in [k_x]} x[j] o w[i][j] =
+        // = sum_{j \in [k_x]}x[j]o(\sum_{i \in [k_w]}(beta[i]*w[i][j])). We let w_reduced[j] = \sum_{i \in [k_w]}(beta[i]*w[i][j])
+        // We have  \sum_{i \in [k_w]} beta1[i]prod[i] = sum_{j \in [k_x]} x[j]o w_{reduced[j]}.
+        // So here we compute w_reduced
+
+        let k_w = filter.shape[0];
+        let k_x = filter.shape[1];
+        let n_w = 2 * filter.shape[2] * filter.shape[2];
+        let mut w_red = vec![E::ZERO; n_w * k_x];
+        for i in 0..k_w {
+            for j in 0..k_x {
+                for k in 0..n_w {
+                    if (filter.data[i * k_x * n_w + j * n_w + k] < 0) {
+                        w_red[j * n_w + k] -=
+                            beta1[i] * E::from((-filter.data[i * k_x * n_w + j * n_w + k]) as u64);
+                    } else {
+                        w_red[j * n_w + k] +=
+                            beta1[i] * E::from((filter.data[i * k_x * n_w + j * n_w + k]) as u64);
+                    }
+                }
+            }
+        }
+        let mut beta_acc = vec![E::ZERO; w_red.len()];
+        let mut ctr = 0;
+        for i in 0..k_x {
+            for j in 0..beta2.len() {
+                beta_acc[ctr] = beta2[j];
+                ctr += 1;
+            }
+        }
+
+        // After computing w_reduced, observe that y = \sum_{k \in [n_x^2]} sum_{j \in [k_x]} beta2[k]*x[j][k]*w_reduced[j][k]
+        // This is a cubic sumcheck where v1 = [x[0][0],...,x[k_x][n_x^2]], v2 = [w_reduced[0][0],...,w_reduced[k_x][n_x^2]]
+        // and v3 = [beta2,..(k_x times)..,beta2]. So, first initialzie v3 and then invoke the cubic sumceck.
+
+        let mut f1 = w_red.into_mle();
+        let mut f2 = proving_data
+            .input_fft
+            .clone()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .into_mle();
+        let mut f3 = beta_acc.into_mle();
+
+        let mut vp = VirtualPolynomial::<E>::new(f1.num_vars);
+        vp.add_mle_list(
+            vec![f1.clone().into(), f2.clone().into(), f3.clone().into()],
+            E::ONE,
+        );
+        let (hadamard_proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
+        let hadamard_claims = state.get_mle_final_evaluations();
+
+        let point = [hadamard_proof.point.clone(), r1.clone()].concat();
+        let eval = hadamard_claims[0];
+        self.commit_prover
+            .add_claim(info.poly_id, Claim::new(point, hadamard_claims[0]))
+            .context("unable to add claim")?;
+
+        // self.r_weights = proof.point.clone();
+        // self.r_weights.extend(r1.iter());
+
+        // Finally prove the correct computation of the x_fft and get an evaluation claim of the input
+        let (FFT_proof, FFT_claim, FFT_Del_proof) = self.prove_batch_fft(
+            hadamard_proof.point.clone(),
+            &mut proving_data.input.clone(),
+        );
+
+        self.proofs.push(StepProof::Convolution(ConvProof {
+            fft_proof: FFT_proof.clone(),
+            fft_claims: FFT_claim.clone(),
+            ifft_proof: iFFT_proof,
+            fft_delegation_proof: FFT_Del_proof.0,
+            ifft_delegation_proof: iFFT_Del_proof.0,
+            hadamard_proof: hadamard_proof.clone(),
+            ifft_claims: iFFT_claim,
+            fft_delegation_claims: FFT_Del_proof.1,
+            ifft_delegation_claims: iFFT_Del_proof.1,
+            hadamard_clams: hadamard_claims,
+        }));
+        let mut input_point = FFT_proof.point.clone();
+        let mut v = input_point.pop().unwrap();
+        v = (E::ONE - v).invert().unwrap();
+        let final_claim = Claim {
+            point: [
+                input_point.clone(),
+                hadamard_proof.point[((filter.filter_size() * 2).ilog2() as usize)..].to_vec(),
+            ]
+            .concat(),
+            eval: FFT_claim[0] * v,
+        };
+
+        Ok(final_claim)
+    }
+
     fn prove_dense_step(
         &mut self,
         // last random claim made
@@ -509,12 +1021,12 @@ where
         Ok(claim)
     }
 
-    pub fn prove<'b>(mut self, trace: InferenceTrace<'b, Element>) -> anyhow::Result<Proof<E>> {
-        // First write commitments and polynomials info to transcript
-        self.ctx.write_to_transcript(self.transcript)?;
-        // create the context for the witness polys -
+    pub fn prove<'b>(mut self, trace: InferenceTrace<'b, Element, E>) -> anyhow::Result<Proof<E>> {
+        // First, create the context for the witness polys -
         self.instantiate_witness_ctx(&trace)?;
-        let trace = trace.to_field::<E>();
+        // write commitments and polynomials info to transcript
+        self.ctx.write_to_transcript(self.transcript)?;
+        let trace = trace.to_field();
         // this is the random set of variables to fix at each step derived as the output of
         // sumcheck.
         // For the first step, so before the first sumcheck, we generate it from FS.
@@ -535,6 +1047,8 @@ where
             point: r_i,
             eval: y_i,
         };
+
+        // let trace_size = trace.last_step().id;
 
         // we start by the output to prove up to the input, GKR style
         for ((input, step), info) in trace.iter().rev().zip(self.ctx.steps_info.iter()) {
@@ -564,7 +1078,7 @@ where
     /// Looks at all the individual polys to accumulate from the witnesses and create the context from that.
     fn instantiate_witness_ctx<'b>(
         &mut self,
-        trace: &InferenceTrace<'b, Element>,
+        trace: &InferenceTrace<'b, Element, E>,
     ) -> anyhow::Result<()> {
         let (lookup_witness, polys) = lookup::WitnessContext::<E>::initialise_witness_ctx(
             &self.ctx.lookup,
@@ -581,5 +1095,39 @@ where
         }
         self.lookup_witness = lookup_witness;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use goldilocks::GoldilocksExt2;
+    use itertools::Itertools;
+    use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
+
+    use crate::testing::random_field_vector;
+
+    use ff::Field;
+    type F = GoldilocksExt2;
+
+    #[test]
+    fn test_padding_prover() {
+        let num_vars = 7;
+        let poly_size = 1 << num_vars;
+        let padded_num_vars = 10;
+        let padded_size = 1 << padded_num_vars;
+        let poly = random_field_vector(1 << num_vars);
+        let padded_poly = poly
+            .iter()
+            .chain(std::iter::repeat(&F::ZERO))
+            .take(padded_size)
+            .cloned()
+            .collect_vec();
+        let padded_point = random_field_vector::<F>(padded_num_vars);
+        let padded_eval = padded_poly.into_mle().evaluate(&padded_point);
+        // now resize the claim to the original poly size (emulating what next dense layer proving is doing)
+        let reduced_point = padded_point.iter().take(num_vars).cloned().collect_vec();
+        let eval = poly.into_mle().evaluate(&reduced_point);
+        assert_eq!(padded_eval, eval);
     }
 }

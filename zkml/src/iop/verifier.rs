@@ -5,13 +5,13 @@ use crate::{
     commit::{self, identity_eval, precommit, same_poly},
     iop::{StepProof, context::StepInfo},
     lookup::{self, LookupProtocol, TableInfo},
-    tensor::Tensor,
+    tensor::{Tensor, getRootOfUnity},
 };
 use anyhow::{anyhow, bail, ensure};
 use ff_ext::ExtensionField;
 
 use gkr::util::ceil_log2;
-use itertools::Itertools;
+use itertools::{Itertools, assert_equal, multiunzip};
 use log::debug;
 use multilinear_extensions::{
     mle::{IntoMLE, MultilinearExtension},
@@ -20,11 +20,12 @@ use multilinear_extensions::{
 
 use serde::{Serialize, de::DeserializeOwned};
 use sumcheck::structs::IOPVerifierState;
+use tract_onnx::tract_core::ops::cnn::Conv;
 use transcript::Transcript;
 
 use super::{
-    ActivationProof, Context, DenseProof, PoolingProof, Proof, RequantProof, TableProof,
-    context::{ActivationInfo, DenseInfo, PoolingInfo, RequantInfo},
+    ActivationProof, Context, ConvProof, DenseProof, PoolingProof, Proof, RequantProof, TableProof,
+    context::{ActivationInfo, ConvInfo, DenseInfo, PoolingInfo, RequantInfo},
 };
 
 /// What the verifier must have besides the proof
@@ -188,6 +189,14 @@ where
                     challenges,
                     step,
                 )?
+            }
+            (StepProof::<E>::Convolution(proof), StepInfo::<E>::Convolution(info)) => {
+                let info = if let StepInfo::Convolution(info) = &ctx.steps_info[i] {
+                    info
+                } else {
+                    return Err(anyhow!("Step info does not line up at Convolution step"));
+                };
+                verify_convolution(output_claim, &proof, info, &mut commit_verifier, transcript)?
             }
             _ => bail!(
                 "Step proof: {} and step info: {} did not match",
@@ -399,6 +408,177 @@ where
     let eval = info.requant.recombine_claims(&eval_claims);
     // 4. return the input claim for to be proven at subsequent step
     Ok(Claim { point, eval })
+}
+
+pub fn phi_eval<E: ExtensionField>(
+    r: Vec<E>,
+    rand1: E,
+    rand2: E,
+    exponents: Vec<E>,
+    FirstIter: bool,
+) -> E {
+    let mut eval = E::ONE;
+    for i in 0..r.len() {
+        eval *= (E::ONE - r[i] + r[i] * exponents[exponents.len() - r.len() + i]);
+    }
+
+    if (FirstIter) {
+        eval = (E::ONE - rand2) * (E::ONE - rand1 + rand1 * eval);
+    } else {
+        eval = E::ONE - rand1 + (E::ONE - E::from(2) * rand2) * rand1 * eval;
+    }
+
+    return eval;
+}
+
+pub fn pow_two_omegas<E: ExtensionField>(n: usize, isIFFT: bool) -> Vec<E> {
+    let mut pows = vec![E::ZERO; n - 1];
+    let mut rou: E = getRootOfUnity(n);
+    if (isIFFT) {
+        rou = rou.invert().unwrap();
+    }
+    pows[0] = rou;
+    for i in 1..(n - 1) {
+        pows[i] = pows[i - 1] * pows[i - 1];
+    }
+    return pows;
+}
+
+fn verify_convolution<E: ExtensionField, T: Transcript<E>>(
+    last_claim: Claim<E>,
+    proof: &ConvProof<E>,
+    info: &ConvInfo<E>,
+    commit_verifier: &mut commit::precommit::CommitVerifier<E>,
+    t: &mut T,
+) -> anyhow::Result<Claim<E>>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+    E: Serialize + DeserializeOwned,
+{
+    IOPVerifierState::<E>::verify(last_claim.eval, &proof.ifft_proof, &info.ifft_aux, t);
+    assert_eq!(
+        info.delegation_ifft.len(),
+        proof.ifft_delegation_proof.len(),
+        "Inconsistency in iFFT delegation proofs/aux size"
+    );
+    let mut iter = proof.ifft_delegation_proof.len();
+    let mut claim = proof.ifft_claims[1];
+    let mut exponents = pow_two_omegas(iter + 1, true);
+    let mut prev_r = proof.ifft_proof.point.clone();
+    for i in 0..iter {
+        IOPVerifierState::<E>::verify(
+            claim,
+            &proof.ifft_delegation_proof[i],
+            &info.delegation_ifft[i],
+            t,
+        );
+        assert_eq!(
+            identity_eval(
+                proof.ifft_delegation_proof[i].point.clone().as_slice(),
+                prev_r.clone().as_slice()
+            ),
+            proof.ifft_delegation_claims[i][0],
+            "Error in identity evaluation ifft delegation iter : {}",
+            i
+        );
+        assert_eq!(
+            phi_eval(
+                proof.ifft_delegation_proof[i].point.clone(),
+                E::ONE - last_claim.point[i],
+                prev_r[prev_r.len() - 1],
+                exponents.clone(),
+                false
+            ),
+            proof.ifft_delegation_claims[i][1],
+            "Error in phi computation ifft delegation iter : {}",
+            i
+        );
+
+        prev_r = proof.ifft_delegation_proof[i].point.clone();
+        claim = proof.ifft_delegation_claims[i][2];
+    }
+    IOPVerifierState::<E>::verify(
+        proof.ifft_claims[0],
+        &proof.hadamard_proof,
+        &info.hadamard,
+        t,
+    );
+    commit_verifier.add_claim(
+        info.poly_id,
+        Claim::new(
+            [
+                proof.hadamard_proof.point.clone(),
+                proof.ifft_proof.point[((2 * info.filter_size).ilog2() as usize)..].to_vec(),
+            ]
+            .concat(),
+            proof.hadamard_clams[0],
+        ),
+    )?;
+    // >>>>>> TODO : 1) Dont forget beta evaluation 2) verification of the last step of delegation <<<<<<<
+    // Verify fft sumcheck
+    IOPVerifierState::<E>::verify(proof.hadamard_clams[1], &proof.fft_proof, &info.fft_aux, t);
+
+    claim = proof.fft_claims[1];
+
+    assert_eq!(
+        info.delegation_fft.len(),
+        proof.fft_delegation_proof.len(),
+        "Inconsistency in FFT delegation proofs/aux size"
+    );
+    iter = proof.fft_delegation_proof.len();
+    // Verify delegation protocol of W iFFT matrix
+    exponents = pow_two_omegas(iter + 1, false);
+    prev_r = proof.fft_proof.point.clone();
+    for i in 0..iter {
+        IOPVerifierState::<E>::verify(
+            claim,
+            &proof.fft_delegation_proof[i],
+            &info.delegation_fft[i],
+            t,
+        );
+
+        assert_eq!(
+            identity_eval(
+                proof.fft_delegation_proof[i].point.clone().as_slice(),
+                prev_r.clone().as_slice()
+            ),
+            proof.fft_delegation_claims[i][0],
+            "Error in identity evaluation fft delegation iter : {}",
+            i
+        );
+
+        assert_eq!(
+            phi_eval(
+                proof.fft_delegation_proof[i].point.clone(),
+                proof.hadamard_proof.point[i],
+                prev_r[prev_r.len() - 1],
+                exponents.clone(),
+                (i == 0)
+            ),
+            proof.fft_delegation_claims[i][1],
+            "Error in phi computation fft delegation iter : {}",
+            i
+        );
+
+        claim = proof.fft_delegation_claims[i][2];
+        prev_r = proof.fft_delegation_proof[i].point.clone();
+    }
+    println!("Successful Verification of Convolution");
+    let mut input_point = proof.fft_proof.point.clone();
+    let mut v = input_point.pop().unwrap();
+    v = (E::ONE - v).invert().unwrap();
+    // the output claim for this step that is going to be verified at next step
+    Ok(Claim {
+        // the new randomness to fix at next layer is the randomness from the sumcheck !
+        point: [
+            input_point.clone(),
+            proof.hadamard_proof.point[((info.filter_size * 2).ilog2() as usize)..].to_vec(),
+        ]
+        .concat(),
+        // the claimed sum for the next sumcheck is MLE of the current vector evaluated at the
+        // random point. 1 because vector is secondary.
+        eval: proof.fft_claims[0] * v,
+    })
 }
 
 fn verify_dense<E: ExtensionField, T: Transcript<E>>(
