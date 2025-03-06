@@ -1,14 +1,7 @@
 use crate::quantization;
-use ark_std::rand::{
-    self, Rng, SeedableRng,
-    distributions::{Standard, uniform::SampleUniform},
-    prelude::Distribution,
-    rngs::StdRng,
-    thread_rng,
-};
+use ark_std::rand::{self, Rng, SeedableRng, rngs::StdRng, thread_rng};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::Element;
 

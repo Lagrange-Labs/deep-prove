@@ -7,7 +7,6 @@ use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
 use itertools::Itertools;
 use multilinear_extensions::mle::{DenseMultilinearExtension, MultilinearExtension};
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 pub const MAXPOOL2D_KERNEL_SIZE: usize = 2;

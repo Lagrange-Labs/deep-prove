@@ -11,7 +11,7 @@ use crate::{
     activation::{Activation, Relu},
     pooling::Pooling,
     quantization::{Requant, TensorFielder},
-    tensor::{Conv_Data, Tensor},
+    tensor::{ConvData, Tensor},
 };
 
 // The index of the step, starting from the input layer. (proving is done in the opposite flow)
@@ -38,35 +38,35 @@ impl std::fmt::Display for Layer {
     }
 }
 
-enum Layer_Output<F>
+enum LayerOutput<F>
 where
     F: ExtensionField,
 {
-    Normal_Out(Tensor<Element>),
-    Conv_Out((Tensor<Element>, Conv_Data<F>)),
+    NormalOut(Tensor<Element>),
+    ConvOut((Tensor<Element>, ConvData<F>)),
 }
 
 impl Layer {
     /// Run the operation associated with that layer with the given input
     // TODO: move to tensor library : right now it works because we assume there is only Dense
     // layer which is matmul
-    pub fn op<F: ExtensionField>(&self, input: &Tensor<Element>) -> Layer_Output<F> {
+    pub fn op<F: ExtensionField>(&self, input: &Tensor<Element>) -> LayerOutput<F> {
         match &self {
-            Layer::Dense(ref dense) => Layer_Output::Normal_Out(dense.op(input)),
-            Layer::Activation(activation) => Layer_Output::Normal_Out(activation.op(input)),
+            Layer::Dense(ref dense) => LayerOutput::NormalOut(dense.op(input)),
+            Layer::Activation(activation) => LayerOutput::NormalOut(activation.op(input)),
 
-            Layer::Convolution(ref filter) => Layer_Output::Conv_Out(filter.fft_conv(input)),
+            Layer::Convolution(ref filter) => LayerOutput::ConvOut(filter.fft_conv(input)),
             // Traditional convolution is used for debug purposes. That is because the actual convolution
             // we use relies on the FFT algorithm. This convolution does not have a snark implementation.
             Layer::Traditional_Convolution(ref filter) => {
-                Layer_Output::Normal_Out(filter.cnn_naive_convolution(input))
+                LayerOutput::NormalOut(filter.cnn_naive_convolution(input))
             }
 
             Layer::Requant(info) => {
                 // NOTE: we assume we have default quant structure as input
-                Layer_Output::Normal_Out(info.op(input))
+                LayerOutput::NormalOut(info.op(input))
             }
-            Layer::Pooling(info) => Layer_Output::Normal_Out(info.op(input)),
+            Layer::Pooling(info) => LayerOutput::NormalOut(info.op(input)),
         }
     }
 
@@ -174,10 +174,10 @@ impl Model {
             let input = trace.last_input();
             let output = layer.op(input);
             match output {
-                Layer_Output::Normal_Out(output) => {
+                LayerOutput::NormalOut(output) => {
                     debug!("step: {}: output: {:?}", id, output);
                     let empty_matrix: Vec<Vec<E>> = vec![vec![Default::default(); 0]; 0];
-                    let conv_data = Conv_Data::<E>::new(
+                    let conv_data = ConvData::<E>::new(
                         empty_matrix.clone(),
                         empty_matrix.clone(),
                         empty_matrix.clone(),
@@ -191,7 +191,7 @@ impl Model {
                     };
                     trace.push_step(step);
                 }
-                Layer_Output::Conv_Out((output, conv_data)) => {
+                LayerOutput::ConvOut((output, conv_data)) => {
                     let step = InferenceStep {
                         layer,
                         output,
@@ -378,7 +378,7 @@ pub struct InferenceStep<'a, E, F: ExtensionField> {
     pub layer: &'a Layer,
     /// Output produced by this layer
     pub output: Tensor<E>,
-    pub conv_data: Conv_Data<F>,
+    pub conv_data: ConvData<F>,
 }
 
 #[cfg(test)]

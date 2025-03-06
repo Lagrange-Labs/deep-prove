@@ -52,7 +52,7 @@ use crate::{
     iop::{ActivationProof, ConvProof, DenseProof, PoolingProof},
     lookup::{self, LookupProtocol},
     model::{InferenceStep, InferenceTrace, Layer},
-    tensor::{Conv_Data, Tensor, getRootOfUnity},
+    tensor::{ConvData, Tensor, get_root_of_unity},
 };
 use anyhow::{Context as CC, anyhow, bail};
 use ff_ext::ExtensionField;
@@ -501,7 +501,7 @@ where
     // Compute powers of roots of unity
     pub fn phiPowInit(&mut self, phi_mul: &mut Vec<E>, n: usize, isIFFT: bool) {
         let N = 1 << n;
-        let rou: E = getRootOfUnity(n);
+        let rou: E = get_root_of_unity(n);
 
         let mut phi = rou;
         if (isIFFT) {
@@ -718,7 +718,7 @@ where
         // Struct containing all necessary information
         // to generate a convolution proof
         output: &Tensor<E>,
-        proving_data: &Conv_Data<E>,
+        proving_data: &ConvData<E>,
         info: &ConvInfo<E>,
         filter: &Tensor<Element>,
     ) -> anyhow::Result<Claim<E>> {

@@ -5,7 +5,7 @@ use crate::{
     commit::{self, identity_eval, precommit, same_poly},
     iop::{StepProof, context::StepInfo},
     lookup::{self, LookupProtocol, TableInfo},
-    tensor::{Tensor, getRootOfUnity},
+    tensor::{Tensor, get_root_of_unity},
 };
 use anyhow::{anyhow, bail, ensure};
 use ff_ext::ExtensionField;
@@ -433,7 +433,7 @@ pub fn phi_eval<E: ExtensionField>(
 
 pub fn pow_two_omegas<E: ExtensionField>(n: usize, isIFFT: bool) -> Vec<E> {
     let mut pows = vec![E::ZERO; n - 1];
-    let mut rou: E = getRootOfUnity(n);
+    let mut rou: E = get_root_of_unity(n);
     if (isIFFT) {
         rou = rou.invert().unwrap();
     }
