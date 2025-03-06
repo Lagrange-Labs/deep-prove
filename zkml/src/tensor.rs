@@ -207,6 +207,16 @@ where
         }
     }
 
+    pub fn pad_1d(mut self, new_len: usize) -> Self {
+        assert!(
+            self.shape.len() == 1,
+            "pad_1d only works for 1d tensors, e.g. vectors"
+        );
+        self.data.resize(new_len, Default::default());
+        self.shape[0] = new_len;
+        self
+    }
+
     pub fn pad_next_power_of_two_2d(mut self) -> Self {
         assert!(self.is_matrix(), "Tensor is not a matrix");
         // assume the matrix is already well formed and there is always n_rows and n_cols
@@ -454,6 +464,9 @@ impl Tensor<Element> {
     /// Returns the evaluation point, in order for (row,col) addressing
     pub fn evals_2d<F: ExtensionField>(&self) -> Vec<F> {
         assert!(self.is_matrix(), "Tensor is not a matrix");
+        self.evals_flat()
+    }
+    pub fn evals_flat<F: ExtensionField>(&self) -> Vec<F> {
         self.data.par_iter().map(|e| e.to_field()).collect()
     }
 

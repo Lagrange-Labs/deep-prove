@@ -412,10 +412,12 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
+    // Subtract the bias evaluation from the previous claim to remove the bias
+    let eval_no_bias = last_claim.eval - proof.bias_eval;
     debug!("VERIFIER: claim {:?}", last_claim);
     // TODO: currently that API can panic - should remove panic for error
     let subclaim =
-        IOPVerifierState::<E>::verify(last_claim.eval, &proof.sumcheck, &info.poly_aux, t);
+        IOPVerifierState::<E>::verify(eval_no_bias, &proof.sumcheck, &info.matrix_poly_aux, t);
 
     // MATRIX OPENING PART
     // pcs_eval means this evaluation should come from a PCS opening proof
@@ -429,7 +431,14 @@ where
     // Note we don't care about verifying that for the vector since it's verified at the next
     // step.
     let pcs_eval_output = proof.individual_claims[0];
-    commit_verifier.add_claim(info.poly_id, Claim::new(pcs_eval_input, pcs_eval_output))?;
+    commit_verifier.add_claim(
+        info.matrix_poly_id,
+        Claim::new(pcs_eval_input, pcs_eval_output),
+    )?;
+    commit_verifier.add_claim(
+        info.bias_poly_id,
+        Claim::new(last_claim.point, proof.bias_eval),
+    )?;
 
     // SUMCHECK verification part
     // Instead of computing the polynomial at the random point requested like this

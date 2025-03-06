@@ -14,6 +14,11 @@ use multilinear_extensions::virtual_poly::VPAuxInfo;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use transcript::Transcript;
 
+/// Bias to compute the bias ID polynomials. Since originally we take the index of each
+/// layer to be the index of the layer, we need to add a bias to avoid collision with other
+/// layers poly id.
+pub(crate) const BIAS_POLY_ID: PolyID = 100_000;
+
 /// Describes a steps wrt the polynomial to be proven/looked at. Verifier needs to know
 /// the sequence of steps and the type of each step from the setup phase so it can make sure the prover is not
 /// cheating on this.
@@ -35,9 +40,11 @@ where
 /// Holds the poly info for the polynomials representing each matrix in the dense layers
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DenseInfo<E> {
-    pub poly_id: PolyID,
-    pub poly_aux: VPAuxInfo<E>,
+    pub matrix_poly_id: PolyID,
+    pub matrix_poly_aux: VPAuxInfo<E>,
+    pub bias_poly_id: PolyID,
 }
+
 /// Currently holds the poly info for the output polynomial of the RELU
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ActivationInfo {
@@ -132,10 +139,10 @@ where
             .layers()
             .map(|(id, layer)| {
                 match layer {
-                    Layer::Dense(matrix) => {
+                    Layer::Dense(dense) => {
                         // construct dimension of the polynomial given to the sumcheck
-                        let ncols = matrix.ncols_2d();
-                        last_output_size = matrix.nrows_2d();
+                        let ncols = dense.matrix.ncols_2d();
+                        last_output_size = dense.matrix.nrows_2d();
                         // each poly is only two polynomial right now: matrix and vector
                         // for matrix, each time we fix the variables related to rows so we are only left
                         // with the variables related to columns
@@ -143,11 +150,12 @@ where
                         let vector_num_vars = matrix_num_vars;
                         // there is only one product (i.e. quadratic sumcheck)
                         let dense_info = StepInfo::Dense(DenseInfo {
-                            poly_id: id,
-                            poly_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![
+                            matrix_poly_id: id,
+                            matrix_poly_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![
                                 matrix_num_vars,
                                 vector_num_vars,
                             ]]),
+                            bias_poly_id: BIAS_POLY_ID + id,
                         });
                         dense_info
                     }
@@ -188,8 +196,8 @@ where
         for steps in self.steps_info.iter() {
             match steps {
                 StepInfo::Dense(info) => {
-                    t.append_field_element(&E::BaseField::from(info.poly_id as u64));
-                    info.poly_aux.write_to_transcript(t);
+                    t.append_field_element(&E::BaseField::from(info.matrix_poly_id as u64));
+                    info.matrix_poly_aux.write_to_transcript(t);
                 }
                 StepInfo::Requant(info) => {
                     t.append_field_element(&E::BaseField::from(info.poly_id as u64));

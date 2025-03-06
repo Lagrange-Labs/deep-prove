@@ -86,6 +86,10 @@ where
 pub struct DenseProof<E: ExtensionField> {
     /// the actual sumcheck proof proving the mat2vec protocol
     sumcheck: IOPProof<E>,
+    /// The evaluation of the bias at the previous claims in the proving flow.
+    /// The verifier substracts this from the previous claim to end up with one claim only
+    /// about the matrix, without the bias.
+    bias_eval: E,
     /// The individual evaluations of the individual polynomial for the last random part of the
     /// sumcheck. One for each polynomial involved in the "virtual poly". Since we only support quadratic right now it's
     /// a flat list.
@@ -160,7 +164,7 @@ mod test {
     #[test]
     fn test_prover_steps() {
         init_test_logging();
-        let (model, input) = Model::random(6);
+        let (model, input) = Model::random(4);
         model.describe();
         let trace = model.run(input.clone());
         let output = trace.final_output();

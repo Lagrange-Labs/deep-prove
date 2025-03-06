@@ -14,6 +14,7 @@ pub use iop::{
     verifier::{IO, verify},
 };
 
+pub mod dense;
 pub mod lookup;
 pub mod model;
 mod onnx_parse;

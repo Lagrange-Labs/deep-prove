@@ -1,3 +1,4 @@
+use crate::dense::Dense;
 use ff_ext::ExtensionField;
 use goldilocks::GoldilocksExt2;
 use itertools::Itertools;
@@ -17,8 +18,7 @@ pub type StepIdx = usize;
 
 #[derive(Clone, Debug)]
 pub enum Layer {
-    // TODO: replace this with a Tensor based implementation
-    Dense(Tensor<Element>),
+    Dense(Dense),
     Activation(Activation),
     // this is the output quant info. Since we always do a requant layer after each dense,
     // then we assume the inputs requant info are default()
@@ -38,7 +38,7 @@ impl Layer {
     // layer which is matmul
     pub fn op(&self, input: &Tensor<Element>) -> Tensor<Element> {
         match self {
-            Layer::Dense(ref matrix) => matrix.matvec(input),
+            Layer::Dense(ref dense) => dense.op(input),
             Layer::Activation(activation) => activation.op(input),
             Layer::Requant(info) => {
                 // NOTE: we assume we have default quant structure as input
@@ -50,19 +50,20 @@ impl Layer {
 
     pub fn shape(&self) -> Vec<usize> {
         match self {
-            Layer::Dense(ref matrix) => vec![matrix.nrows_2d(), matrix.ncols_2d()],
+            Layer::Dense(ref dense) => vec![dense.matrix.nrows_2d(), dense.matrix.ncols_2d()],
             Layer::Activation(Activation::Relu(_)) => Relu::shape(),
             Layer::Requant(info) => info.shape(),
             Layer::Pooling(Pooling::Maxpool2D(info)) => vec![info.kernel_size, info.kernel_size],
         }
     }
+
     pub fn describe(&self) -> String {
         match self {
-            Layer::Dense(ref matrix) => {
+            Layer::Dense(ref dense) => {
                 format!(
                     "Dense: ({},{})",
-                    matrix.nrows_2d(),
-                    matrix.ncols_2d(),
+                    dense.matrix.nrows_2d(),
+                    dense.matrix.ncols_2d(),
                     // matrix.fmt_integer()
                 )
             }
@@ -76,30 +77,6 @@ impl Layer {
                 "MaxPool2D{{ kernel size: {}, stride: {} }}",
                 info.kernel_size, info.stride
             ),
-        }
-    }
-    /// Prepare the input to return it in the right format expected for the first layer.
-    /// for the bias
-    pub fn prepare_input(&self, input: Tensor<Element>) -> Tensor<Element> {
-        match self {
-            Layer::Dense(ref matrix) => {
-                if input.get_data().len() == matrix.ncols_2d() {
-                    // no need to do anything if it's already at the right format
-                    input
-                } else {
-                    // append 1 for the bias factor and pad to right size
-                    let data = input
-                        .get_data()
-                        .to_vec()
-                        .into_iter()
-                        .chain(std::iter::once(1))
-                        .chain(std::iter::repeat(0))
-                        .take(matrix.ncols_2d())
-                        .collect_vec();
-                    Tensor::new(vec![matrix.ncols_2d()], data)
-                }
-            }
-            _ => panic!("Layer {:?} should not be a first layer", self.describe()),
         }
     }
 }
@@ -119,11 +96,11 @@ impl Model {
     }
     pub fn add_layer(&mut self, l: Layer) {
         let after_layer = match l {
-            Layer::Dense(ref matrix) => {
+            Layer::Dense(ref dense) => {
                 // append a requantization layer after
                 // NOTE: since we requantize at each dense step currently, we assume
                 // default quantization inputs for matrix and vector
-                Some(Layer::Requant(Requant::from_matrix_default(matrix)))
+                Some(Layer::Requant(dense.requant_info()))
             }
             _ => None,
         };
@@ -133,10 +110,13 @@ impl Model {
         }
     }
 
-    /// Prepare the input for the first layer. For example if it's a dense layer, input will be padded correctly
-    /// to handle the bias factor.
     pub fn prepare_input(&self, input: Tensor<Element>) -> Tensor<Element> {
-        self.layers[0].prepare_input(input)
+        match self.layers[0] {
+            Layer::Dense(ref dense) => input.pad_1d(dense.ncols()),
+            _ => {
+                panic!("unable to deal with non-vector input yet");
+            }
+        }
     }
 
     pub fn run<'a>(&'a self, input: Tensor<Element>) -> InferenceTrace<'a, Element> {
@@ -159,14 +139,14 @@ impl Model {
         let Layer::Dense(mat) = &self.layers[0] else {
             panic!("layer is not starting with a dense layer?");
         };
-        vec![mat.ncols_2d()]
+        vec![mat.matrix.ncols_2d()]
     }
 
     pub fn first_output_shape(&self) -> Vec<usize> {
         let Layer::Dense(mat) = &self.layers[0] else {
             panic!("layer is not starting with a dense layer?");
         };
-        vec![mat.nrows_2d()]
+        vec![mat.matrix.nrows_2d()]
     }
     /// Prints to stdout
     pub fn describe(&self) {
@@ -319,12 +299,13 @@ pub(crate) mod test {
         mle::{IntoMLE, MultilinearExtension},
         virtual_poly::VirtualPolynomial,
     };
-    use sumcheck::structs::IOPProverState;
+    use sumcheck::structs::{IOPProverState, IOPVerifierState};
 
     use crate::{
         Element,
         activation::{Activation, Relu},
         default_transcript,
+        dense::Dense,
         model::Layer,
         pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
         quantization::{Requant, TensorFielder},
@@ -349,11 +330,13 @@ pub(crate) mod test {
             let mut last_row = rng.gen_range(3..15);
             for selector in 0..num_dense_layers {
                 if selector % MOD_SELECTOR == SELECTOR_DENSE {
+                    // if true {
                     // last row becomes new column
                     let (nrows, ncols) = (rng.gen_range(3..15), last_row);
                     last_row = nrows;
-                    let mat = Tensor::random(vec![nrows, ncols]).pad_next_power_of_two_2d();
-                    model.add_layer(Layer::Dense(mat));
+                    model.add_layer(Layer::Dense(
+                        Dense::random(vec![nrows, ncols]).pad_next_power_of_two(),
+                    ));
                 } else if selector % MOD_SELECTOR == SELECTOR_RELU {
                     model.add_layer(Layer::Activation(Activation::Relu(Relu::new())));
                     // no need to change the `last_row` since RELU layer keeps the same shape
@@ -381,18 +364,18 @@ pub(crate) mod test {
     }
 
     #[test]
-    fn test_model_run() {
-        let mat1 = Tensor::random(vec![10, 11]).pad_next_power_of_two_2d();
-        let mat2 = Tensor::random(vec![7, mat1.ncols_2d()]).pad_next_power_of_two_2d();
-        let input = Tensor::random(vec![mat1.ncols_2d()]);
-        let output1 = mat1.matvec(&input);
-        let requant = Requant::from_matrix_default(&mat1);
+    fn test_model_manual_run() {
+        let dense1 = Dense::random(vec![10, 11]).pad_next_power_of_two();
+        let dense2 = Dense::random(vec![7, dense1.ncols()]).pad_next_power_of_two();
+        let input = Tensor::random(vec![dense1.ncols()]);
+        let output1 = dense1.op(&input);
+        let requant = dense1.requant_info();
         let requantized_output1 = requant.op(&output1);
-        let final_output = mat2.matvec(&requantized_output1);
+        let final_output = dense2.op(&requantized_output1);
 
         let mut model = Model::new();
-        model.add_layer(Layer::Dense(mat1));
-        model.add_layer(Layer::Dense(mat2.clone()));
+        model.add_layer(Layer::Dense(dense1.clone()));
+        model.add_layer(Layer::Dense(dense2.clone()));
 
         let trace = model.run(input.clone()).to_field::<F>();
         // 4 steps because we requant after each dense layer
@@ -403,21 +386,21 @@ pub(crate) mod test {
 
         // Verify second step
         assert_eq!(trace.steps[2].output, final_output.clone().to_fields());
-        let (nrow, _) = (mat2.nrows_2d(), mat2.ncols_2d());
+        let (nrow, _) = (dense2.nrows(), dense2.ncols());
         assert_eq!(final_output.get_data().len(), nrow);
     }
 
     #[test]
     fn test_inference_trace_iterator() {
-        let mat1 = Tensor::random(vec![10, 11]).pad_next_power_of_two_2d();
+        let dense1 = Dense::random(vec![10, 11]).pad_next_power_of_two();
         // let relu1 = Activation::Relu(Relu);
-        let mat2 = Tensor::random(vec![7, mat1.ncols_2d()]).pad_next_power_of_two_2d();
+        let dense2 = Dense::random(vec![7, dense1.ncols()]).pad_next_power_of_two();
         // let relu2 = Activation::Relu(Relu);
-        let input = Tensor::random(vec![mat1.ncols_2d()]);
+        let input = Tensor::random(vec![dense1.ncols()]);
 
         let mut model = Model::new();
-        model.add_layer(Layer::Dense(mat1));
-        model.add_layer(Layer::Dense(mat2));
+        model.add_layer(Layer::Dense(dense1));
+        model.add_layer(Layer::Dense(dense2));
 
         let trace = model.run(input.clone());
 
@@ -450,12 +433,12 @@ pub(crate) mod test {
 
     #[test]
     fn test_inference_trace_reverse_iterator() {
-        let mat1 = Tensor::random(vec![10, 11]).pad_next_power_of_two_2d();
+        let dense1 = Dense::random(vec![10, 11]).pad_next_power_of_two();
 
-        let input = Tensor::random(vec![mat1.ncols_2d()]);
+        let input = Tensor::random(vec![dense1.ncols()]);
 
         let mut model = Model::new();
-        model.add_layer(Layer::Dense(mat1));
+        model.add_layer(Layer::Dense(dense1));
 
         let trace = model.run(input.clone());
 
@@ -484,16 +467,20 @@ pub(crate) mod test {
         println!("INPUT: {:?}", input);
         let bb = model.clone();
         let trace = bb.run(input.clone()).to_field::<F>();
-        let matrices = model
+        let dense_layers = model
             .layers()
             .flat_map(|(_id, l)| match l {
-                Layer::Dense(ref matrix) => Some(matrix.clone()),
+                Layer::Dense(ref dense) => Some(dense.clone()),
                 _ => None,
             })
             .collect_vec();
-        let matrices_mle = matrices.iter().map(|m| m.to_mle_2d::<F>()).collect_vec();
-        let point1 = random_bool_vector(matrices[0].nrows_2d().ilog2() as usize);
+        let matrices_mle = dense_layers
+            .iter()
+            .map(|d| d.matrix.to_mle_2d::<F>())
+            .collect_vec();
+        let point1 = random_bool_vector(dense_layers[0].matrix.nrows_2d().ilog2() as usize);
         println!("point1: {:?}", point1);
+        // -2 because there is always requant after each dense layer
         let computed_eval1 = trace.steps[trace.steps.len() - 2]
             .output
             .get_data()
@@ -501,8 +488,16 @@ pub(crate) mod test {
             .into_mle()
             .evaluate(&point1);
         let flatten_mat1 = matrices_mle[0].fix_high_variables(&point1);
+        let bias_eval = dense_layers[0]
+            .bias
+            .evals_flat::<F>()
+            .into_mle()
+            .evaluate(&point1);
+        let computed_eval1_no_bias = computed_eval1 - bias_eval;
         let input_vector = trace.input.clone();
-        // y(r) = SUM_i m(r,i) x(i)
+        // since y = SUM M(j,i) x(i) + B(j)
+        // then
+        // y(r) - B(r) = SUM_i m(r,i) x(i)
         let full_poly = vec![
             flatten_mat1.clone().into(),
             input_vector.get_data().to_vec().into_mle().into(),
@@ -512,9 +507,17 @@ pub(crate) mod test {
         #[allow(deprecated)]
         let (proof, _state) =
             IOPProverState::<F>::prove_parallel(vp.clone(), &mut default_transcript());
-        let (p2, _s2) = IOPProverState::prove_batch_polys(1, vec![vp], &mut default_transcript());
+        let (p2, _s2) =
+            IOPProverState::prove_batch_polys(1, vec![vp.clone()], &mut default_transcript());
         let given_eval1 = proof.extract_sum();
         assert_eq!(p2.extract_sum(), proof.extract_sum());
-        assert_eq!(computed_eval1, given_eval1);
+        assert_eq!(computed_eval1_no_bias, given_eval1);
+
+        let _subclaim = IOPVerifierState::<F>::verify(
+            computed_eval1_no_bias,
+            &proof,
+            &vp.aux_info,
+            &mut default_transcript(),
+        );
     }
 }

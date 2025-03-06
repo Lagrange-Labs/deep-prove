@@ -6,6 +6,7 @@ use crate::{
     Claim, Element, VectorTranscript,
     activation::Activation,
     commit::{compute_betas_eval, identity_eval, precommit, same_poly},
+    dense,
     iop::{ActivationProof, DenseProof, PoolingProof},
     lookup::{self, LookupProtocol},
     model::{InferenceStep, InferenceTrace, Layer},
@@ -79,11 +80,11 @@ where
     ) -> anyhow::Result<Claim<E>> {
         println!("PROVER: proving layer {}", step.layer.to_string());
         let claim = match (step.layer, info) {
-            (Layer::Dense(matrix), StepInfo::Dense(info)) => {
+            (Layer::Dense(dense), StepInfo::Dense(info)) => {
                 // NOTE: here we treat the ID of the step AS the ID of the polynomial. THat's okay because we only care
                 // about these IDs being unique, so as long as the mapping between poly <-> id is correct, all good.
                 // This is the case here since we treat each matrix as a different poly
-                self.prove_dense_step(last_claim, input, &step.output, info, matrix)
+                self.prove_dense_step(last_claim, input, &step.output, info, dense)
             }
             (Layer::Activation(Activation::Relu(..)), StepInfo::Activation(..))
             | (Layer::Requant(..), StepInfo::Requant(..)) => {
@@ -389,9 +390,9 @@ where
         // output of dense layer evaluation
         output: &Tensor<E>,
         info: &DenseInfo<E>,
-        matrix: &Tensor<Element>,
+        dense: &dense::Dense,
     ) -> anyhow::Result<Claim<E>> {
-        // println!("PROVER: claim {:?}", last_claim);
+        let matrix = &dense.matrix;
         let (nrows, ncols) = (matrix.nrows_2d(), matrix.ncols_2d());
         assert_eq!(
             nrows,
@@ -410,6 +411,18 @@ where
             input.get_data().len(),
             "something's wrong with the input"
         );
+        // Evaluates the bias at the random point so verifier can substract the evaluation
+        // from the sumcheck claim that is only about the matrix2vec product.
+        assert_eq!(
+            dense.bias.get_data().len().ilog2() as usize,
+            last_claim.point.len(),
+            "something's wrong with the randomness"
+        );
+        let bias_eval = dense
+            .bias
+            .evals_flat::<E>()
+            .into_mle()
+            .evaluate(&last_claim.point);
         // contruct the MLE combining the input and the matrix
         let mut mat_mle = matrix.to_mle_2d();
         // fix the variables from the random input
@@ -439,11 +452,17 @@ where
             // asserted_sum in this case is the output MLE evaluated at the random point
             let mle_output = output.get_data().to_vec().into_mle();
             let claimed_sum = mle_output.evaluate(&last_claim.point);
+            let claimed_sum_no_bias = claimed_sum - bias_eval;
             debug_assert_eq!(claimed_sum, last_claim.eval, "sumcheck eval weird");
-            debug_assert_eq!(claimed_sum, proof.extract_sum(), "sumcheck output weird");
+            debug_assert_eq!(
+                claimed_sum_no_bias,
+                proof.extract_sum(),
+                "sumcheck output weird"
+            );
 
             debug!("prover: claimed sum: {:?}", claimed_sum);
-            let subclaim = IOPVerifierState::<E>::verify(claimed_sum, &proof, &vp.aux_info, &mut t);
+            let subclaim =
+                IOPVerifierState::<E>::verify(claimed_sum_no_bias, &proof, &vp.aux_info, &mut t);
             // now assert that the polynomial evaluated at the random point of the sumcheck proof
             // is equal to last small poly sent by prover (`subclaim.expected_evaluation`). This
             // step can be done via PCS opening proofs for all steps but first (output of
@@ -468,8 +487,13 @@ where
         let point = [proof.point.as_slice(), last_claim.point.as_slice()].concat();
         let eval = state.get_mle_final_evaluations()[0];
         self.commit_prover
-            .add_claim(info.poly_id, Claim::new(point, eval))
-            .context("unable to add claim")?;
+            .add_claim(info.matrix_poly_id, Claim::new(point, eval))
+            .context("unable to add matrix claim")?;
+        // add the bias claim over the last claim input, since that is what is needed to "remove" the bias
+        // to only verify the matrix2vec product via the sumcheck proof.
+        self.commit_prover
+            .add_claim(info.bias_poly_id, Claim::new(last_claim.point, bias_eval))
+            .context("unable to add bias claim")?;
 
         // the claim that this proving step outputs is the claim about not the matrix but the vector poly.
         // at next step, that claim will be proven over this vector poly (either by the next dense layer proving, or RELU etc).
@@ -479,6 +503,7 @@ where
         };
         self.proofs.push(StepProof::Dense(DenseProof {
             sumcheck: proof,
+            bias_eval,
             individual_claims: state.get_mle_final_evaluations(),
         }));
         Ok(claim)
