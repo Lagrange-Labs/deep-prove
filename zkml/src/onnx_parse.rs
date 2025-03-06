@@ -450,6 +450,7 @@ mod tests {
 
         let model = load_mlp::<Element>(&filepath).unwrap();
         let input = crate::tensor::Tensor::random(vec![model.input_shape()[0]]);
+        let input = model.prepare_input(input);
         let trace = model.run::<F>(input.clone());
         println!("Result: {:?}", trace.final_output());
     }
