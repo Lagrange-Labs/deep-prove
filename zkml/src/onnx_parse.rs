@@ -508,12 +508,6 @@ pub fn analyze_model_weight_ranges(filepath: &str) -> Result<(f32, f32)> {
     Ok((global_min, global_max))
 }
 
-// Update load_cnn to use the new unified loader
-#[allow(dead_code)]
-pub fn load_cnn<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
-    load_model::<Q>(filepath, ModelType::CNN)
-}
-
 #[cfg(test)]
 mod tests {
 
