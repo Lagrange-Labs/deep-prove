@@ -1,45 +1,3 @@
-// use super::{
-//     Context, Proof, RequantProof, StepProof, TableProof,
-//     context::{DenseInfo, PoolingInfo, StepInfo},
-// };
-// use crate::{
-//     Claim, Context, Element, Proof, RequantProof, StepProof, VectorTranscript,
-//     activation::Activation,
-//     commit::{compute_betas_eval, identity_eval, precommit, same_poly},
-//     context::{ConvInfo, DenseInfo, StepInfo},
-//     dense,
-//     iop::{ActivationProof, DenseProof, PoolingProof},
-//     lookup::{self, LookupProtocol},
-//     model::{InferenceStep, InferenceTrace, Layer},
-//     tensor::Tensor,
-// };
-// use anyhow::{Context as CC, anyhow, bail};
-// use ff_ext::ExtensionField;
-
-// use crate::{
-//     Claim, Element, VectorTranscript,
-//     activation::Activation,
-//     commit::{precommit, same_poly},
-//     iop::{ActivationProof, ConvProof, DenseProof},
-//     lookup::{self, LookupProtocol},
-//     model::{InferenceStep, InferenceTrace, Layer},
-//     tensor::{Conv_Data, Tensor, getRootOfUnity},
-// };
-// use anyhow::{Context as CC, anyhow, bail};
-// use ff_ext::ExtensionField;
-// use gkr::structs::IOPProof;
-// use goldilocks::GoldilocksExt2;
-// use itertools::{Itertools, assert_equal};
-// use tracing::{debug, warn};
-// use multilinear_extensions::{
-//     mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension, IntoMLE, MultilinearExtension},
-//     virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial},
-// };
-// use serde::{Serialize, de::DeserializeOwned};
-// use std::{marker::PhantomData, sync::Arc};
-// use sumcheck::structs::{IOPProverState, IOPVerifierState};
-// use transcript::Transcript;
-
 use super::{
     ChallengeStorage, Context, Proof, RequantProof, StepProof, TableProof,
     context::{ConvInfo, DenseInfo, PoolingInfo, StepInfo},
@@ -64,9 +22,9 @@ use multilinear_extensions::{
     virtual_poly::{ArcMultilinearExtension, VirtualPolynomial},
 };
 use serde::{Serialize, de::DeserializeOwned};
-use timed::timed_instrument;
 use std::marker::PhantomData;
 use sumcheck::structs::{IOPProverState, IOPVerifierState};
+use timed::timed_instrument;
 use tracing::{debug, instrument, trace, warn};
 use transcript::Transcript;
 
@@ -173,7 +131,7 @@ where
         claim
     }
 
-    #[timed::timed_instrument(level="debug")]
+    #[timed::timed_instrument(level = "debug")]
     fn prove_lookup(
         &mut self,
         last_claim: &Claim<E>,
@@ -742,7 +700,7 @@ where
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
 
         let mut claims = state.get_mle_final_evaluations();
-        
+
         (
             proof.clone(),
             claims,
@@ -1022,17 +980,32 @@ where
         let mut v = input_point.pop().unwrap();
         v = (E::ONE - v).invert().unwrap();
         debug_assert!({
-            let mut p = [input_point.clone(),hadamard_proof.point[((filter.filter_size() * 2).ilog2() as usize)..].to_vec()].concat();
-            //println!("({},{}), {}",proving_data.input.len(),proving_data.input[0].len(),p.len());
-            let y =  proving_data.input.clone().into_iter().flat_map(|v| v.into_iter()).collect::<Vec<E>>().into_mle().evaluate(&p);
-            assert_eq!(y,fft_claim[0] * v,"Error in input eval CONV PROVER");
-            for i in 0..((filter.filter_size().ilog2()) as usize){
+            let mut p = [
+                input_point.clone(),
+                hadamard_proof.point[((filter.filter_size() * 2).ilog2() as usize)..].to_vec(),
+            ]
+            .concat();
+            // println!("({},{}), {}",proving_data.input.len(),proving_data.input[0].len(),p.len());
+            let y = proving_data
+                .input
+                .clone()
+                .into_iter()
+                .flat_map(|v| v.into_iter())
+                .collect::<Vec<E>>()
+                .into_mle()
+                .evaluate(&p);
+            assert_eq!(y, fft_claim[0] * v, "Error in input eval CONV PROVER");
+            for i in 0..((filter.filter_size().ilog2()) as usize) {
                 p[i] = E::ONE - p[i];
             }
-            assert_eq!(proving_data.real_input.clone().into_mle().evaluate(&p),fft_claim[0] * v,"Error in real input eval CONV PROVER");
+            assert_eq!(
+                proving_data.real_input.clone().into_mle().evaluate(&p),
+                fft_claim[0] * v,
+                "Error in real input eval CONV PROVER"
+            );
             proving_data.real_input.clone().into_mle().evaluate(&p) == fft_claim[0] * v
         });
-        for i in 0..input_point.len(){
+        for i in 0..input_point.len() {
             input_point[i] = E::ONE - input_point[i];
         }
         let final_claim = Claim {
@@ -1047,7 +1020,7 @@ where
         Ok(final_claim)
     }
 
-    #[timed::timed_instrument(level="debug")]
+    #[timed::timed_instrument(level = "debug")]
     fn prove_dense_step(
         &mut self,
         // last random claim made
@@ -1061,7 +1034,7 @@ where
     ) -> anyhow::Result<Claim<E>> {
         let matrix = &dense.matrix;
         let (nrows, ncols) = (matrix.nrows_2d(), matrix.ncols_2d());
-        debug!("dense proving nrows: {} ncols: {}",nrows,ncols);
+        debug!("dense proving nrows: {} ncols: {}", nrows, ncols);
         assert_eq!(
             nrows,
             output.get_data().len(),
@@ -1233,7 +1206,7 @@ where
     }
 
     /// Looks at all the individual polys to accumulate from the witnesses and create the context from that.
-    #[timed_instrument(level="debug")]
+    #[timed_instrument(level = "debug")]
     fn instantiate_witness_ctx<'b>(
         &mut self,
         trace: &InferenceTrace<'b, Element, E>,
