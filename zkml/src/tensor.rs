@@ -17,13 +17,7 @@ use std::{
     fmt::{self, Debug},
 };
 
-use crate::{
-    Element,
-    pooling::MAXPOOL2D_KERNEL_SIZE,
-    quantization::Fieldizer,
-    testing::{random_vector, random_vector_seed},
-    to_bit_sequence_le,
-};
+use crate::{Element, pooling::MAXPOOL2D_KERNEL_SIZE, quantization::Fieldizer, to_bit_sequence_le};
 
 // Function testing the consistency between the actual convolution implementation and
 // the FFT one. Used for debugging purposes.
@@ -272,10 +266,10 @@ impl Tensor<Element> {
     // needed to generate a convolution proof
     pub fn fft_conv<F: ExtensionField>(
         &self,
-        X: &Tensor<Element>,
+        x: &Tensor<Element>,
     ) -> (Tensor<Element>, ConvData<F>) {
-        let n_x = X.shape[1].next_power_of_two();
-        let mut x_vec = vec![vec![F::ZERO; n_x * n_x]; X.shape[0].next_power_of_two()];
+        let n_x = x.shape[1].next_power_of_two();
+        let mut x_vec = vec![vec![F::ZERO; n_x * n_x]; x.shape[0].next_power_of_two()];
         let mut w_fft = vec![F::ZERO; self.data.len()];
         for i in 0..w_fft.len() {
             if self.data[i] < 0 {
@@ -287,7 +281,7 @@ impl Tensor<Element> {
 
         for i in 0..x_vec.len() {
             index_x(
-                X.data[i * n_x * n_x..(i + 1) * n_x * n_x].to_vec(),
+                x.data[i * n_x * n_x..(i + 1) * n_x * n_x].to_vec(),
                 &mut x_vec[i],
                 n_x,
             );
@@ -621,15 +615,6 @@ where
     pub fn pad_next_power_of_two(&self) -> Self {
         let shape = self.dims();
 
-        let checker = shape
-            .iter()
-            .fold(true, |acc, dim| acc & dim.is_power_of_two());
-
-        // If all dims are already a power of two then short circuit early
-        if checker {
-            return self.clone();
-        }
-
         let padded_data = Self::recursive_pad(self.get_data(), &shape);
 
         let padded_shape = shape
@@ -750,30 +735,30 @@ where
         return out;
     }
 
-    pub fn add_matrix(&self, M1: &mut Vec<Vec<T>>, M2: Vec<Vec<T>>) -> Vec<Vec<T>> {
-        let mut M = vec![vec![Default::default(); M1[0].len()]; M1.len()];
-        for i in 0..M.len() {
-            for j in 0..M[i].len() {
-                M[i][j] = M1[i][j] + M2[i][j];
+    pub fn add_matrix(&self, m1: &mut Vec<Vec<T>>, m2: Vec<Vec<T>>) -> Vec<Vec<T>> {
+        let mut m = vec![vec![Default::default(); m1[0].len()]; m1.len()];
+        for i in 0..m.len() {
+            for j in 0..m[i].len() {
+                m[i][j] = m1[i][j] + m2[i][j];
             }
         }
-        return M;
+        return m;
     }
 
     // Implementation of the stadard convolution algorithm.
     // This is needed mostly for debugging purposes
-    pub fn cnn_naive_convolution(&self, X: &Tensor<T>) -> Tensor<T> {
+    pub fn cnn_naive_convolution(&self, xt: &Tensor<T>) -> Tensor<T> {
         let k_w = self.shape[0];
         let k_x = self.shape[1];
         let n_w = self.shape[2];
-        let n = X.shape[0];
+        let n = xt.shape[0];
         let mut ctr = 0;
         assert!(n == k_x, "Inconsistency on filter/input vector");
 
         let mut w: Vec<Vec<Vec<Vec<T>>>> =
             vec![vec![vec![vec![Default::default(); n_w]; n_w]; k_x]; k_w];
         let mut x: Vec<Vec<Vec<T>>> =
-            vec![vec![vec![Default::default(); X.shape[1]]; X.shape[1]]; n];
+            vec![vec![vec![Default::default(); xt.shape[1]]; xt.shape[1]]; n];
         for k in 0..k_w {
             for l in 0..k_x {
                 for i in 0..n_w {
@@ -786,15 +771,15 @@ where
         }
         ctr = 0;
         for k in 0..n {
-            for i in 0..X.shape[1] {
-                for j in 0..X.shape[1] {
-                    x[k][i][j] = X.data[ctr];
+            for i in 0..xt.shape[1] {
+                for j in 0..xt.shape[1] {
+                    x[k][i][j] = xt.data[ctr];
                     ctr += 1;
                 }
             }
         }
         let mut conv: Vec<Vec<Vec<T>>> =
-            vec![vec![vec![Default::default(); X.shape[1] - n_w + 1]; X.shape[1] - n_w + 1]; k_w];
+            vec![vec![vec![Default::default(); xt.shape[1] - n_w + 1]; xt.shape[1] - n_w + 1]; k_w];
 
         for i in 0..k_w {
             for j in 0..k_x {
@@ -804,7 +789,7 @@ where
         }
 
         return Tensor::new(
-            vec![k_w, X.shape[1] - n_w + 1, X.shape[1] - n_w + 1],
+            vec![k_w, xt.shape[1] - n_w + 1, xt.shape[1] - n_w + 1],
             conv.into_iter()
                 .flat_map(|inner_vec| inner_vec.into_iter())
                 .flat_map(|inner_inner_vec| inner_inner_vec.into_iter())
@@ -889,32 +874,6 @@ where
 }
 
 impl Tensor<Element> {
-    /// Creates a random matrix with a given number of rows and cols.
-    /// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
-    /// sync which is not true for basic rng core.
-    pub fn random(shape: Vec<usize>) -> Self {
-        let size = shape.iter().product();
-        let data = random_vector(size);
-        Self {
-            data,
-            shape,
-            input_shape: vec![0],
-        }
-    }
-
-    /// Creates a random matrix with a given number of rows and cols.
-    /// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
-    /// sync which is not true for basic rng core.
-    pub fn random_seed(shape: Vec<usize>, seed: Option<u64>) -> Self {
-        let size = shape.iter().product();
-        let data = random_vector_seed(size, seed);
-        Self {
-            data,
-            shape,
-            input_shape: vec![0],
-        }
-    }
-
     /// Returns the evaluation point, in order for (row,col) addressing
     pub fn evals_2d<F: ExtensionField>(&self) -> Vec<F> {
         assert!(self.is_matrix(), "Tensor is not a matrix");
@@ -1243,13 +1202,44 @@ impl PartialEq for Tensor<GoldilocksExt2> {
     }
 }
 
+
+#[cfg(test)]
 mod test {
+
     use ark_std::rand::{Rng, thread_rng};
     use goldilocks::GoldilocksExt2;
-    use multilinear_extensions::mle::MultilinearExtension;
+
+    use super::super::testing::{random_vector, random_vector_seed};
 
     use super::*;
+    use multilinear_extensions::mle::MultilinearExtension;
+    impl Tensor<Element> {
+        /// Creates a random matrix with a given number of rows and cols.
+        /// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
+        /// sync which is not true for basic rng core.
+        pub fn random(shape: Vec<usize>) -> Self {
+            let size = shape.iter().product();
+            let data = random_vector(size);
+            Self {
+                data,
+                shape,
+                input_shape: vec![0],
+            }
+        }
 
+        /// Creates a random matrix with a given number of rows and cols.
+        /// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
+        /// sync which is not true for basic rng core.
+        pub fn random_seed(shape: Vec<usize>, seed: Option<u64>) -> Self {
+            let size = shape.iter().product();
+            let data = random_vector_seed(size, seed);
+            Self {
+                data,
+                shape,
+                input_shape: vec![0],
+            }
+        }
+    }
     #[test]
     fn test_tensor_basic_ops() {
         let tensor1 = Tensor::new(vec![2, 2], vec![1, 2, 3, 4]);
@@ -1419,9 +1409,9 @@ mod test {
                         let rand_vec = random_vector(n_w*n_w*k_x*k_w);
                         let filter_1 = Tensor::new_conv(vec![k_w,k_x,n_w,n_w], vec![k_x,n_x,n_x], rand_vec.iter().map(|&x| x as Element).collect());
                         let filter_2 = Tensor::new(vec![k_w,k_x,n_w,n_w], rand_vec.iter().map(|&x| x as Element).collect());
-                        let X = Tensor::new(vec![k_x,n_x,n_x],vec![3;n_x*n_x*k_x]);//random_vector(n_x*n_x*k_x));
-                        let (out_2,_) = filter_1.fft_conv::<GoldilocksExt2>(&X);
-                        let out_1 = filter_2.cnn_naive_convolution(&X);
+                        let big_x = Tensor::new(vec![k_x,n_x,n_x],vec![3;n_x*n_x*k_x]);//random_vector(n_x*n_x*k_x));
+                        let (out_2,_) = filter_1.fft_conv::<GoldilocksExt2>(&big_x);
+                        let out_1 = filter_2.cnn_naive_convolution(&big_x);
                         check_tensor_consistency(out_1,out_2);
                         /*
 

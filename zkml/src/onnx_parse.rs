@@ -143,7 +143,7 @@ impl ModelType {
                     bail!("Model is not a valid CNN architecture");
                 }
                 Ok(())
-            },
+            }
             ModelType::MLP => {
                 if !is_mlp(filepath)? {
                     bail!("Model is not a valid MLP architecture");
@@ -155,19 +155,18 @@ impl ModelType {
 }
 
 /// Unified model loading function that handles both MLP and CNN models
-pub fn load_model<Q: Quantizer<Element>>(
-    filepath: &str, 
-    model_type: ModelType
-) -> Result<Model> {
+pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) -> Result<Model> {
     // Validate that the model matches the expected type
     model_type.validate(filepath)?;
-    
+
     // Get global weight ranges first
     let (global_min, global_max) = analyze_model_weight_ranges(filepath)?;
     let global_max_abs = global_min.abs().max(global_max.abs());
-    println!("Using global weight range for quantization: [{}, {}], max_abs={}", 
-             global_min, global_max, global_max_abs);
-    
+    println!(
+        "Using global weight range for quantization: [{}, {}], max_abs={}",
+        global_min, global_max, global_max_abs
+    );
+
     // Continue with model loading
     let model = tract_onnx::onnx()
         .proto_model_for_path(filepath)
@@ -193,9 +192,13 @@ pub fn load_model<Q: Quantizer<Element>>(
         match node.op_type.as_str() {
             op if LINEAR_ALG.contains(&op) => {
                 let mut weight = fetch_weight_bias_as_tensor::<Q>(
-                    "weight", node, &initializers, global_max_abs)?;
-                let bias = fetch_weight_bias_as_tensor::<Q>(
-                    "bias", node, &initializers, global_max_abs)?;
+                    "weight",
+                    node,
+                    &initializers,
+                    global_max_abs,
+                )?;
+                let bias =
+                    fetch_weight_bias_as_tensor::<Q>("bias", node, &initializers, global_max_abs)?;
                 ensure!(bias.dims().len() == 1, "bias is not a vector");
                 let nrows = weight.dims()[0];
                 ensure!(
@@ -239,11 +242,15 @@ pub fn load_model<Q: Quantizer<Element>>(
                 layers.push(layer);
             }
             op if CONVOLUTION.contains(&op) => {
-                let weight = fetch_weight_bias_as_tensor::<Q>(
-                    "weight", node, &initializers, global_max_abs)?;
-                let bias = fetch_weight_bias_as_tensor::<Q>(
-                    "bias", node, &initializers, global_max_abs)?;
-                // CNN-specific implementation 
+                let _weight = fetch_weight_bias_as_tensor::<Q>(
+                    "weight",
+                    node,
+                    &initializers,
+                    global_max_abs,
+                )?;
+                let _bias =
+                    fetch_weight_bias_as_tensor::<Q>("bias", node, &initializers, global_max_abs)?;
+                // CNN-specific implementation
                 unimplemented!("CNN convolution layer processing not yet implemented")
             }
             op if DOWNSAMPLING.contains(&op) => {
@@ -269,7 +276,7 @@ pub fn load_model<Q: Quantizer<Element>>(
 }
 
 /// Common function to extract tensor data from a node
-/// 
+///
 /// This function handles finding the tensor by name, applying alpha/beta multipliers,
 /// and extracting the raw f32 data and shape for further processing.
 fn extract_tensor_f32_data(
@@ -293,7 +300,7 @@ fn extract_tensor_f32_data(
             })
             .map(|x| x.f)
             .collect_vec();
-        
+
         if !result.is_empty() {
             alpha_or_beta = result[0];
         }
@@ -316,10 +323,10 @@ fn extract_tensor_f32_data(
     let tensor_t = tensor_vec[0].clone();
     let tensor_shape = tensor_t.shape().to_vec();
     let tensor_t_f32 = tensor_t.as_slice::<f32>().unwrap().to_vec();
-    
+
     // Apply alpha/beta multiplier
     let tensor_t_f32 = tensor_t_f32.iter().map(|x| x * alpha_or_beta).collect_vec();
-    
+
     Ok(Some((tensor_t_f32, tensor_shape)))
 }
 
@@ -334,11 +341,15 @@ fn extract_node_weight_range(
         Some(data) => data,
         None => return Ok(None),
     };
-    
+
     // Find min and max values
-    let min_val = tensor_data.iter().fold(f32::MAX, |min_so_far, &val| min_so_far.min(val));
-    let max_val = tensor_data.iter().fold(f32::MIN, |max_so_far, &val| max_so_far.max(val));
-    
+    let min_val = tensor_data
+        .iter()
+        .fold(f32::MAX, |min_so_far, &val| min_so_far.min(val));
+    let max_val = tensor_data
+        .iter()
+        .fold(f32::MIN, |max_so_far, &val| max_so_far.max(val));
+
     Ok(Some((min_val, max_val)))
 }
 
@@ -349,28 +360,37 @@ fn fetch_weight_bias_as_tensor<Q: Quantizer<Element>>(
     global_max_abs: f32,
 ) -> Result<crate::tensor::Tensor<Element>> {
     // Extract the tensor data using the common function
-    let (tensor_data, tensor_shape) = match extract_tensor_f32_data(weight_or_bias, node, initializers)? {
-        Some(data) => data,
-        None => bail!("No {} tensor found for node {}", weight_or_bias, node.name),
-    };
-    
+    let (tensor_data, tensor_shape) =
+        match extract_tensor_f32_data(weight_or_bias, node, initializers)? {
+            Some(data) => data,
+            None => bail!("No {} tensor found for node {}", weight_or_bias, node.name),
+        };
+
     // For debugging, calculate the local range
-    let local_max_abs = tensor_data.iter().fold(0.0f32, |max_so_far, &val| max_so_far.max(val.abs()));
-    let min_val = tensor_data.iter().fold(f32::MAX, |min_so_far, &val| min_so_far.min(val));
-    let max_val = tensor_data.iter().fold(f32::MIN, |max_so_far, &val| max_so_far.max(val));
-    
-    println!("Tensor {}: local range=[{}, {}], abs={}, using global_max_abs={}", 
-             weight_or_bias, min_val, max_val, local_max_abs, global_max_abs);
-    
+    let local_max_abs = tensor_data
+        .iter()
+        .fold(0.0f32, |max_so_far, &val| max_so_far.max(val.abs()));
+    let min_val = tensor_data
+        .iter()
+        .fold(f32::MAX, |min_so_far, &val| min_so_far.min(val));
+    let max_val = tensor_data
+        .iter()
+        .fold(f32::MIN, |max_so_far, &val| max_so_far.max(val));
+
+    println!(
+        "Tensor {}: local range=[{}, {}], abs={}, using global_max_abs={}",
+        weight_or_bias, min_val, max_val, local_max_abs, global_max_abs
+    );
+
     // Quantize using the global max_abs
     let tensor_f = tensor_data
         .iter()
         .map(|x| Q::from_f32_unsafe_clamp(x, global_max_abs as f64))
         //.map(|x| Q::from_f32_unsafe_clamp(x, local_max_abs as f64))
         .collect_vec();
-    
+
     let tensor_result = crate::tensor::Tensor::new(tensor_shape, tensor_f);
-    
+
     Ok(tensor_result)
 }
 
@@ -410,9 +430,9 @@ fn fetch_maxpool_attributes(node: &NodeProto) -> Result<()> {
     Ok(())
 }
 
-/// Analyzes all weights from supported layers (Dense and Conv2D) 
+/// Analyzes all weights from supported layers (Dense and Conv2D)
 /// and returns the global min and max values.
-/// 
+///
 /// This is useful for determining quantization ranges for the entire model.
 pub fn analyze_model_weight_ranges(filepath: &str) -> Result<(f32, f32)> {
     if !Path::new(filepath).exists() {
@@ -445,35 +465,48 @@ pub fn analyze_model_weight_ranges(filepath: &str) -> Result<(f32, f32)> {
     // Examine all nodes in the graph
     for node in graph.node.iter() {
         let op_type = node.op_type.as_str();
-        
+
         // Only process layers we support
         if LINEAR_ALG.contains(&op_type) || CONVOLUTION.contains(&op_type) {
             // Process weights
-            if let Some(weight_min_max) = extract_node_weight_range("weight", node, &initializers)? {
+            if let Some(weight_min_max) = extract_node_weight_range("weight", node, &initializers)?
+            {
                 global_min = global_min.min(weight_min_max.0);
                 global_max = global_max.max(weight_min_max.1);
-                debug!("Node {}: weight range [{}, {}]", node.name, weight_min_max.0, weight_min_max.1);
+                debug!(
+                    "Node {}: weight range [{}, {}]",
+                    node.name, weight_min_max.0, weight_min_max.1
+                );
             }
-            
+
             // Process bias if present
             if let Some(bias_min_max) = extract_node_weight_range("bias", node, &initializers)? {
                 global_min = global_min.min(bias_min_max.0);
                 global_max = global_max.max(bias_min_max.1);
-                debug!("Node {}: bias range [{}, {}]", node.name, bias_min_max.0, bias_min_max.1);
+                debug!(
+                    "Node {}: bias range [{}, {}]",
+                    node.name, bias_min_max.0, bias_min_max.1
+                );
             }
         }
     }
 
     // Handle case where no weights were found
     if global_min == f32::MAX || global_max == f32::MIN {
-        return Err(Error::msg("No supported layers with weights found in model"));
+        return Err(Error::msg(
+            "No supported layers with weights found in model",
+        ));
     }
 
-    println!("Global weight range: min={}, max={}", global_min, global_max);
+    println!(
+        "Global weight range: min={}, max={}",
+        global_min, global_max
+    );
     Ok((global_min, global_max))
 }
 
 // Update load_cnn to use the new unified loader
+#[allow(dead_code)]
 pub fn load_cnn<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
     load_model::<Q>(filepath, ModelType::CNN)
 }
@@ -548,11 +581,11 @@ mod tests {
     }
 
     // #[test]
-    fn test_load_cnn() {
-        // let filepath = "assets/scripts/CNN/lenet-mnist-01.onnx";
-        let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
-        let result = load_model::<Element>(&filepath, ModelType::CNN);
+    // fn test_load_cnn() {
+    //    // let filepath = "assets/scripts/CNN/lenet-mnist-01.onnx";
+    //    let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
+    //    let result = load_model::<Element>(&filepath, ModelType::CNN);
 
-        assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
-    }
+    //    assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
+    //}
 }

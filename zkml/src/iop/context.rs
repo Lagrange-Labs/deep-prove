@@ -33,7 +33,7 @@ where
 {
     Dense(DenseInfo<E>),
     Convolution(ConvInfo<E>),
-    Traditional_Convolution(Traditional_ConvInfo<E>),
+    SchoolBookConvolution(SchoolBookConvInfo<E>),
     Activation(ActivationInfo),
     Requant(RequantInfo),
     Pooling(PoolingInfo), // Maxpool update
@@ -55,7 +55,7 @@ pub struct ConvInfo<E> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Traditional_ConvInfo<E> {
+pub struct SchoolBookConvInfo<E> {
     pub dummy: E,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -112,7 +112,7 @@ where
     pub fn variant_name(&self) -> String {
         match self {
             Self::Dense(_) => "Dense".to_string(),
-            Self::Traditional_Convolution(_) => "Traditional Convolution".to_string(),
+            Self::SchoolBookConvolution(_) => "Traditional Convolution".to_string(),
             Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
             Self::Requant(_) => "Requant".to_string(),
@@ -269,10 +269,9 @@ where
                         });
                         conv_info
                     }
-                    Layer::Traditional_Convolution(filter) => {
-                        let conv_info = StepInfo::Traditional_Convolution(Traditional_ConvInfo {
-                            dummy: E::ZERO,
-                        });
+                    Layer::SchoolBookConvolution(_filter) => {
+                        let conv_info =
+                            StepInfo::SchoolBookConvolution(SchoolBookConvInfo { dummy: E::ZERO });
                         conv_info
                     }
                 }
@@ -327,7 +326,7 @@ where
                     info.ifft_aux.write_to_transcript(t);
                     info.hadamard.write_to_transcript(t);
                 }
-                StepInfo::Traditional_Convolution(info) => {}
+                StepInfo::SchoolBookConvolution(_info) => {}
             }
         }
         self.weights.write_to_transcript(t)?;

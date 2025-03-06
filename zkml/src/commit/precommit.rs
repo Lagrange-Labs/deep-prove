@@ -120,8 +120,6 @@ where
                 .enumerate()
                 .map(|(idx, (id, poly_len))| (*id, (idx, poly_len))),
         );
-        let lenlens = polys.iter().map(|(_, w_i)| w_i.len()).collect_vec();
-        let sum_lenlens = lenlens.iter().sum::<usize>().ilog2();
         let flattened = polys
             .into_iter()
             .map(|(_, w_i)| w_i)

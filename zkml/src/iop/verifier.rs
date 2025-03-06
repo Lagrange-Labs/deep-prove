@@ -10,8 +10,7 @@ use crate::{
 use anyhow::{anyhow, bail, ensure};
 use ff_ext::ExtensionField;
 
-use gkr::util::ceil_log2;
-use itertools::{Itertools, assert_equal, izip};
+use itertools::{Itertools, izip};
 use log::debug;
 use multilinear_extensions::{
     mle::{IntoMLE, MultilinearExtension},
@@ -20,7 +19,6 @@ use multilinear_extensions::{
 
 use serde::{Serialize, de::DeserializeOwned};
 use sumcheck::structs::IOPVerifierState;
-use tract_onnx::tract_core::ops::cnn::Conv;
 use transcript::Transcript;
 
 use super::{
@@ -193,11 +191,6 @@ where
                 )?
             }
             (StepProof::<E>::Convolution(proof), StepInfo::<E>::Convolution(info)) => {
-                let info = if let StepInfo::Convolution(info) = &ctx.steps_info[i] {
-                    info
-                } else {
-                    return Err(anyhow!("Step info does not line up at Convolution step"));
-                };
                 verify_convolution(output_claim, &proof, info, &mut commit_verifier, transcript)?
             }
             _ => bail!(
@@ -365,7 +358,6 @@ where
         .step_by(2)
         .map(|claim| output_claims[0].eval - claim.eval)
         .product::<E>();
-
     let beta_eval = identity_eval(&output_claims[0].point, &challenge_point);
 
     let computed_zerocheck_claim = beta_eval * zerocheck_claim_no_beta;
@@ -375,6 +367,31 @@ where
         "Computed zerocheck claim did not line up with output of sumcheck verification"
     );
 
+    let lookup_gkr_claim = verifier_claims.gkr_claim();
+    let gkr_point = &lookup_gkr_claim.point_and_evals[0].point;
+    let gkr_point_len = gkr_point.len();
+    let gkr1 = gkr_point[gkr_point_len - 2];
+    let gkr2 = gkr_point[gkr_point_len - 1];
+    let extra_multiplcands = [
+        (E::ONE - gkr1) * (E::ONE - gkr2),
+        (E::ONE - gkr1) * gkr2,
+        gkr1 * (E::ONE - gkr2),
+        gkr1 * gkr2,
+    ];
+    let lookup_claim = input_claims
+        .iter()
+        .skip(1)
+        .step_by(2)
+        .zip(extra_multiplcands)
+        .map(|(claim, m)| (output_claims[1].eval - claim.eval) * m)
+        .sum::<E>();
+
+    ensure!(
+        lookup_claim == lookup_gkr_claim.point_and_evals[0].eval,
+        "Lookup claim did not line up got {:?} expected {:?}",
+        lookup_claim,
+        lookup_gkr_claim.point_and_evals[0].eval
+    );
     Ok(out_claim)
 }
 
@@ -460,14 +477,14 @@ pub fn phi_eval<E: ExtensionField>(
     rand1: E,
     rand2: E,
     exponents: Vec<E>,
-    FirstIter: bool,
+    first_iter: bool,
 ) -> E {
     let mut eval = E::ONE;
     for i in 0..r.len() {
-        eval *= (E::ONE - r[i] + r[i] * exponents[exponents.len() - r.len() + i]);
+        eval *= E::ONE - r[i] + r[i] * exponents[exponents.len() - r.len() + i];
     }
 
-    if (FirstIter) {
+    if first_iter {
         eval = (E::ONE - rand2) * (E::ONE - rand1 + rand1 * eval);
     } else {
         eval = E::ONE - rand1 + (E::ONE - E::from(2) * rand2) * rand1 * eval;
@@ -476,10 +493,10 @@ pub fn phi_eval<E: ExtensionField>(
     return eval;
 }
 
-pub fn pow_two_omegas<E: ExtensionField>(n: usize, isIFFT: bool) -> Vec<E> {
+pub fn pow_two_omegas<E: ExtensionField>(n: usize, is_fft: bool) -> Vec<E> {
     let mut pows = vec![E::ZERO; n - 1];
     let mut rou: E = get_root_of_unity(n);
-    if (isIFFT) {
+    if is_fft {
         rou = rou.invert().unwrap();
     }
     pows[0] = rou;
@@ -598,7 +615,7 @@ where
                 proof.hadamard_proof.point[i],
                 prev_r[prev_r.len() - 1],
                 exponents.clone(),
-                (i == 0)
+                i == 0
             ),
             proof.fft_delegation_claims[i][1],
             "Error in phi computation fft delegation iter : {}",

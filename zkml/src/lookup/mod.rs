@@ -3,11 +3,12 @@ use ark_std::rand::thread_rng;
 use ff::Field;
 use ff_ext::ExtensionField;
 use gkr::{
-    structs::{Circuit, CircuitWitness, IOPProof, IOPProverState, IOPVerifierState, PointAndEval},
+    structs::{
+        Circuit, CircuitWitness, GKRInputClaims, IOPProof, IOPProverState, IOPVerifierState,
+        PointAndEval,
+    },
     util::ceil_log2,
 };
-
-use rayon::prelude::*;
 
 use mpcs::{BasefoldCommitment, PolynomialCommitmentScheme};
 use poseidon::digest::Digest;
@@ -103,6 +104,7 @@ where
     commitment: BasefoldCommitment<E>,
     numerators: Vec<E>,
     denominators: Vec<E>,
+    gkr_claim: GKRInputClaims<E>,
 }
 
 impl<E: ExtensionField> VerifierClaims<E>
@@ -123,6 +125,10 @@ where
 
     pub fn denominators(&self) -> &[E] {
         &self.denominators
+    }
+
+    pub fn gkr_claim(&self) -> &GKRInputClaims<E> {
+        &self.gkr_claim
     }
 }
 
@@ -1108,7 +1114,7 @@ where
             ),
         ];
         // Run the GKR verification
-        let _gkr_claims = IOPVerifierState::verify_parallel(
+        let gkr_claim = IOPVerifierState::verify_parallel(
             circuit,
             challenges,
             vec![],
@@ -1131,6 +1137,7 @@ where
             commitment,
             numerators,
             denominators,
+            gkr_claim,
         })
     }
 
@@ -1189,7 +1196,7 @@ where
             ),
         ];
         // Run the GKR verification
-        let _gkr_claims = IOPVerifierState::verify_parallel(
+        let gkr_claim = IOPVerifierState::verify_parallel(
             circuit,
             challenges,
             vec![],
@@ -1212,6 +1219,7 @@ where
             commitment,
             numerators,
             denominators,
+            gkr_claim,
         })
     }
 }
@@ -1224,8 +1232,6 @@ mod tests {
 
     type F = GoldilocksExt2;
     use goldilocks::GoldilocksExt2;
-
-    use tracing_subscriber;
 
     #[test]
     fn test_prover_steps() -> anyhow::Result<()> {

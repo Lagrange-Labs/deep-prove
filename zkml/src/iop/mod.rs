@@ -184,7 +184,6 @@ mod test {
     };
 
     type F = GoldilocksExt2;
-    use tracing_subscriber;
 
     #[test]
     fn test_prover_steps() {
