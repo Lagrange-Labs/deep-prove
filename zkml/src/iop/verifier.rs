@@ -358,7 +358,6 @@ where
         .step_by(2)
         .map(|claim| output_claims[0].eval - claim.eval)
         .product::<E>();
-
     let beta_eval = identity_eval(&output_claims[0].point, &challenge_point);
 
     let computed_zerocheck_claim = beta_eval * zerocheck_claim_no_beta;
@@ -368,6 +367,31 @@ where
         "Computed zerocheck claim did not line up with output of sumcheck verification"
     );
 
+    let lookup_gkr_claim = verifier_claims.gkr_claim();
+    let gkr_point = &lookup_gkr_claim.point_and_evals[0].point;
+    let gkr_point_len = gkr_point.len();
+    let gkr1 = gkr_point[gkr_point_len - 2];
+    let gkr2 = gkr_point[gkr_point_len - 1];
+    let extra_multiplcands = [
+        (E::ONE - gkr1) * (E::ONE - gkr2),
+        (E::ONE - gkr1) * gkr2,
+        gkr1 * (E::ONE - gkr2),
+        gkr1 * gkr2,
+    ];
+    let lookup_claim = input_claims
+        .iter()
+        .skip(1)
+        .step_by(2)
+        .zip(extra_multiplcands)
+        .map(|(claim, m)| (output_claims[1].eval - claim.eval) * m)
+        .sum::<E>();
+
+    ensure!(
+        lookup_claim == lookup_gkr_claim.point_and_evals[0].eval,
+        "Lookup claim did not line up got {:?} expected {:?}",
+        lookup_claim,
+        lookup_gkr_claim.point_and_evals[0].eval
+    );
     Ok(out_claim)
 }
 
