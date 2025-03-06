@@ -127,19 +127,53 @@ fn is_cnn(filepath: &str) -> Result<bool> {
     Ok(is_cnn)
 }
 
-pub fn load_mlp<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
-    if !Path::new(filepath).exists() {
-        return Err(Error::msg(format!("File '{}' does not exist", filepath)));
-    }
-    // TODO: Re-enable. Was disabled to test the bench binary but only dense layer were working
-    // assert!(is_mlp(filepath)?, "is_mlp: Failed");
+/// Enum representing the different types of models that can be loaded
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelType {
+    MLP,
+    CNN,
+}
 
+impl ModelType {
+    /// Analyze the given filepath and determine if it matches this model type
+    pub fn validate(&self, filepath: &str) -> Result<()> {
+        match self {
+            ModelType::CNN => {
+                if !is_cnn(filepath)? {
+                    bail!("Model is not a valid CNN architecture");
+                }
+                Ok(())
+            },
+            ModelType::MLP => {
+                if !is_mlp(filepath)? {
+                    bail!("Model is not a valid MLP architecture");
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Unified model loading function that handles both MLP and CNN models
+pub fn load_model<Q: Quantizer<Element>>(
+    filepath: &str, 
+    model_type: ModelType
+) -> Result<Model> {
+    // Validate that the model matches the expected type
+    model_type.validate(filepath)?;
+    
+    // Get global weight ranges first
+    let (global_min, global_max) = analyze_model_weight_ranges(filepath)?;
+    let global_max_abs = global_min.abs().max(global_max.abs());
+    println!("Using global weight range for quantization: [{}, {}], max_abs={}", 
+             global_min, global_max, global_max_abs);
+    
+    // Continue with model loading
     let model = tract_onnx::onnx()
         .proto_model_for_path(filepath)
         .map_err(|e| Error::msg(format!("Failed to load model: {:?}", e)))?;
 
     let graph = model.graph.unwrap();
-
     let mut initializers: HashMap<String, Tensor> = HashMap::new();
     for item in graph.initializer {
         let dt = tract_onnx::pb::tensor_proto::DataType::from_i32(item.data_type)
@@ -152,93 +186,102 @@ pub fn load_mlp<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
     }
 
     let mut layers: Vec<Layer> = Vec::new();
+    // we need to keep track of the last shape because when we pad to next power of two one layer, we need to make sure
+    // the next layer's expected input matches.
+    let mut prev_layer_shape: Option<Vec<usize>> = None;
     for (i, node) in graph.node.iter().enumerate() {
         match node.op_type.as_str() {
             op if LINEAR_ALG.contains(&op) => {
-                let matrix_weight =
-                    fetch_weight_bias_as_tensor::<Q>(1.0, "weight", node, &initializers)?;
-                let matrix_bias =
-                    fetch_weight_bias_as_tensor::<Q>(1.0, "bias", node, &initializers)?;
+                let mut weight = fetch_weight_bias_as_tensor::<Q>(
+                    "weight", node, &initializers, global_max_abs)?;
+                let bias = fetch_weight_bias_as_tensor::<Q>(
+                    "bias", node, &initializers, global_max_abs)?;
+                ensure!(bias.dims().len() == 1, "bias is not a vector");
+                let nrows = weight.dims()[0];
+                ensure!(
+                    bias.get_data().len() == nrows,
+                    "bias length {} does not match matrix width {}",
+                    bias.get_data().len(),
+                    nrows
+                );
+                let mut new_cols = weight.ncols_2d();
+                if let Some(prev_shape) = prev_layer_shape {
+                    assert!(prev_shape.iter().all(|d| d.is_power_of_two()));
+                    // Check if previous output's vector length is equal to the number of columns of this matrix
+                    if weight.ncols_2d() != prev_shape[0] {
+                        if weight.ncols_2d() < prev_shape[0] {
+                            new_cols = prev_shape[0];
+                        } else {
+                            // If we have too many columns, we can't shrink without losing information
+                            panic!(
+                                "Matrix has more columns ({}) than previous layer output size ({}).
+                                Cannot shrink without losing information.",
+                                weight.ncols_2d(),
+                                prev_shape[0]
+                            );
+                        }
+                    }
+                }
 
-                // Concatenate bias as an extra column
-                let matrix = matrix_weight.concat_matvec_col(&matrix_bias);
+                let ncols = new_cols.next_power_of_two();
+                let nrows = weight.nrows_2d().next_power_of_two();
 
-                debug!("layer idx {} -> unprocessed matrix {:?}", i, matrix.dims());
-                layers.push(Layer::Dense(Dense::new(matrix_weight, matrix_bias)));
+                // Pad to power of two dimensions
+                weight.reshape_to_fit_inplace_2d(vec![nrows, ncols]);
+                let bias = bias.pad_1d(nrows);
+                // Update prev_output_size to reflect the padded size
+                prev_layer_shape = Some(weight.dims());
+                debug!("layer idx {} -> final shape {:?}", i, weight.dims());
+                layers.push(Layer::Dense(Dense::new(weight, bias)));
             }
             op if ACTIVATION.contains(&op) => {
                 let layer = Layer::Activation(Activation::Relu(Relu::new()));
                 layers.push(layer);
             }
+            op if CONVOLUTION.contains(&op) => {
+                let weight = fetch_weight_bias_as_tensor::<Q>(
+                    "weight", node, &initializers, global_max_abs)?;
+                let bias = fetch_weight_bias_as_tensor::<Q>(
+                    "bias", node, &initializers, global_max_abs)?;
+                // CNN-specific implementation 
+                unimplemented!("CNN convolution layer processing not yet implemented")
+            }
+            op if DOWNSAMPLING.contains(&op) => {
+                let _ = fetch_maxpool_attributes(node)?;
+                let layer = Layer::Pooling(Pooling::Maxpool2D(Maxpool2D::default()));
+                layers.push(layer);
+                unimplemented!("CNN pooling layer processing not yet implemented")
+            }
+            op if RESHAPE.contains(&op) => {
+                // Most likely this is for flattening after CNN layers and before Dense layers
+                unimplemented!("CNN reshape layer processing not yet implemented")
+            }
             _ => (),
         };
     }
 
-    println!(" DONE READING LAYERS - MOVING ON TO PADDING");
-    // Process the layers to ensure consistent dimensions
-    let mut processed_layers: Vec<Layer> = Vec::new();
-    let mut prev_layer_shape: Option<Vec<usize>> = None;
-    let last = layers.len() - 1;
-    for (i, layer) in layers.into_iter().enumerate() {
-        if let Layer::Dense(dense) = layer {
-            let Dense { mut matrix, bias } = dense;
-            let mut new_cols = matrix.ncols_2d();
-            if let Some(prev_shape) = prev_layer_shape {
-                assert!(prev_shape.iter().all(|d| d.is_power_of_two()));
-                // Check if previous output's vector length is equal to the number of columns of this matrix
-                if matrix.ncols_2d() != prev_shape[0] {
-                    if matrix.ncols_2d() < prev_shape[0] {
-                        new_cols = prev_shape[0];
-                    } else {
-                        // If we have too many columns, we can't shrink without losing information
-                        panic!(
-                            "Matrix has more columns ({}) than previous layer output size ({}).
-                            Cannot shrink without losing information.",
-                            matrix.ncols_2d(),
-                            prev_shape[0]
-                        );
-                    }
-                }
-            }
-
-            let ncols = new_cols.next_power_of_two();
-            let nrows = matrix.nrows_2d().next_power_of_two();
-
-            // println!("layer idx {} -> from ({:?} to ({},{})",i,matrix.shape(),
-            //                 nrows.next_power_of_two(),
-            //                 new_cols.next_power_of_two());
-            // Pad to power of two dimensions
-            matrix.reshape_to_fit_inplace_2d(vec![nrows, ncols]);
-            let bias = bias.pad_1d(nrows);
-            // Update prev_output_size to reflect the padded size
-            prev_layer_shape = Some(matrix.dims());
-            debug!("layer idx {} -> final shape {:?}", i, matrix.dims());
-            processed_layers.push(Layer::Dense(Dense::new(matrix, bias)));
-        } else {
-            // prev_layer_shape = Some(layer.shape()); // TODO: Need to double check
-            processed_layers.push(layer);
-        }
-    }
-
+    // Create and return the model
     let mut model = Model::new();
-    for layer in processed_layers {
+    for layer in layers {
         model.add_layer(layer);
     }
-
     Ok(model)
 }
 
-// TODO: Need to get max_abs by looking at the range of the weights and biases during calibration.
-fn fetch_weight_bias_as_tensor<Q: Quantizer<Element>>(
-    max_abs: f64,
+/// Common function to extract tensor data from a node
+/// 
+/// This function handles finding the tensor by name, applying alpha/beta multipliers,
+/// and extracting the raw f32 data and shape for further processing.
+fn extract_tensor_f32_data(
     weight_or_bias: &str,
     node: &NodeProto,
     initializers: &HashMap<String, Tensor>,
-) -> Result<crate::tensor::Tensor<Element>> {
+) -> Result<Option<(Vec<f32>, Vec<usize>)>> {
     ensure!(weight_or_bias == "weight" || weight_or_bias == "bias");
 
+    // Handle multipliers (alpha/beta) from Gemm operations
     let mut alpha_or_beta: f32 = 1.0;
-    if node.name.contains("Gemm") {
+    if node.op_type == "Gemm" {
         let result = node
             .attribute
             .iter()
@@ -250,9 +293,13 @@ fn fetch_weight_bias_as_tensor<Q: Quantizer<Element>>(
             })
             .map(|x| x.f)
             .collect_vec();
-        alpha_or_beta = result[0];
+        
+        if !result.is_empty() {
+            alpha_or_beta = result[0];
+        }
     }
 
+    // Find tensor by name pattern
     let tensor_vec = node
         .input
         .iter()
@@ -260,16 +307,70 @@ fn fetch_weight_bias_as_tensor<Q: Quantizer<Element>>(
         .filter_map(|key| initializers.get(key).cloned())
         .collect_vec();
 
-    // If a node is Gemm, then it has only one tensor of the form "fcN.weight"
-    let tensor_t = tensor_vec[0].clone();
-    let tensor_t_f32 = tensor_t.as_slice::<f32>().unwrap().to_vec();
-    let tensor_t_f32 = tensor_t_f32.iter().map(|x| x * alpha_or_beta).collect_vec();
-    let tensor_f = tensor_t_f32
-        .iter()
-        .map(|x| Q::from_f32_unsafe_clamp(x, max_abs))
-        .collect_vec();
-    let tensor_result = crate::tensor::Tensor::new(tensor_t.shape().to_vec(), tensor_f);
+    // If no matching tensor found, return None
+    if tensor_vec.is_empty() {
+        return Ok(None);
+    }
 
+    // Get the tensor data
+    let tensor_t = tensor_vec[0].clone();
+    let tensor_shape = tensor_t.shape().to_vec();
+    let tensor_t_f32 = tensor_t.as_slice::<f32>().unwrap().to_vec();
+    
+    // Apply alpha/beta multiplier
+    let tensor_t_f32 = tensor_t_f32.iter().map(|x| x * alpha_or_beta).collect_vec();
+    
+    Ok(Some((tensor_t_f32, tensor_shape)))
+}
+
+/// Extracts the min and max values from a specific tensor in a node
+fn extract_node_weight_range(
+    weight_or_bias: &str,
+    node: &NodeProto,
+    initializers: &HashMap<String, Tensor>,
+) -> Result<Option<(f32, f32)>> {
+    // Extract the tensor data using the common function
+    let (tensor_data, _) = match extract_tensor_f32_data(weight_or_bias, node, initializers)? {
+        Some(data) => data,
+        None => return Ok(None),
+    };
+    
+    // Find min and max values
+    let min_val = tensor_data.iter().fold(f32::MAX, |min_so_far, &val| min_so_far.min(val));
+    let max_val = tensor_data.iter().fold(f32::MIN, |max_so_far, &val| max_so_far.max(val));
+    
+    Ok(Some((min_val, max_val)))
+}
+
+fn fetch_weight_bias_as_tensor<Q: Quantizer<Element>>(
+    weight_or_bias: &str,
+    node: &NodeProto,
+    initializers: &HashMap<String, Tensor>,
+    global_max_abs: f32,
+) -> Result<crate::tensor::Tensor<Element>> {
+    // Extract the tensor data using the common function
+    let (tensor_data, tensor_shape) = match extract_tensor_f32_data(weight_or_bias, node, initializers)? {
+        Some(data) => data,
+        None => bail!("No {} tensor found for node {}", weight_or_bias, node.name),
+    };
+    
+    // For debugging, calculate the local range
+    let local_max_abs = tensor_data.iter().fold(0.0f32, |max_so_far, &val| max_so_far.max(val.abs()));
+    let min_val = tensor_data.iter().fold(f32::MAX, |min_so_far, &val| min_so_far.min(val));
+    let max_val = tensor_data.iter().fold(f32::MIN, |max_so_far, &val| max_so_far.max(val));
+    
+    println!("Tensor {}: local range=[{}, {}], abs={}, using global_max_abs={}", 
+             weight_or_bias, min_val, max_val, local_max_abs, global_max_abs);
+    
+    // Quantize using the global max_abs
+    let tensor_f = tensor_data
+        .iter()
+        .map(|x| Q::from_f32_unsafe_clamp(x, global_max_abs as f64))
+        //.map(|x| Q::from_f32_unsafe_clamp(x, local_max_abs as f64))
+        .collect_vec();
+    
+    let tensor_result = crate::tensor::Tensor::new(tensor_shape, tensor_f);
+    
     Ok(tensor_result)
 }
 
@@ -309,24 +410,27 @@ fn fetch_maxpool_attributes(node: &NodeProto) -> Result<()> {
     Ok(())
 }
 
-pub fn load_cnn<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
+/// Analyzes all weights from supported layers (Dense and Conv2D) 
+/// and returns the global min and max values.
+/// 
+/// This is useful for determining quantization ranges for the entire model.
+pub fn analyze_model_weight_ranges(filepath: &str) -> Result<(f32, f32)> {
     if !Path::new(filepath).exists() {
         return Err(Error::msg(format!("File '{}' does not exist", filepath)));
     }
-    let result = is_cnn(filepath)?;
-    if !result {
-        bail!("is_cnn: Failed");
-    }
 
+    // Load the ONNX model
     let model = tract_onnx::onnx()
         .proto_model_for_path(filepath)
         .map_err(|e| Error::msg(format!("Failed to load model: {:?}", e)))?;
 
     let graph = model.graph.unwrap();
+
+    // Build map of initializers
     let mut initializers: HashMap<String, Tensor> = HashMap::new();
     for item in graph.initializer {
         let dt = tract_onnx::pb::tensor_proto::DataType::from_i32(item.data_type)
-            .unwrap()
+            .context("can't load from onnx")?
             .try_into()?;
         let shape: Vec<usize> = item.dims.iter().map(|&i| i as usize).collect();
         let value = create_tensor(shape, dt, &item.raw_data).unwrap();
@@ -334,48 +438,44 @@ pub fn load_cnn<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
         initializers.insert(key, value);
     }
 
-    let mut layers: Vec<Layer> = Vec::new();
-    for (i, node) in graph.node.iter().enumerate() {
-        match node.op_type.as_str() {
-            op if LINEAR_ALG.contains(&op) => {
-                let weight = fetch_weight_bias_as_tensor::<Q>(1.0, "weight", node, &initializers)?;
-                let bias = fetch_weight_bias_as_tensor::<Q>(1.0, "bias", node, &initializers)?;
-                // Concatenate bias as an extra column
-                let matrix = weight.concat_matvec_col(&bias);
+    // Track global min and max values
+    let mut global_min = f32::MAX;
+    let mut global_max = f32::MIN;
 
-                debug!("layer idx {} -> unprocessed matrix {:?}", i, matrix.dims());
-                layers.push(Layer::Dense(Dense::new(weight, bias)));
+    // Examine all nodes in the graph
+    for node in graph.node.iter() {
+        let op_type = node.op_type.as_str();
+        
+        // Only process layers we support
+        if LINEAR_ALG.contains(&op_type) || CONVOLUTION.contains(&op_type) {
+            // Process weights
+            if let Some(weight_min_max) = extract_node_weight_range("weight", node, &initializers)? {
+                global_min = global_min.min(weight_min_max.0);
+                global_max = global_max.max(weight_min_max.1);
+                debug!("Node {}: weight range [{}, {}]", node.name, weight_min_max.0, weight_min_max.1);
             }
-            op if ACTIVATION.contains(&op) => {
-                let layer = Layer::Activation(Activation::Relu(Relu::new()));
-                layers.push(layer);
+            
+            // Process bias if present
+            if let Some(bias_min_max) = extract_node_weight_range("bias", node, &initializers)? {
+                global_min = global_min.min(bias_min_max.0);
+                global_max = global_max.max(bias_min_max.1);
+                debug!("Node {}: bias range [{}, {}]", node.name, bias_min_max.0, bias_min_max.1);
             }
-            op if CONVOLUTION.contains(&op) => {
-                // TODO
-                let weight = fetch_weight_bias_as_tensor::<Q>(1.0, "weight", node, &initializers)?;
-                let bias = fetch_weight_bias_as_tensor::<Q>(1.0, "bias", node, &initializers)?;
-                unimplemented!()
-            }
-            op if DOWNSAMPLING.contains(&op) => {
-                // TODO
-                let _ = fetch_maxpool_attributes(node)?;
-                let layer = Layer::Pooling(Pooling::Maxpool2D(Maxpool2D::default()));
-                layers.push(layer);
-                unimplemented!()
-            }
-            op if RESHAPE.contains(&op) => {
-                // TODO
-                unimplemented!()
-            }
-            _ => (),
-        };
+        }
     }
 
-    let mut model = Model::new();
-    for layer in layers {
-        model.add_layer(layer);
+    // Handle case where no weights were found
+    if global_min == f32::MAX || global_max == f32::MIN {
+        return Err(Error::msg("No supported layers with weights found in model"));
     }
-    Ok(model)
+
+    println!("Global weight range: min={}, max={}", global_min, global_max);
+    Ok((global_min, global_max))
+}
+
+// Update load_cnn to use the new unified loader
+pub fn load_cnn<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
+    load_model::<Q>(filepath, ModelType::CNN)
 }
 
 #[cfg(test)]
@@ -392,7 +492,7 @@ mod tests {
     #[test]
     fn test_tract() {
         let filepath = "assets/scripts/MLP/mlp-iris-01.onnx";
-        let result = load_mlp::<Element>(&filepath);
+        let result = load_model::<Element>(&filepath, ModelType::MLP);
 
         assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
     }
@@ -401,8 +501,9 @@ mod tests {
     fn test_model_run() {
         let filepath = "assets/scripts/MLP/mlp-iris-01.onnx";
 
-        let model = load_mlp::<Element>(&filepath).unwrap();
+        let model = load_model::<Element>(&filepath, ModelType::MLP).unwrap();
         let input = crate::tensor::Tensor::random(vec![model.input_shape()[0]]);
+        let input = model.prepare_input(input);
         let trace = model.run::<F>(input.clone());
         println!("Result: {:?}", trace.final_output());
     }
@@ -450,7 +551,7 @@ mod tests {
     fn test_load_cnn() {
         // let filepath = "assets/scripts/CNN/lenet-mnist-01.onnx";
         let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
-        let result = load_cnn::<Element>(&filepath);
+        let result = load_model::<Element>(&filepath, ModelType::CNN);
 
         assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
     }

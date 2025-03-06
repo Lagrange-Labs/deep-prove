@@ -87,14 +87,14 @@ where
 /// Contains proof material related to one step of the inference
 
 #[derive(Default, Clone, Serialize, Deserialize)]
-pub struct ConvProof<E: ExtensionField>{
+pub struct ConvProof<E: ExtensionField> {
     // Sumcheck proof for the FFT layer
-    fft_proof : IOPProof<E>,
+    fft_proof: IOPProof<E>,
     // Proof for the evaluation delegation of the omegas matrix
     // It consists of multiple sumcheck proofs
     fft_delegation_proof: Vec<IOPProof<E>>,
     // Likewise for fft, we define ifft proofs
-    ifft_proof : IOPProof<E>,
+    ifft_proof: IOPProof<E>,
     ifft_delegation_proof: Vec<IOPProof<E>>,
     // Sumcheck proof for the hadamard product
     hadamard_proof: IOPProof<E>,
@@ -103,8 +103,7 @@ pub struct ConvProof<E: ExtensionField>{
     ifft_claims: Vec<E>,
     fft_delegation_claims: Vec<Vec<E>>,
     ifft_delegation_claims: Vec<Vec<E>>,
-    hadamard_clams: Vec<E>
-
+    hadamard_clams: Vec<E>,
 }
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct DenseProof<E: ExtensionField> {

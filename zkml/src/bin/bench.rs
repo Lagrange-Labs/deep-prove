@@ -12,11 +12,11 @@ use csv::WriterBuilder;
 use goldilocks::GoldilocksExt2;
 use itertools::Itertools;
 use log::info;
-use zkml::quantization::Quantizer;
+use zkml::{load_model, quantization::Quantizer, ModelType};
 
 use serde::{Deserialize, Serialize};
 use zkml::{
-    Context, Element, IO, Prover, argmax, default_transcript, load_mlp, lookup::LogUp,
+    Context, Element, IO, Prover, argmax, default_transcript, lookup::LogUp,
     quantization::TensorFielder, tensor::Tensor, verify,
 };
 
@@ -115,7 +115,7 @@ const CSV_PROOF_SIZE: &str = "proof size (KB)";
 
 fn run(args: Args) -> anyhow::Result<()> {
     info!("[+] Reading onnx model");
-    let model = load_mlp::<Element>(&args.onnx).context("loading model:")?;
+    let model = load_model::<Element>(&args.onnx, ModelType::MLP).context("loading model:")?;
     model.describe();
     info!("[+] Reading input/output from pytorch");
     let (inputs, given_outputs) =

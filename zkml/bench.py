@@ -115,15 +115,70 @@ MODEL = "mlp-model.onnx"
 INPUT = "mlp-input.json"
 EZKL_KZG_PARAMS = "kzg.params"
 
-def create_model(num_dense, layer_width, output_dir, verbose, num_samples):
-    """Create a PyTorch model with the specified parameters"""
-    print(f"Creating PyTorch model: dense={num_dense}, width={layer_width}")
-    ex(["python3", PYTORCH_SCRIPT,
-        "--num-dense", str(num_dense),
-        "--layer-width", str(layer_width),
-        "--export", str(output_dir),
-        "--num-samples", str(num_samples)],
-       verbose=verbose)
+def create_model(num_dense, layer_width, output_dir, verbose, num_samples, model_type):
+    """Create a model with the specified parameters"""
+    print(f"\n⚡ Creating {model_type.upper()} model with {num_dense} dense layers, each with width {layer_width}")
+    
+    # Create the model script path based on model type
+    if model_type == "mlp":
+        script_path = Path("assets/scripts/MLP/mlp.py")
+    else:  # model_type == "cnn"
+        script_path = Path("assets/scripts/CNN/cifar-cnn.py")
+    
+    # Ensure the script exists
+    if not script_path.exists():
+        print(f"❌ Error: Model script not found at {script_path}")
+        sys.exit(1)
+    
+    # Prepare command based on model type
+    if model_type == "mlp":
+        cmd = [
+            "python", str(script_path),
+            "--num-dense", str(num_dense),
+            "--layer-width", str(layer_width),
+            "--export", str(output_dir),
+            "--num-samples", str(num_samples)
+        ]
+    else:  # model_type == "cnn"
+        cmd = [
+            "python", str(script_path),
+            "--export", str(output_dir),
+            "--num-samples", str(num_samples)
+        ]
+    
+    if verbose:
+        print(f"📋 Running command: {' '.join(cmd)}")
+    
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"❌ Error creating model:")
+        print(result.stderr)
+        sys.exit(1)
+    
+    if verbose:
+        print(result.stdout)
+    
+    # Return paths to model and input/output file
+    if model_type == "mlp":
+        model_path = output_dir / "mlp-model.onnx"
+        input_path = output_dir / "mlp-input.json"
+    else:  # model_type == "cnn"
+        model_path = output_dir / "cifar-cnn.onnx"
+        input_path = output_dir / "cifar-input.json"
+    
+    if not model_path.exists() or not input_path.exists():
+        missing = []
+        if not model_path.exists():
+            missing.append(str(model_path))
+        if not input_path.exists():
+            missing.append(str(input_path))
+        print(f"❌ Error: The following files were not created: {', '.join(missing)}")
+        sys.exit(1)
+    
+    print(f"✅ Model created successfully: {model_path}")
+    print(f"✅ Input file created: {input_path}")
+    
+    return model_path, input_path
 
 def run_zkml_benchmark(config_name, output_dir, verbose, num_samples):
     """Run ZKML benchmark and save results to CSV"""
@@ -261,16 +316,16 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples)
         # Always return to the original directory
         os.chdir(original_dir)
 
-def run_benchmark(num_dense, layer_width, run_index, output_dir, verbose, run_ezkl, num_samples):
+def run_benchmark(num_dense, layer_width, run_index, output_dir, verbose, run_ezkl, num_samples, model_type):
     """Run a single benchmark with the specified parameters"""
-    config_name = f"d{num_dense}_w{layer_width}"
+    config_name = f"d{num_dense}_w{layer_width}" if model_type == "mlp" else f"cnn"
     
     print(f"\n{'='*80}")
-    print(f"Running benchmark: dense={num_dense}, width={layer_width}, run={run_index}")
+    print(f"Running benchmark: model={model_type}, dense={num_dense}, width={layer_width}, run={run_index}")
     print(f"{'='*80}\n")
     
-    # Step 1: Create PyTorch model with specified number of samples
-    create_model(num_dense, layer_width, output_dir, verbose, num_samples)
+    # Step 1: Create model with specified number of samples
+    create_model(num_dense, layer_width, output_dir, verbose, num_samples, model_type)
     
     # Step 2: Run ZKML benchmark
     zkml_csv = run_zkml_benchmark(config_name, output_dir, verbose, num_samples)
@@ -387,12 +442,12 @@ def calculate_average_accuracy(csv_file):
 
     return total_accuracy / row_count if row_count > 0 else None
 
-def compute_summary_statistics(output_dir, configs, run_ezkl):
+def compute_summary_statistics(output_dir, configs, run_ezkl, model_type):
     """Compute summary statistics for all configurations and return a DataFrame."""
     summary_data = []
     
     for num_dense, layer_width in configs:
-        config_name = f"d{num_dense}_w{layer_width}"
+        config_name = f"d{num_dense}_w{layer_width}" if model_type == "mlp" else f"cnn"
         config_data = {
             "num_dense": num_dense,
             "layer_width": layer_width,
@@ -533,21 +588,23 @@ def print_summary_table(summary_df, run_ezkl):
 
 def parse_arguments():
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="Benchmarking Tool for ZKML and EZKL")
-    parser.add_argument("--configs", type=str, default="3,4:4,8", 
-                        help="Configurations to run as 'dense1,width1:dense2,width2:...'")
+    parser = argparse.ArgumentParser(description="Run benchmarks for ZKML and EZKL")
+    parser.add_argument("--configs", type=str, default="1,10:2,20",
+                        help="Model configurations to benchmark in format 'dense,width:dense,width'")
     parser.add_argument("--repeats", type=int, default=3,
-                        help="Number of times to repeat each configuration")
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_BENCH_FOLDER,
-                        help="Directory to store benchmark results")
-    parser.add_argument("--verbose", action="store_true",
-                        help="Enable verbose output for each command")
+                        help="Number of times to repeat each benchmark")
     parser.add_argument("--run-ezkl", action="store_true",
-                        help="Enable EZKL comparison (off by default)")
+                        help="Run EZKL benchmarks (slower)")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Enable verbose logging")
+    parser.add_argument("--output-dir", type=Path, default=Path("bench"),
+                        help="Directory to save benchmark results")
     parser.add_argument("--num-threads", type=int, default=None,
                         help="Limit the number of threads used (default: no limit)")
     parser.add_argument("--samples", type=int, default=30,
                         help="Number of input/output samples to process for both ZKML and EZKL (default: 30)")
+    parser.add_argument("--model-type", type=str, choices=["mlp", "cnn"], default="mlp",
+                        help="Type of model to benchmark: 'mlp' for MLP, 'cnn' for CNN (default: mlp)")
     return parser.parse_args()
 
 def setup_environment(args):
@@ -566,16 +623,16 @@ def run_configurations(configs, args):
     
     for config in configs:
         num_dense, layer_width = config
-        config_name = f"d{num_dense}_w{layer_width}"
+        config_name = f"d{num_dense}_w{layer_width}" if args.model_type == "mlp" else f"cnn"
         
         # Delete existing CSV files for this configuration
         delete_csv_files(output_dir, config_name)
         
         for run_idx in range(args.repeats):
-            # Pass args.samples to run_benchmark
+            # Pass args.samples and args.model_type to run_benchmark
             zkml_csv, ezkl_csv, pytorch_csv = run_benchmark(
                 num_dense, layer_width, run_idx, output_dir, 
-                args.verbose, args.run_ezkl, args.samples
+                args.verbose, args.run_ezkl, args.samples, args.model_type
             )
             
             if zkml_csv:
@@ -626,13 +683,13 @@ def main():
             print(f"Invalid configuration values in: {config_str}. Expected integers.")
             sys.exit(1)
     
-    print(f"Running {len(configs)} configurations, each repeated {args.repeats} times")
+    print(f"Running {len(configs)} configurations with model type '{args.model_type}', each repeated {args.repeats} times")
     
     zkml_csv_files, ezkl_csv_files, pytorch_csv_files = run_configurations(configs, args)
     calculate_and_print_results(configs, zkml_csv_files, ezkl_csv_files, pytorch_csv_files, args)
     
     # Generate and print summary statistics
-    summary_df = compute_summary_statistics(args.output_dir, configs, args.run_ezkl)
+    summary_df = compute_summary_statistics(args.output_dir, configs, args.run_ezkl, args.model_type)
     summary_path = save_summary_csv(summary_df, args.output_dir)
     print_summary_table(summary_df, args.run_ezkl)
 
