@@ -31,8 +31,6 @@ mod utils;
 /// 16 + log(c) = 64 => c = 2^48 columns in a dense layer
 pub type Element = i128;
 
-
-
 /// Claim type to accumulate in this protocol, for a certain polynomial, known in the context.
 /// f(point) = eval
 #[derive(Clone, Debug, Serialize, Deserialize)]

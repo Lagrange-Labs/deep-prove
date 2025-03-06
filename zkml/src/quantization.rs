@@ -30,6 +30,7 @@ pub static ZERO: Lazy<Element> = Lazy::new(|| 0);
 pub trait Quantizer<Output> {
     fn from_f32_unsafe(e: &f32) -> Output;
     fn from_f32_unsafe_clamp(e: &f32, max_abs: f64) -> Output;
+    fn from_f32_unsafe_range(e: &f32, min_val: f64, max_val: f64) -> Output;
 }
 
 impl Quantizer<Element> for Element {
@@ -56,11 +57,17 @@ impl Quantizer<Element> for Element {
             "max_abs should be greater than zero. Domain range is between [-max_abs, max_abs]."
         );
 
-        let scale = (2.0 * max_abs) / (*MAX - *MIN) as f64;
+        let scale = (2.0 * max_abs * 1.05) / (*MAX - *MIN) as f64;
         let zero_point = 0;
 
         // formula is q = round(r/S) + z
         let scaled = (e / scale).round() as Element + zero_point;
+        if scaled < *MIN || scaled > *MAX {
+            panic!(
+                "Quantization error: Value {} scales to {}, which is outside the valid range [{}, {}].",
+                e, scaled, *MIN, *MAX
+            );
+        }
         let scaled = scaled.clamp(*MIN, *MAX);
 
         if e < -max_abs || e > max_abs {
@@ -71,6 +78,37 @@ impl Quantizer<Element> for Element {
         }
         scaled as Element
     }
+
+    fn from_f32_unsafe_range(e: &f32, min_val: f64, max_val: f64) -> Self {
+        let e = *e as f64;
+        assert!(
+            min_val < max_val,
+            "min_val must be less than max_val. Domain range is between [min_val, max_val]."
+        );
+    
+        // Safety factor for avoiding edge cases
+        let safety_factor = 1.05;
+        
+        // Find the maximum absolute value to ensure zero-centered scaling
+        let abs_max = max_val.abs().max(min_val.abs()) * safety_factor;
+        
+        // This scale maps [-abs_max, abs_max] to [MIN, MAX]
+        let scale = (2.0 * abs_max) / (*MAX - *MIN) as f64;
+        assert!(scale > 0.0, "Scale must be positive");
+        
+        // Simple scaling ensures that 0 maps to 0 in the output
+        let scaled = (e / scale).round() as Element;
+        
+        // Bounds check
+        if scaled < *MIN || scaled > *MAX {
+            panic!(
+                "Quantization error: Value {} (from range [{}, {}]) scales to {}, which is outside the valid range [{}, {}].",
+                e, min_val, max_val, scaled, *MIN, *MAX
+            );
+        }
+        
+        scaled
+    } 
 }
 
 pub(crate) trait Fieldizer<F> {

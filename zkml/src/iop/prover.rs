@@ -1023,9 +1023,9 @@ where
 
     pub fn prove<'b>(mut self, trace: InferenceTrace<'b, Element, E>) -> anyhow::Result<Proof<E>> {
         // First, create the context for the witness polys -
-        self.instantiate_witness_ctx(&trace)?;
         // write commitments and polynomials info to transcript
         self.ctx.write_to_transcript(self.transcript)?;
+        self.instantiate_witness_ctx(&trace)?;
         let trace = trace.to_field();
         // this is the random set of variables to fix at each step derived as the output of
         // sumcheck.

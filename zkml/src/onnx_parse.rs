@@ -264,10 +264,18 @@ fn fetch_weight_bias_as_tensor<Q: Quantizer<Element>>(
     let tensor_t = tensor_vec[0].clone();
     let tensor_t_f32 = tensor_t.as_slice::<f32>().unwrap().to_vec();
     let tensor_t_f32 = tensor_t_f32.iter().map(|x| x * alpha_or_beta).collect_vec();
+    
+    // Calculate both min and max values, not just max_abs
+    let max_abs = tensor_t_f32.iter().fold(0.0f32, |max_so_far, &val| max_so_far.max(val.abs()));
+    let min_val = tensor_t_f32.iter().fold(f32::MAX, |min_so_far, &val| min_so_far.min(val));
+    let max_val = tensor_t_f32.iter().fold(f32::MIN, |max_so_far, &val| max_so_far.max(val));
+    println!("Tensor: min={}, max={}, abs={}", min_val, max_val, max_abs);
+    // Use the new quantization method with both min and max
     let tensor_f = tensor_t_f32
         .iter()
-        .map(|x| Q::from_f32_unsafe_clamp(x, max_abs))
+        .map(|x| Q::from_f32_unsafe_clamp(x, max_abs as f64))
         .collect_vec();
+    
     let tensor_result = crate::tensor::Tensor::new(tensor_t.shape().to_vec(), tensor_f);
 
     Ok(tensor_result)
@@ -335,15 +343,54 @@ pub fn load_cnn<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
     }
 
     let mut layers: Vec<Layer> = Vec::new();
+    // we need to keep track of the last shape because when we pad to next power of two one layer, we need to make sure
+    // the next layer's expected input matches.
+    let mut prev_layer_shape: Option<Vec<usize>> = None;
     for (i, node) in graph.node.iter().enumerate() {
         match node.op_type.as_str() {
             op if LINEAR_ALG.contains(&op) => {
-                let weight = fetch_weight_bias_as_tensor::<Q>(1.0, "weight", node, &initializers)?;
+                let mut weight =
+                    fetch_weight_bias_as_tensor::<Q>(1.0, "weight", node, &initializers)?;
                 let bias = fetch_weight_bias_as_tensor::<Q>(1.0, "bias", node, &initializers)?;
-                // Concatenate bias as an extra column
-                let matrix = weight.concat_matvec_col(&bias);
+                ensure!(bias.dims().len() == 1, "bias is not a vector");
+                let nrows = weight.dims()[0];
+                ensure!(
+                    bias.get_data().len() == nrows,
+                    "bias length {} does not match matrix width {}",
+                    bias.get_data().len(),
+                    nrows
+                );
+                let mut new_cols = weight.ncols_2d();
+                if let Some(prev_shape) = prev_layer_shape {
+                    assert!(prev_shape.iter().all(|d| d.is_power_of_two()));
+                    // Check if previous output's vector length is equal to the number of columns of this matrix
+                    if weight.ncols_2d() != prev_shape[0] {
+                        if weight.ncols_2d() < prev_shape[0] {
+                            new_cols = prev_shape[0];
+                        } else {
+                            // If we have too many columns, we can't shrink without losing information
+                            panic!(
+                                "Matrix has more columns ({}) than previous layer output size ({}).
+                                Cannot shrink without losing information.",
+                                weight.ncols_2d(),
+                                prev_shape[0]
+                            );
+                        }
+                    }
+                }
 
-                debug!("layer idx {} -> unprocessed matrix {:?}", i, matrix.dims());
+                let ncols = new_cols.next_power_of_two();
+                let nrows = weight.nrows_2d().next_power_of_two();
+
+                // println!("layer idx {} -> from ({:?} to ({},{})",i,matrix.shape(),
+                //                 nrows.next_power_of_two(),
+                //                 new_cols.next_power_of_two());
+                // Pad to power of two dimensions
+                weight.reshape_to_fit_inplace_2d(vec![nrows, ncols]);
+                let bias = bias.pad_1d(nrows);
+                // Update prev_output_size to reflect the padded size
+                prev_layer_shape = Some(weight.dims());
+                debug!("layer idx {} -> final shape {:?}", i, weight.dims());
                 layers.push(Layer::Dense(Dense::new(weight, bias)));
             }
             op if ACTIVATION.contains(&op) => {
