@@ -453,6 +453,53 @@ pub(crate) mod test {
             let input = Tensor::random(vec![input_dims[1]]);
             (model, input)
         }
+
+        /// Returns a model that only contains pooling and relu layers.
+        /// The output [`Model`] will contain `num_layers` [`Maxpool2D`] layers and a [`Dense`] layer as well.
+        pub fn random_pooling(num_layers: usize) -> (Model, Tensor<Element>) {
+            let mut model = Model::new();
+            let mut rng = thread_rng();
+            // Since Maxpool reduces the size of the output based on the kernel size and the stride we need to ensure that
+            // Our starting input size is large enough for the number of layers.
+
+            // If maxpool input matrix has dimensions w x h then output has width and height
+            // out_w = (w - kernel_size) / stride + 1
+            // out_h = (h - kenrel_size) / stride + 1
+            // Hence to make sure we have a large enough tensor for the last step
+            // we need to have that w_first > 2^{num_layers + 1} + 2^{num_layers}
+            // and likewise for h_first.
+
+            let minimum_initial_size = (1 << num_layers) * (3usize);
+
+            let mut input_shape = (0..4)
+                .map(|i| {
+                    if i < 2 {
+                        rng.gen_range(1..5usize).next_power_of_two()
+                    } else {
+                        (minimum_initial_size + rng.gen_range(1..4usize)).next_power_of_two()
+                    }
+                })
+                .collect::<Vec<usize>>();
+
+            let input = Tensor::<Element>::random(input_shape.clone());
+
+            let info = Maxpool2D::default();
+            for _ in 0..num_layers {
+                input_shape
+                    .iter_mut()
+                    .skip(2)
+                    .for_each(|dim| *dim = (*dim - info.kernel_size) / info.stride + 1);
+                model.add_layer(Layer::Pooling(Pooling::Maxpool2D(info)));
+            }
+
+            let (nrows, ncols) = (rng.gen_range(3..15), input_shape.iter().product::<usize>());
+
+            model.add_layer(Layer::Dense(
+                Dense::random(vec![nrows, ncols]).pad_next_power_of_two(),
+            ));
+
+            (model, input)
+        }
     }
 
     #[test]
@@ -721,7 +768,7 @@ pub(crate) mod test {
             model.run::<F>(input.clone());
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
         let mut ctx =
-            Context::<GoldilocksExt2>::generate(&model).expect("Unable to generate context");
+            Context::<GoldilocksExt2>::generate(&model, None).expect("Unable to generate context");
         let output = trace.final_output().clone();
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, lookup::LogUp> =
             Prover::new(&ctx, &mut tr);
@@ -761,8 +808,8 @@ pub(crate) mod test {
         let trace: crate::model::InferenceTrace<'_, _, GoldilocksExt2> =
             model.run::<F>(input.clone());
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
-        let mut ctx =
-            Context::<GoldilocksExt2>::generate(&model).expect("Unable to generate context");
+        let mut ctx = Context::<GoldilocksExt2>::generate(&model, Some(input.dims()))
+            .expect("Unable to generate context");
         let output = trace.final_output().clone();
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, lookup::LogUp> =
             Prover::new(&ctx, &mut tr);
@@ -808,8 +855,9 @@ pub(crate) mod test {
                             model.run::<F>(input.clone());
                         let mut tr: BasicTranscript<GoldilocksExt2> =
                             BasicTranscript::new(b"m2vec");
-                        let mut ctx = Context::<GoldilocksExt2>::generate(&model)
-                            .expect("Unable to generate context");
+                        let mut ctx =
+                            Context::<GoldilocksExt2>::generate(&model, Some(input.dims()))
+                                .expect("Unable to generate context");
                         let output = trace.final_output().clone();
                         let prover: Prover<
                             '_,

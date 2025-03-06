@@ -57,6 +57,7 @@ use crate::{
 use anyhow::{Context as CC, anyhow, bail};
 use ff_ext::ExtensionField;
 
+use gkr::util::ceil_log2;
 use log::{debug, warn};
 use multilinear_extensions::{
     mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension, IntoMLE, MultilinearExtension},
@@ -375,7 +376,7 @@ where
 
         let output_claim = claim_acc_proof.extract_claim();
 
-        self.commit_prover
+        self.witness_prover
             .add_claim(info.poly_id, output_claim)
             .context("unable to add claim")?;
         // Now we must do the samething accumulating evals for the input poly as we fix variables on the input poly.
@@ -388,33 +389,39 @@ where
         );
         let mut same_poly_prover = same_poly::Prover::<E>::new(input_mle.clone());
         let padded_input_shape = input.dims();
-        [[E::ZERO, E::ZERO], [E::ZERO, E::ONE], [E::ONE, E::ZERO], [
+        let padded_input_row_length_log = ceil_log2(padded_input_shape[3]);
+        // We can batch all of the claims for the input poly with 00, 10, 01, 11 fixed into one with random challenges
+        let [r1, r2] = [self
+            .transcript
+            .get_and_append_challenge(b"input_batching")
+            .elements; 2];
+        // To the input claims we add evaluations at both the zerocheck point and lookup point
+        // in the order 00, 01, 10, 11. These will be used in conjunction with r1 and r2 by the verifier to link the claims output by the sumcheck and lookup GKR
+        // proofs with the claims fed to the same poly verifier.
+        [[E::ZERO, E::ZERO], [E::ONE, E::ZERO], [E::ZERO, E::ONE], [
             E::ONE,
             E::ONE,
         ]]
         .iter()
-        .try_for_each(|pair| {
+        .for_each(|pair| {
             let point_1 = [
                 &[pair[0]],
-                &zerocheck_point[..padded_input_shape[3] >> 2],
+                &zerocheck_point[..padded_input_row_length_log - 1],
                 &[pair[1]],
-                &zerocheck_point[padded_input_shape[3] >> 2..],
+                &zerocheck_point[padded_input_row_length_log - 1..],
             ]
             .concat();
             let eval = input_mle.evaluate(&point_1);
-
             let zerocheck_claim = Claim {
                 point: point_1,
                 eval,
             };
-
-            same_poly_prover.add_claim(zerocheck_claim.clone())?;
             input_claims.push(zerocheck_claim);
             let point_2 = [
                 &[pair[0]],
-                &lookup_point[..padded_input_shape[3] >> 2],
+                &lookup_point[..padded_input_row_length_log - 1],
                 &[pair[1]],
-                &lookup_point[padded_input_shape[3] >> 2..],
+                &lookup_point[padded_input_row_length_log - 1..],
             ]
             .concat();
             let eval = input_mle.evaluate(&point_2);
@@ -425,8 +432,39 @@ where
             };
 
             input_claims.push(lookup_claim.clone());
-            same_poly_prover.add_claim(lookup_claim)
-        })?;
+        });
+
+        let point_1 = [
+            &[r1],
+            &zerocheck_point[..padded_input_row_length_log - 1],
+            &[r2],
+            &zerocheck_point[padded_input_row_length_log - 1..],
+        ]
+        .concat();
+        let eval = input_mle.evaluate(&point_1);
+
+        let zerocheck_claim = Claim {
+            point: point_1,
+            eval,
+        };
+
+        same_poly_prover.add_claim(zerocheck_claim.clone())?;
+
+        let point_2 = [
+            &[r1],
+            &lookup_point[..padded_input_row_length_log - 1],
+            &[r2],
+            &lookup_point[padded_input_row_length_log - 1..],
+        ]
+        .concat();
+        let eval = input_mle.evaluate(&point_2);
+
+        let lookup_claim = Claim {
+            point: point_2,
+            eval,
+        };
+
+        same_poly_prover.add_claim(lookup_claim)?;
 
         // This is the proof for the input_poly
         let input_claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, self.transcript)?;
@@ -440,6 +478,7 @@ where
             io_accumulation: [input_claim_acc_proof, claim_acc_proof],
             output_claims,
             input_claims,
+            variable_gap: padded_input_row_length_log - 1,
         }));
         Ok(next_claim)
     }
@@ -1022,9 +1061,9 @@ where
     }
 
     pub fn prove<'b>(mut self, trace: InferenceTrace<'b, Element, E>) -> anyhow::Result<Proof<E>> {
-        // First, create the context for the witness polys -
         // write commitments and polynomials info to transcript
         self.ctx.write_to_transcript(self.transcript)?;
+        // then create the context for the witness polys -
         self.instantiate_witness_ctx(&trace)?;
         let trace = trace.to_field();
         // this is the random set of variables to fix at each step derived as the output of
@@ -1043,6 +1082,7 @@ where
             .to_vec()
             .into_mle()
             .evaluate(&r_i);
+
         let mut last_claim = Claim {
             point: r_i,
             eval: y_i,

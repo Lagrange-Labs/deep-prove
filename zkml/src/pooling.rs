@@ -238,9 +238,6 @@ mod tests {
 
             let padded_input_shape = padded_input.dims();
 
-            let padded_column_size = padded_input_shape[3];
-            let log_padded_column_size = ceil_log2(padded_column_size);
-
             let num_vars = padded_input.get_data().len().ilog2() as usize;
             let output_num_vars = padded_output.get_data().len().ilog2() as usize;
 
@@ -413,9 +410,9 @@ mod tests {
             .map(|pair| {
                 [
                     &[pair[0]],
-                    &point[..padded_input_shape[3] >> 2],
+                    &point[..ceil_log2(padded_input_shape[3]) - 1],
                     &[pair[1]],
-                    &point[padded_input_shape[3] >> 2..],
+                    &point[ceil_log2(padded_input_shape[3]) - 1..],
                 ]
                 .concat()
             });
@@ -435,6 +432,30 @@ mod tests {
                 * eq_eval;
 
             assert_eq!(calc_eval, subclaim.expected_evaluation);
+
+            // in order output - 00, output - 10, output - 01, output - 11, eq I believe
+            let final_mle_evals = state.get_mle_final_evaluations();
+
+            let [r1, r2] = [F::random(&mut rng); 2];
+            let one_minus_r1 = F::ONE - r1;
+            let one_minus_r2 = F::ONE - r2;
+
+            let maybe_eval = (output_eval - final_mle_evals[0]) * one_minus_r1 * one_minus_r2
+                + (output_eval - final_mle_evals[2]) * one_minus_r1 * r2
+                + (output_eval - final_mle_evals[1]) * r1 * one_minus_r2
+                + (output_eval - final_mle_evals[3]) * r1 * r2;
+
+            let mle_eval = mle.evaluate(
+                &[
+                    &[r1],
+                    &point[..ceil_log2(padded_input_shape[3]) - 1],
+                    &[r2],
+                    &point[ceil_log2(padded_input_shape[3]) - 1..],
+                ]
+                .concat(),
+            );
+
+            assert_eq!(mle_eval, maybe_eval);
         }
     }
 }

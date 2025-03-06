@@ -143,6 +143,8 @@ where
     output_claims: Vec<Claim<E>>,
     /// The claim that are accumulated for the input of this step
     input_claims: Vec<Claim<E>>,
+    /// This tells the verifier how far apart the variables get fixed on the input MLE
+    variable_gap: usize,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -191,7 +193,24 @@ mod test {
         model.describe();
         let trace = model.run(input.clone());
         let output = trace.final_output();
-        let ctx = Context::<F>::generate(&model).expect("unable to generate context");
+        let ctx = Context::<F>::generate(&model, None).expect("unable to generate context");
+        let io = IO::new(input.to_fields(), output.clone().to_fields());
+        let mut prover_transcript = default_transcript();
+        let prover = Prover::<_, _, LogUp>::new(&ctx, &mut prover_transcript);
+        let proof = prover.prove(trace).expect("unable to generate proof");
+        let mut verifier_transcript = default_transcript();
+        verify::<_, _, LogUp>(ctx, proof, io, &mut verifier_transcript).expect("invalid proof");
+    }
+
+    #[test]
+    fn test_prover_steps_pooling() {
+        init_test_logging();
+        let (model, input) = Model::random_pooling(4);
+        model.describe();
+        let trace = model.run(input.clone());
+        let output = trace.final_output();
+        let ctx =
+            Context::<F>::generate(&model, Some(input.dims())).expect("unable to generate context");
         let io = IO::new(input.to_fields(), output.clone().to_fields());
         let mut prover_transcript = default_transcript();
         let prover = Prover::<_, _, LogUp>::new(&ctx, &mut prover_transcript);

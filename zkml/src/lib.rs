@@ -165,7 +165,7 @@ mod test {
 
         let model = load_model::<Element>(&filepath.to_string_lossy(), ModelType::MLP).unwrap();
         println!("[+] Loaded onnx file");
-        let ctx = Context::<E>::generate(&model).expect("unable to generate context");
+        let ctx = Context::<E>::generate(&model, None).expect("unable to generate context");
         println!("[+] Setup parameters");
 
         let shape = model.input_shape();
