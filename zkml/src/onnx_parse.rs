@@ -245,7 +245,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
                 layers.push(layer);
             }
             op if CONVOLUTION.contains(&op) => {
-                let _weight = fetch_weight_bias_as_tensor::<Q>(
+                let weight = fetch_weight_bias_as_tensor::<Q>(
                     "weight",
                     node,
                     &initializers,
@@ -254,13 +254,13 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
                 let _bias =
                     fetch_weight_bias_as_tensor::<Q>("bias", node, &initializers, global_max_abs)?;
                 // CNN-specific implementation
-                unimplemented!("CNN convolution layer processing not yet implemented")
+                let layer = Layer::Convolution(weight);
+                layers.push(layer);
             }
             op if DOWNSAMPLING.contains(&op) => {
                 let _ = fetch_maxpool_attributes(node)?;
                 let layer = Layer::Pooling(Pooling::Maxpool2D(Maxpool2D::default()));
                 layers.push(layer);
-                unimplemented!("CNN pooling layer processing not yet implemented")
             }
             op if RESHAPE.contains(&op) => {
                 // Most likely this is for flattening after CNN layers and before Dense layers
