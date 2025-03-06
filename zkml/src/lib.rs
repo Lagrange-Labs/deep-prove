@@ -20,7 +20,8 @@ pub mod model;
 mod onnx_parse;
 pub mod pooling;
 pub mod quantization;
-pub use onnx_parse::load_mlp;
+pub use onnx_parse::{load_model, ModelType};
+
 
 pub mod tensor;
 mod testing;
@@ -137,17 +138,10 @@ mod test {
     use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 
     use crate::{
-        Element, default_transcript,
-        iop::{
-            Context,
-            prover::Prover,
-            verifier::{IO, verify},
-        },
-        lookup::{LogUp, LookupProtocol},
-        onnx_parse::load_mlp,
-        quantization::TensorFielder,
-        tensor::Tensor,
-        to_bit_sequence_le,
+        default_transcript, iop::{
+            prover::Prover, verifier::{verify, IO}, Context
+        }, load_model, lookup::{LogUp, LookupProtocol}, quantization::TensorFielder, tensor::Tensor, to_bit_sequence_le, Element,
+        onnx_parse::ModelType,
     };
     use ff_ext::ff::Field;
 
@@ -169,7 +163,7 @@ mod test {
     fn test_model_run_helper<L: LookupProtocol<E>>() -> anyhow::Result<()> {
         let filepath = workspace_root().join("zkml/assets/model.onnx");
 
-        let model = load_mlp::<Element>(&filepath.to_string_lossy()).unwrap();
+        let model = load_model::<Element>(&filepath.to_string_lossy(), ModelType::MLP).unwrap();
         println!("[+] Loaded onnx file");
         let ctx = Context::<E>::generate(&model).expect("unable to generate context");
         println!("[+] Setup parameters");
