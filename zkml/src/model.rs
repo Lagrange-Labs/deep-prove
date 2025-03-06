@@ -371,9 +371,7 @@ pub struct InferenceStep<'a, E, F: ExtensionField> {
 
 #[cfg(test)]
 pub(crate) mod test {
-    use ark_std::{
-        rand::{Rng, thread_rng},
-    };
+    use ark_std::rand::{Rng, thread_rng};
     use ff_ext::ExtensionField;
     use goldilocks::GoldilocksExt2;
     use itertools::Itertools;
@@ -839,9 +837,8 @@ pub(crate) mod test {
                             model.run::<F>(input.clone());
                         let mut tr: BasicTranscript<GoldilocksExt2> =
                             BasicTranscript::new(b"m2vec");
-                        let ctx =
-                            Context::<GoldilocksExt2>::generate(&model, Some(input.dims()))
-                                .expect("Unable to generate context");
+                        let ctx = Context::<GoldilocksExt2>::generate(&model, Some(input.dims()))
+                            .expect("Unable to generate context");
                         let output = trace.final_output().clone();
                         let prover: Prover<
                             '_,
@@ -853,7 +850,8 @@ pub(crate) mod test {
                         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
                             BasicTranscript::new(b"m2vec");
                         let io = IO::new(input.to_fields(), output.to_fields());
-                        verify::<_, _, lookup::LogUp>(ctx, proof, io, &mut verifier_transcript).unwrap();
+                        verify::<_, _, lookup::LogUp>(ctx, proof, io, &mut verifier_transcript)
+                            .unwrap();
                     }
                 }
             }

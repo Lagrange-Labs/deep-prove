@@ -528,6 +528,7 @@ where
                 vec![f1.clone().into(), f2.clone().into(), f3.clone().into()],
                 E::ONE,
             );
+            #[allow(deprecated)]
             let (proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
             let claim: Vec<E> = state.get_mle_final_evaluations();
             r2 = proof.point.clone();
@@ -675,6 +676,7 @@ where
 
         let mut vp = VirtualPolynomial::<E>::new(f_m.num_vars);
         vp.add_mle_list(vec![f_m.clone().into(), f_red.clone().into()], E::ONE);
+        #[allow(deprecated)]
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
 
         let mut claims = state.get_mle_final_evaluations();
@@ -734,6 +736,7 @@ where
         // Construct the virtual polynomial and run the sumcheck prover
         let mut vp = VirtualPolynomial::<E>::new(f_m.num_vars);
         vp.add_mle_list(vec![f_m.clone().into(), f_red.clone().into()], E::ONE);
+        #[allow(deprecated)]
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
 
         let claims = state.get_mle_final_evaluations();
@@ -756,7 +759,7 @@ where
         last_claim: Claim<E>,
         // Struct containing all necessary information
         // to generate a convolution proof
-        output: &Tensor<E>,
+        _output: &Tensor<E>,
         proving_data: &ConvData<E>,
         info: &ConvInfo<E>,
         filter: &Tensor<Element>,
@@ -887,11 +890,12 @@ where
             vec![f1.clone().into(), f2.clone().into(), f3.clone().into()],
             E::ONE,
         );
+        #[allow(deprecated)]
         let (hadamard_proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
         let hadamard_claims = state.get_mle_final_evaluations();
 
         let point = [hadamard_proof.point.clone(), r1.clone()].concat();
-        //let eval = hadamard_claims[0];
+        // let eval = hadamard_claims[0];
         self.commit_prover
             .add_claim(info.poly_id, Claim::new(point, hadamard_claims[0]))
             .context("unable to add claim")?;

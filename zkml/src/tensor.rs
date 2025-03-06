@@ -17,13 +17,7 @@ use std::{
     fmt::{self, Debug},
 };
 
-use crate::{
-    Element,
-    pooling::MAXPOOL2D_KERNEL_SIZE,
-    quantization::Fieldizer,
-    testing::{random_vector, random_vector_seed},
-    to_bit_sequence_le,
-};
+use crate::{Element, pooling::MAXPOOL2D_KERNEL_SIZE, quantization::Fieldizer, to_bit_sequence_le};
 
 // Function testing the consistency between the actual convolution implementation and
 // the FFT one. Used for debugging purposes.
@@ -880,32 +874,6 @@ where
 }
 
 impl Tensor<Element> {
-    /// Creates a random matrix with a given number of rows and cols.
-    /// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
-    /// sync which is not true for basic rng core.
-    pub fn random(shape: Vec<usize>) -> Self {
-        let size = shape.iter().product();
-        let data = random_vector(size);
-        Self {
-            data,
-            shape,
-            input_shape: vec![0],
-        }
-    }
-
-    /// Creates a random matrix with a given number of rows and cols.
-    /// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
-    /// sync which is not true for basic rng core.
-    pub fn random_seed(shape: Vec<usize>, seed: Option<u64>) -> Self {
-        let size = shape.iter().product();
-        let data = random_vector_seed(size, seed);
-        Self {
-            data,
-            shape,
-            input_shape: vec![0],
-        }
-    }
-
     /// Returns the evaluation point, in order for (row,col) addressing
     pub fn evals_2d<F: ExtensionField>(&self) -> Vec<F> {
         assert!(self.is_matrix(), "Tensor is not a matrix");
@@ -1234,13 +1202,44 @@ impl PartialEq for Tensor<GoldilocksExt2> {
     }
 }
 
+
+#[cfg(test)]
 mod test {
+
     use ark_std::rand::{Rng, thread_rng};
     use goldilocks::GoldilocksExt2;
 
-    use multilinear_extensions::mle::MultilinearExtension;
-    use super::*;
+    use super::super::testing::{random_vector, random_vector_seed};
 
+    use super::*;
+    use multilinear_extensions::mle::MultilinearExtension;
+    impl Tensor<Element> {
+        /// Creates a random matrix with a given number of rows and cols.
+        /// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
+        /// sync which is not true for basic rng core.
+        pub fn random(shape: Vec<usize>) -> Self {
+            let size = shape.iter().product();
+            let data = random_vector(size);
+            Self {
+                data,
+                shape,
+                input_shape: vec![0],
+            }
+        }
+
+        /// Creates a random matrix with a given number of rows and cols.
+        /// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
+        /// sync which is not true for basic rng core.
+        pub fn random_seed(shape: Vec<usize>, seed: Option<u64>) -> Self {
+            let size = shape.iter().product();
+            let data = random_vector_seed(size, seed);
+            Self {
+                data,
+                shape,
+                input_shape: vec![0],
+            }
+        }
+    }
     #[test]
     fn test_tensor_basic_ops() {
         let tensor1 = Tensor::new(vec![2, 2], vec![1, 2, 3, 4]);

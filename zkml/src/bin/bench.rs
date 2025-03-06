@@ -11,7 +11,7 @@ use clap::Parser;
 use csv::WriterBuilder;
 use goldilocks::GoldilocksExt2;
 use log::info;
-use zkml::{load_model, quantization::Quantizer, ModelType};
+use zkml::{ModelType, load_model, quantization::Quantizer};
 
 use serde::{Deserialize, Serialize};
 use zkml::{

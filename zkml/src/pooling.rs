@@ -1,8 +1,4 @@
-use crate::{
-    Element,
-    quantization::TensorFielder,
-    tensor::Tensor,
-};
+use crate::{Element, quantization::TensorFielder, tensor::Tensor};
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
 use itertools::Itertools;
@@ -193,8 +189,8 @@ mod tests {
     use crate::{commit::compute_betas_eval, default_transcript};
 
     use super::*;
-    use ark_std::rand::{Rng, thread_rng};
     use crate::quantization::Fieldizer;
+    use ark_std::rand::{Rng, thread_rng};
     use ff::Field;
     use gkr::util::ceil_log2;
     use goldilocks::{Goldilocks, GoldilocksExt2};

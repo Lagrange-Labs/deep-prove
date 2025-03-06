@@ -270,9 +270,8 @@ where
                         conv_info
                     }
                     Layer::SchoolBookConvolution(_filter) => {
-                        let conv_info = StepInfo::SchoolBookConvolution(SchoolBookConvInfo {
-                            dummy: E::ZERO,
-                        });
+                        let conv_info =
+                            StepInfo::SchoolBookConvolution(SchoolBookConvInfo { dummy: E::ZERO });
                         conv_info
                     }
                 }
