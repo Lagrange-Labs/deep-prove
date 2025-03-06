@@ -143,7 +143,9 @@ where
     pub fn add_claim(&mut self, claim: Claim<E>) -> anyhow::Result<()> {
         ensure!(
             claim.point.len() == self.ctx.vp_info.max_num_variables,
-            "invalid input len wrt to poly in ctx"
+            "invalid input len wrt to poly in ctx, claim point length: {}, expected point length: {}",
+            claim.point.len(),
+            self.ctx.vp_info.max_num_variables
         );
         self.claims.push(claim);
         Ok(())

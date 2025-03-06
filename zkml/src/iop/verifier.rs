@@ -11,7 +11,7 @@ use anyhow::{anyhow, bail, ensure};
 use ff_ext::ExtensionField;
 
 use gkr::util::ceil_log2;
-use itertools::{Itertools, assert_equal, multiunzip};
+use itertools::{Itertools, assert_equal, izip};
 use log::debug;
 use multilinear_extensions::{
     mle::{IntoMLE, MultilinearExtension},
@@ -107,10 +107,12 @@ where
     //    now.
     let output_mle = io.output.get_data().to_vec().into_mle();
     let computed_sum = output_mle.evaluate(&first_randomness);
+
     let mut output_claim = Claim {
         point: first_randomness,
         eval: computed_sum,
     };
+
     // NOTE: if we only had m2v then we need to do the following check manually to make sure the output is correct.
     // For other cases, for example if we have RELU at last, then we _always_ accumulate output claims into the
     // _witness_prover_ part,  so that claim will be verified nonetheless.
@@ -303,18 +305,61 @@ where
     witness_verifier.add_claim(info.poly_id, commit_claim)?;
 
     // Now we do the same poly verifiaction claims for the input poly
-    let sp_ctx = same_poly::Context::<E>::new(info.num_vars + ceil_log2(info.poolinfo.kernel_size));
+    let sp_ctx = same_poly::Context::<E>::new(info.num_vars + 2);
     let mut sp_verifier = same_poly::Verifier::<E>::new(&sp_ctx);
 
-    let input_claims = &proof.input_claims;
-    input_claims
-        .iter()
-        .try_for_each(|claim| sp_verifier.add_claim(claim.clone()))?;
+    // Challenegs used to batch input poly claims together and link them with zerocheck and lookup verification output
+    let [r1, r2] = [t.get_and_append_challenge(b"input_batching").elements; 2];
+    let one_minus_r1 = E::ONE - r1;
+    let one_minus_r2 = E::ONE - r2;
+
+    let eval_multiplicands = [
+        one_minus_r1 * one_minus_r2,
+        one_minus_r1 * r2,
+        r1 * one_minus_r2,
+        r1 * r2,
+    ];
+
+    let mut zerocheck_point = proof.input_claims[0].point.clone();
+    zerocheck_point[0] = r1;
+    zerocheck_point[1 + proof.variable_gap] = r2;
+
+    let mut lookup_point = proof.input_claims[1].point.clone();
+    lookup_point[0] = r1;
+    lookup_point[1 + proof.variable_gap] = r2;
+
+    let (zerocheck_input_eval_claims, lookup_input_eval_claims): (Vec<E>, Vec<E>) = proof
+        .input_claims
+        .chunks(2)
+        .map(|chunk| (chunk[0].eval, chunk[1].eval))
+        .unzip();
+
+    let (zerocheck_eval, lookup_eval) = izip!(
+        zerocheck_input_eval_claims.iter(),
+        lookup_input_eval_claims.iter(),
+        eval_multiplicands.iter()
+    )
+    .fold(
+        (E::ZERO, E::ZERO),
+        |(zerocheck_acc, lookup_acc), (&ze, &le, &me)| {
+            (zerocheck_acc + ze * me, lookup_acc + le * me)
+        },
+    );
+
+    sp_verifier.add_claim(Claim {
+        point: zerocheck_point,
+        eval: zerocheck_eval,
+    })?;
+    sp_verifier.add_claim(Claim {
+        point: lookup_point,
+        eval: lookup_eval,
+    })?;
 
     // Run the same poly verifier, the output claim from this is what we pass to the next step of verification.
     let out_claim = sp_verifier.verify(input_proof, t)?;
 
     // Now we check consistency between the lookup/sumcheck proof claims and the claims passed to the same poly verifiers.
+    let input_claims = &proof.input_claims;
     let zerocheck_claim_no_beta = input_claims
         .iter()
         .step_by(2)
@@ -659,13 +704,7 @@ where
     E: Serialize + DeserializeOwned,
 {
     // 1. Verify the lookup proof
-    let verifier_claims = L::verify_table(
-        challenges,
-        &info.lookup_type,
-        &info.circuit,
-        proof.lookup.clone(),
-        t,
-    )?;
+    let verifier_claims = L::verify_table(challenges, &info.circuit, proof.lookup.clone(), t)?;
 
     // 2. Accumulate the multiplicity poly claim into the witness commitment protocol
     witness_verifier.add_claim(

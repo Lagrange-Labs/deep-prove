@@ -124,7 +124,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     // Generate context once and measure the time
     info!("[+] Generating context for proving");
     let now = time::Instant::now();
-    let ctx = Context::<F>::generate(&model).expect("unable to generate context");
+    let ctx = Context::<F>::generate(&model, None).expect("unable to generate context");
     let setup_time = now.elapsed().as_millis();
     info!("STEP: {} took {}ms", CSV_SETUP, setup_time);
 
