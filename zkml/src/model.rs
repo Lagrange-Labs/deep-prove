@@ -24,7 +24,7 @@ pub enum Layer {
     Convolution(Tensor<Element>),
     // Traditional convolution is used for debug purposes. That is because the actual convolution
     // we use relies on the FFT algorithm. This convolution does not have a snark implementation.
-    Traditional_Convolution(Tensor<Element>),
+    SchoolBookConvolution(Tensor<Element>),
     Activation(Activation),
     // this is the output quant info. Since we always do a requant layer after each dense,
     // then we assume the inputs requant info are default()
@@ -58,7 +58,7 @@ impl Layer {
             Layer::Convolution(ref filter) => LayerOutput::ConvOut(filter.fft_conv(input)),
             // Traditional convolution is used for debug purposes. That is because the actual convolution
             // we use relies on the FFT algorithm. This convolution does not have a snark implementation.
-            Layer::Traditional_Convolution(ref filter) => {
+            Layer::SchoolBookConvolution(ref filter) => {
                 LayerOutput::NormalOut(filter.cnn_naive_convolution(input))
             }
 
@@ -75,7 +75,7 @@ impl Layer {
             Layer::Dense(ref dense) => vec![dense.matrix.nrows_2d(), dense.matrix.ncols_2d()],
 
             Layer::Convolution(ref filter) => filter.get_shape(),
-            Layer::Traditional_Convolution(ref filter) => filter.get_shape(),
+            Layer::SchoolBookConvolution(ref filter) => filter.get_shape(),
 
             Layer::Activation(Activation::Relu(_)) => Relu::shape(),
             Layer::Requant(info) => info.shape(),
@@ -102,7 +102,7 @@ impl Layer {
                     filter.nw()
                 )
             }
-            Layer::Traditional_Convolution(ref filter) => {
+            Layer::SchoolBookConvolution(ref filter) => {
                 format!(
                     "Conv: Traditional convolution for debug purposes" /* matrix.fmt_integer() */
                 )
@@ -579,9 +579,9 @@ pub(crate) mod test {
             model.run::<F>(input.clone());
 
         let mut model2 = Model::new();
-        model2.add_layer(Layer::Traditional_Convolution(trad_conv1));
-        model2.add_layer(Layer::Traditional_Convolution(trad_conv2));
-        model2.add_layer(Layer::Traditional_Convolution(trad_conv3));
+        model2.add_layer(Layer::SchoolBookConvolution(trad_conv1));
+        model2.add_layer(Layer::SchoolBookConvolution(trad_conv2));
+        model2.add_layer(Layer::SchoolBookConvolution(trad_conv3));
         let trace2 = model.run::<F>(input.clone());
 
         check_tensor_consistency_field::<GoldilocksExt2>(
@@ -767,7 +767,7 @@ pub(crate) mod test {
         let trace: crate::model::InferenceTrace<'_, _, GoldilocksExt2> =
             model.run::<F>(input.clone());
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
-        let mut ctx =
+        let ctx =
             Context::<GoldilocksExt2>::generate(&model, None).expect("Unable to generate context");
         let output = trace.final_output().clone();
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, lookup::LogUp> =
@@ -776,7 +776,7 @@ pub(crate) mod test {
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
         let io = IO::new(input.to_fields(), output.to_fields());
-        verify::<_, _, lookup::LogUp>(ctx, proof, io, &mut verifier_transcript);
+        verify::<_, _, lookup::LogUp>(ctx, proof, io, &mut verifier_transcript).unwrap();
     }
 
     #[test]
@@ -817,7 +817,7 @@ pub(crate) mod test {
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
         let io = IO::new(input.to_fields(), output.to_fields());
-        verify::<_, _, lookup::LogUp>(ctx, proof, io, &mut verifier_transcript);
+        verify::<_, _, lookup::LogUp>(ctx, proof, io, &mut verifier_transcript).unwrap();
     }
 
     #[test]
@@ -855,7 +855,7 @@ pub(crate) mod test {
                             model.run::<F>(input.clone());
                         let mut tr: BasicTranscript<GoldilocksExt2> =
                             BasicTranscript::new(b"m2vec");
-                        let mut ctx =
+                        let ctx =
                             Context::<GoldilocksExt2>::generate(&model, Some(input.dims()))
                                 .expect("Unable to generate context");
                         let output = trace.final_output().clone();
@@ -869,7 +869,7 @@ pub(crate) mod test {
                         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
                             BasicTranscript::new(b"m2vec");
                         let io = IO::new(input.to_fields(), output.to_fields());
-                        verify::<_, _, lookup::LogUp>(ctx, proof, io, &mut verifier_transcript);
+                        verify::<_, _, lookup::LogUp>(ctx, proof, io, &mut verifier_transcript).unwrap();
                     }
                 }
             }

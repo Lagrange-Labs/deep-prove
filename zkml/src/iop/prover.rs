@@ -506,16 +506,16 @@ where
             let beta = compute_betas(r2[0..(r2.len() - 1)].to_vec().clone());
 
             for i in 0..(phi.len()) {
-                if (!isIFFT && l == F_middle.len() - 1) {
+                if !isIFFT && l == F_middle.len() - 1 {
                     phi[i] = (E::ONE - r2[r2.len() - 1])
                         * (E::ONE - r1[(F_middle.len() - 1) - l]
                             + r1[(F_middle.len() - 1) - l]
                                 * omegas[i << ((F_middle.len() - 1) - l)]);
                 } else {
-                    phi[i] = (E::ONE - r1[(F_middle.len() - 1) - l]
+                    phi[i] = E::ONE - r1[(F_middle.len() - 1) - l]
                         + (E::ONE - E::from(2) * r2[r2.len() - 1])
                             * r1[(F_middle.len() - 1) - l]
-                            * omegas[i << ((F_middle.len() - 1) - l)]);
+                            * omegas[i << ((F_middle.len() - 1) - l)];
                 }
             }
 
@@ -538,34 +538,34 @@ where
     }
 
     // Compute powers of roots of unity
-    pub fn phiPowInit(&mut self, phi_mul: &mut Vec<E>, n: usize, isIFFT: bool) {
-        let N = 1 << n;
+    pub fn phiPowInit(&mut self, phi_mul: &mut Vec<E>, n: usize, is_fft: bool) {
+        let length = 1 << n;
         let rou: E = get_root_of_unity(n);
 
         let mut phi = rou;
-        if (isIFFT) {
+        if is_fft {
             phi = phi.invert().unwrap();
         }
         phi_mul[0] = E::ONE;
-        for i in 1..N {
+        for i in 1..length {
             phi_mul[i] = phi_mul[i - 1] * phi;
         }
     }
 
     // Efficiently compute the omegas of FFT/iFFT matrix reduced at rx
     // This is a copy-paste implementation from zkCNN paper
-    pub fn phiGInit(
+    pub fn phi_g_init(
         &mut self,
         phi_g: &mut Vec<E>,
         mid_phi_g: &mut Vec<Vec<E>>,
         rx: Vec<E>,
         scale: E,
         n: usize,
-        isIFFT: bool,
+        is_fft: bool,
     ) {
-        let mut phi_mul = vec![E::ZERO; (1 << n)];
-        self.phiPowInit(&mut phi_mul, n, isIFFT);
-        if (isIFFT == true) {
+        let mut phi_mul = vec![E::ZERO; 1 << n];
+        self.phiPowInit(&mut phi_mul, n, is_fft);
+        if is_fft {
             phi_g[0] = scale;
             phi_g[1] = scale;
             for i in 1..(n + 1) {
@@ -578,7 +578,7 @@ where
                     phi_g[r] = phi_g[l] * (tmp1 - tmp2);
                     phi_g[l] = phi_g[l] * (tmp1 + tmp2);
                 }
-                if (i < n) {
+                if i < n {
                     mid_phi_g[i - 1] = vec![E::ZERO; 1 << (i) as usize];
                     for b in 0..(1 << (i)) {
                         mid_phi_g[i - 1][b] = phi_g[b];
@@ -640,11 +640,11 @@ where
             r2[i] = r[i + r1.len()];
         }
         // compute W(r1,i)
-        let mut W_red: Vec<E> = vec![E::ZERO; x[0].len()];
-        let mut F_middle: Vec<Vec<E>> = vec![Vec::new(); r1.len() - 1];
-        self.phiGInit(
-            &mut W_red,
-            &mut F_middle,
+        let mut w_red: Vec<E> = vec![E::ZERO; x[0].len()];
+        let mut f_middle: Vec<Vec<E>> = vec![Vec::new(); r1.len() - 1];
+        self.phi_g_init(
+            &mut w_red,
+            &mut f_middle,
             r1.clone(),
             E::from(1),
             x[0].len().ilog2() as usize,
@@ -652,29 +652,29 @@ where
         );
         // compute X(i,r2)
 
-        let mut f_M = x
+        let mut f_m = x
             .clone()
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()
             .into_mle();
 
-        f_M.fix_high_variables_in_place(&r2);
+        f_m.fix_high_variables_in_place(&r2);
 
         let beta = compute_betas(r2);
-        let mut M_red = vec![E::ZERO; x[0].len()];
+        let mut m_red = vec![E::ZERO; x[0].len()];
         for i in 0..x.len() {
             for j in 0..x[i].len() {
-                M_red[j] += x[i][j] * beta[i];
+                m_red[j] += x[i][j] * beta[i];
             }
         }
 
         // Construct the virtual polynomial and run the sumcheck prover
 
-        let mut f_red = W_red.into_mle();
+        let mut f_red = w_red.into_mle();
 
-        let mut vp = VirtualPolynomial::<E>::new(f_M.num_vars);
-        vp.add_mle_list(vec![f_M.clone().into(), f_red.clone().into()], E::ONE);
+        let mut vp = VirtualPolynomial::<E>::new(f_m.num_vars);
+        vp.add_mle_list(vec![f_m.clone().into(), f_red.clone().into()], E::ONE);
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
 
         let mut claims = state.get_mle_final_evaluations();
@@ -686,7 +686,7 @@ where
         (
             proof.clone(),
             claims,
-            self.delegate_matrix_evaluation(&mut F_middle, r1.clone(), proof.point.clone(), false),
+            self.delegate_matrix_evaluation(&mut f_middle, r1.clone(), proof.point.clone(), false),
         )
     }
 
@@ -711,37 +711,37 @@ where
             r2[i] = r[i + r1.len()];
         }
         // compute W(r1,i)
-        let mut W_red: Vec<E> = vec![E::ZERO; prod[0].len()];
-        let mut F_middle: Vec<Vec<E>> = vec![Vec::new(); r1.len() - 1];
-        self.phiGInit(
-            &mut W_red,
-            &mut F_middle,
+        let mut w_red: Vec<E> = vec![E::ZERO; prod[0].len()];
+        let mut f_middle: Vec<Vec<E>> = vec![Vec::new(); r1.len() - 1];
+        self.phi_g_init(
+            &mut w_red,
+            &mut f_middle,
             r1.clone(),
             scale,
             prod[0].len().ilog2() as usize,
             true,
         );
-        let mut f_red = W_red.into_mle();
+        let f_red = w_red.into_mle();
         // compute X(i,r2)
-        let mut f_M = prod
+        let mut f_m = prod
             .clone()
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()
             .into_mle();
-        f_M.fix_high_variables_in_place(&r2);
+        f_m.fix_high_variables_in_place(&r2);
 
         // Construct the virtual polynomial and run the sumcheck prover
-        let mut vp = VirtualPolynomial::<E>::new(f_M.num_vars);
-        vp.add_mle_list(vec![f_M.clone().into(), f_red.clone().into()], E::ONE);
+        let mut vp = VirtualPolynomial::<E>::new(f_m.num_vars);
+        vp.add_mle_list(vec![f_m.clone().into(), f_red.clone().into()], E::ONE);
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
 
-        let mut claims = state.get_mle_final_evaluations();
+        let claims = state.get_mle_final_evaluations();
 
         (
             proof.clone(),
             claims,
-            self.delegate_matrix_evaluation(&mut F_middle, r1.clone(), proof.point.clone(), true),
+            self.delegate_matrix_evaluation(&mut f_middle, r1.clone(), proof.point.clone(), true),
         )
         // return Proof;
     }
@@ -793,7 +793,7 @@ where
             debug_assert_eq!(last_claim.eval, y, "Error in Conv 1");
             last_claim.eval == y
         });
-        let (iFFT_proof, iFFT_claim, iFFT_Del_proof) =
+        let (ifft_proof, ifft_claim, ifft_del_proof) =
             self.prove_batch_ifft(r.clone(), &proving_data.prod);
         // After this point, the verifier holds an evaluation claim of proving_data.prod at P1.randomness[0][i]
         // Let r' = P1.randomness[0][i] and y is the evaluation claim of prod = proving_data.prod
@@ -802,7 +802,7 @@ where
         // For this let r1 be the last log(k_w) elements of r and r2 the first log(n_x^2) elements
         // Compute the arrays beta1,beta2 such that beta1[i] = beta(i,r1) and beta2[i] = beta(i,r2)
 
-        let mut r_ifft: Vec<E> = iFFT_proof.point.clone();
+        let mut r_ifft: Vec<E> = ifft_proof.point.clone();
         for i in (proving_data.output[0].len().ilog2() as usize)..r.len() {
             r_ifft.push(r[i]);
         }
@@ -816,7 +816,7 @@ where
                 .collect::<Vec<_>>()
                 .into_mle()
                 .evaluate(&r_ifft);
-            let eval2 = iFFT_claim[0];
+            let eval2 = ifft_claim[0];
             debug_assert_eq!(
                 proving_data
                     .prod
@@ -826,7 +826,7 @@ where
                     .collect::<Vec<_>>()
                     .into_mle()
                     .evaluate(&r_ifft),
-                iFFT_claim[0],
+                ifft_claim[0],
                 "Error in Conv 1"
             );
             eval1 == eval2
@@ -849,7 +849,7 @@ where
         for i in 0..k_w {
             for j in 0..k_x {
                 for k in 0..n_w {
-                    if (filter.data[i * k_x * n_w + j * n_w + k] < 0) {
+                    if filter.data[i * k_x * n_w + j * n_w + k] < 0 {
                         w_red[j * n_w + k] -=
                             beta1[i] * E::from((-filter.data[i * k_x * n_w + j * n_w + k]) as u64);
                     } else {
@@ -900,24 +900,24 @@ where
         // self.r_weights.extend(r1.iter());
 
         // Finally prove the correct computation of the x_fft and get an evaluation claim of the input
-        let (FFT_proof, FFT_claim, FFT_Del_proof) = self.prove_batch_fft(
+        let (fft_proof, fft_claim, fft_del_proof) = self.prove_batch_fft(
             hadamard_proof.point.clone(),
             &mut proving_data.input.clone(),
         );
 
         self.proofs.push(StepProof::Convolution(ConvProof {
-            fft_proof: FFT_proof.clone(),
-            fft_claims: FFT_claim.clone(),
-            ifft_proof: iFFT_proof,
-            fft_delegation_proof: FFT_Del_proof.0,
-            ifft_delegation_proof: iFFT_Del_proof.0,
+            fft_proof: fft_proof.clone(),
+            fft_claims: fft_claim.clone(),
+            ifft_proof,
+            fft_delegation_proof: fft_del_proof.0,
+            ifft_delegation_proof: ifft_del_proof.0,
             hadamard_proof: hadamard_proof.clone(),
-            ifft_claims: iFFT_claim,
-            fft_delegation_claims: FFT_Del_proof.1,
-            ifft_delegation_claims: iFFT_Del_proof.1,
+            ifft_claims: ifft_claim,
+            fft_delegation_claims: fft_del_proof.1,
+            ifft_delegation_claims: ifft_del_proof.1,
             hadamard_clams: hadamard_claims,
         }));
-        let mut input_point = FFT_proof.point.clone();
+        let mut input_point = fft_proof.point.clone();
         let mut v = input_point.pop().unwrap();
         v = (E::ONE - v).invert().unwrap();
         let final_claim = Claim {
@@ -926,7 +926,7 @@ where
                 hadamard_proof.point[((filter.filter_size() * 2).ilog2() as usize)..].to_vec(),
             ]
             .concat(),
-            eval: FFT_claim[0] * v,
+            eval: fft_claim[0] * v,
         };
 
         Ok(final_claim)

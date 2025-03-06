@@ -10,7 +10,6 @@ use anyhow::{Context as CC, ensure};
 use clap::Parser;
 use csv::WriterBuilder;
 use goldilocks::GoldilocksExt2;
-use itertools::Itertools;
 use log::info;
 use zkml::{load_model, quantization::Quantizer, ModelType};
 

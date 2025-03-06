@@ -33,7 +33,7 @@ where
 {
     Dense(DenseInfo<E>),
     Convolution(ConvInfo<E>),
-    Traditional_Convolution(Traditional_ConvInfo<E>),
+    Traditional_Convolution(SchoolBookConvInfo<E>),
     Activation(ActivationInfo),
     Requant(RequantInfo),
     Pooling(PoolingInfo), // Maxpool update
@@ -55,7 +55,7 @@ pub struct ConvInfo<E> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Traditional_ConvInfo<E> {
+pub struct SchoolBookConvInfo<E> {
     pub dummy: E,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -269,8 +269,8 @@ where
                         });
                         conv_info
                     }
-                    Layer::Traditional_Convolution(filter) => {
-                        let conv_info = StepInfo::Traditional_Convolution(Traditional_ConvInfo {
+                    Layer::SchoolBookConvolution(filter) => {
+                        let conv_info = StepInfo::Traditional_Convolution(SchoolBookConvInfo {
                             dummy: E::ZERO,
                         });
                         conv_info

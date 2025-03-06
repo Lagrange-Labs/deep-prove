@@ -460,14 +460,14 @@ pub fn phi_eval<E: ExtensionField>(
     rand1: E,
     rand2: E,
     exponents: Vec<E>,
-    FirstIter: bool,
+    first_iter: bool,
 ) -> E {
     let mut eval = E::ONE;
     for i in 0..r.len() {
-        eval *= (E::ONE - r[i] + r[i] * exponents[exponents.len() - r.len() + i]);
+        eval *= E::ONE - r[i] + r[i] * exponents[exponents.len() - r.len() + i];
     }
 
-    if (FirstIter) {
+    if first_iter {
         eval = (E::ONE - rand2) * (E::ONE - rand1 + rand1 * eval);
     } else {
         eval = E::ONE - rand1 + (E::ONE - E::from(2) * rand2) * rand1 * eval;
@@ -476,10 +476,10 @@ pub fn phi_eval<E: ExtensionField>(
     return eval;
 }
 
-pub fn pow_two_omegas<E: ExtensionField>(n: usize, isIFFT: bool) -> Vec<E> {
+pub fn pow_two_omegas<E: ExtensionField>(n: usize, is_fft: bool) -> Vec<E> {
     let mut pows = vec![E::ZERO; n - 1];
     let mut rou: E = get_root_of_unity(n);
-    if (isIFFT) {
+    if is_fft {
         rou = rou.invert().unwrap();
     }
     pows[0] = rou;
@@ -598,7 +598,7 @@ where
                 proof.hadamard_proof.point[i],
                 prev_r[prev_r.len() - 1],
                 exponents.clone(),
-                (i == 0)
+                i == 0
             ),
             proof.fft_delegation_claims[i][1],
             "Error in phi computation fft delegation iter : {}",

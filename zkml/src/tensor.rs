@@ -272,10 +272,10 @@ impl Tensor<Element> {
     // needed to generate a convolution proof
     pub fn fft_conv<F: ExtensionField>(
         &self,
-        X: &Tensor<Element>,
+        x: &Tensor<Element>,
     ) -> (Tensor<Element>, ConvData<F>) {
-        let n_x = X.shape[1].next_power_of_two();
-        let mut x_vec = vec![vec![F::ZERO; n_x * n_x]; X.shape[0].next_power_of_two()];
+        let n_x = x.shape[1].next_power_of_two();
+        let mut x_vec = vec![vec![F::ZERO; n_x * n_x]; x.shape[0].next_power_of_two()];
         let mut w_fft = vec![F::ZERO; self.data.len()];
         for i in 0..w_fft.len() {
             if self.data[i] < 0 {
@@ -287,7 +287,7 @@ impl Tensor<Element> {
 
         for i in 0..x_vec.len() {
             index_x(
-                X.data[i * n_x * n_x..(i + 1) * n_x * n_x].to_vec(),
+                x.data[i * n_x * n_x..(i + 1) * n_x * n_x].to_vec(),
                 &mut x_vec[i],
                 n_x,
             );
@@ -621,15 +621,6 @@ where
     pub fn pad_next_power_of_two(&self) -> Self {
         let shape = self.dims();
 
-        let checker = shape
-            .iter()
-            .fold(true, |acc, dim| acc & dim.is_power_of_two());
-
-        // If all dims are already a power of two then short circuit early
-        if checker {
-            return self.clone();
-        }
-
         let padded_data = Self::recursive_pad(self.get_data(), &shape);
 
         let padded_shape = shape
@@ -750,30 +741,30 @@ where
         return out;
     }
 
-    pub fn add_matrix(&self, M1: &mut Vec<Vec<T>>, M2: Vec<Vec<T>>) -> Vec<Vec<T>> {
-        let mut M = vec![vec![Default::default(); M1[0].len()]; M1.len()];
-        for i in 0..M.len() {
-            for j in 0..M[i].len() {
-                M[i][j] = M1[i][j] + M2[i][j];
+    pub fn add_matrix(&self, m1: &mut Vec<Vec<T>>, m2: Vec<Vec<T>>) -> Vec<Vec<T>> {
+        let mut m = vec![vec![Default::default(); m1[0].len()]; m1.len()];
+        for i in 0..m.len() {
+            for j in 0..m[i].len() {
+                m[i][j] = m1[i][j] + m2[i][j];
             }
         }
-        return M;
+        return m;
     }
 
     // Implementation of the stadard convolution algorithm.
     // This is needed mostly for debugging purposes
-    pub fn cnn_naive_convolution(&self, X: &Tensor<T>) -> Tensor<T> {
+    pub fn cnn_naive_convolution(&self, xt: &Tensor<T>) -> Tensor<T> {
         let k_w = self.shape[0];
         let k_x = self.shape[1];
         let n_w = self.shape[2];
-        let n = X.shape[0];
+        let n = xt.shape[0];
         let mut ctr = 0;
         assert!(n == k_x, "Inconsistency on filter/input vector");
 
         let mut w: Vec<Vec<Vec<Vec<T>>>> =
             vec![vec![vec![vec![Default::default(); n_w]; n_w]; k_x]; k_w];
         let mut x: Vec<Vec<Vec<T>>> =
-            vec![vec![vec![Default::default(); X.shape[1]]; X.shape[1]]; n];
+            vec![vec![vec![Default::default(); xt.shape[1]]; xt.shape[1]]; n];
         for k in 0..k_w {
             for l in 0..k_x {
                 for i in 0..n_w {
@@ -786,15 +777,15 @@ where
         }
         ctr = 0;
         for k in 0..n {
-            for i in 0..X.shape[1] {
-                for j in 0..X.shape[1] {
-                    x[k][i][j] = X.data[ctr];
+            for i in 0..xt.shape[1] {
+                for j in 0..xt.shape[1] {
+                    x[k][i][j] = xt.data[ctr];
                     ctr += 1;
                 }
             }
         }
         let mut conv: Vec<Vec<Vec<T>>> =
-            vec![vec![vec![Default::default(); X.shape[1] - n_w + 1]; X.shape[1] - n_w + 1]; k_w];
+            vec![vec![vec![Default::default(); xt.shape[1] - n_w + 1]; xt.shape[1] - n_w + 1]; k_w];
 
         for i in 0..k_w {
             for j in 0..k_x {
@@ -804,7 +795,7 @@ where
         }
 
         return Tensor::new(
-            vec![k_w, X.shape[1] - n_w + 1, X.shape[1] - n_w + 1],
+            vec![k_w, xt.shape[1] - n_w + 1, xt.shape[1] - n_w + 1],
             conv.into_iter()
                 .flat_map(|inner_vec| inner_vec.into_iter())
                 .flat_map(|inner_inner_vec| inner_inner_vec.into_iter())
@@ -1419,9 +1410,9 @@ mod test {
                         let rand_vec = random_vector(n_w*n_w*k_x*k_w);
                         let filter_1 = Tensor::new_conv(vec![k_w,k_x,n_w,n_w], vec![k_x,n_x,n_x], rand_vec.iter().map(|&x| x as Element).collect());
                         let filter_2 = Tensor::new(vec![k_w,k_x,n_w,n_w], rand_vec.iter().map(|&x| x as Element).collect());
-                        let X = Tensor::new(vec![k_x,n_x,n_x],vec![3;n_x*n_x*k_x]);//random_vector(n_x*n_x*k_x));
-                        let (out_2,_) = filter_1.fft_conv::<GoldilocksExt2>(&X);
-                        let out_1 = filter_2.cnn_naive_convolution(&X);
+                        let big_x = Tensor::new(vec![k_x,n_x,n_x],vec![3;n_x*n_x*k_x]);//random_vector(n_x*n_x*k_x));
+                        let (out_2,_) = filter_1.fft_conv::<GoldilocksExt2>(&big_x);
+                        let out_1 = filter_2.cnn_naive_convolution(&big_x);
                         check_tensor_consistency(out_1,out_2);
                         /*
 
