@@ -8,6 +8,7 @@ use crate::{
     Element,
     activation::{Activation, Relu},
     model::{Layer, Model},
+    pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
     quantization::Quantizer,
 };
 
@@ -100,7 +101,6 @@ fn is_cnn(filepath: &str) -> Result<bool> {
             )));
         }
 
-        println!("Prev op: {}. Status: {}", previous_op, is_cnn);
         if ACTIVATION.contains(&op_type) {
             is_cnn =
                 is_cnn && (LINEAR_ALG.contains(&previous_op) || CONVOLUTION.contains(&previous_op));
@@ -276,6 +276,42 @@ fn fetch_weight_bias_as_tensor<Q: Quantizer<Element>>(
     Ok(tensor_result)
 }
 
+fn fetch_maxpool_attributes(node: &NodeProto) -> Result<()> {
+    let get_attr = |name: &str| -> Vec<i64> {
+        node.attribute
+            .iter()
+            .find(|x| x.name.contains(name))
+            .map_or_else(Vec::new, |x| x.ints.clone())
+    };
+
+    let (strides, pads, kernel_shape, dilations) = (
+        get_attr("strides"),
+        get_attr("pads"),
+        get_attr("kernel_shape"),
+        get_attr("dilations"),
+    );
+
+    let expected_value: i64 = MAXPOOL2D_KERNEL_SIZE.try_into()?;
+
+    assert!(
+        strides.iter().all(|&x| x == expected_value),
+        "Strides must be {}",
+        expected_value
+    );
+    assert!(pads.iter().all(|&x| x == 0), "Padding must be 0s");
+    assert!(
+        kernel_shape.iter().all(|&x| x == expected_value),
+        "Kernel shape must be {}",
+        expected_value
+    );
+    assert!(
+        dilations.iter().all(|&x| x == 1),
+        "Dilations shape must be 1"
+    );
+
+    Ok(())
+}
+
 pub fn load_cnn<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
     if !Path::new(filepath).exists() {
         return Err(Error::msg(format!("File '{}' does not exist", filepath)));
@@ -303,7 +339,6 @@ pub fn load_cnn<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
 
     let mut layers: Vec<Layer> = Vec::new();
     for (i, node) in graph.node.iter().enumerate() {
-        println!("Layer: {}", node.op_type.as_str());
         match node.op_type.as_str() {
             op if LINEAR_ALG.contains(&op) => {
                 let weight = fetch_weight_bias_as_tensor::<Q>(1.0, "weight", node, &initializers)?;
@@ -325,12 +360,15 @@ pub fn load_cnn<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                 unimplemented!()
             }
             op if DOWNSAMPLING.contains(&op) => {
-                unimplemented!()
                 // TODO
+                let _ = fetch_maxpool_attributes(node)?;
+                let layer = Layer::Pooling(Pooling::Maxpool2D(Maxpool2D::default()));
+                layers.push(layer);
+                unimplemented!()
             }
             op if RESHAPE.contains(&op) => {
-                unimplemented!()
                 // TODO
+                unimplemented!()
             }
             _ => (),
         };

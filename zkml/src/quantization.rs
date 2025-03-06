@@ -5,6 +5,7 @@ use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
 use goldilocks::SmallField;
 use itertools::Itertools;
+use log::debug;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -63,7 +64,7 @@ impl Quantizer<Element> for Element {
         let scaled = scaled.clamp(*MIN, *MAX);
 
         if e < -max_abs || e > max_abs {
-            println!(
+            debug!(
                 "Quantization: Value {} is out of [-{}, {}]. But quantized to {}.",
                 e, max_abs, max_abs, scaled
             );
