@@ -7,6 +7,8 @@ use gkr::{
     util::ceil_log2,
 };
 
+use rayon::prelude::*;
+
 use mpcs::{BasefoldCommitment, PolynomialCommitmentScheme};
 use poseidon::digest::Digest;
 use std::collections::{HashMap, HashSet};
@@ -18,6 +20,7 @@ use crate::{
     commit::{Pcs, precommit::PolyID},
     iop::context::StepInfo,
     model::{InferenceTrace, StepIdx},
+    pooling::Maxpool2D,
     quantization::{BIT_LEN, Fieldizer, Requant},
     tensor::Tensor,
 };
@@ -36,7 +39,7 @@ pub use logup::LogUp;
 
 type MLE<E> = DenseMultilinearExtension<E>;
 fn max_poly_size() -> usize {
-    (*BIT_LEN*2) + 1
+    (*BIT_LEN * 2) + 1
 }
 /// Proof from a GKR based lookup.
 /// The commitment is a batch commitment to all of the witness wires.
@@ -129,6 +132,8 @@ pub enum LookupType {
     Requant(Requant, usize),
     RequantTable(usize),
     ReluTable,
+    Maxpool2D(Maxpool2D, usize), // Maxpool update
+    Maxpool2DTable(usize),       // Maxpool update
     NoLookup,
 }
 
@@ -141,6 +146,8 @@ where
         match value {
             StepInfo::Requant(info) => LookupType::Requant(info.requant, info.num_vars),
             StepInfo::Activation(info) => LookupType::Relu(info.num_vars),
+            StepInfo::Pooling(info) => LookupType::Maxpool2D(info.poolinfo, info.num_vars),
+            // Maxpool update
             _ => LookupType::NoLookup,
         }
     }
@@ -153,6 +160,9 @@ impl LookupType {
             LookupType::Relu(num_vars) => lookup_wire_fractional_sumcheck(2, *num_vars),
             LookupType::ReluTable => table_fractional_sumcheck(2, *BIT_LEN),
             LookupType::RequantTable(num_vars) => table_fractional_sumcheck(1, *num_vars),
+            // Maxpool update
+            LookupType::Maxpool2D(_, num_vars) => lookup_wire_fractional_sumcheck(1, *num_vars),
+            LookupType::Maxpool2DTable(num_vars) => table_fractional_sumcheck(1, *num_vars),
             LookupType::NoLookup => Circuit::<E>::default(),
         }
     }
@@ -170,6 +180,9 @@ impl LookupType {
             LookupType::Relu(..) => 2,
             LookupType::ReluTable => 2,
             LookupType::RequantTable(..) => 1,
+            // Maxpool update
+            LookupType::Maxpool2D(..) => 1,
+            LookupType::Maxpool2DTable(..) => 1,
             LookupType::NoLookup => 0,
         }
     }
@@ -180,6 +193,9 @@ impl LookupType {
             LookupType::Relu(..) => 2,
             LookupType::ReluTable => 3,
             LookupType::RequantTable(..) => 2,
+            // Maxpool update
+            LookupType::Maxpool2D(..) => 4,
+            LookupType::Maxpool2DTable(..) => 1,
             LookupType::NoLookup => 0,
         }
     }
@@ -190,6 +206,9 @@ impl LookupType {
             LookupType::Relu(num_vars) => *num_vars,
             LookupType::ReluTable => *BIT_LEN,
             LookupType::RequantTable(num_vars) => *num_vars,
+            // Maxpool update
+            LookupType::Maxpool2D(.., num_vars) => *num_vars,
+            LookupType::Maxpool2DTable(num_vars) => *num_vars,
             LookupType::NoLookup => 0,
         }
     }
@@ -209,6 +228,10 @@ impl LookupType {
             }
             LookupType::Relu(..) | LookupType::ReluTable => "Relu".to_string(),
             LookupType::RequantTable(num_vars) => format!("Requant_{}", *num_vars),
+            // Maxpool update
+            LookupType::Maxpool2D(..) | LookupType::Maxpool2DTable(..) => {
+                format!("Maxpool2D")
+            }
             LookupType::NoLookup => "NoLookup".to_string(),
         }
     }
@@ -233,6 +256,13 @@ impl LookupType {
                         .collect::<Vec<E::BaseField>>(),
                 ])
             }
+            // Maxpool update
+            LookupType::Maxpool2DTable(..) => {
+                let mle = (0..1u64 << (*BIT_LEN))
+                    .map(|i| E::BaseField::from(i))
+                    .collect::<Vec<E::BaseField>>();
+                Some(vec![mle])
+            }
             _ => None,
         }
     }
@@ -251,6 +281,9 @@ impl LookupType {
                 LookupType::RequantTable(info.after_range.ilog2() as usize)
             }
             LookupType::RequantTable(..) => *self,
+            // Maxpool update
+            LookupType::Maxpool2D(..) => *self,
+            LookupType::Maxpool2DTable(..) => *self,
             LookupType::NoLookup => LookupType::NoLookup,
         }
     }
@@ -276,6 +309,21 @@ impl LookupType {
                     .collect::<Vec<Vec<E::BaseField>>>()
             }
             LookupType::Requant(info, ..) => info.prep_for_requantize::<E>(input.get_data()),
+            // Maxpool update
+            LookupType::Maxpool2D(info, ..) => {
+                let max_pool_polys = info.compute_polys::<E>(input);
+
+                max_pool_polys[1..]
+                    .iter()
+                    .map(|fixed_input| {
+                        max_pool_polys[0]
+                            .iter()
+                            .zip(fixed_input.iter())
+                            .map(|(output, input)| *output - *input)
+                            .collect::<Vec<E::BaseField>>()
+                    })
+                    .collect::<Vec<Vec<E::BaseField>>>()
+            }
             _ => vec![],
         }
     }
@@ -463,6 +511,45 @@ where
                         let table_info = TableInfo {
                             poly_id: table_poly_id,
                             num_vars,
+                            table_commitment: commit,
+                            circuit,
+                            lookup_type,
+                        };
+                        table_circuits.push(table_info);
+                        table_poly_id += 1;
+                    }
+                    Ok(())
+                }
+                // Maxpool update
+                StepInfo::Pooling(..) => {
+                    let lookup_type = LookupType::from(step);
+                    let circuit = lookup_type.make_circuit::<E>();
+                    let vec_position = lookup_circuits.len();
+                    step_index_map.insert(idx, vec_position);
+                    lookup_circuits.push((lookup_type, circuit));
+
+                    if tables_used.insert(LookupType::Maxpool2DTable(*BIT_LEN)) {
+                        let lookup_type = LookupType::Maxpool2DTable(*BIT_LEN);
+                        let circuit = lookup_type.make_circuit::<E>();
+                        let mles = lookup_type
+                            .get_mles::<E>()
+                            .ok_or(anyhow!(
+                                "Got none table LookupType when only tables should be made: {:?}",
+                                lookup_type
+                            ))?
+                            .into_iter()
+                            .map(|evaluations| {
+                                DenseMultilinearExtension::<E>::from_evaluations_vec(
+                                    *BIT_LEN,
+                                    evaluations,
+                                )
+                            })
+                            .collect::<Vec<DenseMultilinearExtension<E>>>();
+                        let (pp, _) = Pcs::<E>::trim(params.clone(), 1 << (*BIT_LEN))?;
+                        let commit = Pcs::<E>::batch_commit(&pp, &mles)?.to_commitment();
+                        let table_info = TableInfo {
+                            poly_id: table_poly_id,
+                            num_vars: *BIT_LEN,
                             table_commitment: commit,
                             circuit,
                             lookup_type,

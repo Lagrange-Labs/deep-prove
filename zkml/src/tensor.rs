@@ -5,7 +5,7 @@ use ark_std::rand::{
 use ff::Field;
 use ff_ext::ExtensionField;
 use goldilocks::GoldilocksExt2;
-use itertools::Itertools;
+use itertools::{Itertools, izip};
 use multilinear_extensions::mle::DenseMultilinearExtension;
 use rayon::{
     iter::{
@@ -16,7 +16,7 @@ use rayon::{
 };
 use std::{
     cmp::PartialEq,
-    fmt::{self},
+    fmt::{self, Debug},
 };
 
 use crate::{
@@ -252,6 +252,52 @@ where
         self
     }
 
+    /// Recursively pads the tensor so its ready to be viewed as an MLE
+    pub fn pad_next_power_of_two(&self) -> Self {
+        let shape = self.dims();
+
+        let padded_data = Self::recursive_pad(self.get_data(), &shape);
+
+        let padded_shape = shape
+            .into_iter()
+            .map(|dim| dim.next_power_of_two())
+            .collect::<Vec<usize>>();
+
+        Tensor::<T>::new(padded_shape, padded_data)
+    }
+
+    fn recursive_pad(data: &[T], remaining_dims: &[usize]) -> Vec<T> {
+        match remaining_dims.len() {
+            // If the remaining dims show we are a vector simply pad
+            1 => data
+                .iter()
+                .cloned()
+                .chain(std::iter::repeat(T::default()))
+                .take(remaining_dims[0].next_power_of_two())
+                .collect::<Vec<T>>(),
+            // If the remaining dims show that we are a matrix call the matrix method
+            2 => {
+                let tmp_tensor = Tensor::<T>::new(remaining_dims.to_vec(), data.to_vec())
+                    .pad_next_power_of_two_2d();
+                tmp_tensor.data.clone()
+            }
+            // Otherwise we recurse
+            _ => {
+                let chunk_size = remaining_dims[1..].iter().product::<usize>();
+                let mut unpadded_data = data
+                    .chunks(chunk_size)
+                    .map(|data_chunk| Self::recursive_pad(data_chunk, &remaining_dims[1..]))
+                    .collect::<Vec<Vec<T>>>();
+                let elem_size = unpadded_data[0].len();
+                unpadded_data.resize(remaining_dims[0].next_power_of_two(), vec![
+                    T::default();
+                    elem_size
+                ]);
+                unpadded_data.concat()
+            }
+        }
+    }
+
     /// Perform matrix-matrix multiplication
     pub fn matmul(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(
@@ -432,7 +478,7 @@ impl Tensor<Element> {
 
 impl<T> Tensor<T>
 where
-    T: PartialOrd + Clone,
+    T: PartialOrd + Ord + Clone + Debug,
     T: std::default::Default,
 {
     pub fn maxpool2d(&self, kernel_size: usize, stride: usize) -> Tensor<T> {
@@ -897,6 +943,38 @@ mod test {
             padded_result, padded_expected,
             "Padded Maxpool (Element) failed."
         );
+    }
+
+    #[test]
+    fn test_pad_tensor_for_mle() {
+        let input = Tensor::<Element>::new(vec![1, 3, 4, 4], vec![
+            93, 56, -3, -1, 104, -68, -71, -96, 5, -16, 3, -8, 74, -34, -16, -31, -42, -59, -64,
+            70, -77, 19, -17, -114, 79, 55, 4, -26, -7, -17, -94, 21, 59, -116, -113, 47, 8, 112,
+            65, -99, 35, 3, -126, -52, 28, 69, 105, 33,
+        ]);
+
+        let padded = input.pad_next_power_of_two();
+
+        padded
+            .dims()
+            .iter()
+            .zip(input.dims().iter())
+            .for_each(|(padded_dim, input_dim)| {
+                assert_eq!(*padded_dim, input_dim.next_power_of_two())
+            });
+
+        let input_data = input.get_data();
+        let padded_data = padded.get_data();
+        for i in 0..1 {
+            for j in 0..3 {
+                for k in 0..4 {
+                    for l in 0..4 {
+                        let index = 3 * 4 * 4 * i + 4 * 4 * j + 4 * k + l;
+                        assert_eq!(input_data[index], padded_data[index]);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

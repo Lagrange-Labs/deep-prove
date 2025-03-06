@@ -3,7 +3,7 @@ use crate::{
     iop::precommit::{self, PolyID},
     lookup::Context as LookupContext,
     model::{Layer, Model},
-    pooling::Pooling,
+    pooling::{Maxpool2D, Pooling},
     quantization::Requant,
 };
 use anyhow::Context as CC;
@@ -28,6 +28,7 @@ where
     Dense(DenseInfo<E>),
     Activation(ActivationInfo),
     Requant(RequantInfo),
+    Pooling(PoolingInfo), // Maxpool update
     Table(TableInfo<E>),
 }
 
@@ -49,6 +50,14 @@ pub struct ActivationInfo {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequantInfo {
     pub requant: Requant,
+    pub poly_id: PolyID,
+    pub num_vars: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+// Maxpool update
+pub struct PoolingInfo {
+    pub poolinfo: Maxpool2D,
     pub poly_id: PolyID,
     pub num_vars: usize,
 }
@@ -77,6 +86,7 @@ where
             Self::Dense(_) => "Dense".to_string(),
             Self::Activation(_) => "Activation".to_string(),
             Self::Requant(_) => "Requant".to_string(),
+            Self::Pooling(_) => "Pooling".to_string(), // Maxpool update
             Self::Table(..) => "Table".to_string(),
         }
     }
@@ -153,7 +163,12 @@ where
                         poly_id: id,
                         num_vars: last_output_size.ilog2() as usize,
                     }),
-                    Layer::Pooling(Pooling::Maxpool2D(_)) => unimplemented!(),
+                    Layer::Pooling(Pooling::Maxpool2D(info)) => StepInfo::Pooling(PoolingInfo {
+                        // Maxpool update
+                        poolinfo: *info,
+                        poly_id: id,
+                        num_vars: last_output_size.ilog2() as usize,
+                    }),
                 }
             })
             .collect_vec();
@@ -183,6 +198,11 @@ where
                 StepInfo::Activation(info) => {
                     t.append_field_element(&E::BaseField::from(info.poly_id as u64));
                     t.append_field_element(&E::BaseField::from(info.num_vars as u64));
+                }
+                StepInfo::Pooling(info) => {
+                    // Maxpool update
+                    t.append_field_element(&E::BaseField::from(info.poolinfo.kernel_size as u64));
+                    t.append_field_element(&E::BaseField::from(info.poolinfo.stride as u64));
                 }
                 StepInfo::Table(info) => {
                     t.append_field_element(&E::BaseField::from(info.poly_id as u64));
