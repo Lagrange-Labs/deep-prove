@@ -39,8 +39,3 @@ pub fn random_vector_seed(n: usize, seed: Option<u64>) -> Vec<Element> {
         })
         .collect_vec()
 }
-
-pub fn random_ranged_vector(n: usize, range: std::ops::Range<Element>) -> Vec<Element> {
-    let mut rng = thread_rng();
-    (0..n).map(|_| rng.gen_range(range.clone())).collect_vec()
-}

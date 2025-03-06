@@ -7,8 +7,6 @@ use gkr::{
     util::ceil_log2,
 };
 
-use rayon::prelude::*;
-
 use mpcs::{BasefoldCommitment, PolynomialCommitmentScheme};
 use poseidon::digest::Digest;
 use std::collections::{HashMap, HashSet};
@@ -1224,8 +1222,6 @@ mod tests {
 
     type F = GoldilocksExt2;
     use goldilocks::GoldilocksExt2;
-
-    use tracing_subscriber;
 
     #[test]
     fn test_prover_steps() -> anyhow::Result<()> {

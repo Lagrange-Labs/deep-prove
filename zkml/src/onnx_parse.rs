@@ -548,11 +548,11 @@ mod tests {
     }
 
     // #[test]
-    fn test_load_cnn() {
-        // let filepath = "assets/scripts/CNN/lenet-mnist-01.onnx";
-        let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
-        let result = load_model::<Element>(&filepath, ModelType::CNN);
+    //fn test_load_cnn() {
+    //    // let filepath = "assets/scripts/CNN/lenet-mnist-01.onnx";
+    //    let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
+    //    let result = load_model::<Element>(&filepath, ModelType::CNN);
 
-        assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
-    }
+    //    assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
+    //}
 }

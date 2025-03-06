@@ -25,7 +25,6 @@ pub use onnx_parse::{load_model, ModelType};
 
 pub mod tensor;
 mod testing;
-mod utils;
 
 /// We allow higher range to account for overflow. Since we do a requant after each layer, we
 /// can support with i128 with 8 bits quant:

@@ -47,7 +47,7 @@ use super::{
 use crate::{
     Claim, Element, VectorTranscript,
     activation::Activation,
-    commit::{compute_betas_eval, identity_eval, precommit, same_poly},
+    commit::{compute_betas_eval, precommit, same_poly},
     dense,
     iop::{ActivationProof, ConvProof, DenseProof, PoolingProof},
     lookup::{self, LookupProtocol},
@@ -61,10 +61,10 @@ use gkr::util::ceil_log2;
 use log::{debug, warn};
 use multilinear_extensions::{
     mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension, IntoMLE, MultilinearExtension},
-    virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial},
+    virtual_poly::{ArcMultilinearExtension, VirtualPolynomial},
 };
 use serde::{Serialize, de::DeserializeOwned};
-use std::{marker::PhantomData, sync::Arc};
+use std::marker::PhantomData;
 use sumcheck::structs::{IOPProverState, IOPVerifierState};
 use transcript::Transcript;
 
@@ -490,38 +490,38 @@ where
     // r2: the random point produced by the sumcheck
     pub fn delegate_matrix_evaluation(
         &mut self,
-        F_middle: &mut Vec<Vec<E>>,
+        f_middle: &mut Vec<Vec<E>>,
         r1: Vec<E>,
         mut r2: Vec<E>,
-        isIFFT: bool,
+        is_fft: bool,
     ) -> (Vec<sumcheck::structs::IOPProof<E>>, Vec<Vec<E>>) {
         let mut omegas = vec![E::ZERO; 1 << r1.len() as usize];
-        self.phiPowInit(&mut omegas, r1.len(), isIFFT);
+        self.phi_pow_init(&mut omegas, r1.len(), is_fft);
 
         let mut proofs: Vec<sumcheck::structs::IOPProof<E>> = Vec::new();
         let mut claims: Vec<Vec<E>> = Vec::new();
 
         for l in (0..(r1.len() - 1)).rev() {
-            let mut phi = vec![E::ZERO; F_middle[l].len()];
+            let mut phi = vec![E::ZERO; f_middle[l].len()];
             let beta = compute_betas(r2[0..(r2.len() - 1)].to_vec().clone());
 
             for i in 0..(phi.len()) {
-                if !isIFFT && l == F_middle.len() - 1 {
+                if !is_fft && l == f_middle.len() - 1 {
                     phi[i] = (E::ONE - r2[r2.len() - 1])
-                        * (E::ONE - r1[(F_middle.len() - 1) - l]
-                            + r1[(F_middle.len() - 1) - l]
-                                * omegas[i << ((F_middle.len() - 1) - l)]);
+                        * (E::ONE - r1[(f_middle.len() - 1) - l]
+                            + r1[(f_middle.len() - 1) - l]
+                                * omegas[i << ((f_middle.len() - 1) - l)]);
                 } else {
-                    phi[i] = E::ONE - r1[(F_middle.len() - 1) - l]
+                    phi[i] = E::ONE - r1[(f_middle.len() - 1) - l]
                         + (E::ONE - E::from(2) * r2[r2.len() - 1])
-                            * r1[(F_middle.len() - 1) - l]
-                            * omegas[i << ((F_middle.len() - 1) - l)];
+                            * r1[(f_middle.len() - 1) - l]
+                            * omegas[i << ((f_middle.len() - 1) - l)];
                 }
             }
 
             let f1 = beta.into_mle();
             let f2 = phi.into_mle();
-            let f3 = F_middle[l].clone().into_mle();
+            let f3 = f_middle[l].clone().into_mle();
 
             let mut vp = VirtualPolynomial::<E>::new(f1.num_vars);
             vp.add_mle_list(
@@ -529,7 +529,7 @@ where
                 E::ONE,
             );
             let (proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
-            let mut claim: Vec<E> = state.get_mle_final_evaluations();
+            let claim: Vec<E> = state.get_mle_final_evaluations();
             r2 = proof.point.clone();
             proofs.push(proof);
             claims.push(claim);
@@ -538,7 +538,7 @@ where
     }
 
     // Compute powers of roots of unity
-    pub fn phiPowInit(&mut self, phi_mul: &mut Vec<E>, n: usize, is_fft: bool) {
+    pub fn phi_pow_init(&mut self, phi_mul: &mut Vec<E>, n: usize, is_fft: bool) {
         let length = 1 << n;
         let rou: E = get_root_of_unity(n);
 
@@ -564,7 +564,7 @@ where
         is_fft: bool,
     ) {
         let mut phi_mul = vec![E::ZERO; 1 << n];
-        self.phiPowInit(&mut phi_mul, n, is_fft);
+        self.phi_pow_init(&mut phi_mul, n, is_fft);
         if is_fft {
             phi_g[0] = scale;
             phi_g[1] = scale;
@@ -671,14 +671,14 @@ where
 
         // Construct the virtual polynomial and run the sumcheck prover
 
-        let mut f_red = w_red.into_mle();
+        let f_red = w_red.into_mle();
 
         let mut vp = VirtualPolynomial::<E>::new(f_m.num_vars);
         vp.add_mle_list(vec![f_m.clone().into(), f_red.clone().into()], E::ONE);
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
 
         let mut claims = state.get_mle_final_evaluations();
-        let mut v = (E::ONE - proof.point[proof.point.len() - 1])
+        let v = (E::ONE - proof.point[proof.point.len() - 1])
             .invert()
             .unwrap(); //(E::ONE - proof.point[proof.point.len()-1]).invert();
         claims[0] = claims[0] * v;
@@ -861,7 +861,7 @@ where
         }
         let mut beta_acc = vec![E::ZERO; w_red.len()];
         let mut ctr = 0;
-        for i in 0..k_x {
+        for _ in 0..k_x {
             for j in 0..beta2.len() {
                 beta_acc[ctr] = beta2[j];
                 ctr += 1;
@@ -872,15 +872,15 @@ where
         // This is a cubic sumcheck where v1 = [x[0][0],...,x[k_x][n_x^2]], v2 = [w_reduced[0][0],...,w_reduced[k_x][n_x^2]]
         // and v3 = [beta2,..(k_x times)..,beta2]. So, first initialzie v3 and then invoke the cubic sumceck.
 
-        let mut f1 = w_red.into_mle();
-        let mut f2 = proving_data
+        let f1 = w_red.into_mle();
+        let f2 = proving_data
             .input_fft
             .clone()
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()
             .into_mle();
-        let mut f3 = beta_acc.into_mle();
+        let f3 = beta_acc.into_mle();
 
         let mut vp = VirtualPolynomial::<E>::new(f1.num_vars);
         vp.add_mle_list(
@@ -891,7 +891,7 @@ where
         let hadamard_claims = state.get_mle_final_evaluations();
 
         let point = [hadamard_proof.point.clone(), r1.clone()].concat();
-        let eval = hadamard_claims[0];
+        //let eval = hadamard_claims[0];
         self.commit_prover
             .add_claim(info.poly_id, Claim::new(point, hadamard_claims[0]))
             .context("unable to add claim")?;

@@ -10,8 +10,7 @@ use crate::{
 use anyhow::{anyhow, bail, ensure};
 use ff_ext::ExtensionField;
 
-use gkr::util::ceil_log2;
-use itertools::{Itertools, assert_equal, izip};
+use itertools::{Itertools, izip};
 use log::debug;
 use multilinear_extensions::{
     mle::{IntoMLE, MultilinearExtension},
@@ -20,7 +19,6 @@ use multilinear_extensions::{
 
 use serde::{Serialize, de::DeserializeOwned};
 use sumcheck::structs::IOPVerifierState;
-use tract_onnx::tract_core::ops::cnn::Conv;
 use transcript::Transcript;
 
 use super::{
@@ -193,11 +191,6 @@ where
                 )?
             }
             (StepProof::<E>::Convolution(proof), StepInfo::<E>::Convolution(info)) => {
-                let info = if let StepInfo::Convolution(info) = &ctx.steps_info[i] {
-                    info
-                } else {
-                    return Err(anyhow!("Step info does not line up at Convolution step"));
-                };
                 verify_convolution(output_claim, &proof, info, &mut commit_verifier, transcript)?
             }
             _ => bail!(

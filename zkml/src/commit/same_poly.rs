@@ -11,7 +11,6 @@ use crate::{Claim, VectorTranscript, commit::identity_eval};
 use anyhow::{Ok, ensure};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::{
     mle::{DenseMultilinearExtension, IntoMLE, MultilinearExtension},
     virtual_poly::{VPAuxInfo, VirtualPolynomial},

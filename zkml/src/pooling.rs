@@ -1,6 +1,6 @@
 use crate::{
     Element,
-    quantization::{Fieldizer, TensorFielder},
+    quantization::TensorFielder,
     tensor::Tensor,
 };
 use ff_ext::ExtensionField;
@@ -194,10 +194,11 @@ mod tests {
 
     use super::*;
     use ark_std::rand::{Rng, thread_rng};
+    use crate::quantization::Fieldizer;
     use ff::Field;
     use gkr::util::ceil_log2;
-    use goldilocks::{Goldilocks, GoldilocksExt2, SmallField};
-    use itertools::{Itertools, izip};
+    use goldilocks::{Goldilocks, GoldilocksExt2};
+    use itertools::Itertools;
     use multilinear_extensions::{
         mle::{DenseMultilinearExtension, MultilinearExtension},
         virtual_poly::{ArcMultilinearExtension, VirtualPolynomial},

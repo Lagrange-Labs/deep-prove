@@ -1237,8 +1237,8 @@ impl PartialEq for Tensor<GoldilocksExt2> {
 mod test {
     use ark_std::rand::{Rng, thread_rng};
     use goldilocks::GoldilocksExt2;
-    use multilinear_extensions::mle::MultilinearExtension;
 
+    use multilinear_extensions::mle::MultilinearExtension;
     use super::*;
 
     #[test]
