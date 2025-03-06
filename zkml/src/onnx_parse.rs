@@ -161,9 +161,6 @@ pub fn load_mlp<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                     fetch_weight_bias_as_tensor::<Q>(1.0, "bias", node, &initializers)?;
 
                 // Concatenate bias as an extra column
-                let matrix = matrix_weight.concat_matvec_col(&matrix_bias);
-
-                debug!("layer idx {} -> unprocessed matrix {:?}", i, matrix.dims());
                 layers.push(Layer::Dense(Dense::new(matrix_weight, matrix_bias)));
             }
             op if ACTIVATION.contains(&op) => {
