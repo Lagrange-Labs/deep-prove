@@ -41,7 +41,7 @@
 // use transcript::Transcript;
 
 use super::{
-    Context, Proof, RequantProof, StepProof, TableProof,
+    ChallengeStorage, Context, Proof, RequantProof, StepProof, TableProof,
     context::{ConvInfo, DenseInfo, PoolingInfo, StepInfo},
 };
 use crate::{
@@ -50,7 +50,7 @@ use crate::{
     commit::{compute_betas_eval, precommit, same_poly},
     dense,
     iop::{ActivationProof, ConvProof, DenseProof, PoolingProof},
-    lookup::{self, LookupProtocol},
+    lookup::{self, LookupProtocol, LookupType},
     model::{InferenceStep, InferenceTrace, Layer},
     tensor::{ConvData, Tensor, get_root_of_unity},
 };
@@ -106,7 +106,9 @@ where
     /// The prover related to proving multiple claims about different witness polyy (io of lookups etc)
     witness_prover: precommit::CommitProver<E>,
     /// The context for the lookups
-    lookup_witness: lookup::WitnessContext<'a, E>,
+    lookup_witness: lookup::WitnessContext<E>,
+    /// Stores all the challenges for the different lookup/table types
+    challenge_storage: ChallengeStorage<E>,
     _phantom: PhantomData<L>,
 }
 
@@ -129,6 +131,7 @@ where
             witness_ctx: None,
             witness_prover: precommit::CommitProver::new(),
             lookup_witness: lookup::WitnessContext::default(),
+            challenge_storage: ChallengeStorage::default(),
             _phantom: PhantomData,
         }
     }
@@ -184,8 +187,21 @@ where
             .lookup_witness
             .next()
             .ok_or(anyhow!("No more lookup witness!"))?;
+        // Retrieve challenges for this lookup
+        let (constant_challenge, column_separator_challenges) =
+            self.get_challenges(prover_info.lookup_type).ok_or(anyhow!(
+                "No challenges found for lookup of type: {} at step: {}",
+                prover_info.lookup_type.name(),
+                step.variant_name()
+            ))?;
         // Run the lookup protocol and return the lookup proof
-        let lookup_proof = L::prove(&self.ctx.lookup, &prover_info, self.transcript)?;
+        let lookup_proof = L::prove(
+            &self.ctx.lookup,
+            &prover_info,
+            constant_challenge,
+            &column_separator_challenges,
+            self.transcript,
+        )?;
 
         // We need to prove that the output of this step is the input to following activation function
         let mut same_poly_prover = same_poly::Prover::<E>::new(output.to_vec().into_mle());
@@ -254,26 +270,54 @@ where
     }
 
     fn prove_tables(&mut self) -> anyhow::Result<()> {
+        let table_proving_info = self
+            .ctx
+            .lookup
+            .get_table_circuits()
+            .iter()
+            .map(|table_info| {
+                // Retrieve challenges for this table
+                let (constant_challenge, column_separator_challenges) =
+                    self.get_challenges(table_info.lookup_type).ok_or(anyhow!(
+                        "No challenges found for table lookup of type: {}",
+                        table_info.lookup_type.name(),
+                    ))?;
+                Ok((
+                    table_info.clone(),
+                    constant_challenge,
+                    column_separator_challenges,
+                ))
+            })
+            .collect::<Result<Vec<_>, anyhow::Error>>()?;
+
         self.lookup_witness
             .get_table_witnesses()
             .iter()
-            .zip(self.ctx.lookup.get_table_circuits().iter())
-            .try_for_each(|(table_witness, table_info)| {
-                let poly_id = table_info.poly_id;
-                println!("PROVING table of type: {:?}", table_info.lookup_type);
-                // Make the proof for the table
-                let table_proof =
-                    L::prove_table(&table_info.circuit, &table_witness, self.transcript)?;
+            .zip(table_proving_info.into_iter())
+            .try_for_each(
+                |(table_witness, (table_info, constant_challenge, column_separator_challenges))| {
+                    let poly_id = table_info.poly_id;
+                    println!("PROVING table of type: {:?}", table_info.lookup_type);
 
-                // Add the multiplicity poly claim
-                self.witness_prover
-                    .add_claim(poly_id, table_proof.claims().last().unwrap().clone())?;
+                    // Make the proof for the table
+                    let table_proof = L::prove_table(
+                        &table_info.circuit,
+                        &table_witness,
+                        constant_challenge,
+                        &column_separator_challenges,
+                        self.transcript,
+                    )?;
 
-                self.table_proofs.push(TableProof {
-                    lookup: table_proof,
-                });
-                Ok(())
-            })
+                    // Add the multiplicity poly claim
+                    self.witness_prover
+                        .add_claim(poly_id, table_proof.claims().last().unwrap().clone())?;
+
+                    self.table_proofs.push(TableProof {
+                        lookup: table_proof,
+                    });
+                    Ok(())
+                },
+            )
     }
 
     fn prove_pooling(
@@ -291,8 +335,20 @@ where
             .lookup_witness
             .next()
             .ok_or(anyhow!("No more lookup witness!"))?;
+        // Retrieve challenges for this lookup
+        let (constant_challenge, column_separator_challenges) =
+            self.get_challenges(prover_info.lookup_type).ok_or(anyhow!(
+                "No challenges found for lookup of type: {} during prove pooling",
+                prover_info.lookup_type.name(),
+            ))?;
         // Run the lookup protocol and return the lookup proof
-        let lookup_proof = L::prove(&self.ctx.lookup, &prover_info, self.transcript)?;
+        let lookup_proof = L::prove(
+            &self.ctx.lookup,
+            &prover_info,
+            constant_challenge,
+            &column_separator_challenges,
+            self.transcript,
+        )?;
 
         let max_pool_polys = info.poolinfo.compute_polys_field::<E>(input, output);
         // These are the polys that get passed to the zero check make sure their product is zero at every evaluation point
@@ -1124,20 +1180,25 @@ where
         &mut self,
         trace: &InferenceTrace<'b, Element, E>,
     ) -> anyhow::Result<()> {
-        let (lookup_witness, polys) = lookup::WitnessContext::<E>::initialise_witness_ctx(
-            &self.ctx.lookup,
-            trace,
-            self.transcript,
-        )?;
+        let (lookup_witness, polys) =
+            lookup::WitnessContext::<E>::initialise_witness_ctx(&self.ctx.lookup, trace)?;
 
         if !polys.is_empty() {
             let ctx = precommit::Context::generate(polys)
                 .context("unable to generate ctx for witnesses")?;
+            ctx.write_to_transcript(self.transcript)?;
+            // Set the witness context
             self.witness_ctx = Some(ctx);
+            // generate all the lookup related challenges
+            self.challenge_storage = ChallengeStorage::<E>::initialise(self.ctx, self.transcript);
         } else {
             warn!("no activation functions found - no witness commitment");
         }
         self.lookup_witness = lookup_witness;
         Ok(())
+    }
+
+    fn get_challenges(&self, lookup_type: LookupType) -> Option<(E, Vec<E>)> {
+        self.challenge_storage.get_challenges(lookup_type)
     }
 }
