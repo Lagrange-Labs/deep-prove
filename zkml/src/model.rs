@@ -129,13 +129,13 @@ pub struct Model {
     layers: Vec<Layer>,
 }
 
-impl Model {
+impl Model where{
     pub fn new() -> Self {
         Self {
             layers: Default::default(),
         }
     }
-    pub fn add_layer(&mut self, l: Layer) {
+    pub fn add_layer<F:ExtensionField>(&mut self, l: Layer) {
         let after_layer = match l {
             Layer::Dense(ref dense) => {
                 // append a requantization layer after
@@ -143,9 +143,9 @@ impl Model {
                 // default quantization inputs for matrix and vector
                 Some(Layer::Requant(dense.requant_info()))
             }
-            // Layer::Convolution(ref filter) => {
-            // Some(Layer::Requant(Requant::from_matrix_default(filter)))
-            // }
+            Layer::Convolution(ref filter) => {
+                Some(Layer::Requant(filter.requant_info::<F>()))
+            }
             // Layer::Traditional_Convolution(ref filter) => {
             // Some(Layer::Requant(Requant::from_matrix_default(filter)))
             // }
@@ -423,17 +423,17 @@ pub(crate) mod test {
                     // last row becomes new column
                     let (nrows, ncols) = (rng.gen_range(3..15), last_row);
                     last_row = nrows;
-                    model.add_layer(Layer::Dense(
+                    model.add_layer::<F>(Layer::Dense(
                         Dense::random(vec![nrows, ncols]).pad_next_power_of_two(),
                     ));
                 } else if selector % MOD_SELECTOR == SELECTOR_RELU {
-                    model.add_layer(Layer::Activation(Activation::Relu(Relu::new())));
+                    model.add_layer::<F>(Layer::Activation(Activation::Relu(Relu::new())));
                     // no need to change the `last_row` since RELU layer keeps the same shape
                     // of outputs
                 } else if selector % MOD_SELECTOR == SELECTOR_POOLING {
                     // Currently unreachable until Model is updated to work with higher dimensional tensors
                     // TODO: Implement higher dimensional tensor functionality.
-                    model.add_layer(Layer::Pooling(Pooling::Maxpool2D(Maxpool2D::default())));
+                    model.add_layer::<F>(Layer::Pooling(Pooling::Maxpool2D(Maxpool2D::default())));
                     last_row -= MAXPOOL2D_KERNEL_SIZE - 1;
                 } else {
                     panic!("random selection shouldn't be in that case");
@@ -515,18 +515,18 @@ pub(crate) mod test {
         let trad_conv3 = Tensor::new(vec![1 << 1, 1 << 2, 1 << 2, 1 << 2], w3.clone());
 
         let mut model = Model::new();
-        model.add_layer(Layer::Convolution(Convolution::new(conv1.clone(),Tensor::new(vec![conv1.kw()],random_vector_quant(conv1.kw())))));
-        model.add_layer(Layer::Convolution(Convolution::new(conv2.clone(),Tensor::new(vec![conv2.kw()],random_vector_quant(conv2.kw())))));
-        model.add_layer(Layer::Convolution(Convolution::new(conv3.clone(),Tensor::new(vec![conv3.kw()],random_vector_quant(conv3.kw())))));
+        model.add_layer::<F>(Layer::Convolution(Convolution::new(conv1.clone(),Tensor::new(vec![conv1.kw()],random_vector_quant(conv1.kw())))));
+        model.add_layer::<F>(Layer::Convolution(Convolution::new(conv2.clone(),Tensor::new(vec![conv2.kw()],random_vector_quant(conv2.kw())))));
+        model.add_layer::<F>(Layer::Convolution(Convolution::new(conv3.clone(),Tensor::new(vec![conv3.kw()],random_vector_quant(conv3.kw())))));
         
         let input = Tensor::new(vec![1, 32, 32], random_vector_quant(1024));
         let trace: crate::model::InferenceTrace<'_, _, GoldilocksExt2> =
             model.run::<F>(input.clone());
 
         let mut model2 = Model::new();
-        model2.add_layer(Layer::Traditional_Convolution(trad_conv1));
-        model2.add_layer(Layer::Traditional_Convolution(trad_conv2));
-        model2.add_layer(Layer::Traditional_Convolution(trad_conv3));
+        model2.add_layer::<F>(Layer::Traditional_Convolution(trad_conv1));
+        model2.add_layer::<F>(Layer::Traditional_Convolution(trad_conv2));
+        model2.add_layer::<F>(Layer::Traditional_Convolution(trad_conv3));
         let trace2 = model.run::<F>(input.clone());
 
         check_tensor_consistency_field::<GoldilocksExt2>(
@@ -548,8 +548,8 @@ pub(crate) mod test {
         let final_output = dense2.op(&requantized_output1);
 
         let mut model = Model::new();
-        model.add_layer(Layer::Dense(dense1.clone()));
-        model.add_layer(Layer::Dense(dense2.clone()));
+        model.add_layer::<F>(Layer::Dense(dense1.clone()));
+        model.add_layer::<F>(Layer::Dense(dense2.clone()));
 
         let trace = model.run::<F>(input.clone());
         // 4 steps because we requant after each dense layer
@@ -573,8 +573,8 @@ pub(crate) mod test {
         let input = Tensor::random(vec![dense1.ncols()]);
 
         let mut model = Model::new();
-        model.add_layer(Layer::Dense(dense1));
-        model.add_layer(Layer::Dense(dense2));
+        model.add_layer::<F>(Layer::Dense(dense1));
+        model.add_layer::<F>(Layer::Dense(dense2));
 
         let trace = model.run::<F>(input.clone());
 
@@ -612,7 +612,7 @@ pub(crate) mod test {
         let input = Tensor::random(vec![dense1.ncols()]);
 
         let mut model = Model::new();
-        model.add_layer(Layer::Dense(dense1));
+        model.add_layer::<F>(Layer::Dense(dense1));
 
         let trace = model.run::<F>(input.clone());
 
@@ -706,7 +706,7 @@ pub(crate) mod test {
         let conv2 = Tensor::new(vec![1024], w2.clone());
 
         let mut model = Model::new();
-        model.add_layer(Layer::Dense(Dense::new(conv1, conv2)));
+        model.add_layer::<F>(Layer::Dense(Dense::new(conv1, conv2)));
         model.describe();
         let input = Tensor::new(vec![1024], random_vector_quant(1024));
         let trace: crate::model::InferenceTrace<'_, _, GoldilocksExt2> =
@@ -746,7 +746,7 @@ pub(crate) mod test {
             w1.clone(),
         );
         let mut model = Model::new();
-        model.add_layer(Layer::Convolution(Convolution::new(conv1.clone(),Tensor::new(vec![conv1.kw()],random_vector_quant(conv1.kw())))));
+        model.add_layer::<F>(Layer::Convolution(Convolution::new(conv1.clone(),Tensor::new(vec![conv1.kw()],random_vector_quant(conv1.kw())))));
         model.describe();
         let input = Tensor::new(vec![k_x, n_x, n_x], random_vector_quant(n_x * n_x * k_x));
         let trace: crate::model::InferenceTrace<'_, _, GoldilocksExt2> =
@@ -793,7 +793,7 @@ pub(crate) mod test {
                         );
 
                         let mut model = Model::new();
-                        model.add_layer(Layer::Convolution(Convolution::new(conv1.clone(),Tensor::new(vec![conv1.kw()],random_vector_quant(conv1.kw())))));
+                        model.add_layer::<F>(Layer::Convolution(Convolution::new(conv1.clone(),Tensor::new(vec![conv1.kw()],random_vector_quant(conv1.kw())))));
                         model.describe();
                         let input =
                             Tensor::new(vec![k_x, n_x, n_x], random_vector_quant(n_x * n_x * k_x));

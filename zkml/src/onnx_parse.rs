@@ -1,9 +1,13 @@
 use crate::dense::Dense;
 use anyhow::{Context, Error, Result, bail, ensure};
+use ff_ext::ExtensionField;
 use itertools::Itertools;
 use log::debug;
 use std::{collections::HashMap, i8, path::Path};
 use tract_onnx::{pb::NodeProto, prelude::*};
+use goldilocks::GoldilocksExt2;
+
+type F = GoldilocksExt2;
 
 use crate::{
     Element,
@@ -222,7 +226,7 @@ pub fn load_mlp<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
 
     let mut model = Model::new();
     for layer in processed_layers {
-        model.add_layer(layer);
+        model.add_layer::<F>(layer);
     }
 
     Ok(model)
@@ -373,7 +377,7 @@ pub fn load_cnn<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
 
     let mut model = Model::new();
     for layer in layers {
-        model.add_layer(layer);
+        model.add_layer::<F>(layer);
     }
     Ok(model)
 }

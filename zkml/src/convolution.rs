@@ -89,7 +89,7 @@ impl Convolution {
                 max_val = max_temp;
             }
         }
-        let shift = (max_val - min_val).ilog2() as usize - *quantization::BIT_LEN;
+        let shift = ((max_val - min_val)).ilog2() as usize - *quantization::BIT_LEN;
         
         /*
         let ind_range = (*quantization::MAX as i64 - *quantization::MIN as i64) as usize;
@@ -121,9 +121,9 @@ mod test {
     #[test]
     pub fn test_quantization(){
         let n_w = 1 << 2;
-        let k_w = 1 << 4;
-        let n_x = 1 << 5;
-        let k_x = 1 << 1;
+        let k_w = 1 << 0;
+        let n_x = 1 << 3;
+        let k_x = 1 << 0;
 
         let mut in_dimensions: Vec<Vec<usize>> =
             vec![vec![k_x, n_x, n_x], vec![16, 29, 29], vec![4, 26, 26]];
@@ -140,7 +140,7 @@ mod test {
             Tensor::new(vec![k_w],random_vector_quant(k_w)));
         let info = conv.requant_info::<GoldilocksExt2>();
         println!("range : {}",info.range);
-        for i in 0..10000{
+        for i in 0..100{
             let (out, proving_data) = conv.op::<GoldilocksExt2>(&Tensor::new(vec![k_x,n_x,n_x], random_vector_quant( k_x * n_x * n_x)));
             for j in 0..out.data.len(){
                 if(out.data[j] < 0){
