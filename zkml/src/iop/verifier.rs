@@ -501,7 +501,8 @@ where
         claim = proof.ifft_delegation_claims[i][2];
     }
     let scale = E::from(1<<(iter+1)).invert().unwrap();
-    assert_eq!(claim,scale*(E::ONE - E::from(2)*(E::ONE - last_claim.point[iter]))*prev_r[0] + scale*(E::ONE - prev_r[0]),"Error in final iFFT delegation step");
+    
+    assert_eq!(claim,scale*(E::ONE)*prev_r[0] + scale*(E::ONE - prev_r[0]),"Error in final iFFT delegation step");
     
     IOPVerifierState::<E>::verify(
         proof.ifft_claims[0],
@@ -570,8 +571,7 @@ where
         claim = proof.fft_delegation_claims[i][2];
         prev_r = proof.fft_delegation_proof[i].point.clone();
     }
-    assert_eq!(claim,(E::ONE - E::from(2)*proof.hadamard_proof.point[proof.hadamard_proof.point.len()-2])*prev_r[0] + E::ONE - prev_r[0],"Error in final FFT delegation step");
-    println!("Successful Verification of Convolution");
+    assert_eq!(claim,(E::ONE - E::from(2)*proof.hadamard_proof.point[iter])*prev_r[0] + E::ONE - prev_r[0],"Error in final FFT delegation step");
     let mut input_point = proof.fft_proof.point.clone();
     let mut v = input_point.pop().unwrap();
     v = (E::ONE - v).invert().unwrap();

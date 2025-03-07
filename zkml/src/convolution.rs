@@ -60,15 +60,96 @@ impl Convolution {
     pub fn filter_size(&self)->usize{
         self.filter.filter_size()
     }
-    pub fn requant_info(&self) -> Requant {
+    pub fn requant_info<E:ExtensionField>(&self) -> Requant {
+        let weights = self.filter.get_real_weights::<E>();
+        let mut min_val: Element = 0;
+        let mut max_val: Element = 0;
+        let MIN = *quantization::MIN as Element;
+        let MAX = *quantization::MAX as Element;
+        for i in 0..self.kw(){
+            let mut min_temp: Element = 0;
+            let mut max_temp: Element = 0;
+            for j in 0..self.kx(){
+                for k in 0..(self.nw()*self.nw()){
+                    if(weights[i][j][k] == 0){
+                        continue;
+                    }else if(weights[i][j][k] < 0){
+                        max_temp += MIN*weights[i][j][k];
+                        min_temp += MAX*weights[i][j][k];
+                    }else{
+                        max_temp += MAX*weights[i][j][k];
+                        min_temp += MIN*weights[i][j][k];
+                    }
+                }
+            }
+            if(min_temp < min_val){
+                min_val = min_temp;
+            }
+            if(max_temp > max_val){
+                max_val = max_temp;
+            }
+        }
+        let shift = (max_val - min_val).ilog2() as usize - *quantization::BIT_LEN;
+        
+        /*
         let ind_range = (*quantization::MAX as i64 - *quantization::MIN as i64) as usize;
         let max_range = (2*ind_range + self.filter.ncols_2d() as usize * ind_range).next_power_of_two();
         let shift = (max_range.ilog2() as usize) - (*quantization::BIT_LEN as usize);
+         */
         Requant {
-            range: max_range,
+            range: (max_val - min_val) as usize,
             right_shift: shift,
             after_range: 1 << *quantization::BIT_LEN,
         }
     }
 }
 
+#[cfg(test)]
+mod test {
+    use super::*;
+    use ark_std::{
+        iterable::Iterable,
+        rand::{Rng, thread_rng},
+    };
+    use goldilocks::GoldilocksExt2;
+
+    fn random_vector_quant(n: usize) -> Vec<Element> {
+        vec![thread_rng().gen_range(-128..128); n]
+    }
+    
+    
+    #[test]
+    pub fn test_quantization(){
+        let n_w = 1 << 2;
+        let k_w = 1 << 4;
+        let n_x = 1 << 5;
+        let k_x = 1 << 1;
+
+        let mut in_dimensions: Vec<Vec<usize>> =
+            vec![vec![k_x, n_x, n_x], vec![16, 29, 29], vec![4, 26, 26]];
+
+        for i in 0..in_dimensions.len() {
+            for j in 0..in_dimensions[0].len() {
+                in_dimensions[i][j] = (in_dimensions[i][j]).next_power_of_two();
+            }
+        }
+        let w1 = random_vector_quant(k_w * k_x * n_w * n_w);
+        
+        let conv = Convolution::new(
+            Tensor::new_conv(vec![k_w, k_x, n_w, n_w],in_dimensions[0].clone(),w1.clone(),),
+            Tensor::new(vec![k_w],random_vector_quant(k_w)));
+        let info = conv.requant_info::<GoldilocksExt2>();
+        println!("range : {}",info.range);
+        for i in 0..10000{
+            let (out, proving_data) = conv.op::<GoldilocksExt2>(&Tensor::new(vec![k_x,n_x,n_x], random_vector_quant( k_x * n_x * n_x)));
+            for j in 0..out.data.len(){
+                if(out.data[j] < 0){
+                    assert!((-out.data[j] as usize) < info.range);
+                }else{
+                    assert!((out.data[j] as usize) < info.range);
+                }
+            }
+        }
+    }
+
+}

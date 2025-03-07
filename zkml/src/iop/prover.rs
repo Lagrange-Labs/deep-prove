@@ -591,6 +591,7 @@ where
         for i in 0..r1.len() {
             r1[i] = r[i];
         }
+        
         for i in 0..r2.len() {
             r2[i] = r[i + r1.len()];
         }
@@ -662,6 +663,7 @@ where
         for i in 0..r1.len() {
             r1[i] = r[i];
         }
+        assert_eq!(r1[r1.len()-1],E::ZERO,"Error in randomness init batch ifft");
         for i in 0..r2.len() {
             r2[i] = r[i + r1.len()];
         }

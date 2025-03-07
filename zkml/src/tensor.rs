@@ -269,7 +269,7 @@ impl Tensor<Element> {
         }
     }
     
-    pub fn get_real_filter<F: ExtensionField>(&self) {
+    pub fn get_real_weights<F: ExtensionField>(&self) -> Vec<Vec<Vec<Element>>> {
         let mut w_fft = vec![
             vec![vec![F::ZERO; 2*self.nw() * self.nw()]; self.kx().next_power_of_two()]; self.kw().next_power_of_two() ];
         let mut ctr = 0;
@@ -291,6 +291,20 @@ impl Tensor<Element> {
                 fft(&mut w_fft[i][j],true);
             }
         }
+        let mut real_weights = vec![vec![vec![0 as Element; self.nw()*self.nw()]; self.kx() ]; self.kw()];
+        for i in 0..self.kw(){
+            for j in 0..self.kx(){
+                for k in 0..(self.nw()*self.nw()){
+                    if (F::to_canonical_u64_vec(&w_fft[i][j][k])[0] as u64 > (1 << 60 as u64)) {
+                        real_weights[i][j][k] = -(F::to_canonical_u64_vec(&(-w_fft[i][j][k]))[0] as Element);
+                    } else {
+                        real_weights[i][j][k] = (F::to_canonical_u64_vec(&(w_fft[i][j][k]))[0] as Element);
+                    }
+                }
+            }
+        }
+        real_weights
+
     }
 
     // Convolution algorithm using FFTs.
