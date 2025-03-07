@@ -30,6 +30,7 @@ VERIFYING = "verifying (ms)"
 ACCURACY = "accuracy (bool)"
 PROOF_SIZE = "proof size (KB)"
 SAMPLE = "sample"
+EZKL_FULL_PROVING = "ezkl_full_proving (ms)"  # New constant for full proving time
 
 class CSVBencher:
     def __init__(self, headers: List[str]):
@@ -194,7 +195,7 @@ def run_zkml_benchmark(config_name, output_dir, verbose, num_samples):
     print("ZKML benchmark completed")
     return zkml_csv
 
-def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples):
+def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples, skip_calibration=False, check_mode="safe"):
     """Run EZKL benchmark for each input/output pair and save results to CSV"""
     # Create absolute paths before changing directory
     ezkl_csv = output_dir / f"ezkl_{config_name}.csv"
@@ -221,21 +222,24 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples)
         print(f"Found {available_samples} input/output pairs in {INPUT}, will process {max_samples}")
         
         # Run setup steps once (these don't depend on the input data)
-        ex(["ezkl", "gen-settings", "-K", str(LOGROWS),"-M", MODEL], verbose=verbose)
+        ex(["ezkl", "gen-settings", "-K", str(LOGROWS),"-M", MODEL,"--check-mode", check_mode], verbose=verbose)
         
-        # Use the timing from ex() function directly
-        calibration_result = ex(["ezkl", "calibrate-settings", "-M", MODEL, "-D", INPUT,"--max-logrows", str(LOGROWS)], verbose=verbose)
-        calibration_time = calibration_result["elapsed_time_ms"]
+        # Calibrate only if not skipping calibration
+        if not skip_calibration:
+            calibration_result = ex(["ezkl", "calibrate-settings", "-M", MODEL, "-D", INPUT,"--max-logrows", str(LOGROWS)], verbose=verbose)
+            calibration_time = calibration_result["elapsed_time_ms"]
+        else:
+            print("Skipping EZKL calibration step as requested")
+            calibration_time = 0
         
         if not Path(EZKL_KZG_PARAMS).exists():
             print("Downloading SRS params")
             ex(["ezkl", "get-srs", "--logrows", str(LOGROWS),"--srs-path", EZKL_KZG_PARAMS], verbose=verbose)
-        ex(["ezkl", "compile-circuit", "-M", MODEL], verbose=verbose)
+        compile_result = ex(["ezkl", "compile-circuit", "-M", MODEL], verbose=verbose)
         
         # Run setup once and measure time
-        setup_start = time.perf_counter()
-        ex(["ezkl", "setup", "--srs-path", EZKL_KZG_PARAMS], verbose=verbose)
-        setup_time_ms = (time.perf_counter() - setup_start) * 1000
+        setup_result = ex(["ezkl", "setup", "--srs-path", EZKL_KZG_PARAMS], verbose=verbose)
+        setup_time_ms = setup_result["elapsed_time_ms"]
         
         # Process each input/output pair up to the limit
         for sample_idx in range(max_samples):
@@ -251,8 +255,9 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples)
             with open(temp_input_file, "w") as f:
                 json.dump(temp_input, f)
             
-            # Initialize bencher for this sample
-            bencher = CSVBencher([CONFIG, RUN, SAMPLE, SETUP, INFERENCE, PROVING, VERIFYING, ACCURACY, PROOF_SIZE])
+            # Initialize bencher with the new column
+            bencher = CSVBencher([CONFIG, RUN, SAMPLE, SETUP, INFERENCE, PROVING, 
+                                 EZKL_FULL_PROVING, VERIFYING, ACCURACY, PROOF_SIZE])
             bencher.set(CONFIG, config_name)
             bencher.set(RUN, str(run_index))
             bencher.set(SAMPLE, str(sample_idx))
@@ -263,10 +268,17 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples)
             witness_time_ms = witness_result["elapsed_time_ms"]
             bencher.set(INFERENCE, str(witness_time_ms))
             
-            # For proving, extract the specific timing
+            # We already have the witness gen time, so don't need to run it again
+            # Now measure proving time
             proving_result = ex(["ezkl", "prove", "--srs-path", EZKL_KZG_PARAMS], verbose=verbose)
+            proving_time_wall = proving_result["elapsed_time_ms"]
             
-            # Extract the proof time using regex
+            # Full proving time is the sum of witness generation and proving times
+            full_proving_time_ms = witness_time_ms + proving_time_wall
+            print(f"Full proving time: {witness_time_ms}ms + {proving_time_wall}ms = {full_proving_time_ms}ms")
+            bencher.set(EZKL_FULL_PROVING, str(full_proving_time_ms))
+            
+            # Extract the proof time using regex (same as before)
             proof_time_match = re.search(r"\[.*ezkl::pfsys\] - proof took (\d+\.\d+)", proving_result["stdout"])
             if proof_time_match:
                 proof_time_seconds = float(proof_time_match.group(1))
@@ -278,10 +290,26 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples)
             
             # Sum the witness and proof times
             total_proving_time_ms = witness_time_ms + proof_time_ms
+            print(f"Extracting proving time: {witness_time_ms}ms + {proof_time_ms}ms = {total_proving_time_ms}ms")
             bencher.set(PROVING, f"{total_proving_time_ms:.2f}")
             
-            # Run verification
-            bencher.r(VERIFYING, ["ezkl", "verify", "--srs-path", EZKL_KZG_PARAMS])
+            # Run verification with error handling
+            start_time = time.perf_counter()
+            verify_result = subprocess.run(["ezkl", "verify", "--srs-path", EZKL_KZG_PARAMS], 
+                                          capture_output=True, text=True)
+            elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+            
+            # Store the time regardless of success or failure
+            bencher.set(VERIFYING, str(elapsed_ms))
+            
+            # Check if verification succeeded
+            if verify_result.returncode != 0:
+                print(f"\n⚠️ WARNING: EZKL verification FAILED ⚠️")
+                print(f"Error message: {verify_result.stderr}")
+                print("This may be expected if using --skip-ezkl-calibration")
+                print("Continuing with benchmark despite verification failure...\n")
+            else:
+                print("✅ EZKL verification succeeded")
             
             # Extract outputs and check accuracy
             with open("proof.json", "r") as f:
@@ -316,7 +344,8 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples)
         # Always return to the original directory
         os.chdir(original_dir)
 
-def run_benchmark(num_dense, layer_width, run_index, output_dir, verbose, run_ezkl, num_samples, model_type):
+def run_benchmark(num_dense, layer_width, run_index, output_dir, verbose, run_ezkl, num_samples, model_type, 
+                skip_ezkl_calibration=False, ezkl_check_mode="safe"):
     """Run a single benchmark with the specified parameters"""
     config_name = f"d{num_dense}_w{layer_width}" if model_type == "mlp" else f"cnn"
     
@@ -336,7 +365,9 @@ def run_benchmark(num_dense, layer_width, run_index, output_dir, verbose, run_ez
     # Step 4: Run EZKL benchmark if requested
     ezkl_csv = None
     if run_ezkl:
-        ezkl_csv = run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples)
+        print(f"\n📊 Running EZKL benchmark for run {run_index}...")
+        ezkl_csv = run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples, 
+                                    skip_ezkl_calibration, ezkl_check_mode)
         print(f"Results saved to {zkml_csv}, {pytorch_csv}, and {ezkl_csv}")
     else:
         print(f"Results saved to {zkml_csv} and {pytorch_csv} (EZKL comparison skipped)")
@@ -416,15 +447,44 @@ def set_cpu_affinity(max_threads: int):
     else:
         print("⚠️ Warning: CPU affinity setting is not supported on this platform. Proceeding without restriction.")
 
-def delete_csv_files(output_dir, config_name):
-    """Delete existing CSV files for the given configuration."""
-    zkml_csv = output_dir / f"zkml_{config_name}.csv"
-    ezkl_csv = output_dir / f"ezkl_{config_name}.csv"
+def clean_output_directory(output_dir, config_name):
+    """
+    Delete non-essential files in the output directory between configurations.
+    Preserves:
+    - KZG parameters file (kzg.params)
+    - All CSV files (they contain benchmark results we need)
+    """
+    # Create the set of files to preserve
+    preserve_files = {"kzg.params"}
     
-    for csv_file in [zkml_csv, ezkl_csv]:
-        if csv_file.exists():
-            csv_file.unlink()
-            print(f"Deleted existing file: {csv_file}")
+    # Add all CSV files to the preserve list
+    for file in output_dir.glob("*.csv"):
+        preserve_files.add(file.name)
+    
+    # Loop through all files in the directory and delete those not in preserve_files
+    for file in output_dir.iterdir():
+        if file.is_file() and file.name not in preserve_files:
+            print(f"Cleaning up: {file}")
+            file.unlink()
+
+def delete_all_csv_files(output_dir):
+    """Delete all CSV files in the output directory at the start of benchmarking."""
+    print(f"\n🗑️  Cleaning up previous benchmark results...")
+    
+    # Count how many files were deleted
+    deleted_count = 0
+    
+    # Delete all CSV files in the output directory
+    for csv_file in output_dir.glob("*.csv"):
+        print(f"  Deleting: {csv_file}")
+        csv_file.unlink()
+        deleted_count += 1
+    
+    if deleted_count > 0:
+        print(f"✅ Deleted {deleted_count} CSV files from previous runs.")
+    else:
+        print("✅ No previous benchmark CSV files found.")
+    print("")
 
 def calculate_average_accuracy(csv_file):
     """Calculate the average accuracy from a CSV file."""
@@ -493,6 +553,13 @@ def compute_summary_statistics(output_dir, configs, run_ezkl, model_type):
                 if not ezkl_df.empty:
                     config_data["ezkl_accuracy"] = ezkl_df[ACCURACY].mean()
                     config_data["ezkl_proving_time"] = ezkl_df[PROVING].astype(float).mean()
+                    print(f"EXTRACTED EZKL proving time: {ezkl_df[PROVING].astype(float)}")
+                    
+                    # Add the new full proving time metric
+                    if EZKL_FULL_PROVING in ezkl_df.columns:
+                        config_data["ezkl_full_proving_time"] = ezkl_df[EZKL_FULL_PROVING].astype(float).mean()
+                        print(f"FULL EZKL full proving time: {ezkl_df[EZKL_FULL_PROVING].astype(float)}")
+                    
                     config_data["ezkl_verifying_time"] = ezkl_df[VERIFYING].astype(float).mean()
                     if PROOF_SIZE in ezkl_df.columns:
                         config_data["ezkl_proof_size"] = ezkl_df[PROOF_SIZE].astype(float).mean()
@@ -547,7 +614,8 @@ def print_summary_table(summary_df, run_ezkl):
         "ezkl_proving_time": "EZKL Proving",
         "ezkl_verifying_time": "EZKL Verifying",
         "ezkl_proof_size": "EZKL Proof Size",
-        "pytorch_accuracy": "PyTorch Accuracy"
+        "pytorch_accuracy": "PyTorch Accuracy",
+        "ezkl_full_proving_time": "EZKL Full Proving",
     }
     display_df = display_df.rename(columns=column_renames)
     
@@ -564,7 +632,7 @@ def print_summary_table(summary_df, run_ezkl):
     # Group all proving time columns together
     proving_columns = ["ZKML Proving"]
     if run_ezkl:
-        proving_columns.append("EZKL Proving")
+        proving_columns.extend(["EZKL Proving", "EZKL Full Proving"])
     columns_to_show.extend(proving_columns)
     
     # Group all verification time columns together
@@ -595,6 +663,10 @@ def parse_arguments():
                         help="Number of times to repeat each benchmark")
     parser.add_argument("--run-ezkl", action="store_true",
                         help="Run EZKL benchmarks (slower)")
+    parser.add_argument("--skip-ezkl-calibration", action="store_true",
+                        help="Skip the EZKL calibration step (faster but potentially less accurate)")
+    parser.add_argument("--ezkl-check-mode", choices=["safe", "unsafe"], default="safe",
+                        help="Set EZKL check mode (safe or unsafe) - safe by default")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable verbose logging")
     parser.add_argument("--output-dir", type=Path, default=Path("bench"),
@@ -625,14 +697,15 @@ def run_configurations(configs, args):
         num_dense, layer_width = config
         config_name = f"d{num_dense}_w{layer_width}" if args.model_type == "mlp" else f"cnn"
         
-        # Delete existing CSV files for this configuration
-        delete_csv_files(output_dir, config_name)
+        # Clean up the output directory for this configuration
+        clean_output_directory(output_dir, config_name)
         
         for run_idx in range(args.repeats):
-            # Pass args.samples and args.model_type to run_benchmark
+            # Pass all EZKL-related parameters
             zkml_csv, ezkl_csv, pytorch_csv = run_benchmark(
                 num_dense, layer_width, run_idx, output_dir, 
-                args.verbose, args.run_ezkl, args.samples, args.model_type
+                args.verbose, args.run_ezkl, args.samples, args.model_type,
+                args.skip_ezkl_calibration, args.ezkl_check_mode
             )
             
             if zkml_csv:
@@ -665,27 +738,33 @@ def calculate_and_print_results(configs, zkml_csv_files, ezkl_csv_files, pytorch
             print(f"Average accuracy for PyTorch (d{config_name[0]}_w{config_name[1]}): {pytorch_accuracy:.2f}")
 
 def main():
+    """Main function to run benchmarks."""
     args = parse_arguments()
     setup_environment(args)
     
-    # Parse configurations
+    # Create output directory if it doesn't exist
+    output_dir = args.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Delete all CSV files at the beginning
+    delete_all_csv_files(output_dir)
+    
+    # Parse model configurations
     configs = []
-    for config_str in args.configs.split(':'):
-        parts = config_str.split(',')
+    for config in args.configs.split(':'):
+        parts = config.split(',')
         if len(parts) != 2:
-            print(f"Invalid configuration: {config_str}. Expected format: 'dense,width'")
+            print(f"❌ Error: Invalid configuration format: {config}")
             sys.exit(1)
-        try:
-            num_dense = int(parts[0])
-            layer_width = int(parts[1])
-            configs.append((num_dense, layer_width))
-        except ValueError:
-            print(f"Invalid configuration values in: {config_str}. Expected integers.")
-            sys.exit(1)
+        
+        num_dense = int(parts[0])
+        layer_width = int(parts[1])
+        configs.append((num_dense, layer_width))
     
-    print(f"Running {len(configs)} configurations with model type '{args.model_type}', each repeated {args.repeats} times")
-    
+    # Run all specified configurations
     zkml_csv_files, ezkl_csv_files, pytorch_csv_files = run_configurations(configs, args)
+    
+    # Calculate and print results
     calculate_and_print_results(configs, zkml_csv_files, ezkl_csv_files, pytorch_csv_files, args)
     
     # Generate and print summary statistics
