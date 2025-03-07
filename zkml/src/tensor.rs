@@ -1202,7 +1202,6 @@ impl PartialEq for Tensor<GoldilocksExt2> {
     }
 }
 
-
 #[cfg(test)]
 mod test {
 

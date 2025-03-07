@@ -360,6 +360,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f46ad14479a25103f283c0f10005961cf086d8dc42205bb44c46ac563475dca6"
 
 [[package]]
+name = "code-timing-macros"
+version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15cfadb008499abfb16146f2dfb71bfd272d324380a34d535a5a41d838be2911"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.98",
+ "tracing",
+]
+
+[[package]]
 name = "colorchoice"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2312,6 +2324,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "timed"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+ "tracing",
+]
+
+[[package]]
 name = "tiny-keccak"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2925,15 +2947,14 @@ dependencies = [
  "anyhow",
  "ark-std",
  "clap",
+ "code-timing-macros",
  "csv",
  "derive_more",
- "env_logger",
  "ff",
  "ff_ext",
  "gkr",
  "goldilocks",
  "itertools 0.13.0",
- "log",
  "mpcs",
  "multilinear_extensions",
  "num-traits",
@@ -2945,6 +2966,7 @@ dependencies = [
  "serde_json",
  "simple-frontend",
  "sumcheck",
+ "timed",
  "tracing",
  "tracing-subscriber",
  "tract-onnx",

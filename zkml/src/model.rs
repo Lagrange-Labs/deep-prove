@@ -1,7 +1,7 @@
 use crate::dense::Dense;
 use ff_ext::ExtensionField;
-use log::debug;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use tracing::debug;
 
 use crate::{
     Element,

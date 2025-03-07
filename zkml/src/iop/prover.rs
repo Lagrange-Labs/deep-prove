@@ -30,7 +30,7 @@
 // use gkr::structs::IOPProof;
 // use goldilocks::GoldilocksExt2;
 // use itertools::{Itertools, assert_equal};
-// use log::{debug, warn};
+// use tracing::{debug, warn};
 // use multilinear_extensions::{
 //     mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension, IntoMLE, MultilinearExtension},
 //     virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial},
@@ -55,17 +55,19 @@ use crate::{
     tensor::{ConvData, Tensor, get_root_of_unity},
 };
 use anyhow::{Context as CC, anyhow, bail};
+use code_timing_macros::time_function;
 use ff_ext::ExtensionField;
 
 use gkr::util::ceil_log2;
-use log::{debug, warn};
 use multilinear_extensions::{
     mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension, IntoMLE, MultilinearExtension},
     virtual_poly::{ArcMultilinearExtension, VirtualPolynomial},
 };
 use serde::{Serialize, de::DeserializeOwned};
+use timed::timed_instrument;
 use std::marker::PhantomData;
 use sumcheck::structs::{IOPProverState, IOPVerifierState};
+use tracing::{debug, instrument, trace, warn};
 use transcript::Transcript;
 
 pub fn compute_betas<E: ExtensionField>(r: Vec<E>) -> Vec<E> {
@@ -132,6 +134,7 @@ where
             _phantom: PhantomData,
         }
     }
+    //#[instrument(name="prove step",skip_all,fields(step = step.layer.describe()),level = "debug")]
     fn prove_step<'b>(
         &mut self,
         last_claim: Claim<E>,
@@ -139,7 +142,7 @@ where
         step: &InferenceStep<'b, E, E>,
         info: &StepInfo<E>,
     ) -> anyhow::Result<Claim<E>> {
-        println!("PROVER: proving layer {}", step.layer.to_string());
+        debug!("PROVER: proving layer {}", step.layer.to_string());
         let claim = match (step.layer, info) {
             (Layer::Dense(dense), StepInfo::Dense(info)) => {
                 // NOTE: here we treat the ID of the step AS the ID of the polynomial. THat's okay because we only care
@@ -167,6 +170,7 @@ where
         claim
     }
 
+    #[timed::timed_instrument(level="debug")]
     fn prove_lookup(
         &mut self,
         last_claim: &Claim<E>,
@@ -260,7 +264,7 @@ where
             .zip(self.ctx.lookup.get_table_circuits().iter())
             .try_for_each(|(table_witness, table_info)| {
                 let poly_id = table_info.poly_id;
-                println!("PROVING table of type: {:?}", table_info.lookup_type);
+                debug!("PROVING table of type: {:?}", table_info.lookup_type);
                 // Make the proof for the table
                 let table_proof =
                     L::prove_table(&table_info.circuit, &table_witness, self.transcript)?;
@@ -276,6 +280,7 @@ where
             })
     }
 
+    #[tracing::instrument(name = "Prover::prove_pooling", skip_all, level = "debug")]
     fn prove_pooling(
         &mut self,
         // last random claim made
@@ -753,6 +758,7 @@ where
     // and a 4D filter matrix W of dimension k_w * k_x * n_w * n_w. The output is a 3D matrix Y of dimension k_w * n_x * n_x
     // We want to batch prove the following: Y[i] = iFFT(sum_{j \in [n_x]}(FFT(X[j]) o FFT(W[i][j])).
 
+    #[instrument(name = "Prover::prove_convolution_step", skip_all, level = "debug")]
     fn prove_convolution_step(
         &mut self,
         // last random claim made
@@ -936,6 +942,7 @@ where
         Ok(final_claim)
     }
 
+    #[timed::timed_instrument(level="debug")]
     fn prove_dense_step(
         &mut self,
         // last random claim made
@@ -949,6 +956,7 @@ where
     ) -> anyhow::Result<Claim<E>> {
         let matrix = &dense.matrix;
         let (nrows, ncols) = (matrix.nrows_2d(), matrix.ncols_2d());
+        debug!("dense proving nrows: {} ncols: {}",nrows,ncols);
         assert_eq!(
             nrows,
             output.get_data().len(),
@@ -1015,7 +1023,7 @@ where
                 "sumcheck output weird"
             );
 
-            debug!("prover: claimed sum: {:?}", claimed_sum);
+            trace!("prover: claimed sum: {:?}", claimed_sum);
             let subclaim =
                 IOPVerifierState::<E>::verify(claimed_sum_no_bias, &proof, &vp.aux_info, &mut t);
             // now assert that the polynomial evaluated at the random point of the sumcheck proof
@@ -1120,6 +1128,7 @@ where
     }
 
     /// Looks at all the individual polys to accumulate from the witnesses and create the context from that.
+    #[timed_instrument(level="debug")]
     fn instantiate_witness_ctx<'b>(
         &mut self,
         trace: &InferenceTrace<'b, Element, E>,

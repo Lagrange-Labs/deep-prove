@@ -5,10 +5,10 @@ use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
 use goldilocks::SmallField;
 use itertools::Itertools;
-use log::debug;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::env;
+use tracing::debug;
 use transcript::Transcript;
 
 use crate::{Element, tensor::Tensor};

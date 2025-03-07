@@ -11,11 +11,11 @@ use anyhow::{anyhow, bail, ensure};
 use ff_ext::ExtensionField;
 
 use itertools::{Itertools, izip};
-use log::debug;
 use multilinear_extensions::{
     mle::{IntoMLE, MultilinearExtension},
     virtual_poly::VPAuxInfo,
 };
+use tracing::debug;
 
 use serde::{Serialize, de::DeserializeOwned};
 use sumcheck::structs::IOPVerifierState;

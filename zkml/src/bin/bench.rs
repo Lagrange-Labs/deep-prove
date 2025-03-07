@@ -1,4 +1,6 @@
+use tracing_subscriber::{prelude::*,Registry};
 use std::{
+
     collections::HashMap,
     fs::{File, OpenOptions},
     io::BufReader,
@@ -10,7 +12,8 @@ use anyhow::{Context as CC, ensure};
 use clap::Parser;
 use csv::WriterBuilder;
 use goldilocks::GoldilocksExt2;
-use log::info;
+use tracing::{Level, info};
+use tracing_subscriber::{EnvFilter, fmt};
 use zkml::{ModelType, load_model, quantization::Quantizer};
 
 use serde::{Deserialize, Serialize};
@@ -40,11 +43,17 @@ struct Args {
 }
 
 pub fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    // tracing_subscriber::fmt::init();
+    let subscriber = fmt::Subscriber::builder()
+        .with_env_filter(EnvFilter::from_default_env())
+        .finish();
+
+   tracing::subscriber::set_global_default(subscriber).expect("Failed to set global subscriber");
     let args = Args::parse();
     run(args).context("error running bench:")?;
     Ok(())
 }
+
 
 #[derive(Serialize, Deserialize)]
 struct InputJSON {
