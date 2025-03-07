@@ -61,40 +61,56 @@ impl Convolution {
     }
     pub fn requant_info<E: ExtensionField>(&self) -> Requant {
         let weights = self.filter.get_real_weights::<E>();
-        let mut min_val: Element = 0;
-        let mut max_val: Element = 0;
-        let min_quant= *quantization::MIN as Element;
+        let min_quant = *quantization::MIN as Element;
         let max_quant = *quantization::MAX as Element;
+
+        let mut max_range: u128 = 0;
+        let max_bias = self.bias.get_data().iter().max().unwrap();
+
+        // Keep the original iteration order: first over kernel height (i), then kernel width (j), then output channels (k)
         for i in 0..self.kw() {
-            let mut min_temp: Element = 0;
-            let mut max_temp: Element = 0;
             for j in 0..self.kx() {
+                let mut min_temp: Element = 0;
+                let mut max_temp: Element = 0;
+
+                // Loop over output channels (k) and apply weights and bias
                 for k in 0..(self.nw() * self.nw()) {
-                    if weights[i][j][k] == 0 {
-                        continue;
-                    } else if weights[i][j][k] < 0 {
-                        max_temp += min_quant * weights[i][j][k];
-                        min_temp += max_quant * weights[i][j][k];
-                    } else {
-                        max_temp += max_quant * weights[i][j][k];
-                        min_temp += min_quant * weights[i][j][k];
+                    let weight = weights[i][j][k];
+                    // PANICKING HERE
+                    //let bias = self.bias.data[k]; // Bias for the current output channel
+                    let bias = *max_bias;
+
+                    if weight != 0 {
+                        let (min_contrib, max_contrib) = if weight < 0 {
+                            (max_quant * weight, min_quant * weight)
+                        } else {
+                            (min_quant * weight, max_quant * weight)
+                        };
+
+                        min_temp += min_contrib;
+                        max_temp += max_contrib;
                     }
+
+                    // Add the bias for this output channel `k`
+                    min_temp += bias;
+                    max_temp += bias;
                 }
-            }
-            if min_temp < min_val {
-                min_val = min_temp;
-            }
-            if max_temp > max_val {
-                max_val = max_temp;
+
+                // After processing all output channels for this (i, j) location, update the global min and max
+                max_range = max_range.max((max_temp - min_temp).unsigned_abs().next_power_of_two());
             }
         }
-        let shift = (max_val - min_val).ilog2() as usize - *quantization::BIT_LEN;
+        assert!(max_range.ilog2() as usize > *quantization::BIT_LEN);
+        // TODO: this is wrong, as the formula comes from dense layer and not conv
+        // see https://www.notion.so/lagrangelabs/sumcheck-example-19028d1c65a880a3abf6ca37318148ea?pvs=4#1ab28d1c65a88040b076e511ff98ae39
+        let shift = max_range.ilog2() as usize - *quantization::BIT_LEN;
 
         // let ind_range = (*quantization::MAX as i64 - *quantization::MIN as i64) as usize;
         // let max_range = (2*ind_range + self.filter.ncols_2d() as usize * ind_range).next_power_of_two();
         // let shift = (max_range.ilog2() as usize) - (*quantization::BIT_LEN as usize);
         Requant {
-            range: (max_val - min_val) as usize,
+            // range: (max_val - min_val) as usize,
+            range: max_range as usize,
             right_shift: shift,
             after_range: 1 << *quantization::BIT_LEN,
         }
@@ -104,9 +120,7 @@ impl Convolution {
 #[cfg(test)]
 mod test {
     use super::*;
-    use ark_std::{
-        rand::{Rng, thread_rng},
-    };
+    use ark_std::rand::{Rng, thread_rng};
     use goldilocks::GoldilocksExt2;
 
     fn random_vector_quant(n: usize) -> Vec<Element> {

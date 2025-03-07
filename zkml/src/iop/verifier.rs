@@ -1,9 +1,7 @@
-use std::collections::HashMap;
-
 use crate::{
     Claim, VectorTranscript,
     commit::{self, identity_eval, precommit, same_poly},
-    iop::{StepProof, context::StepInfo},
+    iop::{ChallengeStorage, StepProof, context::StepInfo},
     lookup::{self, LookupProtocol, TableInfo},
     tensor::{Tensor, get_root_of_unity},
 };
@@ -67,37 +65,27 @@ where
     let mut denominators = Vec::<E>::new();
 
     ctx.write_to_transcript(transcript)?;
+
+    // Here we generate and store all lookup related challenges
+    let challenge_storage = if let Some((_, witness_context)) = proof.witness {
+        witness_context.write_to_transcript(transcript)?;
+        ChallengeStorage::<E>::initialise(&ctx, transcript)
+    } else {
+        ChallengeStorage::default()
+    };
+
     proof.steps.iter().rev().for_each(|proof| {
-        if let Some((commit, num, denom)) = proof.get_lookup_data() {
-            transcript.append_field_elements(&commit);
+        if let Some((num, denom)) = proof.get_lookup_data() {
             numerators.extend(num.into_iter());
             denominators.extend(denom.into_iter());
         }
     });
 
-    let constant_challenge = transcript
-        .get_and_append_challenge(b"table_constant_challenge")
-        .elements;
-    let mut lookup_challenges = HashMap::<String, Vec<E>>::new();
-    proof
-        .table_proofs
-        .iter()
-        .zip(ctx.lookup.get_table_circuits().iter())
-        .for_each(|(table_proof, table_info)| {
-            let table_type = table_info.lookup_type;
+    proof.table_proofs.iter().for_each(|proof| {
+        numerators.extend(proof.lookup.numerators().into_iter());
+        denominators.extend(proof.lookup.denominators().into_iter());
+    });
 
-            transcript.append_field_elements(table_proof.lookup.get_digest().0.as_slice());
-
-            let actual_challenge = transcript
-                .get_and_append_challenge(b"table_challenge")
-                .elements;
-            lookup_challenges.insert(table_type.name(), vec![
-                actual_challenge,
-                constant_challenge,
-            ]);
-            numerators.extend(table_proof.lookup.numerators().into_iter());
-            denominators.extend(table_proof.lookup.denominators().into_iter());
-        });
     // 2. Derive the first randomness
     let first_randomness = transcript.read_challenges(io.output.get_data().len().ilog2() as usize);
     // 3. For the output, we manually evaluate the MLE and check if it's the same as what prover
@@ -135,10 +123,13 @@ where
             (StepProof::<E>::Activation(proof), StepInfo::Activation(info)) => {
                 let step = total_steps - 1 - i;
                 let (lookup_type, _) = ctx.lookup.get_circuit_and_type(step)?;
-                let challenges = lookup_challenges.get(&lookup_type.name()).ok_or(anyhow!(
-                    "Couldn't get challenges at Activation verification, LookupType was: {:?}",
-                    lookup_type
-                ))?;
+                let (constant_challenge, column_separator_challenges) = challenge_storage
+                    .get_challenges(*lookup_type)
+                    .ok_or(anyhow!(
+                        "Couldn't get challenges at Step: {}, LookupType was: {}",
+                        proof_and_step.1.variant_name(),
+                        lookup_type.name()
+                    ))?;
                 verify_activation::<_, _, L>(
                     output_claim,
                     &proof,
@@ -146,7 +137,8 @@ where
                     &mut witness_verifier,
                     &ctx.lookup,
                     transcript,
-                    challenges,
+                    constant_challenge,
+                    &column_separator_challenges,
                     step,
                 )?
             }
@@ -156,10 +148,13 @@ where
             (StepProof::<E>::Requant(proof), StepInfo::Requant(info)) => {
                 let step = total_steps - 1 - i;
                 let (lookup_type, _) = ctx.lookup.get_circuit_and_type(step)?;
-                let challenges = lookup_challenges.get(&lookup_type.name()).ok_or(anyhow!(
-                    "Couldn't get challenges at Requant verification, LookupType was: {:?}",
-                    lookup_type
-                ))?;
+                let (constant_challenge, column_separator_challenges) = challenge_storage
+                    .get_challenges(*lookup_type)
+                    .ok_or(anyhow!(
+                        "Couldn't get challenges at Step: {}, LookupType was: {}",
+                        proof_and_step.1.variant_name(),
+                        lookup_type.name()
+                    ))?;
                 verify_requant::<_, _, L>(
                     output_claim,
                     &proof,
@@ -167,17 +162,21 @@ where
                     &mut witness_verifier,
                     &ctx.lookup,
                     transcript,
-                    challenges,
+                    constant_challenge,
+                    &column_separator_challenges,
                     step,
                 )?
             }
             (StepProof::Pooling(proof), StepInfo::Pooling(info)) => {
                 let step = total_steps - 1 - i;
                 let (lookup_type, _) = ctx.lookup.get_circuit_and_type(step)?;
-                let challenges = lookup_challenges.get(&lookup_type.name()).ok_or(anyhow!(
-                    "Couldn't get challenges at Requant verification, LookupType was: {:?}",
-                    lookup_type
-                ))?;
+                let (constant_challenge, column_separator_challenges) = challenge_storage
+                    .get_challenges(*lookup_type)
+                    .ok_or(anyhow!(
+                        "Couldn't get challenges at Step: {}, LookupType was: {}",
+                        proof_and_step.1.variant_name(),
+                        lookup_type.name()
+                    ))?;
 
                 verify_pooling::<_, _, L>(
                     output_claim,
@@ -186,7 +185,8 @@ where
                     &mut witness_verifier,
                     &ctx.lookup,
                     transcript,
-                    challenges,
+                    constant_challenge,
+                    &column_separator_challenges,
                     step,
                 )?
             }
@@ -207,8 +207,8 @@ where
         .iter()
         .zip(ctx.lookup.get_table_circuits())
         .try_for_each(|(table_proof, table_info)| {
-            let challenges = lookup_challenges
-                .get(&table_info.lookup_type.name())
+            let (constant_challenge, column_separator_challenges) = challenge_storage
+                .get_challenges(table_info.lookup_type)
                 .ok_or(anyhow!(
                     "No challenges found for table of type: {:?} during verification",
                     table_info.lookup_type
@@ -218,7 +218,8 @@ where
                 table_info,
                 &mut witness_verifier,
                 transcript,
-                challenges,
+                constant_challenge,
+                &column_separator_challenges,
             )
         })?;
 
@@ -261,7 +262,8 @@ fn verify_pooling<E: ExtensionField, T: Transcript<E>, L: LookupProtocol<E>>(
     witness_verifier: &mut commit::precommit::CommitVerifier<E>,
     lookup_ctx: &lookup::Context<E>,
     t: &mut T,
-    challenges: &[E],
+    constant_challenge: E,
+    column_separator_challenges: &[E],
     step: usize,
 ) -> anyhow::Result<Claim<E>>
 where
@@ -269,7 +271,14 @@ where
     E: Serialize + DeserializeOwned,
 {
     // 1. Verify the lookup proof
-    let verifier_claims = L::verify(lookup_ctx, challenges, step, proof.lookup.clone(), t)?;
+    let verifier_claims = L::verify(
+        lookup_ctx,
+        constant_challenge,
+        column_separator_challenges,
+        step,
+        proof.lookup.clone(),
+        t,
+    )?;
 
     // 2. Verify the sumcheck proof
     // Squeeze some randomness from the transcript to
@@ -402,7 +411,8 @@ fn verify_activation<E: ExtensionField, T: Transcript<E>, L: LookupProtocol<E>>(
     witness_verifier: &mut commit::precommit::CommitVerifier<E>,
     lookup_ctx: &lookup::Context<E>,
     t: &mut T,
-    challenges: &[E],
+    constant_challenge: E,
+    column_separator_challenges: &[E],
     step: usize,
 ) -> anyhow::Result<Claim<E>>
 where
@@ -410,7 +420,14 @@ where
     E: Serialize + DeserializeOwned,
 {
     // 1. Verify the lookup proof
-    let verifier_claims = L::verify(lookup_ctx, challenges, step, proof.lookup.clone(), t)?;
+    let verifier_claims = L::verify(
+        lookup_ctx,
+        constant_challenge,
+        column_separator_challenges,
+        step,
+        proof.lookup.clone(),
+        t,
+    )?;
 
     // 2. Verify the accumulation proof from last_claim + lookup claim into the new claim
     let sp_ctx = same_poly::Context::<E>::new(info.num_vars);
@@ -435,7 +452,8 @@ fn verify_requant<E: ExtensionField, T: Transcript<E>, L: LookupProtocol<E>>(
     witness_verifier: &mut commit::precommit::CommitVerifier<E>,
     lookup_ctx: &lookup::Context<E>,
     t: &mut T,
-    challenges: &[E],
+    constant_challenge: E,
+    column_separator_challenges: &[E],
     step: usize,
 ) -> anyhow::Result<Claim<E>>
 where
@@ -443,7 +461,14 @@ where
     E: Serialize + DeserializeOwned,
 {
     // 1. Verify the lookup proof
-    let verifier_claims = L::verify(lookup_ctx, challenges, step, proof.lookup.clone(), t)?;
+    let verifier_claims = L::verify(
+        lookup_ctx,
+        constant_challenge,
+        column_separator_challenges,
+        step,
+        proof.lookup.clone(),
+        t,
+    )?;
 
     // 2. Verify the accumulation proof from last_claim + lookup claim into the new claim
     let sp_ctx = same_poly::Context::<E>::new(info.num_vars);
@@ -734,14 +759,21 @@ fn verify_table<E: ExtensionField, T: Transcript<E>, L: LookupProtocol<E>>(
     info: &TableInfo<E>,
     witness_verifier: &mut commit::precommit::CommitVerifier<E>,
     t: &mut T,
-    challenges: &[E],
+    constant_challenge: E,
+    column_separator_challenges: &[E],
 ) -> anyhow::Result<()>
 where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
     // 1. Verify the lookup proof
-    let verifier_claims = L::verify_table(challenges, &info.circuit, proof.lookup.clone(), t)?;
+    let verifier_claims = L::verify_table(
+        constant_challenge,
+        column_separator_challenges,
+        &info.circuit,
+        proof.lookup.clone(),
+        t,
+    )?;
 
     // 2. Accumulate the multiplicity poly claim into the witness commitment protocol
     witness_verifier.add_claim(

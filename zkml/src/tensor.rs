@@ -17,7 +17,12 @@ use std::{
     fmt::{self, Debug},
 };
 
-use crate::{Element, pooling::MAXPOOL2D_KERNEL_SIZE, quantization::Fieldizer, to_bit_sequence_le};
+use crate::{
+    Element,
+    pooling::MAXPOOL2D_KERNEL_SIZE,
+    quantization::{Fieldizer, IntoElement},
+    to_bit_sequence_le,
+};
 
 // Function testing the consistency between the actual convolution implementation and
 // the FFT one. Used for debugging purposes.
@@ -292,10 +297,11 @@ impl Tensor<Element> {
                 for k in 0..(self.nw() * self.nw()) {
                     if F::to_canonical_u64_vec(&w_fft[i][j][k])[0] as u64 > (1 << 60 as u64) {
                         real_weights[i][j][k] =
-                            -(F::to_canonical_u64_vec(&(-w_fft[i][j][k]))[0] as Element);
+                            //-(F::to_canonical_u64_vec(&(-w_fft[i][j][k]))[0] as Element);
+                            w_fft[i][j][k].into_element();
                     } else {
-                        real_weights[i][j][k] =
-                            F::to_canonical_u64_vec(&(w_fft[i][j][k]))[0] as Element;
+                        real_weights[i][j][k] = w_fft[i][j][k].into_element();
+                        // F::to_canonical_u64_vec(&(w_fft[i][j][k]))[0] as Element;
                     }
                 }
             }
