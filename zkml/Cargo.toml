@@ -12,15 +12,15 @@ version.workspace = true
 anyhow.workspace = true
 ark-std.workspace = true
 clap = { version = "4", features = ["derive"] }
+code-timing-macros = { version =  "0.0.6",features = ["tracing"]}
+timed = { workspace = true }
 csv = "1.3.1"
 derive_more = { version = "2.0.1", features = ["full"] }
-env_logger = "0.11.6"
 ff.workspace = true
 ff_ext = { version = "0.1.0", path = "../ff_ext" }
 gkr = { version = "0.1.0", path = "../gkr" }
 goldilocks.workspace = true
 itertools.workspace = true
-log = "0.4.25"
 mpcs = { version = "0.1.0", path = "../mpcs" }
 multilinear_extensions = { version = "0.1.0", path = "../multilinear_extensions", features = [
     "parallel",

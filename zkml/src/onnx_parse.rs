@@ -2,8 +2,8 @@ use crate::dense::Dense;
 use anyhow::{Context, Error, Result, bail, ensure};
 use goldilocks::GoldilocksExt2;
 use itertools::Itertools;
-use log::debug;
 use std::{collections::HashMap, i8, path::Path};
+use tracing::debug;
 use tract_onnx::{pb::NodeProto, prelude::*};
 
 type F = GoldilocksExt2;
