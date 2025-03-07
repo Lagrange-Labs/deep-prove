@@ -24,7 +24,7 @@ This is a research driven project and the codebase is improving on a fast pace. 
 [ ] Add support for more layers types (BatchNorm, Dropout, etc)
 
 **Accuracy**:
-[ ] Layer-wise requantization (a single scaling factor per layer)
+[x] Layer-wise requantization (a single scaling factor per layer)
 [ ] Allowing BIT_LEN to grow without loosing performance (lookup related)
 [ ] Add supports for row-wise quantization for each layer to provide better accuracy
 
@@ -127,6 +127,10 @@ python bench.py [options]
 
 - `--skip-ezkl-calibration`: Skip the EZKL calibration step (faster but potentially less accurate)
   - Example: `--skip-ezkl-calibration`
+
+- `--ezkl-check-mode`: Set EZKL check mode ('safe' or 'unsafe')
+  - Default: "safe"
+  - Example: `--ezkl-check-mode unsafe`
 
 - `--num-threads`: Limit CPU thread usage (useful for consistent results or resource management)
   - Example: `--num-threads 4`
