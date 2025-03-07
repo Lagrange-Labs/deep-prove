@@ -444,9 +444,9 @@ pub(crate) mod test {
 
             let minimum_initial_size = (1 << num_layers) * (3usize);
 
-            let mut input_shape = (0..4)
+            let mut input_shape = (0..3)
                 .map(|i| {
-                    if i < 2 {
+                    if i < 1 {
                         rng.gen_range(1..5usize).next_power_of_two()
                     } else {
                         (minimum_initial_size + rng.gen_range(1..4usize)).next_power_of_two()
@@ -460,7 +460,7 @@ pub(crate) mod test {
             for _ in 0..num_layers {
                 input_shape
                     .iter_mut()
-                    .skip(2)
+                    .skip(1)
                     .for_each(|dim| *dim = (*dim - info.kernel_size) / info.stride + 1);
                 model.add_layer::<F>(Layer::Pooling(Pooling::Maxpool2D(info)));
             }

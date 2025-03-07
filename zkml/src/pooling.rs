@@ -71,6 +71,7 @@ impl Maxpool2D {
         input: &Tensor<E>,
         output: &Tensor<E>,
     ) -> Vec<Vec<E::BaseField>> {
+        assert_eq!(input.dims().len(), 3, "Maxpool needs 3D inputs.");
         let padded_input = input.pad_next_power_of_two();
 
         let padded_output = output.pad_next_power_of_two();
@@ -90,9 +91,9 @@ impl Maxpool2D {
 
         // This should give all possible combinations of fixing the lowest three bits in ascending order
 
-        let fixed_mles = (0..padded_input_shape[3] << 1)
+        let fixed_mles = (0..padded_input_shape[2] << 1)
             .map(|i| {
-                let point = (0..ceil_log2(padded_input_shape[3]) + 1)
+                let point = (0..ceil_log2(padded_input_shape[2]) + 1)
                     .map(|n| E::from((i as u64 >> n) & 1))
                     .collect::<Vec<E>>();
 
@@ -113,7 +114,7 @@ impl Maxpool2D {
             .collect::<Vec<DenseMultilinearExtension<E>>>();
 
         let even_merged = even_mles
-            .chunks(padded_input_shape[3] >> 1)
+            .chunks(padded_input_shape[2] >> 1)
             .map(|mle_chunk| {
                 let mut mles_vec = mle_chunk
                     .iter()
@@ -144,7 +145,7 @@ impl Maxpool2D {
             .collect::<Vec<Vec<E::BaseField>>>();
 
         let odd_merged = odd_mles
-            .chunks(padded_input_shape[3] >> 1)
+            .chunks(padded_input_shape[2] >> 1)
             .map(|mle_chunk| {
                 let mut mles_vec = mle_chunk
                     .iter()
