@@ -268,6 +268,30 @@ impl Tensor<Element> {
             input_shape,
         }
     }
+    
+    pub fn get_real_filter<F: ExtensionField>(&self) {
+        let mut w_fft = vec![
+            vec![vec![F::ZERO; 2*self.nw() * self.nw()]; self.kx().next_power_of_two()]; self.kw().next_power_of_two() ];
+        let mut ctr = 0;
+        for i in 0..w_fft.len(){
+            for j in 0..w_fft[i].len(){
+                for k in 0..w_fft[i][j].len(){
+                    if(self.data[ctr] < 0){
+                        w_fft[i][j][k] =-F::from((-self.data[ctr]) as u64);    
+                    }else{
+                        w_fft[i][j][k] = F::from((self.data[ctr]) as u64);    
+                        
+                    }
+                    ctr += 1;
+                }
+            }
+        }
+        for i in 0..w_fft.len(){
+            for j in 0..w_fft[i].len(){
+                fft(&mut w_fft[i][j],true);
+            }
+        }
+    }
 
     // Convolution algorithm using FFTs.
     // When invoking this algorithm the prover generates all withness/intermidiate evaluations

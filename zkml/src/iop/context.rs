@@ -43,6 +43,7 @@ where
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ConvInfo<E> {
     pub poly_id: PolyID,
+    pub bias_poly_id: PolyID,
     pub fft_aux: VPAuxInfo<E>,
     pub ifft_aux: VPAuxInfo<E>,
     pub delegation_fft: Vec<VPAuxInfo<E>>,
@@ -201,10 +202,12 @@ where
                     }),
 
                     Layer::Convolution(filter) => {
+                        
                         last_output_size = filter.nrows_2d();
-
+                        
                         let mut delegation_fft: Vec<VPAuxInfo<E>> = Vec::new();
                         let mut delegation_ifft: Vec<VPAuxInfo<E>> = Vec::new();
+                        //println!("{},{}",id,filter.filter_size());
                         for i in (0..(filter.filter_size().ilog2() as usize)).rev() {
                             delegation_fft.push(VPAuxInfo::<E>::from_mle_list_dimensions(&vec![
                                 vec![i + 1, i + 1, i + 1],
@@ -213,9 +216,10 @@ where
                                 vec![i + 1, i + 1, i + 1],
                             ]));
                         }
-
+                        
                         let conv_info = StepInfo::Convolution(ConvInfo {
                             poly_id: id,
+                            bias_poly_id: BIAS_POLY_ID + id,
                             ifft_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![
                                 ((filter.filter_size()).ilog2() as usize) + 1,
                                 ((filter.filter_size()).ilog2() as usize) + 1,
@@ -285,6 +289,8 @@ where
                 }
                 StepInfo::Convolution(info) => {
                     t.append_field_element(&E::BaseField::from(info.poly_id as u64));
+                    t.append_field_element(&E::BaseField::from(info.bias_poly_id as u64));
+                    
                     for i in 0..info.delegation_fft.len() {
                         info.delegation_fft[i].write_to_transcript(t);
                     }

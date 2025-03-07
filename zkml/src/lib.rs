@@ -13,7 +13,7 @@ pub use iop::{
     prover::Prover,
     verifier::{IO, verify},
 };
-
+pub mod convolution;
 pub mod dense;
 pub mod lookup;
 pub mod model;

@@ -45,14 +45,7 @@ use super::{
     context::{ConvInfo, DenseInfo, PoolingInfo, StepInfo},
 };
 use crate::{
-    Claim, Element, VectorTranscript,
-    activation::Activation,
-    commit::{compute_betas_eval, identity_eval, precommit, same_poly},
-    dense,
-    iop::{ActivationProof, ConvProof, DenseProof, PoolingProof},
-    lookup::{self, LookupProtocol},
-    model::{InferenceStep, InferenceTrace, Layer},
-    tensor::{Conv_Data, Tensor, getRootOfUnity},
+    activation::Activation, commit::{compute_betas_eval, identity_eval, precommit, same_poly}, convolution::Convolution, dense,convolution, iop::{ActivationProof, ConvProof, DenseProof, PoolingProof}, lookup::{self, LookupProtocol}, model::{InferenceStep, InferenceTrace, Layer}, tensor::{getRootOfUnity, Conv_Data, Tensor}, Claim, Element, VectorTranscript
 };
 use anyhow::{Context as CC, anyhow, bail};
 use ff_ext::ExtensionField;
@@ -66,6 +59,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use std::{marker::PhantomData, sync::Arc};
 use sumcheck::structs::{IOPProverState, IOPVerifierState};
 use transcript::Transcript;
+
 
 pub fn compute_betas<E: ExtensionField>(r: Vec<E>) -> Vec<E> {
     let mut beta = vec![E::ZERO; 1 << r.len()];
@@ -720,7 +714,7 @@ where
         output: &Tensor<E>,
         proving_data: &Conv_Data<E>,
         info: &ConvInfo<E>,
-        filter: &Tensor<Element>,
+        filter: &Convolution,
     ) -> anyhow::Result<Claim<E>> {
         assert_eq!(
             filter.filter_size() * filter.kw() * 2,
@@ -735,13 +729,26 @@ where
             last_claim.point.len()
         );
         let mut r = vec![E::ZERO; last_claim.point.len() + 1];
+        let mut bias_point = vec![E::ZERO;filter.kw().ilog2() as usize];
         for i in 0..(filter.filter_size().ilog2() as usize) {
             r[i] = E::ONE - last_claim.point[i];
         }
         for i in 0..(filter.kw().ilog2() as usize) {
             r[i + (filter.filter_size().ilog2() as usize) + 1] =
                 last_claim.point[i + (filter.filter_size().ilog2() as usize)];
+            bias_point[i] = last_claim.point[i + (filter.filter_size().ilog2() as usize)];
         }
+        let mut bias_eval = E::ZERO;
+        if(bias_point.len()!=0){
+            bias_eval = filter
+            .bias
+            .evals_flat::<E>()
+            .into_mle()
+            .evaluate(&bias_point);
+        }else if(filter.bias.data.len() == 1){
+            bias_eval = filter.bias.evals_flat::<E>()[0]; 
+        }
+
         debug_assert!({
             let y = proving_data
                 .output
@@ -751,11 +758,21 @@ where
                 .collect::<Vec<_>>()
                 .into_mle()
                 .evaluate(&r);
-            debug_assert_eq!(last_claim.eval, y, "Error in Conv 1");
-            last_claim.eval == y
+            debug_assert_eq!(last_claim.eval-bias_eval, y, "Error in Conv 1");
+            last_claim.eval-bias_eval == y
         });
+
+        let mut temp_t = self.transcript.clone();
         let (iFFT_proof, iFFT_claim, iFFT_Del_proof) =
             self.prove_batch_ifft(r.clone(), &proving_data.prod);
+        
+        assert_eq!(filter.filter_size().ilog2() as usize + 1,iFFT_proof.point.len(),"Error in ifft sumceck");
+        debug_assert!({
+            IOPVerifierState::<E>::verify(last_claim.eval-bias_eval, &iFFT_proof.clone(), &info.ifft_aux.clone(), &mut temp_t);
+            println!("iFFT Sumcheck Correct");
+            1==1
+        });
+        
         // After this point, the verifier holds an evaluation claim of proving_data.prod at P1.randomness[0][i]
         // Let r' = P1.randomness[0][i] and y is the evaluation claim of prod = proving_data.prod
         // What we want to do now is to prove that prod has been correctly computed from X_fft and w (= proving_data.w)
@@ -803,19 +820,19 @@ where
         // We have  \sum_{i \in [k_w]} beta1[i]prod[i] = sum_{j \in [k_x]} x[j]o w_{reduced[j]}.
         // So here we compute w_reduced
 
-        let k_w = filter.shape[0];
-        let k_x = filter.shape[1];
-        let n_w = 2 * filter.shape[2] * filter.shape[2];
+        let k_w = filter.kw();
+        let k_x = filter.kx();
+        let n_w = 2 * filter.nw() * filter.nw();
         let mut w_red = vec![E::ZERO; n_w * k_x];
         for i in 0..k_w {
             for j in 0..k_x {
                 for k in 0..n_w {
-                    if (filter.data[i * k_x * n_w + j * n_w + k] < 0) {
+                    if (filter.filter.data[i * k_x * n_w + j * n_w + k] < 0) {
                         w_red[j * n_w + k] -=
-                            beta1[i] * E::from((-filter.data[i * k_x * n_w + j * n_w + k]) as u64);
+                            beta1[i] * E::from((-filter.filter.data[i * k_x * n_w + j * n_w + k]) as u64);
                     } else {
                         w_red[j * n_w + k] +=
-                            beta1[i] * E::from((filter.data[i * k_x * n_w + j * n_w + k]) as u64);
+                            beta1[i] * E::from((filter.filter.data[i * k_x * n_w + j * n_w + k]) as u64);
                     }
                 }
             }
@@ -855,11 +872,10 @@ where
         let eval = hadamard_claims[0];
         self.commit_prover
             .add_claim(info.poly_id, Claim::new(point, hadamard_claims[0]))
-            .context("unable to add claim")?;
-
-        // self.r_weights = proof.point.clone();
-        // self.r_weights.extend(r1.iter());
-
+            .context("unable to add convolution claim")?;
+        self.commit_prover.add_claim(info.bias_poly_id, Claim::new(bias_point, bias_eval)).context("unable to add bias claim in convolution")?;
+    
+    
         // Finally prove the correct computation of the x_fft and get an evaluation claim of the input
         let (FFT_proof, FFT_claim, FFT_Del_proof) = self.prove_batch_fft(
             hadamard_proof.point.clone(),
@@ -877,6 +893,7 @@ where
             fft_delegation_claims: FFT_Del_proof.1,
             ifft_delegation_claims: iFFT_Del_proof.1,
             hadamard_clams: hadamard_claims,
+            bias_claim : bias_eval
         }));
         let mut input_point = FFT_proof.point.clone();
         let mut v = input_point.pop().unwrap();
@@ -1023,9 +1040,9 @@ where
 
     pub fn prove<'b>(mut self, trace: InferenceTrace<'b, Element, E>) -> anyhow::Result<Proof<E>> {
         // First, create the context for the witness polys -
-        self.instantiate_witness_ctx(&trace)?;
         // write commitments and polynomials info to transcript
         self.ctx.write_to_transcript(self.transcript)?;
+        self.instantiate_witness_ctx(&trace)?;
         let trace = trace.to_field();
         // this is the random set of variables to fix at each step derived as the output of
         // sumcheck.

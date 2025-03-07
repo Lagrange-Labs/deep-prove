@@ -103,8 +103,8 @@ pub struct ConvProof<E: ExtensionField>{
     ifft_claims: Vec<E>,
     fft_delegation_claims: Vec<Vec<E>>,
     ifft_delegation_claims: Vec<Vec<E>>,
-    hadamard_clams: Vec<E>
-
+    hadamard_clams: Vec<E>,
+    bias_claim : E,
 }
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct DenseProof<E: ExtensionField> {

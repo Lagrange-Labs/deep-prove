@@ -70,7 +70,10 @@ where
                         Some((id, dense.matrix.evals_2d())),
                         Some((BIAS_POLY_ID + id, dense.bias.evals_flat())),
                     ],
-                    Layer::Convolution(m) => vec![Some((id, m.get_conv_weights()))],
+                    Layer::Convolution(m) => vec![
+                        Some((id, m.filter.get_conv_weights())),
+                        Some((BIAS_POLY_ID + id, m.bias.evals_flat()))
+                    ],
                     _ => vec![None],
                 })
                 .flatten()

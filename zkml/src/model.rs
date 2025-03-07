@@ -1,4 +1,5 @@
 use crate::dense::Dense;
+use crate::convolution::Convolution;
 use ff_ext::ExtensionField;
 use goldilocks::GoldilocksExt2;
 use itertools::Itertools;
@@ -21,7 +22,7 @@ pub type StepIdx = usize;
 pub enum Layer {
     Dense(Dense),
     // TODO: replace this with a Tensor based implementation
-    Convolution(Tensor<Element>),
+    Convolution(Convolution),
     // Traditional convolution is used for debug purposes. That is because the actual convolution
     // we use relies on the FFT algorithm. This convolution does not have a snark implementation.
     Traditional_Convolution(Tensor<Element>),
@@ -55,7 +56,7 @@ impl Layer {
             Layer::Dense(ref dense) => Layer_Output::Normal_Out(dense.op(input)),
             Layer::Activation(activation) => Layer_Output::Normal_Out(activation.op(input)),
 
-            Layer::Convolution(ref filter) => Layer_Output::Conv_Out(filter.fft_conv(input)),
+            Layer::Convolution(ref filter) => Layer_Output::Conv_Out(filter.op(input)),
             // Traditional convolution is used for debug purposes. That is because the actual convolution
             // we use relies on the FFT algorithm. This convolution does not have a snark implementation.
             Layer::Traditional_Convolution(ref filter) => {
@@ -398,17 +399,7 @@ pub(crate) mod test {
     use sumcheck::structs::{IOPProverState, IOPVerifierState};
 
     use crate::{
-        Element,
-        activation::{Activation, Relu},
-        commit::same_poly::Verifier,
-        default_transcript,
-        dense::Dense,
-        iop::verifier,
-        model::Layer,
-        pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
-        quantization::{Requant, TensorFielder},
-        tensor::Tensor,
-        testing::{random_bool_vector, random_vector},
+        activation::{Activation, Relu}, commit::same_poly::Verifier, convolution::Convolution, default_transcript, dense::Dense, iop::verifier, model::Layer, pooling::{Maxpool2D, Pooling, MAXPOOL2D_KERNEL_SIZE}, quantization::{Requant, TensorFielder}, tensor::Tensor, testing::{random_bool_vector, random_vector}, Element
     };
 
     use super::Model;
@@ -524,9 +515,10 @@ pub(crate) mod test {
         let trad_conv3 = Tensor::new(vec![1 << 1, 1 << 2, 1 << 2, 1 << 2], w3.clone());
 
         let mut model = Model::new();
-        model.add_layer(Layer::Convolution(conv1));
-        model.add_layer(Layer::Convolution(conv2));
-        model.add_layer(Layer::Convolution(conv3));
+        model.add_layer(Layer::Convolution(Convolution::new(conv1.clone(),Tensor::new(vec![conv1.kw()],random_vector_quant(conv1.kw())))));
+        model.add_layer(Layer::Convolution(Convolution::new(conv2.clone(),Tensor::new(vec![conv2.kw()],random_vector_quant(conv2.kw())))));
+        model.add_layer(Layer::Convolution(Convolution::new(conv3.clone(),Tensor::new(vec![conv3.kw()],random_vector_quant(conv3.kw())))));
+        
         let input = Tensor::new(vec![1, 32, 32], random_vector_quant(1024));
         let trace: crate::model::InferenceTrace<'_, _, GoldilocksExt2> =
             model.run::<F>(input.clone());
@@ -753,9 +745,8 @@ pub(crate) mod test {
             in_dimensions[0].clone(),
             w1.clone(),
         );
-
         let mut model = Model::new();
-        model.add_layer(Layer::Convolution(conv1));
+        model.add_layer(Layer::Convolution(Convolution::new(conv1.clone(),Tensor::new(vec![conv1.kw()],random_vector_quant(conv1.kw())))));
         model.describe();
         let input = Tensor::new(vec![k_x, n_x, n_x], random_vector_quant(n_x * n_x * k_x));
         let trace: crate::model::InferenceTrace<'_, _, GoldilocksExt2> =
@@ -763,7 +754,9 @@ pub(crate) mod test {
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
         let mut ctx =
             Context::<GoldilocksExt2>::generate(&model).expect("Unable to generate context");
+        
         let output = trace.final_output().clone();
+        
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, lookup::LogUp> =
             Prover::new(&ctx, &mut tr);
         let proof = prover.prove(trace).expect("unable to generate proof");
@@ -800,7 +793,7 @@ pub(crate) mod test {
                         );
 
                         let mut model = Model::new();
-                        model.add_layer(Layer::Convolution(conv1));
+                        model.add_layer(Layer::Convolution(Convolution::new(conv1.clone(),Tensor::new(vec![conv1.kw()],random_vector_quant(conv1.kw())))));
                         model.describe();
                         let input =
                             Tensor::new(vec![k_x, n_x, n_x], random_vector_quant(n_x * n_x * k_x));

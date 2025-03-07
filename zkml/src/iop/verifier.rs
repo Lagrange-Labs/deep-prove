@@ -455,12 +455,15 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    IOPVerifierState::<E>::verify(last_claim.eval, &proof.ifft_proof, &info.ifft_aux, t);
+    let conv_claim = last_claim.eval - proof.bias_claim;
+  
+    IOPVerifierState::<E>::verify(conv_claim, &proof.ifft_proof, &info.ifft_aux, t);
     assert_eq!(
         info.delegation_ifft.len(),
         proof.ifft_delegation_proof.len(),
         "Inconsistency in iFFT delegation proofs/aux size"
     );
+  
     let mut iter = proof.ifft_delegation_proof.len();
     let mut claim = proof.ifft_claims[1];
     let mut exponents = pow_two_omegas(iter + 1, true);
@@ -497,12 +500,17 @@ where
         prev_r = proof.ifft_delegation_proof[i].point.clone();
         claim = proof.ifft_delegation_claims[i][2];
     }
+    let scale = E::from(1<<(iter+1)).invert().unwrap();
+    assert_eq!(claim,scale*(E::ONE - E::from(2)*(E::ONE - last_claim.point[iter]))*prev_r[0] + scale*(E::ONE - prev_r[0]),"Error in final iFFT delegation step");
+    
     IOPVerifierState::<E>::verify(
         proof.ifft_claims[0],
         &proof.hadamard_proof,
         &info.hadamard,
         t,
     );
+    assert_eq!(proof.hadamard_clams[2], identity_eval(&proof.ifft_proof.point, &proof.hadamard_proof.point),"Error in Beta evaluation");
+    
     commit_verifier.add_claim(
         info.poly_id,
         Claim::new(
@@ -517,7 +525,6 @@ where
     // >>>>>> TODO : 1) Dont forget beta evaluation 2) verification of the last step of delegation <<<<<<<
     // Verify fft sumcheck
     IOPVerifierState::<E>::verify(proof.hadamard_clams[1], &proof.fft_proof, &info.fft_aux, t);
-
     claim = proof.fft_claims[1];
 
     assert_eq!(
@@ -563,6 +570,7 @@ where
         claim = proof.fft_delegation_claims[i][2];
         prev_r = proof.fft_delegation_proof[i].point.clone();
     }
+    assert_eq!(claim,(E::ONE - E::from(2)*proof.hadamard_proof.point[proof.hadamard_proof.point.len()-2])*prev_r[0] + E::ONE - prev_r[0],"Error in final FFT delegation step");
     println!("Successful Verification of Convolution");
     let mut input_point = proof.fft_proof.point.clone();
     let mut v = input_point.pop().unwrap();
