@@ -195,7 +195,7 @@ def run_zkml_benchmark(config_name, output_dir, verbose, num_samples):
     print("ZKML benchmark completed")
     return zkml_csv
 
-def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples, skip_calibration=False):
+def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples, skip_calibration=False, check_mode="safe"):
     """Run EZKL benchmark for each input/output pair and save results to CSV"""
     # Create absolute paths before changing directory
     ezkl_csv = output_dir / f"ezkl_{config_name}.csv"
@@ -222,7 +222,7 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples,
         print(f"Found {available_samples} input/output pairs in {INPUT}, will process {max_samples}")
         
         # Run setup steps once (these don't depend on the input data)
-        ex(["ezkl", "gen-settings", "-K", str(LOGROWS),"-M", MODEL], verbose=verbose)
+        ex(["ezkl", "gen-settings", "-K", str(LOGROWS),"-M", MODEL,"--check-mode", check_mode], verbose=verbose)
         
         # Calibrate only if not skipping calibration
         if not skip_calibration:
@@ -342,7 +342,8 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples,
         # Always return to the original directory
         os.chdir(original_dir)
 
-def run_benchmark(num_dense, layer_width, run_index, output_dir, verbose, run_ezkl, num_samples, model_type, skip_ezkl_calibration=False):
+def run_benchmark(num_dense, layer_width, run_index, output_dir, verbose, run_ezkl, num_samples, model_type, 
+                skip_ezkl_calibration=False, ezkl_check_mode="safe"):
     """Run a single benchmark with the specified parameters"""
     config_name = f"d{num_dense}_w{layer_width}" if model_type == "mlp" else f"cnn"
     
@@ -363,7 +364,8 @@ def run_benchmark(num_dense, layer_width, run_index, output_dir, verbose, run_ez
     ezkl_csv = None
     if run_ezkl:
         print(f"\n📊 Running EZKL benchmark for run {run_index}...")
-        ezkl_csv = run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples, skip_ezkl_calibration)
+        ezkl_csv = run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples, 
+                                    skip_ezkl_calibration, ezkl_check_mode)
         print(f"Results saved to {zkml_csv}, {pytorch_csv}, and {ezkl_csv}")
     else:
         print(f"Results saved to {zkml_csv} and {pytorch_csv} (EZKL comparison skipped)")
@@ -640,6 +642,8 @@ def parse_arguments():
                         help="Run EZKL benchmarks (slower)")
     parser.add_argument("--skip-ezkl-calibration", action="store_true",
                         help="Skip the EZKL calibration step (faster but potentially less accurate)")
+    parser.add_argument("--ezkl-check-mode", choices=["safe", "unsafe"], default="safe",
+                        help="Set EZKL check mode (safe or unsafe) - safe by default")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable verbose logging")
     parser.add_argument("--output-dir", type=Path, default=Path("bench"),
@@ -674,11 +678,11 @@ def run_configurations(configs, args):
         clean_output_directory(output_dir, config_name)
         
         for run_idx in range(args.repeats):
-            # Pass skip_ezkl_calibration parameter to run_benchmark
+            # Pass all EZKL-related parameters
             zkml_csv, ezkl_csv, pytorch_csv = run_benchmark(
                 num_dense, layer_width, run_idx, output_dir, 
                 args.verbose, args.run_ezkl, args.samples, args.model_type,
-                args.skip_ezkl_calibration  # Pass this parameter
+                args.skip_ezkl_calibration, args.ezkl_check_mode
             )
             
             if zkml_csv:
