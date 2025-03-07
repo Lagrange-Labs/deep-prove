@@ -2326,6 +2326,7 @@ dependencies = [
 [[package]]
 name = "timed"
 version = "0.1.0"
+source = "git+https://github.com/nikkolasg/timed-rs#7443eb5625e9126f14c7782f4d4e5a191d5b2322"
 dependencies = [
  "proc-macro2",
  "quote",

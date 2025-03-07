@@ -55,7 +55,6 @@ use crate::{
     tensor::{ConvData, Tensor, get_root_of_unity},
 };
 use anyhow::{Context as CC, anyhow, bail};
-use code_timing_macros::time_function;
 use ff_ext::ExtensionField;
 
 use gkr::util::ceil_log2;

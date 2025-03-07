@@ -1,4 +1,3 @@
-use tracing_subscriber::{prelude::*,Registry};
 use std::{
 
     collections::HashMap,
@@ -12,7 +11,7 @@ use anyhow::{Context as CC, ensure};
 use clap::Parser;
 use csv::WriterBuilder;
 use goldilocks::GoldilocksExt2;
-use tracing::{Level, info};
+use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt};
 use zkml::{ModelType, load_model, quantization::Quantizer};
 
