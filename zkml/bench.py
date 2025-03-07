@@ -275,6 +275,7 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples,
             
             # Full proving time is the sum of witness generation and proving times
             full_proving_time_ms = witness_time_ms + proving_time_wall
+            print(f"Full proving time: {witness_time_ms}ms + {proving_time_wall}ms = {full_proving_time_ms}ms")
             bencher.set(EZKL_FULL_PROVING, str(full_proving_time_ms))
             
             # Extract the proof time using regex (same as before)
@@ -289,6 +290,7 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples,
             
             # Sum the witness and proof times
             total_proving_time_ms = witness_time_ms + proof_time_ms
+            print(f"Extracting proving time: {witness_time_ms}ms + {proof_time_ms}ms = {total_proving_time_ms}ms")
             bencher.set(PROVING, f"{total_proving_time_ms:.2f}")
             
             # Run verification with error handling
@@ -465,6 +467,25 @@ def clean_output_directory(output_dir, config_name):
             print(f"Cleaning up: {file}")
             file.unlink()
 
+def delete_all_csv_files(output_dir):
+    """Delete all CSV files in the output directory at the start of benchmarking."""
+    print(f"\n🗑️  Cleaning up previous benchmark results...")
+    
+    # Count how many files were deleted
+    deleted_count = 0
+    
+    # Delete all CSV files in the output directory
+    for csv_file in output_dir.glob("*.csv"):
+        print(f"  Deleting: {csv_file}")
+        csv_file.unlink()
+        deleted_count += 1
+    
+    if deleted_count > 0:
+        print(f"✅ Deleted {deleted_count} CSV files from previous runs.")
+    else:
+        print("✅ No previous benchmark CSV files found.")
+    print("")
+
 def calculate_average_accuracy(csv_file):
     """Calculate the average accuracy from a CSV file."""
     if not csv_file.exists():
@@ -532,10 +553,12 @@ def compute_summary_statistics(output_dir, configs, run_ezkl, model_type):
                 if not ezkl_df.empty:
                     config_data["ezkl_accuracy"] = ezkl_df[ACCURACY].mean()
                     config_data["ezkl_proving_time"] = ezkl_df[PROVING].astype(float).mean()
+                    print(f"EXTRACTED EZKL proving time: {ezkl_df[PROVING].astype(float)}")
                     
                     # Add the new full proving time metric
                     if EZKL_FULL_PROVING in ezkl_df.columns:
                         config_data["ezkl_full_proving_time"] = ezkl_df[EZKL_FULL_PROVING].astype(float).mean()
+                        print(f"FULL EZKL full proving time: {ezkl_df[EZKL_FULL_PROVING].astype(float)}")
                     
                     config_data["ezkl_verifying_time"] = ezkl_df[VERIFYING].astype(float).mean()
                     if PROOF_SIZE in ezkl_df.columns:
@@ -715,27 +738,33 @@ def calculate_and_print_results(configs, zkml_csv_files, ezkl_csv_files, pytorch
             print(f"Average accuracy for PyTorch (d{config_name[0]}_w{config_name[1]}): {pytorch_accuracy:.2f}")
 
 def main():
+    """Main function to run benchmarks."""
     args = parse_arguments()
     setup_environment(args)
     
-    # Parse configurations
+    # Create output directory if it doesn't exist
+    output_dir = args.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Delete all CSV files at the beginning
+    delete_all_csv_files(output_dir)
+    
+    # Parse model configurations
     configs = []
-    for config_str in args.configs.split(':'):
-        parts = config_str.split(',')
+    for config in args.configs.split(':'):
+        parts = config.split(',')
         if len(parts) != 2:
-            print(f"Invalid configuration: {config_str}. Expected format: 'dense,width'")
+            print(f"❌ Error: Invalid configuration format: {config}")
             sys.exit(1)
-        try:
-            num_dense = int(parts[0])
-            layer_width = int(parts[1])
-            configs.append((num_dense, layer_width))
-        except ValueError:
-            print(f"Invalid configuration values in: {config_str}. Expected integers.")
-            sys.exit(1)
+        
+        num_dense = int(parts[0])
+        layer_width = int(parts[1])
+        configs.append((num_dense, layer_width))
     
-    print(f"Running {len(configs)} configurations with model type '{args.model_type}', each repeated {args.repeats} times")
-    
+    # Run all specified configurations
     zkml_csv_files, ezkl_csv_files, pytorch_csv_files = run_configurations(configs, args)
+    
+    # Calculate and print results
     calculate_and_print_results(configs, zkml_csv_files, ezkl_csv_files, pytorch_csv_files, args)
     
     # Generate and print summary statistics
