@@ -10,13 +10,12 @@ use anyhow::{Context as CC, ensure};
 use clap::Parser;
 use csv::WriterBuilder;
 use goldilocks::GoldilocksExt2;
-use itertools::Itertools;
 use log::info;
-use zkml::quantization::Quantizer;
+use zkml::{ModelType, load_model, quantization::Quantizer};
 
 use serde::{Deserialize, Serialize};
 use zkml::{
-    Context, Element, IO, Prover, argmax, default_transcript, load_mlp, lookup::LogUp,
+    Context, Element, IO, Prover, argmax, default_transcript, lookup::LogUp,
     quantization::TensorFielder, tensor::Tensor, verify,
 };
 
@@ -115,7 +114,7 @@ const CSV_PROOF_SIZE: &str = "proof size (KB)";
 
 fn run(args: Args) -> anyhow::Result<()> {
     info!("[+] Reading onnx model");
-    let model = load_mlp::<Element>(&args.onnx).context("loading model:")?;
+    let model = load_model::<Element>(&args.onnx, ModelType::MLP).context("loading model:")?;
     model.describe();
     info!("[+] Reading input/output from pytorch");
     let (inputs, given_outputs) =
@@ -124,7 +123,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     // Generate context once and measure the time
     info!("[+] Generating context for proving");
     let now = time::Instant::now();
-    let ctx = Context::<F>::generate(&model).expect("unable to generate context");
+    let ctx = Context::<F>::generate(&model, None).expect("unable to generate context");
     let setup_time = now.elapsed().as_millis();
     info!("STEP: {} took {}ms", CSV_SETUP, setup_time);
 

@@ -64,6 +64,27 @@ import torch
 import torchvision
 import torchvision.transforms as transforms
 import os
+import json
+import argparse
+from pathlib import Path
+
+# Add argument parser similar to mlp.py
+parser = argparse.ArgumentParser(description="CIFAR10 CNN with ONNX export")
+parser.add_argument("--export", type=Path, required=False, default=Path("."), 
+                    help="folder where to export model and input")
+parser.add_argument("--num-samples", type=int, default=100, 
+                    help="Number of test samples to export")
+
+args = parser.parse_args()
+
+# Ensure the export folder exists
+if not args.export.exists() or not args.export.is_dir():
+    print(f"❌ Error: export folder '{args.export}' does not exist or is not a directory.")
+    exit(1)
+
+# Add after parser section
+print(f"\n🔍 Running CIFAR10 CNN with export path: {args.export}")
+print(f"📊 Will export {args.num_samples} samples as input/output pairs\n")
 
 ########################################################################
 # The output of torchvision datasets are PILImage images of range [0, 1].
@@ -74,11 +95,17 @@ import os
 #     If running on Windows and you get a BrokenPipeError, try setting
 #     the num_worker of torch.utils.data.DataLoader() to 0.
 
+# Add before transform
+print("📦 Preparing data transformations...")
+
 transform = transforms.Compose(
     [transforms.ToTensor(),
      transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
 
 batch_size = 4
+
+# Add before trainset
+print("🔽 Loading and preparing training dataset...")
 
 trainset = torchvision.datasets.CIFAR10(root='./data', train=True,
                                         download=True, transform=transform)
@@ -92,6 +119,11 @@ testloader = torch.utils.data.DataLoader(testset, batch_size=batch_size,
 
 classes = ('plane', 'car', 'bird', 'cat',
            'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
+
+# Add after classes definition
+print(f"✅ Datasets loaded successfully")
+print(f"👉 CIFAR10 has {len(trainset)} training images and {len(testset)} test images")
+print(f"👉 {len(classes)} classes: {', '.join(classes)}\n")
 
 ########################################################################
 # Let us show some of the training images, for fun.
@@ -108,6 +140,9 @@ def imshow(img):
 
 
 # get some random training images
+# Add before getting training images
+print("📊 Fetching sample training images...")
+
 dataiter = iter(trainloader)
 images, labels = next(dataiter)
 
@@ -146,6 +181,9 @@ class Net(nn.Module):
 
 net = Net()
 
+# Add after class definition
+print("🏗️ Initializing neural network...")
+
 ########################################################################
 # 3. Define a Loss function and optimizer
 # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -163,8 +201,12 @@ optimizer = optim.SGD(net.parameters(), lr=0.001, momentum=0.9)
 # We simply have to loop over our data iterator, and feed the inputs to the
 # network and optimize.
 
-for epoch in range(2):  # loop over the dataset multiple times
+# Add before training loop
+print("\n🚀 Starting model training...")
+print(f"🔄 Training for 2 epochs with batch size {batch_size}")
 
+for epoch in range(2):  # loop over the dataset multiple times
+    print(f"\n💫 Epoch {epoch+1}/2")
     running_loss = 0.0
     for i, data in enumerate(trainloader, 0):
         # get the inputs; data is a list of [inputs, labels]
@@ -181,11 +223,14 @@ for epoch in range(2):  # loop over the dataset multiple times
 
         # print statistics
         running_loss += loss.item()
-        if i % 2000 == 1999:    # print every 2000 mini-batches
-            print(f'[{epoch + 1}, {i + 1:5d}] loss: {running_loss / 2000:.3f}')
+        if i % 500 == 499:    # print more frequently
+            print(f'    Batch {i+1:5d} - Loss: {running_loss / 500:.4f}')
             running_loss = 0.0
 
 print('Finished Training')
+
+# Add before saving model
+print("\n💾 Training complete! Saving model...")
 
 ########################################################################
 # Let's quickly save our trained model:
@@ -197,9 +242,13 @@ torch.save(net.state_dict(), PATH)
 
 net.eval()
 dummy_input = torch.randn(1, 3, 32, 32)
-model_path = os.path.join('cifar-cnn.onnx')
+model_path = args.export / "cifar-cnn.onnx"
 torch.onnx.export(net, dummy_input, model_path, export_params=True, opset_version=12,
-                  do_constant_folding=True, input_names=['input_0'], output_names=['output'])
+                  do_constant_folding=True, input_names=['input'], output_names=['output'],
+                  dynamic_axes={'input': {0: 'batch_size'},
+                              'output': {0: 'batch_size'}})
+
+print(f"Model onnx exported to {model_path}")
 
 ########################################################################
 # See `here <https://pytorch.org/docs/stable/notes/serialization.html>`_
@@ -314,7 +363,7 @@ device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 # Assuming that we are on a CUDA machine, this should print a CUDA device:
 
-print(device)
+print(f"Running on {device}")
 
 ########################################################################
 # The rest of this section assumes that ``device`` is a CUDA device.
@@ -374,3 +423,47 @@ print(device)
 # %%%%%%INVISIBLE_CODE_BLOCK%%%%%%
 del dataiter
 # %%%%%%INVISIBLE_CODE_BLOCK%%%%%%
+
+# Prepare data arrays for JSON export
+input_data = []
+output_data = []
+pytorch_output = []
+
+# Process a subset of test samples
+num_samples = min(args.num_samples, len(testset))
+sample_indices = np.random.choice(len(testset), num_samples, replace=False)
+
+# Process each selected test sample
+for i in sample_indices:
+    # Get test image and label
+    test_x, true_label = testset[i]
+    
+    # Create a batch dimension for the model
+    test_x_batch = test_x.unsqueeze(0)
+    
+    # Get model prediction
+    with torch.no_grad():
+        model_output = net(test_x_batch).squeeze(0)
+    
+    # Convert input tensor to list
+    input_list = test_x.detach().numpy().reshape([-1]).tolist()
+    
+    # Create one-hot encoded ground truth output
+    one_hot_output = [0.0] * 10  # For 10 classes in CIFAR10
+    one_hot_output[true_label] = 1.0
+    
+    # Store the data
+    input_data.append(input_list)
+    output_data.append(one_hot_output)
+    pytorch_output.append(model_output.tolist())
+
+# Save multiple input/output pairs to JSON
+data = {
+    "input_data": input_data, 
+    "output_data": output_data, 
+    "pytorch_output": pytorch_output
+}
+
+data_path = args.export / "cifar-input.json"
+json.dump(data, open(data_path, 'w'), indent=2)
+print(f"Input/Output data for {num_samples} samples exported to {data_path}")

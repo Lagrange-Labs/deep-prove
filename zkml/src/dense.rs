@@ -22,7 +22,12 @@ impl Dense {
     }
 
     pub fn op(&self, input: &Tensor<Element>) -> Tensor<Element> {
-        self.matrix.matvec(input).add(&self.bias)
+        if input.dims().len() != 1 {
+            let flat_input = input.flatten();
+            self.matrix.matvec(&flat_input).add(&self.bias)
+        } else {
+            self.matrix.matvec(input).add(&self.bias)
+        }
     }
 
     pub fn pad_next_power_of_two(self) -> Self {

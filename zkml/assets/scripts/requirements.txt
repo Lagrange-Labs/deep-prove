@@ -1,3 +1,4 @@
+torchvision
 tabulate
 onnx
 matplotlib

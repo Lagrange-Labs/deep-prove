@@ -1,14 +1,7 @@
 use crate::quantization;
-use ark_std::rand::{
-    self, Rng, SeedableRng,
-    distributions::{Standard, uniform::SampleUniform},
-    prelude::Distribution,
-    rngs::StdRng,
-    thread_rng,
-};
+use ark_std::rand::{self, Rng, SeedableRng, rngs::StdRng, thread_rng};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::Element;
 
@@ -45,9 +38,4 @@ pub fn random_vector_seed(n: usize, seed: Option<u64>) -> Vec<Element> {
             rng.gen_range(*quantization::MIN..=*quantization::MAX)
         })
         .collect_vec()
-}
-
-pub fn random_ranged_vector(n: usize, range: std::ops::Range<Element>) -> Vec<Element> {
-    let mut rng = thread_rng();
-    (0..n).map(|_| rng.gen_range(range.clone())).collect_vec()
 }

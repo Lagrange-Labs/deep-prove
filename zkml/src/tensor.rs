@@ -1,11 +1,9 @@
 use anyhow::bail;
-use ark_std::rand::{
-    self, SeedableRng, distributions::Standard, prelude::Distribution, rngs::StdRng, thread_rng,
-};
+use ark_std::rand::{self, SeedableRng, rngs::StdRng};
 use ff::Field;
 use ff_ext::ExtensionField;
 use goldilocks::GoldilocksExt2;
-use itertools::{Itertools, assert_equal, izip};
+use itertools::Itertools;
 use multilinear_extensions::mle::DenseMultilinearExtension;
 use rayon::{
     iter::{
@@ -22,8 +20,7 @@ use std::{
 use crate::{
     Element,
     pooling::MAXPOOL2D_KERNEL_SIZE,
-    quantization::Fieldizer,
-    testing::{random_vector, random_vector_seed},
+    quantization::{Fieldizer, IntoElement},
     to_bit_sequence_le,
 };
 
@@ -52,10 +49,10 @@ pub fn check_tensor_consistency(real_tensor: Tensor<Element>, padded_tensor: Ten
     }
 }
 
-pub fn getRootOfUnity<E: ExtensionField>(n: usize) -> E {
+pub fn get_root_of_unity<E: ExtensionField>(n: usize) -> E {
     let mut rou = E::ROOT_OF_UNITY;
 
-    for i in 0..(32 - n) {
+    for _ in 0..(32 - n) {
         rou = rou * rou;
     }
 
@@ -67,7 +64,7 @@ pub fn index_w<E: ExtensionField>(w: Vec<Element>, vec: &mut Vec<E>, n_real: usi
     // let mut vec = vec![E::ZERO;n*n];
     for i in 0..n_real {
         for j in 0..n_real {
-            if (w[i * n_real + j] < 0) {
+            if w[i * n_real + j] < 0 {
                 vec[i * n + j] = -E::from((0 - w[i * n_real + j]) as u64);
             } else {
                 vec[i * n + j] = E::from((w[i * n_real + j]) as u64);
@@ -95,7 +92,7 @@ pub fn index_u<E: ExtensionField>(u: Vec<E>, n: usize) -> Vec<E> {
 pub fn index_x<E: ExtensionField>(x: Vec<Element>, vec: &mut Vec<E>, n: usize) {
     for i in 0..n {
         for j in 0..n {
-            if (x[n * (n - 1 - i) + n - 1 - j] < 0) {
+            if x[n * (n - 1 - i) + n - 1 - j] < 0 {
                 vec[i * n + j] = -E::from((0 - x[n * (n - 1 - i) + n - 1 - j]) as u64);
             } else {
                 vec[i * n + j] = E::from((x[n * (n - 1 - i) + n - 1 - j]) as u64);
@@ -120,7 +117,7 @@ pub fn fft<E: ExtensionField>(v: &mut Vec<E>, flag: bool) {
     }
     w[0] = E::ONE;
 
-    let rou: E = getRootOfUnity(logn as usize);
+    let rou: E = get_root_of_unity(logn as usize);
     w[1] = rou;
 
     if flag == true {
@@ -140,7 +137,7 @@ pub fn fft<E: ExtensionField>(v: &mut Vec<E>, flag: bool) {
     let mut u: E;
     let mut l: E;
     let mut i: usize = 2;
-    while (i <= n) {
+    while i <= n {
         for j in (0..n).step_by(i) {
             for k in 0..(i >> 1) {
                 u = v[j + k];
@@ -152,10 +149,10 @@ pub fn fft<E: ExtensionField>(v: &mut Vec<E>, flag: bool) {
         i <<= 1;
     }
 
-    if (flag == true) {
+    if flag == true {
         let mut ilen = E::from(n as u64);
         ilen = ilen.invert().unwrap();
-        if (ilen * E::from(n as u64) != E::ONE) {
+        if ilen * E::from(n as u64) != E::ONE {
             println!("Error in inv\n");
         }
         for i in 0..n {
@@ -171,7 +168,7 @@ pub struct Tensor<T> {
     input_shape: Vec<usize>,
 }
 
-pub struct Conv_Data<E>
+pub struct ConvData<E>
 where
     E: Clone + ExtensionField,
 {
@@ -181,7 +178,7 @@ where
     pub output: Vec<Vec<E>>,
 }
 
-impl<E> Conv_Data<E>
+impl<E> ConvData<E>
 where
     E: Copy + ExtensionField,
 {
@@ -199,12 +196,12 @@ where
         }
     }
 }
-impl<E> Clone for Conv_Data<E>
+impl<E> Clone for ConvData<E>
 where
     E: ExtensionField + Clone,
 {
     fn clone(&self) -> Self {
-        Conv_Data {
+        ConvData {
             input: self.input.clone(),
             input_fft: self.input_fft.clone(),
             prod: self.prod.clone(),
@@ -249,14 +246,14 @@ impl Tensor<Element> {
         for i in 0..w_fft.len() {
             for j in 0..w_fft[0].len() {
                 for k in 0..w_fft[0][0].len() {
-                    if (GoldilocksExt2::to_canonical_u64_vec(&w_fft[i][j][k])[0] as u64
-                        > (1 << 60 as u64))
+                    if GoldilocksExt2::to_canonical_u64_vec(&w_fft[i][j][k])[0] as u64
+                        > (1 << 60 as u64)
                     {
                         w[ctr] = -(GoldilocksExt2::to_canonical_u64_vec(&(-w_fft[i][j][k]))[0]
                             as Element);
                     } else {
                         w[ctr] =
-                            (GoldilocksExt2::to_canonical_u64_vec(&(w_fft[i][j][k]))[0] as Element);
+                            GoldilocksExt2::to_canonical_u64_vec(&(w_fft[i][j][k]))[0] as Element;
                     }
                     ctr = ctr + 1;
                 }
@@ -268,43 +265,48 @@ impl Tensor<Element> {
             input_shape,
         }
     }
-    
+
     pub fn get_real_weights<F: ExtensionField>(&self) -> Vec<Vec<Vec<Element>>> {
-        let mut w_fft = vec![
-            vec![vec![F::ZERO; 2*self.nw() * self.nw()]; self.kx().next_power_of_two()]; self.kw().next_power_of_two() ];
+        let mut w_fft =
+            vec![
+                vec![vec![F::ZERO; 2 * self.nw() * self.nw()]; self.kx().next_power_of_two()];
+                self.kw().next_power_of_two()
+            ];
         let mut ctr = 0;
-        for i in 0..w_fft.len(){
-            for j in 0..w_fft[i].len(){
-                for k in 0..w_fft[i][j].len(){
-                    if(self.data[ctr] < 0){
-                        w_fft[i][j][k] =-F::from((-self.data[ctr]) as u64);    
-                    }else{
-                        w_fft[i][j][k] = F::from((self.data[ctr]) as u64);    
-                        
+        for i in 0..w_fft.len() {
+            for j in 0..w_fft[i].len() {
+                for k in 0..w_fft[i][j].len() {
+                    if self.data[ctr] < 0 {
+                        w_fft[i][j][k] = -F::from((-self.data[ctr]) as u64);
+                    } else {
+                        w_fft[i][j][k] = F::from((self.data[ctr]) as u64);
                     }
                     ctr += 1;
                 }
             }
         }
-        for i in 0..w_fft.len(){
-            for j in 0..w_fft[i].len(){
-                fft(&mut w_fft[i][j],true);
+        for i in 0..w_fft.len() {
+            for j in 0..w_fft[i].len() {
+                fft(&mut w_fft[i][j], true);
             }
         }
-        let mut real_weights = vec![vec![vec![0 as Element; self.nw()*self.nw()]; self.kx() ]; self.kw()];
-        for i in 0..self.kw(){
-            for j in 0..self.kx(){
-                for k in 0..(self.nw()*self.nw()){
-                    if (F::to_canonical_u64_vec(&w_fft[i][j][k])[0] as u64 > (1 << 60 as u64)) {
-                        real_weights[i][j][k] = -(F::to_canonical_u64_vec(&(-w_fft[i][j][k]))[0] as Element);
+        let mut real_weights =
+            vec![vec![vec![0 as Element; self.nw() * self.nw()]; self.kx()]; self.kw()];
+        for i in 0..self.kw() {
+            for j in 0..self.kx() {
+                for k in 0..(self.nw() * self.nw()) {
+                    if F::to_canonical_u64_vec(&w_fft[i][j][k])[0] as u64 > (1 << 60 as u64) {
+                        real_weights[i][j][k] =
+                            //-(F::to_canonical_u64_vec(&(-w_fft[i][j][k]))[0] as Element);
+                            w_fft[i][j][k].into_element();
                     } else {
-                        real_weights[i][j][k] = (F::to_canonical_u64_vec(&(w_fft[i][j][k]))[0] as Element);
+                        real_weights[i][j][k] = w_fft[i][j][k].into_element();
+                        // F::to_canonical_u64_vec(&(w_fft[i][j][k]))[0] as Element;
                     }
                 }
             }
         }
         real_weights
-
     }
 
     // Convolution algorithm using FFTs.
@@ -312,13 +314,13 @@ impl Tensor<Element> {
     // needed to generate a convolution proof
     pub fn fft_conv<F: ExtensionField>(
         &self,
-        X: &Tensor<Element>,
-    ) -> (Tensor<Element>, Conv_Data<F>) {
-        let n_x = X.shape[1].next_power_of_two();
-        let mut x_vec = vec![vec![F::ZERO; n_x * n_x]; X.shape[0].next_power_of_two()];
+        x: &Tensor<Element>,
+    ) -> (Tensor<Element>, ConvData<F>) {
+        let n_x = x.shape[1].next_power_of_two();
+        let mut x_vec = vec![vec![F::ZERO; n_x * n_x]; x.shape[0].next_power_of_two()];
         let mut w_fft = vec![F::ZERO; self.data.len()];
         for i in 0..w_fft.len() {
-            if (self.data[i] < 0) {
+            if self.data[i] < 0 {
                 w_fft[i] = -F::from((-self.data[i]) as u64);
             } else {
                 w_fft[i] = F::from((self.data[i]) as u64);
@@ -327,20 +329,20 @@ impl Tensor<Element> {
 
         for i in 0..x_vec.len() {
             index_x(
-                X.data[i * n_x * n_x..(i + 1) * n_x * n_x].to_vec(),
+                x.data[i * n_x * n_x..(i + 1) * n_x * n_x].to_vec(),
                 &mut x_vec[i],
                 n_x,
             );
         }
 
-        let mut input = x_vec.clone();
+        let input = x_vec.clone();
         let n = 2 * x_vec[0].len();
         for i in 0..x_vec.len() {
             x_vec[i].resize(n, F::ZERO);
             fft(&mut x_vec[i], false);
         }
 
-        let mut input_fft = x_vec.clone();
+        let input_fft = x_vec.clone();
 
         // proving_data.x_fft = x_vec;
         let mut out = vec![vec![F::ZERO; x_vec[0].len()]; self.shape[0]];
@@ -351,31 +353,31 @@ impl Tensor<Element> {
                 }
             }
         }
-        let mut prod = out.clone();
+        let prod = out.clone();
         // proving_data.prod = out;
         for i in 0..out.len() {
             fft(&mut out[i], true);
         }
-        let mut output = out.clone();
+        let output = out.clone();
         for i in 0..out.len() {
             out[i] = index_u(out[i].clone(), n_x);
         }
         let mut out_element: Vec<Element> = vec![0; out.len() * out[0].len()];
         for i in 0..out.len() {
             for j in 0..out[i].len() {
-                if (F::to_canonical_u64_vec(&out[i][j])[0] as u64 > (1 << 60 as u64)) {
+                if F::to_canonical_u64_vec(&out[i][j])[0] as u64 > (1 << 60 as u64) {
                     out_element[i * out[i].len() + j] =
                         -(F::to_canonical_u64_vec(&(-out[i][j]))[0] as Element);
                 } else {
                     out_element[i * out[i].len() + j] =
-                        (F::to_canonical_u64_vec(&(out[i][j]))[0] as Element);
+                        F::to_canonical_u64_vec(&(out[i][j]))[0] as Element;
                 }
             }
         }
 
         return (
             Tensor::new(vec![self.shape[0], n_x, n_x], out_element),
-            Conv_Data::new(input, input_fft, prod, output),
+            ConvData::new(input, input_fft, prod, output),
         );
     }
 
@@ -443,9 +445,9 @@ impl<T> Tensor<T> {
     pub fn ncols_2d(&self) -> usize {
         let mut cols = 0;
         let dims = self.dims();
-        if (self.is_matrix()) {
+        if self.is_matrix() {
             cols = dims[1];
-        } else if (self.is_convolution()) {
+        } else if self.is_convolution() {
             cols = dims[1] * dims[2] * dims[2];
         }
         assert!(cols != 0, "Tensor is not a matrix or convolution");
@@ -781,30 +783,30 @@ where
         return out;
     }
 
-    pub fn add_matrix(&self, M1: &mut Vec<Vec<T>>, M2: Vec<Vec<T>>) -> Vec<Vec<T>> {
-        let mut M = vec![vec![Default::default(); M1[0].len()]; M1.len()];
-        for i in 0..M.len() {
-            for j in 0..M[i].len() {
-                M[i][j] = M1[i][j] + M2[i][j];
+    pub fn add_matrix(&self, m1: &mut Vec<Vec<T>>, m2: Vec<Vec<T>>) -> Vec<Vec<T>> {
+        let mut m = vec![vec![Default::default(); m1[0].len()]; m1.len()];
+        for i in 0..m.len() {
+            for j in 0..m[i].len() {
+                m[i][j] = m1[i][j] + m2[i][j];
             }
         }
-        return M;
+        return m;
     }
 
     // Implementation of the stadard convolution algorithm.
     // This is needed mostly for debugging purposes
-    pub fn cnn_naive_convolution(&self, X: &Tensor<T>) -> Tensor<T> {
+    pub fn cnn_naive_convolution(&self, xt: &Tensor<T>) -> Tensor<T> {
         let k_w = self.shape[0];
         let k_x = self.shape[1];
         let n_w = self.shape[2];
-        let n = X.shape[0];
+        let n = xt.shape[0];
         let mut ctr = 0;
         assert!(n == k_x, "Inconsistency on filter/input vector");
 
         let mut w: Vec<Vec<Vec<Vec<T>>>> =
             vec![vec![vec![vec![Default::default(); n_w]; n_w]; k_x]; k_w];
         let mut x: Vec<Vec<Vec<T>>> =
-            vec![vec![vec![Default::default(); X.shape[1]]; X.shape[1]]; n];
+            vec![vec![vec![Default::default(); xt.shape[1]]; xt.shape[1]]; n];
         for k in 0..k_w {
             for l in 0..k_x {
                 for i in 0..n_w {
@@ -817,15 +819,15 @@ where
         }
         ctr = 0;
         for k in 0..n {
-            for i in 0..X.shape[1] {
-                for j in 0..X.shape[1] {
-                    x[k][i][j] = X.data[ctr];
+            for i in 0..xt.shape[1] {
+                for j in 0..xt.shape[1] {
+                    x[k][i][j] = xt.data[ctr];
                     ctr += 1;
                 }
             }
         }
         let mut conv: Vec<Vec<Vec<T>>> =
-            vec![vec![vec![Default::default(); X.shape[1] - n_w + 1]; X.shape[1] - n_w + 1]; k_w];
+            vec![vec![vec![Default::default(); xt.shape[1] - n_w + 1]; xt.shape[1] - n_w + 1]; k_w];
 
         for i in 0..k_w {
             for j in 0..k_x {
@@ -835,7 +837,7 @@ where
         }
 
         return Tensor::new(
-            vec![k_w, X.shape[1] - n_w + 1, X.shape[1] - n_w + 1],
+            vec![k_w, xt.shape[1] - n_w + 1, xt.shape[1] - n_w + 1],
             conv.into_iter()
                 .flat_map(|inner_vec| inner_vec.into_iter())
                 .flat_map(|inner_inner_vec| inner_inner_vec.into_iter())
@@ -920,32 +922,6 @@ where
 }
 
 impl Tensor<Element> {
-    /// Creates a random matrix with a given number of rows and cols.
-    /// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
-    /// sync which is not true for basic rng core.
-    pub fn random(shape: Vec<usize>) -> Self {
-        let size = shape.iter().product();
-        let data = random_vector(size);
-        Self {
-            data,
-            shape,
-            input_shape: vec![0],
-        }
-    }
-
-    /// Creates a random matrix with a given number of rows and cols.
-    /// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
-    /// sync which is not true for basic rng core.
-    pub fn random_seed(shape: Vec<usize>, seed: Option<u64>) -> Self {
-        let size = shape.iter().product();
-        let data = random_vector_seed(size, seed);
-        Self {
-            data,
-            shape,
-            input_shape: vec![0],
-        }
-    }
-
     /// Returns the evaluation point, in order for (row,col) addressing
     pub fn evals_2d<F: ExtensionField>(&self) -> Vec<F> {
         assert!(self.is_matrix(), "Tensor is not a matrix");
@@ -959,7 +935,7 @@ impl Tensor<Element> {
     pub fn get_conv_weights<F: ExtensionField>(&self) -> Vec<F> {
         let mut data = vec![F::ZERO; self.data.len()];
         for i in 0..data.len() {
-            if (self.data[i] < 0) {
+            if self.data[i] < 0 {
                 data[i] = -F::from((-self.data[i]) as u64);
             } else {
                 data[i] = F::from(self.data[i] as u64);
@@ -1274,13 +1250,43 @@ impl PartialEq for Tensor<GoldilocksExt2> {
     }
 }
 
+#[cfg(test)]
 mod test {
+
     use ark_std::rand::{Rng, thread_rng};
     use goldilocks::GoldilocksExt2;
-    use multilinear_extensions::mle::MultilinearExtension;
+
+    use super::super::testing::{random_vector, random_vector_seed};
 
     use super::*;
+    use multilinear_extensions::mle::MultilinearExtension;
+    impl Tensor<Element> {
+        /// Creates a random matrix with a given number of rows and cols.
+        /// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
+        /// sync which is not true for basic rng core.
+        pub fn random(shape: Vec<usize>) -> Self {
+            let size = shape.iter().product();
+            let data = random_vector(size);
+            Self {
+                data,
+                shape,
+                input_shape: vec![0],
+            }
+        }
 
+        /// Creates a random matrix with a given number of rows and cols.
+        /// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
+        /// sync which is not true for basic rng core.
+        pub fn random_seed(shape: Vec<usize>, seed: Option<u64>) -> Self {
+            let size = shape.iter().product();
+            let data = random_vector_seed(size, seed);
+            Self {
+                data,
+                shape,
+                input_shape: vec![0],
+            }
+        }
+    }
     #[test]
     fn test_tensor_basic_ops() {
         let tensor1 = Tensor::new(vec![2, 2], vec![1, 2, 3, 4]);
@@ -1447,13 +1453,13 @@ mod test {
                         let k_w = 1<<l;
                         let n_x = 1<<j;
                         let k_x = 1<<i;
-                        let F = random_vector(n_w*n_w*k_x*k_w);
-                        let mut Filter = Tensor::new_conv(vec![k_w,k_x,n_w,n_w], vec![k_x,n_x,n_x], F.iter().map(|&x| x as Element).collect());
-                        let mut Filter2 = Tensor::new(vec![k_w,k_x,n_w,n_w], F.iter().map(|&x| x as Element).collect());
-                        let mut X = Tensor::new(vec![k_x,n_x,n_x],vec![3;n_x*n_x*k_x]);//random_vector(n_x*n_x*k_x));
-                        let (Out2,_) = Filter.fft_conv::<GoldilocksExt2>(&X);
-                        let Out1 = Filter2.cnn_naive_convolution(&X);
-                        check_tensor_consistency(Out1,Out2);
+                        let rand_vec = random_vector(n_w*n_w*k_x*k_w);
+                        let filter_1 = Tensor::new_conv(vec![k_w,k_x,n_w,n_w], vec![k_x,n_x,n_x], rand_vec.iter().map(|&x| x as Element).collect());
+                        let filter_2 = Tensor::new(vec![k_w,k_x,n_w,n_w], rand_vec.iter().map(|&x| x as Element).collect());
+                        let big_x = Tensor::new(vec![k_x,n_x,n_x],vec![3;n_x*n_x*k_x]);//random_vector(n_x*n_x*k_x));
+                        let (out_2,_) = filter_1.fft_conv::<GoldilocksExt2>(&big_x);
+                        let out_1 = filter_2.cnn_naive_convolution(&big_x);
+                        check_tensor_consistency(out_1,out_2);
                         /*
 
                         let mut Filter2 = Tensor::new(vec![k_w,k_x,n_w,n_w], F);
