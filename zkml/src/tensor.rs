@@ -1117,6 +1117,11 @@ where
         let (n_size, c_size, h_size, w_size) = self.get4d();
         let (k_n, k_c, k_h, k_w) = kernels.get4d();
 
+        assert!(self.dims().len() <= 4, "Supports only at most 4D input.");
+        assert!(
+            kernels.dims().len() <= 4,
+            "Supports only at most 4D filters."
+        );
         // Validate shapes
         assert_eq!(c_size, k_c, "Input and kernel channels must match!");
         assert_eq!(
@@ -1454,9 +1459,9 @@ mod test {
 
     #[test]
     fn test_conv() {
-        for i in (0)..(3) {
-            for j in (2)..(5) {
-                for l in (0)..(4) {
+        for i in 0..3 {
+            for j in 2..5 {
+                for l in 0..4 {
                     for n in 1..(j-1){
                         let n_w = 1<<n;
                         let k_w = 1<<l;
