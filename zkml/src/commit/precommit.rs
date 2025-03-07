@@ -56,6 +56,26 @@ where
     vcommitment: <Pcs<E> as PolynomialCommitmentScheme<E>>::Commitment,
 }
 
+impl<E> Default for Context<E>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+    E: ExtensionField + Serialize + DeserializeOwned,
+{
+    fn default() -> Self {
+        let params = Pcs::setup(2).expect("unable to setup commitment");
+        let (pp, vp) = Pcs::trim(params, 2).unwrap();
+        Self {
+            pp,
+            vp,
+            commitment: <Pcs<E> as PolynomialCommitmentScheme<E>>::CommitmentWithWitness::default(),
+            polys: DenseMultilinearExtension::<E>::default(),
+            poly_aux: VPAuxInfo::<E>::default(),
+            poly_info: HashMap::default(),
+            vcommitment: <Pcs<E> as PolynomialCommitmentScheme<E>>::Commitment::default(),
+        }
+    }
+}
+
 impl<E: ExtensionField> Context<E>
 where
     E::BaseField: Serialize + DeserializeOwned,
@@ -72,7 +92,7 @@ where
                     ],
                     Layer::Convolution(m) => vec![
                         Some((id, m.filter.get_conv_weights())),
-                        Some((BIAS_POLY_ID + id, m.bias.evals_flat()))
+                        Some((BIAS_POLY_ID + id, m.bias.evals_flat())),
                     ],
                     _ => vec![None],
                 })
@@ -103,8 +123,6 @@ where
                 .enumerate()
                 .map(|(idx, (id, poly_len))| (*id, (idx, poly_len))),
         );
-        let lenlens = polys.iter().map(|(_, w_i)| w_i.len()).collect_vec();
-        let sum_lenlens = lenlens.iter().sum::<usize>().ilog2();
         let flattened = polys
             .into_iter()
             .map(|(_, w_i)| w_i)
@@ -132,8 +150,7 @@ where
 
     /// Write the relevant information to transcript, necessary for both prover and verifier.
     pub fn write_to_transcript<T: Transcript<E>>(&self, t: &mut T) -> anyhow::Result<()> {
-        Pcs::write_commitment(&Pcs::get_pure_commitment(&self.commitment), t)
-            .context("can't write commtiment")?;
+        Pcs::write_commitment(&self.vcommitment, t).context("can't write commtiment")?;
         // TODO: write the rest of the struct
         Ok(())
     }
@@ -219,6 +236,7 @@ where
 
         // TODO: remove that clone
         full_poly.add_mle_list(vec![beta_mle.into(), ctx.polys.clone().into()], E::ONE);
+
         assert_eq!(full_poly.aux_info, ctx.poly_aux);
 
         #[allow(deprecated)]

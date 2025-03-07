@@ -15,7 +15,7 @@ pub(crate) type SumcheckProof<F> = sumcheck::structs::IOPProof<F>;
 pub type Point<F> = Vec<F>;
 
 /// A point and the evaluation of this point.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PointAndEval<F> {
     pub point: Point<F>,
     pub eval: F,
@@ -111,7 +111,7 @@ pub struct IOPProof<E: ExtensionField> {
 
 /// Represent the point at the final step and the evaluations of the subsets of
 /// the input layer.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GKRInputClaims<E: ExtensionField> {
     pub point_and_evals: Vec<PointAndEval<E>>,
 }

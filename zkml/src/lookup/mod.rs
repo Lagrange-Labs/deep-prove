@@ -3,11 +3,12 @@ use ark_std::rand::thread_rng;
 use ff::Field;
 use ff_ext::ExtensionField;
 use gkr::{
-    structs::{Circuit, CircuitWitness, IOPProof, IOPProverState, IOPVerifierState, PointAndEval},
+    structs::{
+        Circuit, CircuitWitness, GKRInputClaims, IOPProof, IOPProverState, IOPVerifierState,
+        PointAndEval,
+    },
     util::ceil_log2,
 };
-
-use rayon::prelude::*;
 
 use mpcs::{BasefoldCommitment, PolynomialCommitmentScheme};
 use poseidon::digest::Digest;
@@ -103,6 +104,7 @@ where
     commitment: BasefoldCommitment<E>,
     numerators: Vec<E>,
     denominators: Vec<E>,
+    gkr_claim: GKRInputClaims<E>,
 }
 
 impl<E: ExtensionField> VerifierClaims<E>
@@ -124,6 +126,10 @@ where
     pub fn denominators(&self) -> &[E] {
         &self.denominators
     }
+
+    pub fn gkr_claim(&self) -> &GKRInputClaims<E> {
+        &self.gkr_claim
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Copy)]
@@ -133,7 +139,7 @@ pub enum LookupType {
     RequantTable(usize),
     ReluTable,
     Maxpool2D(Maxpool2D, usize), // Maxpool update
-    Maxpool2DTable(usize),       // Maxpool update
+    Maxpool2DTable,              // Maxpool update
     NoLookup,
 }
 
@@ -162,7 +168,7 @@ impl LookupType {
             LookupType::RequantTable(num_vars) => table_fractional_sumcheck(1, *num_vars),
             // Maxpool update
             LookupType::Maxpool2D(_, num_vars) => lookup_wire_fractional_sumcheck(1, *num_vars),
-            LookupType::Maxpool2DTable(num_vars) => table_fractional_sumcheck(1, *num_vars),
+            LookupType::Maxpool2DTable => table_fractional_sumcheck(1, *BIT_LEN),
             LookupType::NoLookup => Circuit::<E>::default(),
         }
     }
@@ -181,8 +187,8 @@ impl LookupType {
             LookupType::ReluTable => 2,
             LookupType::RequantTable(..) => 1,
             // Maxpool update
-            LookupType::Maxpool2D(..) => 1,
-            LookupType::Maxpool2DTable(..) => 1,
+            LookupType::Maxpool2D(..) => 4,
+            LookupType::Maxpool2DTable => 1,
             LookupType::NoLookup => 0,
         }
     }
@@ -194,8 +200,8 @@ impl LookupType {
             LookupType::ReluTable => 3,
             LookupType::RequantTable(..) => 2,
             // Maxpool update
-            LookupType::Maxpool2D(..) => 4,
-            LookupType::Maxpool2DTable(..) => 1,
+            LookupType::Maxpool2D(..) => 1,
+            LookupType::Maxpool2DTable => 2,
             LookupType::NoLookup => 0,
         }
     }
@@ -208,7 +214,7 @@ impl LookupType {
             LookupType::RequantTable(num_vars) => *num_vars,
             // Maxpool update
             LookupType::Maxpool2D(.., num_vars) => *num_vars,
-            LookupType::Maxpool2DTable(num_vars) => *num_vars,
+            LookupType::Maxpool2DTable => *BIT_LEN,
             LookupType::NoLookup => 0,
         }
     }
@@ -229,7 +235,7 @@ impl LookupType {
             LookupType::Relu(..) | LookupType::ReluTable => "Relu".to_string(),
             LookupType::RequantTable(num_vars) => format!("Requant_{}", *num_vars),
             // Maxpool update
-            LookupType::Maxpool2D(..) | LookupType::Maxpool2DTable(..) => {
+            LookupType::Maxpool2D(..) | LookupType::Maxpool2DTable => {
                 format!("Maxpool2D")
             }
             LookupType::NoLookup => "NoLookup".to_string(),
@@ -257,7 +263,7 @@ impl LookupType {
                 ])
             }
             // Maxpool update
-            LookupType::Maxpool2DTable(..) => {
+            LookupType::Maxpool2DTable => {
                 let mle = (0..1u64 << (*BIT_LEN))
                     .map(|i| E::BaseField::from(i))
                     .collect::<Vec<E::BaseField>>();
@@ -282,8 +288,8 @@ impl LookupType {
             }
             LookupType::RequantTable(..) => *self,
             // Maxpool update
-            LookupType::Maxpool2D(..) => *self,
-            LookupType::Maxpool2DTable(..) => *self,
+            LookupType::Maxpool2D(..) => LookupType::Maxpool2DTable,
+            LookupType::Maxpool2DTable => *self,
             LookupType::NoLookup => LookupType::NoLookup,
         }
     }
@@ -529,8 +535,8 @@ where
                     step_index_map.insert(idx, vec_position);
                     lookup_circuits.push((lookup_type, circuit));
 
-                    if tables_used.insert(LookupType::Maxpool2DTable(*BIT_LEN)) {
-                        let lookup_type = LookupType::Maxpool2DTable(*BIT_LEN);
+                    if tables_used.insert(LookupType::Maxpool2DTable) {
+                        let lookup_type = LookupType::Maxpool2DTable;
                         let circuit = lookup_type.make_circuit::<E>();
                         let mles = lookup_type
                             .get_mles::<E>()
@@ -621,9 +627,10 @@ where
                 let step_idx = step.id;
 
                 if let Ok((lookup_type, _)) = ctx.get_circuit_and_type(step_idx) {
-                    let num_vars = step_input.get_data().len().ilog2() as usize;
-
                     let mut mle_evals = lookup_type.prep_lookup_polys::<E>(step_input);
+                    let num_vars = mle_evals
+                        .first()
+                        .and_then(|evals| Some(ceil_log2(evals.len())))?;
                     let padded_len = mle_evals.len().next_power_of_two();
                     mle_evals.resize(padded_len, vec![E::BaseField::ZERO; 1 << num_vars]);
 
@@ -886,11 +893,6 @@ where
         let numerators = stuff[0].clone();
         let denominators = stuff[1].clone();
 
-        // If the lookup type is a table type we append the challenges to the transcript here
-        if lookup_type.is_table() {
-            t.append_field_element_exts(&challenges);
-        }
-
         t.append_field_elements(&witness_outputs);
         // Work out how many instances of the same circuit we a re proving at the same time
         // we then squeeze 1 + num_instance_vars challenges from the transcript
@@ -963,7 +965,6 @@ where
     ) -> anyhow::Result<Proof<E>> {
         // Get all the witness info from the context
         let LookupProverInfo {
-            lookup_type,
             batch_commitment,
             circuit_witness,
             challenges,
@@ -993,11 +994,6 @@ where
             .collect::<Vec<E::BaseField>>();
         let numerators = stuff[0].clone();
         let denominators = stuff[1].clone();
-
-        // If the lookup type is a table type we append the challenges to the transcript here
-        if lookup_type.is_table() {
-            t.append_field_element_exts(&challenges);
-        }
 
         t.append_field_elements(&witness_outputs);
         // Work out how many instances of the same circuit we a re proving at the same time
@@ -1068,7 +1064,7 @@ where
         t: &mut T,
     ) -> anyhow::Result<VerifierClaims<E>> {
         // Get the circuit by the lookup type
-        let (lookup_type, circuit) = lookup_ctx.get_circuit_and_type(step)?;
+        let (_, circuit) = lookup_ctx.get_circuit_and_type(step)?;
 
         // Split the proof into parts
         let Proof {
@@ -1102,11 +1098,6 @@ where
                 .collect::<Vec<E::BaseField>>(),
         );
 
-        // If the lookup type is a table append the challenges to the transcript
-        if lookup_type.is_table() {
-            t.append_field_element_exts(&challenges);
-        }
-
         t.append_field_elements(&output_values);
         // Squeeze the challenge
         let output_point =
@@ -1123,7 +1114,7 @@ where
             ),
         ];
         // Run the GKR verification
-        let _gkr_claims = IOPVerifierState::verify_parallel(
+        let gkr_claim = IOPVerifierState::verify_parallel(
             circuit,
             challenges,
             vec![],
@@ -1146,13 +1137,13 @@ where
             commitment,
             numerators,
             denominators,
+            gkr_claim,
         })
     }
 
     // commitments to the lookups, one commitment per "column"
     fn verify_table<T: Transcript<E>>(
         challenges: &[E],
-        lookup_type: &LookupType,
         circuit: &Circuit<E>,
         proof: Proof<E>,
         t: &mut T,
@@ -1189,11 +1180,6 @@ where
                 .collect::<Vec<E::BaseField>>(),
         );
 
-        // If the lookup type is a table append the challenges to the transcript
-        if lookup_type.is_table() {
-            t.append_field_element_exts(&challenges);
-        }
-
         t.append_field_elements(&output_values);
         // Squeeze the challenge
         let output_point =
@@ -1210,7 +1196,7 @@ where
             ),
         ];
         // Run the GKR verification
-        let _gkr_claims = IOPVerifierState::verify_parallel(
+        let gkr_claim = IOPVerifierState::verify_parallel(
             circuit,
             challenges,
             vec![],
@@ -1233,6 +1219,7 @@ where
             commitment,
             numerators,
             denominators,
+            gkr_claim,
         })
     }
 }
@@ -1246,8 +1233,6 @@ mod tests {
     type F = GoldilocksExt2;
     use goldilocks::GoldilocksExt2;
 
-    use tracing_subscriber;
-
     #[test]
     fn test_prover_steps() -> anyhow::Result<()> {
         init_test_logging();
@@ -1255,7 +1240,7 @@ mod tests {
         model.describe();
         let trace = model.run(input);
 
-        let ctx = crate::iop::Context::generate(&model).expect("unable to generate context");
+        let ctx = crate::iop::Context::generate(&model, None).expect("unable to generate context");
 
         let mut prover_transcript = default_transcript();
         ctx.write_to_transcript(&mut prover_transcript)?;
@@ -1389,7 +1374,6 @@ mod tests {
                     ))?;
                     let verifier_claim = LogUp::verify_table(
                         challenges,
-                        lookup_type,
                         circuit,
                         proof.clone(),
                         &mut verifier_transcript,

@@ -8,6 +8,7 @@ use crate::{
 };
 use anyhow::Context as CC;
 use ff_ext::ExtensionField;
+use gkr::util::ceil_log2;
 use itertools::Itertools;
 use mpcs::BasefoldCommitment;
 use multilinear_extensions::virtual_poly::VPAuxInfo;
@@ -32,7 +33,7 @@ where
 {
     Dense(DenseInfo<E>),
     Convolution(ConvInfo<E>),
-    Traditional_Convolution(Traditional_ConvInfo<E>),
+    SchoolBookConvolution(SchoolBookConvInfo<E>),
     Activation(ActivationInfo),
     Requant(RequantInfo),
     Pooling(PoolingInfo), // Maxpool update
@@ -55,7 +56,7 @@ pub struct ConvInfo<E> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Traditional_ConvInfo<E> {
+pub struct SchoolBookConvInfo<E> {
     pub dummy: E,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -112,7 +113,7 @@ where
     pub fn variant_name(&self) -> String {
         match self {
             Self::Dense(_) => "Dense".to_string(),
-            Self::Traditional_Convolution(_) => "Traditional Convolution".to_string(),
+            Self::SchoolBookConvolution(_) => "Traditional Convolution".to_string(),
             Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
             Self::Requant(_) => "Requant".to_string(),
@@ -156,8 +157,12 @@ where
     /// Generates a context to give to the verifier that contains informations about the polynomials
     /// to prove at each step.
     /// INFO: it _assumes_ the model is already well padded to power of twos.
-    pub fn generate(model: &Model) -> anyhow::Result<Self> {
-        let mut last_output_size = model.first_output_shape()[0];
+    pub fn generate(model: &Model, input_shape: Option<Vec<usize>>) -> anyhow::Result<Self> {
+        let mut last_output_shape = if let Some(shape) = input_shape {
+            shape
+        } else {
+            model.input_shape()
+        };
         let auxs = model
             .layers()
             .map(|(id, layer)| {
@@ -165,7 +170,7 @@ where
                     Layer::Dense(dense) => {
                         // construct dimension of the polynomial given to the sumcheck
                         let ncols = dense.matrix.ncols_2d();
-                        last_output_size = dense.matrix.nrows_2d();
+                        last_output_shape = vec![dense.matrix.nrows_2d()];
                         // each poly is only two polynomial right now: matrix and vector
                         // for matrix, each time we fix the variables related to rows so we are only left
                         // with the variables related to columns
@@ -186,28 +191,57 @@ where
                         StepInfo::Activation(ActivationInfo {
                             op: Activation::Relu(*relu),
                             poly_id: id,
-                            num_vars: last_output_size.ilog2() as usize,
+                            num_vars: last_output_shape
+                                .iter()
+                                .map(|dim| ceil_log2(*dim))
+                                .sum::<usize>(),
                         })
                     }
                     Layer::Requant(info) => StepInfo::Requant(RequantInfo {
                         requant: *info,
                         poly_id: id,
-                        num_vars: last_output_size.ilog2() as usize,
+                        num_vars: last_output_shape
+                            .iter()
+                            .map(|dim| ceil_log2(*dim))
+                            .sum::<usize>(),
                     }),
-                    Layer::Pooling(Pooling::Maxpool2D(info)) => StepInfo::Pooling(PoolingInfo {
-                        // Maxpool update
-                        poolinfo: *info,
-                        poly_id: id,
-                        num_vars: last_output_size.ilog2() as usize,
-                    }),
+                    Layer::Pooling(Pooling::Maxpool2D(info)) => {
+                        // Pooling only affects the last two dimensions
+                        let total_number_dims = last_output_shape.len();
+
+                        last_output_shape
+                            .iter_mut()
+                            .skip(total_number_dims - 2)
+                            .for_each(|dim| *dim = (*dim - info.kernel_size) / info.stride + 1);
+                        StepInfo::Pooling(PoolingInfo {
+                            // Maxpool update
+                            poolinfo: *info,
+                            poly_id: id,
+                            num_vars: last_output_shape
+                                .iter()
+                                .map(|dim| ceil_log2(*dim))
+                                .sum::<usize>(),
+                        })
+                    }
 
                     Layer::Convolution(filter) => {
-                        
-                        last_output_size = filter.nrows_2d();
-                        
+                        // TO SEE
+                        // last_output_size = filter.nrows_2d();
+
+                        let filter_shape = filter.filter.dims();
+                        let total_dims = last_output_shape.len();
+                        last_output_shape = std::iter::once(filter_shape[0])
+                            .chain(
+                                last_output_shape
+                                    .iter()
+                                    .skip(total_dims - 2)
+                                    .map(|&dim| ceil_log2(dim)),
+                            )
+                            .collect::<Vec<usize>>();
+
                         let mut delegation_fft: Vec<VPAuxInfo<E>> = Vec::new();
                         let mut delegation_ifft: Vec<VPAuxInfo<E>> = Vec::new();
-                        //println!("{},{}",id,filter.filter_size());
+                        // println!("{},{}",id,filter.filter_size());
                         for i in (0..(filter.filter_size().ilog2() as usize)).rev() {
                             delegation_fft.push(VPAuxInfo::<E>::from_mle_list_dimensions(&vec![
                                 vec![i + 1, i + 1, i + 1],
@@ -216,7 +250,7 @@ where
                                 vec![i + 1, i + 1, i + 1],
                             ]));
                         }
-                        
+
                         let conv_info = StepInfo::Convolution(ConvInfo {
                             poly_id: id,
                             bias_poly_id: BIAS_POLY_ID + id,
@@ -241,10 +275,9 @@ where
                         });
                         conv_info
                     }
-                    Layer::Traditional_Convolution(filter) => {
-                        let conv_info = StepInfo::Traditional_Convolution(Traditional_ConvInfo {
-                            dummy: E::ZERO,
-                        });
+                    Layer::SchoolBookConvolution(_filter) => {
+                        let conv_info =
+                            StepInfo::SchoolBookConvolution(SchoolBookConvInfo { dummy: E::ZERO });
                         conv_info
                     }
                 }
@@ -290,7 +323,7 @@ where
                 StepInfo::Convolution(info) => {
                     t.append_field_element(&E::BaseField::from(info.poly_id as u64));
                     t.append_field_element(&E::BaseField::from(info.bias_poly_id as u64));
-                    
+
                     for i in 0..info.delegation_fft.len() {
                         info.delegation_fft[i].write_to_transcript(t);
                     }
@@ -301,7 +334,7 @@ where
                     info.ifft_aux.write_to_transcript(t);
                     info.hadamard.write_to_transcript(t);
                 }
-                StepInfo::Traditional_Convolution(info) => {}
+                StepInfo::SchoolBookConvolution(_info) => {}
             }
         }
         self.weights.write_to_transcript(t)?;

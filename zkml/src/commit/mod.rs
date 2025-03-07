@@ -159,6 +159,7 @@ mod test {
     fn test_identity_eval() {
         let n = 4;
         let r1 = random_bool_vector::<F>(n);
+        println!("r1: {:?}", r1);
 
         // When vectors are identical, should return 1
         let r2 = r1.clone();

@@ -5,13 +5,12 @@ use crate::{
     commit::{self, identity_eval, precommit, same_poly},
     iop::{StepProof, context::StepInfo},
     lookup::{self, LookupProtocol, TableInfo},
-    tensor::{Tensor, getRootOfUnity},
+    tensor::{Tensor, get_root_of_unity},
 };
 use anyhow::{anyhow, bail, ensure};
 use ff_ext::ExtensionField;
 
-use gkr::util::ceil_log2;
-use itertools::{Itertools, assert_equal, multiunzip};
+use itertools::{Itertools, izip};
 use log::debug;
 use multilinear_extensions::{
     mle::{IntoMLE, MultilinearExtension},
@@ -20,7 +19,6 @@ use multilinear_extensions::{
 
 use serde::{Serialize, de::DeserializeOwned};
 use sumcheck::structs::IOPVerifierState;
-use tract_onnx::tract_core::ops::cnn::Conv;
 use transcript::Transcript;
 
 use super::{
@@ -107,10 +105,12 @@ where
     //    now.
     let output_mle = io.output.get_data().to_vec().into_mle();
     let computed_sum = output_mle.evaluate(&first_randomness);
+
     let mut output_claim = Claim {
         point: first_randomness,
         eval: computed_sum,
     };
+
     // NOTE: if we only had m2v then we need to do the following check manually to make sure the output is correct.
     // For other cases, for example if we have RELU at last, then we _always_ accumulate output claims into the
     // _witness_prover_ part,  so that claim will be verified nonetheless.
@@ -191,11 +191,6 @@ where
                 )?
             }
             (StepProof::<E>::Convolution(proof), StepInfo::<E>::Convolution(info)) => {
-                let info = if let StepInfo::Convolution(info) = &ctx.steps_info[i] {
-                    info
-                } else {
-                    return Err(anyhow!("Step info does not line up at Convolution step"));
-                };
                 verify_convolution(output_claim, &proof, info, &mut commit_verifier, transcript)?
             }
             _ => bail!(
@@ -303,24 +298,66 @@ where
     witness_verifier.add_claim(info.poly_id, commit_claim)?;
 
     // Now we do the same poly verifiaction claims for the input poly
-    let sp_ctx = same_poly::Context::<E>::new(info.num_vars + ceil_log2(info.poolinfo.kernel_size));
+    let sp_ctx = same_poly::Context::<E>::new(info.num_vars + 2);
     let mut sp_verifier = same_poly::Verifier::<E>::new(&sp_ctx);
 
-    let input_claims = &proof.input_claims;
-    input_claims
-        .iter()
-        .try_for_each(|claim| sp_verifier.add_claim(claim.clone()))?;
+    // Challenegs used to batch input poly claims together and link them with zerocheck and lookup verification output
+    let [r1, r2] = [t.get_and_append_challenge(b"input_batching").elements; 2];
+    let one_minus_r1 = E::ONE - r1;
+    let one_minus_r2 = E::ONE - r2;
+
+    let eval_multiplicands = [
+        one_minus_r1 * one_minus_r2,
+        one_minus_r1 * r2,
+        r1 * one_minus_r2,
+        r1 * r2,
+    ];
+
+    let mut zerocheck_point = proof.input_claims[0].point.clone();
+    zerocheck_point[0] = r1;
+    zerocheck_point[1 + proof.variable_gap] = r2;
+
+    let mut lookup_point = proof.input_claims[1].point.clone();
+    lookup_point[0] = r1;
+    lookup_point[1 + proof.variable_gap] = r2;
+
+    let (zerocheck_input_eval_claims, lookup_input_eval_claims): (Vec<E>, Vec<E>) = proof
+        .input_claims
+        .chunks(2)
+        .map(|chunk| (chunk[0].eval, chunk[1].eval))
+        .unzip();
+
+    let (zerocheck_eval, lookup_eval) = izip!(
+        zerocheck_input_eval_claims.iter(),
+        lookup_input_eval_claims.iter(),
+        eval_multiplicands.iter()
+    )
+    .fold(
+        (E::ZERO, E::ZERO),
+        |(zerocheck_acc, lookup_acc), (&ze, &le, &me)| {
+            (zerocheck_acc + ze * me, lookup_acc + le * me)
+        },
+    );
+
+    sp_verifier.add_claim(Claim {
+        point: zerocheck_point,
+        eval: zerocheck_eval,
+    })?;
+    sp_verifier.add_claim(Claim {
+        point: lookup_point,
+        eval: lookup_eval,
+    })?;
 
     // Run the same poly verifier, the output claim from this is what we pass to the next step of verification.
     let out_claim = sp_verifier.verify(input_proof, t)?;
 
     // Now we check consistency between the lookup/sumcheck proof claims and the claims passed to the same poly verifiers.
+    let input_claims = &proof.input_claims;
     let zerocheck_claim_no_beta = input_claims
         .iter()
         .step_by(2)
         .map(|claim| output_claims[0].eval - claim.eval)
         .product::<E>();
-
     let beta_eval = identity_eval(&output_claims[0].point, &challenge_point);
 
     let computed_zerocheck_claim = beta_eval * zerocheck_claim_no_beta;
@@ -330,6 +367,31 @@ where
         "Computed zerocheck claim did not line up with output of sumcheck verification"
     );
 
+    let lookup_gkr_claim = verifier_claims.gkr_claim();
+    let gkr_point = &lookup_gkr_claim.point_and_evals[0].point;
+    let gkr_point_len = gkr_point.len();
+    let gkr1 = gkr_point[gkr_point_len - 2];
+    let gkr2 = gkr_point[gkr_point_len - 1];
+    let extra_multiplcands = [
+        (E::ONE - gkr1) * (E::ONE - gkr2),
+        (E::ONE - gkr1) * gkr2,
+        gkr1 * (E::ONE - gkr2),
+        gkr1 * gkr2,
+    ];
+    let lookup_claim = input_claims
+        .iter()
+        .skip(1)
+        .step_by(2)
+        .zip(extra_multiplcands)
+        .map(|(claim, m)| (output_claims[1].eval - claim.eval) * m)
+        .sum::<E>();
+
+    ensure!(
+        lookup_claim == lookup_gkr_claim.point_and_evals[0].eval,
+        "Lookup claim did not line up got {:?} expected {:?}",
+        lookup_claim,
+        lookup_gkr_claim.point_and_evals[0].eval
+    );
     Ok(out_claim)
 }
 
@@ -415,14 +477,14 @@ pub fn phi_eval<E: ExtensionField>(
     rand1: E,
     rand2: E,
     exponents: Vec<E>,
-    FirstIter: bool,
+    first_iter: bool,
 ) -> E {
     let mut eval = E::ONE;
     for i in 0..r.len() {
-        eval *= (E::ONE - r[i] + r[i] * exponents[exponents.len() - r.len() + i]);
+        eval *= E::ONE - r[i] + r[i] * exponents[exponents.len() - r.len() + i];
     }
 
-    if (FirstIter) {
+    if first_iter {
         eval = (E::ONE - rand2) * (E::ONE - rand1 + rand1 * eval);
     } else {
         eval = E::ONE - rand1 + (E::ONE - E::from(2) * rand2) * rand1 * eval;
@@ -431,10 +493,10 @@ pub fn phi_eval<E: ExtensionField>(
     return eval;
 }
 
-pub fn pow_two_omegas<E: ExtensionField>(n: usize, isIFFT: bool) -> Vec<E> {
+pub fn pow_two_omegas<E: ExtensionField>(n: usize, is_fft: bool) -> Vec<E> {
     let mut pows = vec![E::ZERO; n - 1];
-    let mut rou: E = getRootOfUnity(n);
-    if (isIFFT) {
+    let mut rou: E = get_root_of_unity(n);
+    if is_fft {
         rou = rou.invert().unwrap();
     }
     pows[0] = rou;
@@ -456,14 +518,14 @@ where
     E: Serialize + DeserializeOwned,
 {
     let conv_claim = last_claim.eval - proof.bias_claim;
-  
+
     IOPVerifierState::<E>::verify(conv_claim, &proof.ifft_proof, &info.ifft_aux, t);
     assert_eq!(
         info.delegation_ifft.len(),
         proof.ifft_delegation_proof.len(),
         "Inconsistency in iFFT delegation proofs/aux size"
     );
-  
+
     let mut iter = proof.ifft_delegation_proof.len();
     let mut claim = proof.ifft_claims[1];
     let mut exponents = pow_two_omegas(iter + 1, true);
@@ -500,18 +562,26 @@ where
         prev_r = proof.ifft_delegation_proof[i].point.clone();
         claim = proof.ifft_delegation_claims[i][2];
     }
-    let scale = E::from(1<<(iter+1)).invert().unwrap();
-    
-    assert_eq!(claim,scale*(E::ONE)*prev_r[0] + scale*(E::ONE - prev_r[0]),"Error in final iFFT delegation step");
-    
+    let scale = E::from(1 << (iter + 1)).invert().unwrap();
+
+    assert_eq!(
+        claim,
+        scale * (E::ONE) * prev_r[0] + scale * (E::ONE - prev_r[0]),
+        "Error in final iFFT delegation step"
+    );
+
     IOPVerifierState::<E>::verify(
         proof.ifft_claims[0],
         &proof.hadamard_proof,
         &info.hadamard,
         t,
     );
-    assert_eq!(proof.hadamard_clams[2], identity_eval(&proof.ifft_proof.point, &proof.hadamard_proof.point),"Error in Beta evaluation");
-    
+    assert_eq!(
+        proof.hadamard_clams[2],
+        identity_eval(&proof.ifft_proof.point, &proof.hadamard_proof.point),
+        "Error in Beta evaluation"
+    );
+
     commit_verifier.add_claim(
         info.poly_id,
         Claim::new(
@@ -561,7 +631,7 @@ where
                 proof.hadamard_proof.point[i],
                 prev_r[prev_r.len() - 1],
                 exponents.clone(),
-                (i == 0)
+                i == 0
             ),
             proof.fft_delegation_claims[i][1],
             "Error in phi computation fft delegation iter : {}",
@@ -571,7 +641,11 @@ where
         claim = proof.fft_delegation_claims[i][2];
         prev_r = proof.fft_delegation_proof[i].point.clone();
     }
-    assert_eq!(claim,(E::ONE - E::from(2)*proof.hadamard_proof.point[iter])*prev_r[0] + E::ONE - prev_r[0],"Error in final FFT delegation step");
+    assert_eq!(
+        claim,
+        (E::ONE - E::from(2) * proof.hadamard_proof.point[iter]) * prev_r[0] + E::ONE - prev_r[0],
+        "Error in final FFT delegation step"
+    );
     let mut input_point = proof.fft_proof.point.clone();
     let mut v = input_point.pop().unwrap();
     v = (E::ONE - v).invert().unwrap();
@@ -667,13 +741,7 @@ where
     E: Serialize + DeserializeOwned,
 {
     // 1. Verify the lookup proof
-    let verifier_claims = L::verify_table(
-        challenges,
-        &info.lookup_type,
-        &info.circuit,
-        proof.lookup.clone(),
-        t,
-    )?;
+    let verifier_claims = L::verify_table(challenges, &info.circuit, proof.lookup.clone(), t)?;
 
     // 2. Accumulate the multiplicity poly claim into the witness commitment protocol
     witness_verifier.add_claim(

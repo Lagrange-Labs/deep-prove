@@ -20,18 +20,16 @@ pub mod model;
 mod onnx_parse;
 pub mod pooling;
 pub mod quantization;
-pub use onnx_parse::load_mlp;
+pub use onnx_parse::{ModelType, load_model};
 
 pub mod tensor;
+#[cfg(test)]
 mod testing;
-mod utils;
 
 /// We allow higher range to account for overflow. Since we do a requant after each layer, we
 /// can support with i128 with 8 bits quant:
 /// 16 + log(c) = 64 => c = 2^48 columns in a dense layer
 pub type Element = i128;
-
-
 
 /// Claim type to accumulate in this protocol, for a certain polynomial, known in the context.
 /// f(point) = eval
@@ -145,8 +143,9 @@ mod test {
             prover::Prover,
             verifier::{IO, verify},
         },
+        load_model,
         lookup::{LogUp, LookupProtocol},
-        onnx_parse::load_mlp,
+        onnx_parse::ModelType,
         quantization::TensorFielder,
         tensor::Tensor,
         to_bit_sequence_le,
@@ -171,9 +170,9 @@ mod test {
     fn test_model_run_helper<L: LookupProtocol<E>>() -> anyhow::Result<()> {
         let filepath = workspace_root().join("zkml/assets/model.onnx");
 
-        let model = load_mlp::<Element>(&filepath.to_string_lossy()).unwrap();
+        let model = load_model::<Element>(&filepath.to_string_lossy(), ModelType::MLP).unwrap();
         println!("[+] Loaded onnx file");
-        let ctx = Context::<E>::generate(&model).expect("unable to generate context");
+        let ctx = Context::<E>::generate(&model, None).expect("unable to generate context");
         println!("[+] Setup parameters");
 
         let shape = model.input_shape();

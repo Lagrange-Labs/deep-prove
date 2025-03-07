@@ -87,14 +87,14 @@ where
 /// Contains proof material related to one step of the inference
 
 #[derive(Default, Clone, Serialize, Deserialize)]
-pub struct ConvProof<E: ExtensionField>{
+pub struct ConvProof<E: ExtensionField> {
     // Sumcheck proof for the FFT layer
-    fft_proof : IOPProof<E>,
+    fft_proof: IOPProof<E>,
     // Proof for the evaluation delegation of the omegas matrix
     // It consists of multiple sumcheck proofs
     fft_delegation_proof: Vec<IOPProof<E>>,
     // Likewise for fft, we define ifft proofs
-    ifft_proof : IOPProof<E>,
+    ifft_proof: IOPProof<E>,
     ifft_delegation_proof: Vec<IOPProof<E>>,
     // Sumcheck proof for the hadamard product
     hadamard_proof: IOPProof<E>,
@@ -104,7 +104,7 @@ pub struct ConvProof<E: ExtensionField>{
     fft_delegation_claims: Vec<Vec<E>>,
     ifft_delegation_claims: Vec<Vec<E>>,
     hadamard_clams: Vec<E>,
-    bias_claim : E,
+    bias_claim: E,
 }
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct DenseProof<E: ExtensionField> {
@@ -144,6 +144,8 @@ where
     output_claims: Vec<Claim<E>>,
     /// The claim that are accumulated for the input of this step
     input_claims: Vec<Claim<E>>,
+    /// This tells the verifier how far apart the variables get fixed on the input MLE
+    variable_gap: usize,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -183,7 +185,6 @@ mod test {
     };
 
     type F = GoldilocksExt2;
-    use tracing_subscriber;
 
     #[test]
     fn test_prover_steps() {
@@ -192,7 +193,24 @@ mod test {
         model.describe();
         let trace = model.run(input.clone());
         let output = trace.final_output();
-        let ctx = Context::<F>::generate(&model).expect("unable to generate context");
+        let ctx = Context::<F>::generate(&model, None).expect("unable to generate context");
+        let io = IO::new(input.to_fields(), output.clone().to_fields());
+        let mut prover_transcript = default_transcript();
+        let prover = Prover::<_, _, LogUp>::new(&ctx, &mut prover_transcript);
+        let proof = prover.prove(trace).expect("unable to generate proof");
+        let mut verifier_transcript = default_transcript();
+        verify::<_, _, LogUp>(ctx, proof, io, &mut verifier_transcript).expect("invalid proof");
+    }
+
+    #[test]
+    fn test_prover_steps_pooling() {
+        init_test_logging();
+        let (model, input) = Model::random_pooling(4);
+        model.describe();
+        let trace = model.run(input.clone());
+        let output = trace.final_output();
+        let ctx =
+            Context::<F>::generate(&model, Some(input.dims())).expect("unable to generate context");
         let io = IO::new(input.to_fields(), output.clone().to_fields());
         let mut prover_transcript = default_transcript();
         let prover = Prover::<_, _, LogUp>::new(&ctx, &mut prover_transcript);
