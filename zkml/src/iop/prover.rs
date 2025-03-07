@@ -41,16 +41,17 @@
 // use transcript::Transcript;
 
 use super::{
-    Context, Proof, RequantProof, StepProof, TableProof,
+    ChallengeStorage, Context, Proof, RequantProof, StepProof, TableProof,
     context::{ConvInfo, DenseInfo, PoolingInfo, StepInfo},
 };
 use crate::{
     Claim, Element, VectorTranscript,
     activation::Activation,
     commit::{compute_betas_eval, precommit, same_poly},
+    convolution::Convolution,
     dense,
     iop::{ActivationProof, ConvProof, DenseProof, PoolingProof},
-    lookup::{self, LookupProtocol},
+    lookup::{self, LookupProtocol, LookupType},
     model::{InferenceStep, InferenceTrace, Layer},
     tensor::{ConvData, Tensor, get_root_of_unity},
 };
@@ -107,7 +108,9 @@ where
     /// The prover related to proving multiple claims about different witness polyy (io of lookups etc)
     witness_prover: precommit::CommitProver<E>,
     /// The context for the lookups
-    lookup_witness: lookup::WitnessContext<'a, E>,
+    lookup_witness: lookup::WitnessContext<E>,
+    /// Stores all the challenges for the different lookup/table types
+    challenge_storage: ChallengeStorage<E>,
     _phantom: PhantomData<L>,
 }
 
@@ -130,6 +133,7 @@ where
             witness_ctx: None,
             witness_prover: precommit::CommitProver::new(),
             lookup_witness: lookup::WitnessContext::default(),
+            challenge_storage: ChallengeStorage::default(),
             _phantom: PhantomData,
         }
     }
@@ -187,8 +191,21 @@ where
             .lookup_witness
             .next()
             .ok_or(anyhow!("No more lookup witness!"))?;
+        // Retrieve challenges for this lookup
+        let (constant_challenge, column_separator_challenges) =
+            self.get_challenges(prover_info.lookup_type).ok_or(anyhow!(
+                "No challenges found for lookup of type: {} at step: {}",
+                prover_info.lookup_type.name(),
+                step.variant_name()
+            ))?;
         // Run the lookup protocol and return the lookup proof
-        let lookup_proof = L::prove(&self.ctx.lookup, &prover_info, self.transcript)?;
+        let lookup_proof = L::prove(
+            &self.ctx.lookup,
+            &prover_info,
+            constant_challenge,
+            &column_separator_challenges,
+            self.transcript,
+        )?;
 
         // We need to prove that the output of this step is the input to following activation function
         let mut same_poly_prover = same_poly::Prover::<E>::new(output.to_vec().into_mle());
@@ -257,26 +274,54 @@ where
     }
 
     fn prove_tables(&mut self) -> anyhow::Result<()> {
+        let table_proving_info = self
+            .ctx
+            .lookup
+            .get_table_circuits()
+            .iter()
+            .map(|table_info| {
+                // Retrieve challenges for this table
+                let (constant_challenge, column_separator_challenges) =
+                    self.get_challenges(table_info.lookup_type).ok_or(anyhow!(
+                        "No challenges found for table lookup of type: {}",
+                        table_info.lookup_type.name(),
+                    ))?;
+                Ok((
+                    table_info.clone(),
+                    constant_challenge,
+                    column_separator_challenges,
+                ))
+            })
+            .collect::<Result<Vec<_>, anyhow::Error>>()?;
+
         self.lookup_witness
             .get_table_witnesses()
             .iter()
-            .zip(self.ctx.lookup.get_table_circuits().iter())
-            .try_for_each(|(table_witness, table_info)| {
-                let poly_id = table_info.poly_id;
-                debug!("PROVING table of type: {:?}", table_info.lookup_type);
-                // Make the proof for the table
-                let table_proof =
-                    L::prove_table(&table_info.circuit, &table_witness, self.transcript)?;
+            .zip(table_proving_info.into_iter())
+            .try_for_each(
+                |(table_witness, (table_info, constant_challenge, column_separator_challenges))| {
+                    let poly_id = table_info.poly_id;
+                    println!("PROVING table of type: {:?}", table_info.lookup_type);
 
-                // Add the multiplicity poly claim
-                self.witness_prover
-                    .add_claim(poly_id, table_proof.claims().last().unwrap().clone())?;
+                    // Make the proof for the table
+                    let table_proof = L::prove_table(
+                        &table_info.circuit,
+                        &table_witness,
+                        constant_challenge,
+                        &column_separator_challenges,
+                        self.transcript,
+                    )?;
 
-                self.table_proofs.push(TableProof {
-                    lookup: table_proof,
-                });
-                Ok(())
-            })
+                    // Add the multiplicity poly claim
+                    self.witness_prover
+                        .add_claim(poly_id, table_proof.claims().last().unwrap().clone())?;
+
+                    self.table_proofs.push(TableProof {
+                        lookup: table_proof,
+                    });
+                    Ok(())
+                },
+            )
     }
 
     #[tracing::instrument(name = "Prover::prove_pooling", skip_all, level = "debug")]
@@ -295,8 +340,20 @@ where
             .lookup_witness
             .next()
             .ok_or(anyhow!("No more lookup witness!"))?;
+        // Retrieve challenges for this lookup
+        let (constant_challenge, column_separator_challenges) =
+            self.get_challenges(prover_info.lookup_type).ok_or(anyhow!(
+                "No challenges found for lookup of type: {} during prove pooling",
+                prover_info.lookup_type.name(),
+            ))?;
         // Run the lookup protocol and return the lookup proof
-        let lookup_proof = L::prove(&self.ctx.lookup, &prover_info, self.transcript)?;
+        let lookup_proof = L::prove(
+            &self.ctx.lookup,
+            &prover_info,
+            constant_challenge,
+            &column_separator_challenges,
+            self.transcript,
+        )?;
 
         let max_pool_polys = info.poolinfo.compute_polys_field::<E>(input, output);
         // These are the polys that get passed to the zero check make sure their product is zero at every evaluation point
@@ -641,6 +698,7 @@ where
         for i in 0..r1.len() {
             r1[i] = r[i];
         }
+
         for i in 0..r2.len() {
             r2[i] = r[i + r1.len()];
         }
@@ -713,6 +771,11 @@ where
         for i in 0..r1.len() {
             r1[i] = r[i];
         }
+        assert_eq!(
+            r1[r1.len() - 1],
+            E::ZERO,
+            "Error in randomness init batch ifft"
+        );
         for i in 0..r2.len() {
             r2[i] = r[i + r1.len()];
         }
@@ -767,7 +830,7 @@ where
         _output: &Tensor<E>,
         proving_data: &ConvData<E>,
         info: &ConvInfo<E>,
-        filter: &Tensor<Element>,
+        filter: &Convolution,
     ) -> anyhow::Result<Claim<E>> {
         assert_eq!(
             filter.filter_size() * filter.kw() * 2,
@@ -782,13 +845,26 @@ where
             last_claim.point.len()
         );
         let mut r = vec![E::ZERO; last_claim.point.len() + 1];
+        let mut bias_point = vec![E::ZERO; filter.kw().ilog2() as usize];
         for i in 0..(filter.filter_size().ilog2() as usize) {
             r[i] = E::ONE - last_claim.point[i];
         }
         for i in 0..(filter.kw().ilog2() as usize) {
             r[i + (filter.filter_size().ilog2() as usize) + 1] =
                 last_claim.point[i + (filter.filter_size().ilog2() as usize)];
+            bias_point[i] = last_claim.point[i + (filter.filter_size().ilog2() as usize)];
         }
+        let mut bias_eval = E::ZERO;
+        if bias_point.len() != 0 {
+            bias_eval = filter
+                .bias
+                .evals_flat::<E>()
+                .into_mle()
+                .evaluate(&bias_point);
+        } else if filter.bias.data.len() == 1 {
+            bias_eval = filter.bias.evals_flat::<E>()[0];
+        }
+
         debug_assert!({
             let y = proving_data
                 .output
@@ -798,11 +874,30 @@ where
                 .collect::<Vec<_>>()
                 .into_mle()
                 .evaluate(&r);
-            debug_assert_eq!(last_claim.eval, y, "Error in Conv 1");
-            last_claim.eval == y
+            debug_assert_eq!(last_claim.eval - bias_eval, y, "Error in Conv 1");
+            last_claim.eval - bias_eval == y
         });
+
+        let mut temp_t = self.transcript.clone();
         let (ifft_proof, ifft_claim, ifft_del_proof) =
             self.prove_batch_ifft(r.clone(), &proving_data.prod);
+
+        assert_eq!(
+            filter.filter_size().ilog2() as usize + 1,
+            ifft_proof.point.len(),
+            "Error in ifft sumceck"
+        );
+        debug_assert!({
+            IOPVerifierState::<E>::verify(
+                last_claim.eval - bias_eval,
+                &ifft_proof.clone(),
+                &info.ifft_aux.clone(),
+                &mut temp_t,
+            );
+            println!("iFFT Sumcheck Correct");
+            1 == 1
+        });
+
         // After this point, the verifier holds an evaluation claim of proving_data.prod at P1.randomness[0][i]
         // Let r' = P1.randomness[0][i] and y is the evaluation claim of prod = proving_data.prod
         // What we want to do now is to prove that prod has been correctly computed from X_fft and w (= proving_data.w)
@@ -850,19 +945,19 @@ where
         // We have  \sum_{i \in [k_w]} beta1[i]prod[i] = sum_{j \in [k_x]} x[j]o w_{reduced[j]}.
         // So here we compute w_reduced
 
-        let k_w = filter.shape[0];
-        let k_x = filter.shape[1];
-        let n_w = 2 * filter.shape[2] * filter.shape[2];
+        let k_w = filter.kw();
+        let k_x = filter.kx();
+        let n_w = 2 * filter.nw() * filter.nw();
         let mut w_red = vec![E::ZERO; n_w * k_x];
         for i in 0..k_w {
             for j in 0..k_x {
                 for k in 0..n_w {
-                    if filter.data[i * k_x * n_w + j * n_w + k] < 0 {
-                        w_red[j * n_w + k] -=
-                            beta1[i] * E::from((-filter.data[i * k_x * n_w + j * n_w + k]) as u64);
+                    if filter.filter.data[i * k_x * n_w + j * n_w + k] < 0 {
+                        w_red[j * n_w + k] -= beta1[i]
+                            * E::from((-filter.filter.data[i * k_x * n_w + j * n_w + k]) as u64);
                     } else {
-                        w_red[j * n_w + k] +=
-                            beta1[i] * E::from((filter.data[i * k_x * n_w + j * n_w + k]) as u64);
+                        w_red[j * n_w + k] += beta1[i]
+                            * E::from((filter.filter.data[i * k_x * n_w + j * n_w + k]) as u64);
                     }
                 }
             }
@@ -903,10 +998,10 @@ where
         // let eval = hadamard_claims[0];
         self.commit_prover
             .add_claim(info.poly_id, Claim::new(point, hadamard_claims[0]))
-            .context("unable to add claim")?;
-
-        // self.r_weights = proof.point.clone();
-        // self.r_weights.extend(r1.iter());
+            .context("unable to add convolution claim")?;
+        self.commit_prover
+            .add_claim(info.bias_poly_id, Claim::new(bias_point, bias_eval))
+            .context("unable to add bias claim in convolution")?;
 
         // Finally prove the correct computation of the x_fft and get an evaluation claim of the input
         let (fft_proof, fft_claim, fft_del_proof) = self.prove_batch_fft(
@@ -925,6 +1020,7 @@ where
             fft_delegation_claims: fft_del_proof.1,
             ifft_delegation_claims: ifft_del_proof.1,
             hadamard_clams: hadamard_claims,
+            bias_claim: bias_eval,
         }));
         let mut input_point = fft_proof.point.clone();
         let mut v = input_point.pop().unwrap();
@@ -1132,20 +1228,25 @@ where
         &mut self,
         trace: &InferenceTrace<'b, Element, E>,
     ) -> anyhow::Result<()> {
-        let (lookup_witness, polys) = lookup::WitnessContext::<E>::initialise_witness_ctx(
-            &self.ctx.lookup,
-            trace,
-            self.transcript,
-        )?;
+        let (lookup_witness, polys) =
+            lookup::WitnessContext::<E>::initialise_witness_ctx(&self.ctx.lookup, trace)?;
 
         if !polys.is_empty() {
             let ctx = precommit::Context::generate(polys)
                 .context("unable to generate ctx for witnesses")?;
+            ctx.write_to_transcript(self.transcript)?;
+            // Set the witness context
             self.witness_ctx = Some(ctx);
+            // generate all the lookup related challenges
+            self.challenge_storage = ChallengeStorage::<E>::initialise(self.ctx, self.transcript);
         } else {
             warn!("no activation functions found - no witness commitment");
         }
         self.lookup_witness = lookup_witness;
         Ok(())
+    }
+
+    fn get_challenges(&self, lookup_type: LookupType) -> Option<(E, Vec<E>)> {
+        self.challenge_storage.get_challenges(lookup_type)
     }
 }

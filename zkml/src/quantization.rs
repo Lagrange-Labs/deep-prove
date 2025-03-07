@@ -88,6 +88,25 @@ impl<F: ExtensionField> Fieldizer<F> for Element {
         }
     }
 }
+pub(crate) trait IntoElement {
+    fn into_element(&self) -> Element;
+}
+
+impl<F: ExtensionField> IntoElement for F {
+    fn into_element(&self) -> Element {
+        let e = self.to_canonical_u64_vec()[0] as Element;
+        // That means he's a positive number
+        if *self == F::ZERO {
+            0
+        } else if e <= *MAX {
+            e
+        } else {
+            // That means he's a negative number - so take the diff with the modulus and recenter around 0
+            let diff = <F::BaseField as SmallField>::MODULUS_U64 - e as u64;
+            -(diff as Element)
+        }
+    }
+}
 
 impl<F: ExtensionField> Fieldizer<F> for u8 {
     fn to_field(&self) -> F {
@@ -331,6 +350,28 @@ mod test {
             let res = ap * bp;
             let expected = case.res.to_field();
             assert_eq!(res, expected, "test case {}: {:?}", i, case);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type F = goldilocks::GoldilocksExt2;
+    #[test]
+    fn test_element_field_roundtrip() {
+        // Also test a few specific values explicitly
+        let test_values = [*MIN, -100, -50, -1, 0, 1, 50, 100, *MAX];
+        for &val in &test_values {
+            let field_val: F = val.to_field();
+            let roundtrip = field_val.into_element();
+
+            assert_eq!(
+                val, roundtrip,
+                "Element {} did not roundtrip correctly (got {})",
+                val, roundtrip
+            );
         }
     }
 }

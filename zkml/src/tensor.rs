@@ -17,7 +17,12 @@ use std::{
     fmt::{self, Debug},
 };
 
-use crate::{Element, pooling::MAXPOOL2D_KERNEL_SIZE, quantization::Fieldizer, to_bit_sequence_le};
+use crate::{
+    Element,
+    pooling::MAXPOOL2D_KERNEL_SIZE,
+    quantization::{Fieldizer, IntoElement},
+    to_bit_sequence_le,
+};
 
 // Function testing the consistency between the actual convolution implementation and
 // the FFT one. Used for debugging purposes.
@@ -259,6 +264,49 @@ impl Tensor<Element> {
             shape: vec![shape[0], shape[1], n_w, n_w],
             input_shape,
         }
+    }
+
+    pub fn get_real_weights<F: ExtensionField>(&self) -> Vec<Vec<Vec<Element>>> {
+        let mut w_fft =
+            vec![
+                vec![vec![F::ZERO; 2 * self.nw() * self.nw()]; self.kx().next_power_of_two()];
+                self.kw().next_power_of_two()
+            ];
+        let mut ctr = 0;
+        for i in 0..w_fft.len() {
+            for j in 0..w_fft[i].len() {
+                for k in 0..w_fft[i][j].len() {
+                    if self.data[ctr] < 0 {
+                        w_fft[i][j][k] = -F::from((-self.data[ctr]) as u64);
+                    } else {
+                        w_fft[i][j][k] = F::from((self.data[ctr]) as u64);
+                    }
+                    ctr += 1;
+                }
+            }
+        }
+        for i in 0..w_fft.len() {
+            for j in 0..w_fft[i].len() {
+                fft(&mut w_fft[i][j], true);
+            }
+        }
+        let mut real_weights =
+            vec![vec![vec![0 as Element; self.nw() * self.nw()]; self.kx()]; self.kw()];
+        for i in 0..self.kw() {
+            for j in 0..self.kx() {
+                for k in 0..(self.nw() * self.nw()) {
+                    if F::to_canonical_u64_vec(&w_fft[i][j][k])[0] as u64 > (1 << 60 as u64) {
+                        real_weights[i][j][k] =
+                            //-(F::to_canonical_u64_vec(&(-w_fft[i][j][k]))[0] as Element);
+                            w_fft[i][j][k].into_element();
+                    } else {
+                        real_weights[i][j][k] = w_fft[i][j][k].into_element();
+                        // F::to_canonical_u64_vec(&(w_fft[i][j][k]))[0] as Element;
+                    }
+                }
+            }
+        }
+        real_weights
     }
 
     // Convolution algorithm using FFTs.
