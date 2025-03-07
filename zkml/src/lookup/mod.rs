@@ -1,4 +1,4 @@
-use anyhow::anyhow;
+use anyhow::{anyhow, ensure};
 use ark_std::rand::thread_rng;
 use ff::Field;
 use ff_ext::ExtensionField;
@@ -10,15 +10,15 @@ use gkr::{
     util::ceil_log2,
 };
 
-use mpcs::{BasefoldCommitment, PolynomialCommitmentScheme};
-use poseidon::digest::Digest;
+use mpcs::PolynomialCommitmentScheme;
+use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use utils::compute_multiplicity_poly;
 
 use crate::{
     Claim, Element,
     activation::Relu,
-    commit::{Pcs, precommit::PolyID},
+    commit::{Pcs, compute_betas_eval, precommit::PolyID},
     iop::context::StepInfo,
     model::{InferenceTrace, StepIdx},
     pooling::Maxpool2D,
@@ -38,7 +38,6 @@ pub mod utils;
 
 pub use logup::LogUp;
 
-type MLE<E> = DenseMultilinearExtension<E>;
 fn max_poly_size() -> usize {
     (*BIT_LEN * 2) + 1
 }
@@ -51,8 +50,6 @@ pub struct Proof<E: ExtensionField>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
-    /// one commitment for all columns in the lookups
-    commitment: BasefoldCommitment<E>,
     /// Claims about the witness polynomials
     claims: Vec<Claim<E>>,
     /// The actual GKR proof
@@ -61,8 +58,6 @@ where
     numerators: Vec<E>,
     /// denominators for all the fractional sumchecks, in the same order as the claims for witness polys
     denominators: Vec<E>,
-    /// the challenges to be used for this lookup, verified at the very end
-    challenges: Vec<E>,
     /// The number of instances of this circuit this proof is for
     instance_num_vars: usize,
 }
@@ -73,16 +68,6 @@ where
     /// Retireve the claims about the input columns
     pub fn claims(&self) -> &[Claim<E>] {
         &self.claims
-    }
-
-    /// Retrieves the challenges used in this proof
-    pub fn challenges(&self) -> &[E] {
-        &self.challenges
-    }
-
-    /// Retrieves the [`BasefoldCommitment`] digest
-    pub fn get_digest(&self) -> Digest<E::BaseField> {
-        self.commitment.root()
     }
 
     /// Retrieves the numerators
@@ -101,7 +86,6 @@ where
     E::BaseField: Serialize + DeserializeOwned,
 {
     claims: Vec<Claim<E>>,
-    commitment: BasefoldCommitment<E>,
     numerators: Vec<E>,
     denominators: Vec<E>,
     gkr_claim: GKRInputClaims<E>,
@@ -113,10 +97,6 @@ where
 {
     pub fn claims(&self) -> &[Claim<E>] {
         &self.claims
-    }
-
-    pub fn commitment(&self) -> &BasefoldCommitment<E> {
-        &self.commitment
     }
 
     pub fn numerators(&self) -> &[E] {
@@ -367,23 +347,24 @@ where
 }
 
 #[derive(Clone, Default)]
-pub struct WitnessContext<'a, E: ExtensionField>
+pub struct WitnessContext<E: ExtensionField>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
-    lookup_witnesses: Vec<LookupProverInfo<'a, E>>,
-    table_witnesses: Vec<LookupProverInfo<'a, E>>,
+    lookup_witnesses: Vec<LookupProverInfo<E>>,
+    table_witnesses: Vec<LookupProverInfo<E>>,
 }
 
 #[derive(Clone)]
-pub struct LookupProverInfo<'a, E: ExtensionField>
+pub struct LookupProverInfo<E: ExtensionField>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
+    /// This relates to the inference step we are proving
     pub lookup_type: LookupType,
-    pub batch_commitment: BasefoldCommitment<E>,
-    pub circuit_witness: CircuitWitness<'a, E>,
-    pub challenges: Vec<E>,
+    /// The raw MLE evaluations we aim to prove with this lookup, these will need
+    /// to be combined with challenges before passing in to the GKR circuit.
+    pub circuit_witness: Vec<Vec<E::BaseField>>,
 }
 
 impl<E: ExtensionField> Context<E>
@@ -477,7 +458,7 @@ where
 
                         let relu_table_info = TableInfo {
                             poly_id: table_poly_id,
-                            num_vars: 8,
+                            num_vars: *BIT_LEN,
                             table_commitment: commit,
                             circuit: lookup_type.make_circuit::<E>(),
                             lookup_type,
@@ -587,20 +568,16 @@ where
     }
 }
 
-impl<'a, E: ExtensionField> WitnessContext<'a, E>
+impl<E: ExtensionField> WitnessContext<E>
 where
     E: Serialize + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
 {
     /// Initialises [`WitnessContext`] from an [`InferenceTrace`] and a [`Context`]
-    pub fn initialise_witness_ctx<'b, T: Transcript<E>>(
-        ctx: &'b Context<E>,
+    pub fn initialise_witness_ctx(
+        ctx: &Context<E>,
         trace: &InferenceTrace<Element, E>,
-        t: &mut T,
-    ) -> anyhow::Result<(WitnessContext<'a, E>, Vec<(usize, Vec<E>)>)>
-    where
-        'b: 'a,
-    {
+    ) -> anyhow::Result<(WitnessContext<E>, Vec<(usize, Vec<E>)>)> {
         // We look at all the table circuits and make the corresponding challenges for them all
         let tmp_const_challenge = E::BaseField::random(thread_rng());
         let tmp_challenges = ctx
@@ -614,33 +591,23 @@ where
             })
             .collect::<HashMap<String, E::BaseField>>();
 
-        // make the basefold params to commit to all the polys (we won't open them this is just to save some hashing in the verifier).
-        let params = Pcs::<E>::setup(1 << max_poly_size())?;
-
         let mut final_table_lookups = HashMap::<LookupType, Vec<E::BaseField>>::new();
         // Initiate a vec to hold all the witness poly info
         let mut polys_with_id = Vec::<(usize, Vec<E>)>::new();
         // For each step in the inference trace construct the witness MLEs and also batch commit to them so we can generate seperation challenges.
-        let tmp_witness_storage = trace
+        let lookup_witnesses = trace
             .iter()
             .filter_map(|(step_input, step)| {
                 let step_idx = step.id;
 
                 if let Ok((lookup_type, _)) = ctx.get_circuit_and_type(step_idx) {
-                    let mut mle_evals = lookup_type.prep_lookup_polys::<E>(step_input);
-                    let num_vars = mle_evals
+                    let unpadded_mle_evals = lookup_type.prep_lookup_polys::<E>(step_input);
+                    let num_vars = unpadded_mle_evals
                         .first()
                         .and_then(|evals| Some(ceil_log2(evals.len())))?;
-                    let padded_len = mle_evals.len().next_power_of_two();
-                    mle_evals.resize(padded_len, vec![E::BaseField::ZERO; 1 << num_vars]);
-
-                    let mles = mle_evals
-                        .iter()
-                        .map(|val| DenseMultilinearExtension::from_evaluations_slice(num_vars, val))
-                        .collect::<Vec<MLE<E>>>();
-                    let (pp, _) = Pcs::<E>::trim(params.clone(), 1 << num_vars).ok()?;
-                    let batch_commit = Pcs::<E>::batch_commit(&pp, &mles).ok()?.to_commitment();
-                    t.append_field_elements(batch_commit.root().0.as_slice());
+                    let padded_len = (unpadded_mle_evals.len()
+                        / lookup_type.num_columns_per_instance())
+                    .next_power_of_two();
 
                     // Compute a temporary merged eval to make the multiplicity polys
                     let challenge = tmp_challenges.get(&lookup_type.name())?;
@@ -649,7 +616,7 @@ where
                             .take(lookup_type.num_columns_per_instance())
                             .collect::<Vec<E::BaseField>>();
 
-                    let merged_evals = mle_evals
+                    let merged_evals = unpadded_mle_evals
                         .chunks(lookup_type.num_columns_per_instance())
                         .flat_map(|chunk| {
                             (0..1 << num_vars).map(|i| {
@@ -661,6 +628,8 @@ where
                                     })
                             })
                         })
+                        .chain(std::iter::repeat(tmp_const_challenge))
+                        .take((1 << num_vars) * padded_len)
                         .collect::<Vec<E::BaseField>>();
 
                     final_table_lookups
@@ -677,19 +646,15 @@ where
                             .map(Fieldizer::<E>::to_field)
                             .collect(),
                     ));
-
-                    Some((step_idx, *lookup_type, batch_commit, mle_evals))
+                    Some(LookupProverInfo {
+                        lookup_type: *lookup_type,
+                        circuit_witness: unpadded_mle_evals,
+                    })
                 } else {
                     None
                 }
             })
-            .collect::<Vec<(_, _, _, _)>>();
-
-        // Produce all the table columns and work out challeneges
-        let mut challenge_map = HashMap::<String, E>::new();
-        let constant_challenge = t
-            .get_and_append_challenge(b"table_constant_challenge")
-            .elements;
+            .collect::<Vec<LookupProverInfo<E>>>();
 
         let table_witnesses = ctx
             .table_circuits
@@ -697,14 +662,12 @@ where
             .map(|table_info| {
                 let TableInfo {
                     poly_id,
-                    circuit,
                     lookup_type,
                     ..
                 } = table_info;
                 let num_vars = lookup_type.num_vars();
                 let step_id = *poly_id;
 
-                let (pp, _) = Pcs::<E>::trim(params.clone(), 1 << num_vars)?;
                 let merged_lookups = final_table_lookups
                     .get(lookup_type)
                     .ok_or(anyhow!("No lookups for this table type: {:?}", lookup_type))?;
@@ -731,9 +694,9 @@ where
                             })
                     })
                     .collect::<Vec<E::BaseField>>();
-                let multiplicity_poly = compute_multiplicity_poly(&merged_table, merged_lookups);
+                let multiplicity_poly =
+                    compute_multiplicity_poly::<E>(&merged_table, merged_lookups);
                 let m_evals = multiplicity_poly.get_base_field_vec().to_vec();
-                let m_commit = Pcs::<E>::commit(&pp, &multiplicity_poly)?.to_commitment();
 
                 // Add the multiplicity poly that we have to open
                 polys_with_id.push((
@@ -741,87 +704,17 @@ where
                     m_evals.iter().copied().map(E::from).collect::<Vec<E>>(),
                 ));
 
+                // Add the multiplicity poly evals to the witness
                 table_mles.push(m_evals);
-                // Add the mutliplicity commit to `commits_in_order`
-                t.append_field_elements(m_commit.root().0.as_slice());
-                // Squeeze the combining challenge related to this table type
-                let actual_challenege = t.get_and_append_challenge(b"table_challenge").elements;
-                // Put it in the hashmap for later
-                challenge_map.insert(lookup_type.name(), actual_challenege);
-                let mut circuit_witness =
-                    CircuitWitness::new(circuit, vec![actual_challenege, constant_challenge]);
-
-                let wits_in = table_mles
-                    .iter()
-                    .map(|evaluations| {
-                        DenseMultilinearExtension::from_evaluations_slice(num_vars, evaluations)
-                    })
-                    .collect::<Vec<DenseMultilinearExtension<E>>>();
-
-                circuit_witness.add_instance(circuit, wits_in);
 
                 let lookup_witness_data = LookupProverInfo {
                     lookup_type: *lookup_type,
-                    batch_commitment: m_commit,
-                    circuit_witness,
-                    challenges: vec![actual_challenege, constant_challenge],
+                    circuit_witness: table_mles,
                 };
 
                 Ok(lookup_witness_data)
             })
             .collect::<Result<Vec<LookupProverInfo<E>>, anyhow::Error>>()?;
-
-        let lookup_witnesses: Vec<LookupProverInfo<'_, E>> = tmp_witness_storage
-            .into_iter()
-            .map(|(step_idx, lt, batch_commit, mle_evals)| {
-                let challenge = challenge_map
-                    .get(&lt.name())
-                    .expect("No challenges stored for lookup type");
-
-                let circuit: &Circuit<E> = ctx
-                    .get_circuit(step_idx)
-                    .expect("No circuit stored for lookup type");
-                let mut circuit_witness =
-                    CircuitWitness::new(circuit, vec![*challenge, constant_challenge]);
-                // Workout how many of the evals we feed into each instance as we will need to pad the evals to the correct power of two length.
-                let mles_per_instance = lt.num_columns_per_instance();
-                let padded_instances_size =
-                    (mle_evals.len() / mles_per_instance).next_power_of_two();
-
-                let required_padding = padded_instances_size * mles_per_instance - mle_evals.len();
-
-                let padded_mle_evals = mle_evals
-                    .into_iter()
-                    .chain(
-                        std::iter::repeat(vec![E::BaseField::ZERO; 1 << lt.num_vars()])
-                            .take(required_padding),
-                    )
-                    .collect::<Vec<Vec<E::BaseField>>>();
-                padded_mle_evals
-                    .chunks(lt.num_columns_per_instance())
-                    .for_each(|chunk| {
-                        let wits_in = chunk
-                            .iter()
-                            .map(|evaluations| {
-                                DenseMultilinearExtension::from_evaluations_slice(
-                                    lt.num_vars(),
-                                    evaluations,
-                                )
-                            })
-                            .collect::<Vec<DenseMultilinearExtension<E>>>();
-                        circuit_witness.add_instance(circuit, wits_in);
-                    });
-
-                let lookup_witness_data = LookupProverInfo {
-                    lookup_type: lt,
-                    batch_commitment: batch_commit,
-                    circuit_witness,
-                    challenges: vec![*challenge, constant_challenge],
-                };
-
-                lookup_witness_data
-            })
-            .collect();
 
         Ok((
             Self {
@@ -832,7 +725,7 @@ where
         ))
     }
 
-    pub fn next(&mut self) -> Option<LookupProverInfo<'a, E>> {
+    pub fn next(&mut self) -> Option<LookupProverInfo<E>> {
         self.lookup_witnesses.pop()
     }
 
@@ -854,14 +747,14 @@ where
     fn prove<T: Transcript<E>>(
         lookup_ctx: &Context<E>,
         prover_info: &LookupProverInfo<E>,
+        constant_challenge: E,
+        column_separation_challenges: &[E],
         t: &mut T,
     ) -> anyhow::Result<Proof<E>> {
         // Get all the witness info from the context
         let LookupProverInfo {
             lookup_type,
-            batch_commitment,
             circuit_witness,
-            challenges,
             ..
         } = prover_info;
         // Get the circuit based on the lookup type
@@ -870,33 +763,66 @@ where
             lookup_type
         ))?;
 
-        // Get the witness out and use this to calculate a challenge, we shall supply this to the verifier as well
-        let witness_out_ref = circuit_witness.witness_out_ref();
-        let witness_in = circuit_witness.witness_in_ref();
-        // Append the outputs to the transcript
-        let (witness_output_vec, stuff): (Vec<Vec<E::BaseField>>, Vec<Vec<E>>) = witness_out_ref
+        let columns_per_instance = lookup_type.num_columns_per_instance();
+
+        let padded_instances_size =
+            (circuit_witness.len() / columns_per_instance).next_power_of_two();
+
+        let required_padding = padded_instances_size * columns_per_instance - circuit_witness.len();
+
+        let wits_in = circuit_witness
             .iter()
-            .map(|mle| {
-                let evals = mle.get_base_field_vec().to_vec();
-                let stuff = evals
-                    .chunks(2)
-                    .map(|chunk| E::from_bases(chunk))
-                    .collect::<Vec<E>>();
-                (evals, stuff)
+            .map(|evaluations| {
+                DenseMultilinearExtension::<E>::from_evaluations_slice(
+                    lookup_type.num_vars(),
+                    evaluations,
+                )
             })
-            .unzip();
+            .chain(std::iter::repeat_n(
+                DenseMultilinearExtension::<E>::from_evaluations_vec(
+                    lookup_type.num_vars(),
+                    vec![E::BaseField::ZERO; 1 << lookup_type.num_vars()],
+                ),
+                required_padding,
+            ))
+            .collect::<Vec<DenseMultilinearExtension<E>>>();
+
+        let mut c_witness = CircuitWitness::new(circuit, vec![
+            column_separation_challenges[0],
+            constant_challenge,
+        ]);
+        wits_in
+            .chunks(columns_per_instance)
+            .for_each(|chunk| c_witness.add_instance(circuit, chunk.to_vec()));
+
+        // Get the witness out and use this to calculate a challenge, we shall supply this to the verifier as well
+        let witness_out_ref = c_witness.witness_out_ref();
+        let witness_in = c_witness.witness_in_ref();
+        // Append the outputs to the transcript
+        let (witness_output_vec, num_or_denom): (Vec<Vec<E::BaseField>>, Vec<Vec<E>>) =
+            witness_out_ref
+                .iter()
+                .map(|mle| {
+                    let evals = mle.get_base_field_vec().to_vec();
+                    let num_or_denom = evals
+                        .chunks(2)
+                        .map(|chunk| E::from_bases(chunk))
+                        .collect::<Vec<E>>();
+                    (evals, num_or_denom)
+                })
+                .unzip();
 
         let witness_outputs = witness_output_vec
             .into_iter()
             .flatten()
             .collect::<Vec<E::BaseField>>();
-        let numerators = stuff[0].clone();
-        let denominators = stuff[1].clone();
+        let numerators = num_or_denom[0].clone();
+        let denominators = num_or_denom[1].clone();
 
         t.append_field_elements(&witness_outputs);
         // Work out how many instances of the same circuit we a re proving at the same time
         // we then squeeze 1 + num_instance_vars challenges from the transcript
-        let num_instance_vars = circuit_witness.instance_num_vars();
+        let num_instance_vars = c_witness.instance_num_vars();
         // Squeeze a challenge to be used in evaluating the output mle (this is denom_prod flattened ot basefield elements)
         let output_point =
             std::iter::repeat_with(|| t.get_and_append_challenge(b"lookup_challenge").elements)
@@ -912,7 +838,7 @@ where
         // make the GKR proof
         let (gkr_proof, _) = IOPProverState::prove_parallel(
             circuit,
-            circuit_witness,
+            &c_witness,
             vec![],
             wires_out_evals,
             1 << num_instance_vars,
@@ -920,35 +846,34 @@ where
         );
 
         // Group the claims so that we know what our initial sumcheck eval should be at the next step
-        let last_step_message = gkr_proof.sumcheck_proofs.last().unwrap();
-        let point = &last_step_message.sumcheck_proof.point;
         let witness_in_vars = witness_in[0].num_vars() - num_instance_vars;
-        let claims = witness_in
-            .iter()
-            .flat_map(|w_in| {
-                w_in.get_base_field_vec()
-                    .chunks(1 << witness_in_vars)
-                    .map(|mle_evals| {
-                        let mle = DenseMultilinearExtension::from_evaluations_slice(
-                            witness_in_vars,
-                            mle_evals,
-                        );
-                        Claim::new(
-                            point[..witness_in_vars].to_vec(),
-                            mle.evaluate(&point[..witness_in_vars]),
-                        )
-                    })
-                    .collect::<Vec<Claim<E>>>()
+        let claim_point = &gkr_proof
+            .sumcheck_proofs
+            .last()
+            .ok_or(anyhow!("GKR went wrong as it contains no sumcheck steps"))?
+            .sumcheck_proof
+            .point[..witness_in_vars];
+
+        let claims = circuit_witness
+            .par_iter()
+            .map(|evaluations| {
+                let mle = DenseMultilinearExtension::<E>::from_evaluations_slice(
+                    witness_in_vars,
+                    evaluations,
+                );
+                let eval = mle.evaluate(claim_point);
+                Claim {
+                    point: claim_point.to_vec(),
+                    eval,
+                }
             })
             .collect::<Vec<Claim<E>>>();
 
         Ok(Proof {
-            commitment: batch_commitment.clone(),
             claims,
             gkr_proof,
             numerators,
             denominators,
-            challenges: challenges.clone(),
             instance_num_vars: num_instance_vars,
         })
     }
@@ -961,20 +886,34 @@ where
     fn prove_table<T: Transcript<E>>(
         circuit: &Circuit<E>,
         prover_info: &LookupProverInfo<E>,
+        constant_challenge: E,
+        column_separation_challenges: &[E],
         t: &mut T,
     ) -> anyhow::Result<Proof<E>> {
         // Get all the witness info from the context
         let LookupProverInfo {
-            batch_commitment,
+            lookup_type,
             circuit_witness,
-            challenges,
-            ..
         } = prover_info;
-        // Get the circuit based on the lookup type
 
+        let wits_in = circuit_witness
+            .iter()
+            .map(|evaluations| {
+                DenseMultilinearExtension::<E>::from_evaluations_slice(
+                    lookup_type.num_vars(),
+                    evaluations,
+                )
+            })
+            .collect::<Vec<DenseMultilinearExtension<E>>>();
+
+        let mut c_witness = CircuitWitness::new(circuit, vec![
+            column_separation_challenges[0],
+            constant_challenge,
+        ]);
+        c_witness.add_instance(circuit, wits_in);
         // Get the witness out and use this to calculate a challenge, we shall supply this to the verifier as well
-        let witness_out_ref = circuit_witness.witness_out_ref();
-        let witness_in = circuit_witness.witness_in_ref();
+        let witness_out_ref = c_witness.witness_out_ref();
+        let witness_in = c_witness.witness_in_ref();
         // Append the outputs to the transcript
         let (witness_output_vec, stuff): (Vec<Vec<E::BaseField>>, Vec<Vec<E>>) = witness_out_ref
             .iter()
@@ -998,7 +937,7 @@ where
         t.append_field_elements(&witness_outputs);
         // Work out how many instances of the same circuit we a re proving at the same time
         // we then squeeze 1 + num_instance_vars challenges from the transcript
-        let num_instance_vars = circuit_witness.instance_num_vars();
+        let num_instance_vars = c_witness.instance_num_vars();
         // Squeeze a challenge to be used in evaluating the output mle (this is denom_prod flattened ot basefield elements)
         let output_point =
             std::iter::repeat_with(|| t.get_and_append_challenge(b"lookup_challenge").elements)
@@ -1014,7 +953,7 @@ where
         // make the GKR proof
         let (gkr_proof, _) = IOPProverState::prove_parallel(
             circuit,
-            circuit_witness,
+            &c_witness,
             vec![],
             wires_out_evals,
             1 << num_instance_vars,
@@ -1022,35 +961,34 @@ where
         );
 
         // Group the claims so that we know what our initial sumcheck eval should be at the next step
-        let last_step_message = gkr_proof.sumcheck_proofs.last().unwrap();
-        let point = &last_step_message.sumcheck_proof.point;
         let witness_in_vars = witness_in[0].num_vars() - num_instance_vars;
-        let claims = witness_in
-            .iter()
-            .flat_map(|w_in| {
-                w_in.get_base_field_vec()
-                    .chunks(1 << witness_in_vars)
-                    .map(|mle_evals| {
-                        let mle = DenseMultilinearExtension::from_evaluations_slice(
-                            witness_in_vars,
-                            mle_evals,
-                        );
-                        Claim::new(
-                            point[..witness_in_vars].to_vec(),
-                            mle.evaluate(&point[..witness_in_vars]),
-                        )
-                    })
-                    .collect::<Vec<Claim<E>>>()
+        let claim_point = &gkr_proof
+            .sumcheck_proofs
+            .last()
+            .ok_or(anyhow!("GKR went wrong as it contains no sumcheck steps"))?
+            .sumcheck_proof
+            .point[..witness_in_vars];
+
+        let claims = circuit_witness
+            .par_iter()
+            .map(|evaluations| {
+                let mle = DenseMultilinearExtension::<E>::from_evaluations_slice(
+                    witness_in_vars,
+                    evaluations,
+                );
+                let eval = mle.evaluate(claim_point);
+                Claim {
+                    point: claim_point.to_vec(),
+                    eval,
+                }
             })
             .collect::<Vec<Claim<E>>>();
 
         Ok(Proof {
-            commitment: batch_commitment.clone(),
             claims,
             gkr_proof,
             numerators,
             denominators,
-            challenges: challenges.clone(),
             instance_num_vars: num_instance_vars,
         })
     }
@@ -1058,17 +996,17 @@ where
     // commitments to the lookups, one commitment per "column"
     fn verify<T: Transcript<E>>(
         lookup_ctx: &Context<E>,
-        challenges: &[E],
+        constant_challenge: E,
+        column_separation_challenges: &[E],
         step: usize,
         proof: Proof<E>,
         t: &mut T,
     ) -> anyhow::Result<VerifierClaims<E>> {
         // Get the circuit by the lookup type
-        let (_, circuit) = lookup_ctx.get_circuit_and_type(step)?;
+        let (lookup_type, circuit) = lookup_ctx.get_circuit_and_type(step)?;
 
         // Split the proof into parts
         let Proof {
-            commitment,
             gkr_proof,
             numerators,
             denominators,
@@ -1076,27 +1014,12 @@ where
             claims,
             ..
         } = proof;
-        // Compute the expectted output values as the prover should have
-
+        // Compute the expected output values as the prover should have
         let output_values = numerators
             .iter()
             .chain(denominators.iter())
             .flat_map(|val| val.as_bases().to_vec())
             .collect::<Vec<E::BaseField>>();
-        let numerator_mle = DenseMultilinearExtension::from_evaluations_vec(
-            1 + instance_num_vars,
-            numerators
-                .iter()
-                .flat_map(|val| val.as_bases().to_vec())
-                .collect::<Vec<E::BaseField>>(),
-        );
-        let denominator_mle = DenseMultilinearExtension::from_evaluations_vec(
-            1 + instance_num_vars,
-            denominators
-                .iter()
-                .flat_map(|val| val.as_bases().to_vec())
-                .collect::<Vec<E::BaseField>>(),
-        );
 
         t.append_field_elements(&output_values);
         // Squeeze the challenge
@@ -1105,18 +1028,33 @@ where
                 .take(1 + instance_num_vars)
                 .collect::<Vec<E>>();
 
+        let numerator_eval = DenseMultilinearExtension::from_evaluations_vec(
+            1 + instance_num_vars,
+            numerators
+                .iter()
+                .flat_map(|val| val.as_bases().to_vec())
+                .collect::<Vec<E::BaseField>>(),
+        )
+        .evaluate(&output_point);
+        let denominator_eval = DenseMultilinearExtension::from_evaluations_vec(
+            1 + instance_num_vars,
+            denominators
+                .iter()
+                .flat_map(|val| val.as_bases().to_vec())
+                .collect::<Vec<E::BaseField>>(),
+        )
+        .evaluate(&output_point);
+
         // We directly evaluate as all the output MLEs
         let witness_out_evals = vec![
-            PointAndEval::<E>::new(output_point.clone(), numerator_mle.evaluate(&output_point)),
-            PointAndEval::<E>::new(
-                output_point.clone(),
-                denominator_mle.evaluate(&output_point),
-            ),
+            PointAndEval::<E>::new(output_point.clone(), numerator_eval),
+            PointAndEval::<E>::new(output_point, denominator_eval),
         ];
+
         // Run the GKR verification
         let gkr_claim = IOPVerifierState::verify_parallel(
             circuit,
-            challenges,
+            &[column_separation_challenges[0], constant_challenge],
             vec![],
             witness_out_evals,
             gkr_proof,
@@ -1124,17 +1062,35 @@ where
             t,
         )
         .map_err(|e| anyhow!("Error when verifying GKR {{ inner: {:?}}}", e))?;
+        // Work out how many extra evals to chain on to the end
+        let eq_eval =
+            compute_betas_eval(&gkr_claim.point_and_evals[0].point[lookup_type.num_vars()..]);
+        let computed_gkr_claims = (0..lookup_type.num_columns_per_instance())
+            .map(|i| {
+                claims
+                    .iter()
+                    .skip(i)
+                    .step_by(lookup_type.num_columns_per_instance())
+                    .zip(eq_eval.iter())
+                    .fold(E::ZERO, |acc, (claim, eq)| acc + claim.eval * *eq)
+            })
+            .collect::<Vec<E>>();
 
-        // // Convert to our `Claim` type
-        // let claims = gkr_claims
-        //     .point_and_evals
-        //     .iter()
-        //     .map(Claim::from)
-        //     .collect::<Vec<Claim<E>>>();
+        computed_gkr_claims
+            .iter()
+            .zip(gkr_claim.point_and_evals.iter())
+            .try_for_each(|(computed, p_and_e)| {
+                ensure!(
+                    *computed == p_and_e.eval,
+                    "Recombined lookup claims {:?} did not agree with the GKR output {:?}",
+                    computed,
+                    p_and_e.eval
+                );
+                Result::<(), anyhow::Error>::Ok(())
+            })?;
 
         Ok(VerifierClaims {
             claims: claims.clone(),
-            commitment,
             numerators,
             denominators,
             gkr_claim,
@@ -1143,14 +1099,14 @@ where
 
     // commitments to the lookups, one commitment per "column"
     fn verify_table<T: Transcript<E>>(
-        challenges: &[E],
+        constant_challenge: E,
+        column_separation_challenges: &[E],
         circuit: &Circuit<E>,
         proof: Proof<E>,
         t: &mut T,
     ) -> anyhow::Result<VerifierClaims<E>> {
         // Split the proof into parts
         let Proof {
-            commitment,
             gkr_proof,
             numerators,
             denominators,
@@ -1160,25 +1116,12 @@ where
         } = proof;
         // Compute the expected output values as the prover should have
 
+        // Compute the expected output values as the prover should have
         let output_values = numerators
             .iter()
             .chain(denominators.iter())
             .flat_map(|val| val.as_bases().to_vec())
             .collect::<Vec<E::BaseField>>();
-        let numerator_mle = DenseMultilinearExtension::from_evaluations_vec(
-            1 + instance_num_vars,
-            numerators
-                .iter()
-                .flat_map(|val| val.as_bases().to_vec())
-                .collect::<Vec<E::BaseField>>(),
-        );
-        let denominator_mle = DenseMultilinearExtension::from_evaluations_vec(
-            1 + instance_num_vars,
-            denominators
-                .iter()
-                .flat_map(|val| val.as_bases().to_vec())
-                .collect::<Vec<E::BaseField>>(),
-        );
 
         t.append_field_elements(&output_values);
         // Squeeze the challenge
@@ -1187,18 +1130,33 @@ where
                 .take(1 + instance_num_vars)
                 .collect::<Vec<E>>();
 
+        let numerator_eval = DenseMultilinearExtension::from_evaluations_vec(
+            1 + instance_num_vars,
+            numerators
+                .iter()
+                .flat_map(|val| val.as_bases().to_vec())
+                .collect::<Vec<E::BaseField>>(),
+        )
+        .evaluate(&output_point);
+        let denominator_eval = DenseMultilinearExtension::from_evaluations_vec(
+            1 + instance_num_vars,
+            denominators
+                .iter()
+                .flat_map(|val| val.as_bases().to_vec())
+                .collect::<Vec<E::BaseField>>(),
+        )
+        .evaluate(&output_point);
+
         // We directly evaluate as all the output MLEs
         let witness_out_evals = vec![
-            PointAndEval::<E>::new(output_point.clone(), numerator_mle.evaluate(&output_point)),
-            PointAndEval::<E>::new(
-                output_point.clone(),
-                denominator_mle.evaluate(&output_point),
-            ),
+            PointAndEval::<E>::new(output_point.clone(), numerator_eval),
+            PointAndEval::<E>::new(output_point, denominator_eval),
         ];
+
         // Run the GKR verification
         let gkr_claim = IOPVerifierState::verify_parallel(
             circuit,
-            challenges,
+            &[column_separation_challenges[0], constant_challenge],
             vec![],
             witness_out_evals,
             gkr_proof,
@@ -1207,16 +1165,19 @@ where
         )
         .map_err(|e| anyhow!("Error when verifying GKR {{ inner: {:?}}}", e))?;
 
-        // // Convert to our `Claim` type
-        // let claims = gkr_claims
-        //     .point_and_evals
-        //     .iter()
-        //     .map(Claim::from)
-        //     .collect::<Vec<Claim<E>>>();
+        // GKR claim should output two `PointandEval` structs, the first is for the merged table poly, the second is for the multiplicity poly
+        gkr_claim.point_and_evals.iter().zip(claims.iter()).enumerate().try_for_each(|(i,(claim_eval, computed_eval))|{
+            let eval_name = if i == 0 {
+                "merged table evals".to_string()
+            } else {
+                "multiplicity evals".to_string()
+            };
+            ensure!(computed_eval.eval == claim_eval.eval, "{} recalculated from the Proof (1) did not agree with the GKR output claim (2)", eval_name);
+            Result::<(), anyhow::Error>::Ok(())
+        })?;
 
         Ok(VerifierClaims {
             claims: claims.clone(),
-            commitment,
             numerators,
             denominators,
             gkr_claim,
@@ -1226,7 +1187,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::{default_transcript, init_test_logging, model::Model};
+    use crate::{commit::precommit, default_transcript, init_test_logging, model::Model};
 
     use super::*;
 
@@ -1236,7 +1197,7 @@ mod tests {
     #[test]
     fn test_prover_steps() -> anyhow::Result<()> {
         init_test_logging();
-        let (model, input) = Model::random(4);
+        let (model, input) = Model::random(6);
         model.describe();
         let trace = model.run(input);
 
@@ -1244,17 +1205,53 @@ mod tests {
 
         let mut prover_transcript = default_transcript();
         ctx.write_to_transcript(&mut prover_transcript)?;
-        let (witness_context, _) = WitnessContext::<F>::initialise_witness_ctx(
-            &ctx.lookup,
-            &trace,
-            &mut prover_transcript,
-        )
-        .unwrap();
+        let (witness_context, polys) =
+            WitnessContext::<F>::initialise_witness_ctx(&ctx.lookup, &trace).unwrap();
+
+        let commit_context = precommit::Context::<F>::generate(polys)?;
+        commit_context.write_to_transcript(&mut prover_transcript)?;
+
+        let constant_challenge = prover_transcript
+            .get_and_append_challenge(b"table_constant")
+            .elements;
+
+        let prover_challenge_hashmap = ctx
+            .lookup
+            .table_circuits
+            .iter()
+            .map(|table_info| {
+                let challenge = prover_transcript
+                    .get_and_append_challenge(b"table_challenge")
+                    .elements;
+                let lt = table_info.lookup_type;
+                // We subtract one here because these are all table lookup types so number of columns per instance includes the multiplicity poly as well.
+                let num_columns = lt.num_columns_per_instance() - 1;
+                let column_separator_challenges =
+                    std::iter::successors(Some(F::ONE), |prev| Some(*prev * challenge))
+                        .take(num_columns)
+                        .collect::<Vec<F>>();
+                (lt.name(), column_separator_challenges)
+            })
+            .collect::<HashMap<String, Vec<F>>>();
 
         let lookup_proofs = witness_context
             .lookup_witnesses
             .iter()
-            .map(|prover_info| LogUp::prove(&ctx.lookup, prover_info, &mut prover_transcript))
+            .map(|prover_info| {
+                let column_separator_challenges = prover_challenge_hashmap
+                    .get(&prover_info.lookup_type.name())
+                    .ok_or(anyhow!(
+                        "No challenges found for lookup type with name: {}",
+                        prover_info.lookup_type.name()
+                    ))?;
+                LogUp::prove(
+                    &ctx.lookup,
+                    prover_info,
+                    constant_challenge,
+                    column_separator_challenges,
+                    &mut prover_transcript,
+                )
+            })
             .collect::<Result<Vec<Proof<F>>, _>>()
             .unwrap();
 
@@ -1270,7 +1267,19 @@ mod tests {
             .iter()
             .zip(ctx.lookup.table_circuits.iter())
             .map(|(prover_info, table_info)| {
-                LogUp::prove_table(&table_info.circuit, prover_info, &mut prover_transcript)
+                let lt = table_info.lookup_type;
+                let column_separator_challenges =
+                    prover_challenge_hashmap.get(&lt.name()).ok_or(anyhow!(
+                        "No challenges found for lookup type with name: {}",
+                        lt.name()
+                    ))?;
+                LogUp::prove_table(
+                    &table_info.circuit,
+                    prover_info,
+                    constant_challenge,
+                    column_separator_challenges,
+                    &mut prover_transcript,
+                )
             })
             .collect::<Result<Vec<Proof<F>>, _>>()
             .unwrap();
@@ -1295,26 +1304,29 @@ mod tests {
 
         let mut verifier_transcript = default_transcript();
         ctx.write_to_transcript(&mut verifier_transcript)?;
-        lookup_proofs.iter().for_each(|proof| {
-            verifier_transcript.append_field_elements(proof.commitment.root().0.as_slice())
-        });
+        commit_context.write_to_transcript(&mut verifier_transcript)?;
+
         let constant_challenge = verifier_transcript
-            .get_and_append_challenge(b"table_constant_challenge")
+            .get_and_append_challenge(b"table_constant")
             .elements;
-
-        let mut lookup_challenges = HashMap::<String, Vec<F>>::new();
-
-        table_proofs
+        let verifier_challenge_hashmap = ctx
+            .lookup
+            .table_circuits
             .iter()
-            .zip(ctx.lookup.table_circuits.iter())
-            .for_each(|(proof, table_info)| {
-                let table_type = table_info.lookup_type;
-                verifier_transcript.append_field_elements(proof.get_digest().0.as_slice());
-                let challenege = verifier_transcript
+            .map(|table_info| {
+                let challenge = prover_transcript
                     .get_and_append_challenge(b"table_challenge")
                     .elements;
-                lookup_challenges.insert(table_type.name(), vec![challenege, constant_challenge]);
-            });
+                let lt = table_info.lookup_type;
+                // We subtract one here because these are all table lookup types so number of columns per instance includes the multiplicity poly as well.
+                let num_columns = lt.num_columns_per_instance() - 1;
+                let column_separator_challenges =
+                    std::iter::successors(Some(F::ONE), |prev| Some(*prev * challenge))
+                        .take(num_columns)
+                        .collect::<Vec<F>>();
+                (lt.name(), column_separator_challenges)
+            })
+            .collect::<HashMap<String, Vec<F>>>();
 
         let mut proof_iter = lookup_proofs.into_iter();
         let (final_lookup_numerator, final_lookup_denominator) =
@@ -1322,16 +1334,19 @@ mod tests {
                 (F::ZERO, F::ONE),
                 |(acc_num, acc_denom), (step, step_info)| {
                     if step_info.requires_lookup() {
+                        println!("verifying step: {}", step_info.variant_name());
                         let proof = proof_iter.next().unwrap();
                         let (lookup_type, _) = ctx.lookup.get_circuit_and_type(step)?;
-                        let challenges =
-                            lookup_challenges.get(&lookup_type.name()).ok_or(anyhow!(
+                        let column_separator_challenges = verifier_challenge_hashmap
+                            .get(&lookup_type.name())
+                            .ok_or(anyhow!(
                                 "Couldn't get challenges for lookup type: {}",
                                 lookup_type.name()
                             ))?;
                         let verifier_claim = LogUp::verify(
                             &ctx.lookup,
-                            challenges,
+                            constant_challenge,
+                            column_separator_challenges,
                             step,
                             proof.clone(),
                             &mut verifier_transcript,
@@ -1368,12 +1383,15 @@ mod tests {
                         lookup_type,
                         ..
                     } = table_info;
-                    let challenges = lookup_challenges.get(&lookup_type.name()).ok_or(anyhow!(
-                        "Couldn't get challenges for lookup type: {}",
-                        lookup_type.name()
-                    ))?;
+                    let column_separator_challenges = verifier_challenge_hashmap
+                        .get(&lookup_type.name())
+                        .ok_or(anyhow!(
+                            "Couldn't get challenges for lookup type: {}",
+                            lookup_type.name()
+                        ))?;
                     let verifier_claim = LogUp::verify_table(
-                        challenges,
+                        constant_challenge,
+                        column_separator_challenges,
                         circuit,
                         proof.clone(),
                         &mut verifier_transcript,

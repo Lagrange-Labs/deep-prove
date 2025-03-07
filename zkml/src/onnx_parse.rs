@@ -1,9 +1,12 @@
 use crate::dense::Dense;
 use anyhow::{Context, Error, Result, bail, ensure};
+use goldilocks::GoldilocksExt2;
 use itertools::Itertools;
 use log::debug;
 use std::{collections::HashMap, i8, path::Path};
 use tract_onnx::{pb::NodeProto, prelude::*};
+
+type F = GoldilocksExt2;
 
 use crate::{
     Element,
@@ -270,7 +273,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
     // Create and return the model
     let mut model = Model::new();
     for layer in layers {
-        model.add_layer(layer);
+        model.add_layer::<F>(layer);
     }
     Ok(model)
 }
