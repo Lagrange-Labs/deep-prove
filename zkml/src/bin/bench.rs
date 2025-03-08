@@ -25,10 +25,6 @@ use rmp_serde::encode::to_vec_named;
 
 type F = GoldilocksExt2;
 
-// Add constants for model types
-const MODEL_TYPE_MLP: &str = "mlp";
-const MODEL_TYPE_CNN: &str = "cnn";
-
 #[derive(Parser, Debug)]
 struct Args {
     /// onxx file to load
