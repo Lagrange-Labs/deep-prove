@@ -293,12 +293,9 @@ impl Tensor<Element> {
             for j in 0..self.kx() {
                 for k in 0..(self.nw() * self.nw()) {
                     if F::to_canonical_u64_vec(&w_fft[i][j][k])[0] as u64 > (1 << 60 as u64) {
-                        real_weights[i][j][k] =
-                            //-(F::to_canonical_u64_vec(&(-w_fft[i][j][k]))[0] as Element);
-                            w_fft[i][j][k].into_element();
+                        real_weights[i][j][k] = w_fft[i][j][k].into_element();
                     } else {
                         real_weights[i][j][k] = w_fft[i][j][k].into_element();
-                        // F::to_canonical_u64_vec(&(w_fft[i][j][k]))[0] as Element;
                     }
                 }
             }
@@ -360,7 +357,7 @@ impl Tensor<Element> {
             for j in 0..out[i].len() {
                 let val = out[i][j].into_element();
                 out_element[i * out[i].len() + j] = val;
-                //if F::to_canonical_u64_vec(&out[i][j])[0] as u64 > (1 << 60 as u64) {
+                // if F::to_canonical_u64_vec(&out[i][j])[0] as u64 > (1 << 60 as u64) {
                 //    out_element[i * out[i].len() + j] =
                 //        -(F::to_canonical_u64_vec(&(-out[i][j]))[0] as Element);
                 //} else {

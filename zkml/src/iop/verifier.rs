@@ -229,8 +229,11 @@ where
     let given_randomized_input = output_claim.eval;
     ensure!(
         computed_randomized_input == given_randomized_input,
-        "input not valid from proof"
+        "input not valid from proof, should be: {:?} got: {:?}",
+        computed_randomized_input,
+        given_randomized_input
     );
+
     // 7. verify the opening of the accumulation of claims
     commit_verifier.verify(&ctx.weights, proof.commit, transcript)?;
 
@@ -376,31 +379,20 @@ where
         "Computed zerocheck claim did not line up with output of sumcheck verification"
     );
 
-    let lookup_gkr_claim = verifier_claims.gkr_claim();
-    let gkr_point = &lookup_gkr_claim.point_and_evals[0].point;
-    let gkr_point_len = gkr_point.len();
-    let gkr1 = gkr_point[gkr_point_len - 2];
-    let gkr2 = gkr_point[gkr_point_len - 1];
-    let extra_multiplcands = [
-        (E::ONE - gkr1) * (E::ONE - gkr2),
-        (E::ONE - gkr1) * gkr2,
-        gkr1 * (E::ONE - gkr2),
-        gkr1 * gkr2,
-    ];
-    let lookup_claim = input_claims
+    verifier_claims
+        .claims()
         .iter()
-        .skip(1)
-        .step_by(2)
-        .zip(extra_multiplcands)
-        .map(|(claim, m)| (output_claims[1].eval - claim.eval) * m)
-        .sum::<E>();
+        .zip(input_claims.iter().skip(1).step_by(2))
+        .try_for_each(|(gkr_claim, in_claim)| {
+            ensure!(
+                gkr_claim.eval == (output_claims[1].eval - in_claim.eval),
+                "Lookup claim did not line up got {:?} expected {:?}",
+                gkr_claim.eval,
+                output_claims[1].eval - in_claim.eval
+            );
+            Result::<(), anyhow::Error>::Ok(())
+        })?;
 
-    ensure!(
-        lookup_claim == lookup_gkr_claim.point_and_evals[0].eval,
-        "Lookup claim did not line up got {:?} expected {:?}",
-        lookup_claim,
-        lookup_gkr_claim.point_and_evals[0].eval
-    );
     Ok(out_claim)
 }
 

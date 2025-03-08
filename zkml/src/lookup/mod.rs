@@ -3,10 +3,7 @@ use ark_std::rand::thread_rng;
 use ff::Field;
 use ff_ext::ExtensionField;
 use gkr::{
-    structs::{
-        Circuit, CircuitWitness, GKRInputClaims, IOPProof, IOPProverState, IOPVerifierState,
-        PointAndEval,
-    },
+    structs::{Circuit, CircuitWitness, IOPProof, IOPProverState, IOPVerifierState, PointAndEval},
     util::ceil_log2,
 };
 
@@ -88,7 +85,6 @@ where
     claims: Vec<Claim<E>>,
     numerators: Vec<E>,
     denominators: Vec<E>,
-    gkr_claim: GKRInputClaims<E>,
 }
 
 impl<E: ExtensionField> VerifierClaims<E>
@@ -105,10 +101,6 @@ where
 
     pub fn denominators(&self) -> &[E] {
         &self.denominators
-    }
-
-    pub fn gkr_claim(&self) -> &GKRInputClaims<E> {
-        &self.gkr_claim
     }
 }
 
@@ -769,7 +761,7 @@ where
             (circuit_witness.len() / columns_per_instance).next_power_of_two();
 
         let required_padding = padded_instances_size * columns_per_instance - circuit_witness.len();
-
+        println!("lookup type: {:?}", lookup_type);
         let wits_in = circuit_witness
             .iter()
             .map(|evaluations| {
@@ -1093,7 +1085,6 @@ where
             claims: claims.clone(),
             numerators,
             denominators,
-            gkr_claim,
         })
     }
 
@@ -1180,7 +1171,6 @@ where
             claims: claims.clone(),
             numerators,
             denominators,
-            gkr_claim,
         })
     }
 }
