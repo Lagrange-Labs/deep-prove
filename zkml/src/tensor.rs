@@ -719,6 +719,50 @@ where
         }
     }
 
+    pub fn pad_last_two_dimensions(&self, target: Vec<usize>) -> Self {
+        assert!(self.shape.len() > 2, "Tensor must have 2 dimensions.");
+        assert!(target.len() == 2, "Tensor must have at least 2 dimensions.");
+
+        let (target_x, target_y) = (target[0], target[1]);
+        let current_x = self.shape[self.shape.len() - 2];
+        let current_y = self.shape[self.shape.len() - 1];
+
+        let pad_x = target_x - current_x;
+        let pad_y = target_y - current_y;
+
+        if pad_x == 0 && pad_y == 0 {
+            return self.clone();
+        }
+
+        let mut new_shape = self.shape.clone();
+        new_shape[self.shape.len() - 2] = target_x;
+        new_shape[self.shape.len() - 1] = target_y;
+        let new_size: usize = new_shape.iter().product();
+
+        let mut new_data = vec![T::default(); new_size];
+
+        let mut old_index = 0;
+        let mut new_index = 0;
+
+        // Iterate over all dimensions except the last two
+        let outer_dims: usize = self.shape[..self.shape.len() - 2].iter().product();
+        for _ in 0..outer_dims {
+            // Copy the original rows
+            for row in 0..current_x {
+                for col in 0..current_y {
+                    new_data[new_index + row * target_y + col] =
+                        self.data[old_index + row * current_y + col].clone();
+                }
+            }
+            old_index += current_x * current_y;
+            new_index += target_x * target_y;
+        }
+
+        let mut result = Tensor::new(new_shape, new_data);
+        result.update_input_shape(&self.input_shape);
+        result
+    }
+
     /// Perform matrix-matrix multiplication
     pub fn matmul(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(
@@ -1598,6 +1642,38 @@ mod test {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_tensor_pad() {
+        let shape_a = vec![3, 1, 1];
+        let tensor_a = Tensor::<Element>::new(shape_a.clone(), vec![1; shape_a.iter().product()]);
+
+        let shape_b = vec![3, 4, 4];
+        let tensor_b = Tensor::<Element>::new(shape_b, vec![
+            1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0,
+            0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0,
+        ]);
+
+        let tensor_c = tensor_a.pad_next_power_of_two();
+        assert_eq!(tensor_b, tensor_c);
+    }
+
+    #[test]
+    fn test_tensor_pad_last_two() {
+        let shape_a = vec![3, 1, 1];
+        let tensor_a = Tensor::<Element>::new(shape_a.clone(), vec![1; shape_a.iter().product()]);
+
+        let target_dim = vec![4, 4];
+        let shape_b = vec![3, 4, 4];
+        let tensor_b = Tensor::<Element>::new(shape_b, vec![
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
+
+        let tensor_c = tensor_a.pad_last_two_dimensions(target_dim);
+        assert_eq!(tensor_b, tensor_c);
     }
 
     #[test]
