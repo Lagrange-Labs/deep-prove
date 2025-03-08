@@ -36,7 +36,7 @@ where
     SchoolBookConvolution(SchoolBookConvInfo<E>),
     Activation(ActivationInfo),
     Requant(RequantInfo),
-    Pooling(PoolingInfo), // Maxpool update
+    Pooling(PoolingInfo),
     Table(TableInfo<E>),
 }
 
@@ -84,7 +84,7 @@ pub struct RequantInfo {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-// Maxpool update
+
 pub struct PoolingInfo {
     pub poolinfo: Maxpool2D,
     pub poly_id: PolyID,
@@ -117,7 +117,7 @@ where
             Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
             Self::Requant(_) => "Requant".to_string(),
-            Self::Pooling(_) => "Pooling".to_string(), // Maxpool update
+            Self::Pooling(_) => "Pooling".to_string(),
             Self::Table(..) => "Table".to_string(),
         }
     }
@@ -214,7 +214,6 @@ where
                             .skip(total_number_dims - 2)
                             .for_each(|dim| *dim = (*dim - info.kernel_size) / info.stride + 1);
                         StepInfo::Pooling(PoolingInfo {
-                            // Maxpool update
                             poolinfo: *info,
                             poly_id: id,
                             num_vars: last_output_shape
@@ -315,7 +314,6 @@ where
                     t.append_field_element(&E::BaseField::from(info.num_vars as u64));
                 }
                 StepInfo::Pooling(info) => {
-                    // Maxpool update
                     t.append_field_element(&E::BaseField::from(info.poolinfo.kernel_size as u64));
                     t.append_field_element(&E::BaseField::from(info.poolinfo.stride as u64));
                 }

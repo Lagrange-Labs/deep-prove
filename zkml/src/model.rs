@@ -1,4 +1,3 @@
-use crate::{convolution::Convolution, dense::Dense};
 use ff_ext::ExtensionField;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use tracing::debug;
@@ -6,6 +5,8 @@ use tracing::debug;
 use crate::{
     Element,
     activation::{Activation, Relu},
+    convolution::Convolution,
+    dense::Dense,
     pooling::Pooling,
     quantization::{Requant, TensorFielder},
     tensor::{ConvData, Tensor},
@@ -21,7 +22,7 @@ pub enum Layer {
     Convolution(Convolution),
     // Traditional convolution is used for debug purposes. That is because the actual convolution
     // we use relies on the FFT algorithm. This convolution does not have a snark implementation.
-    SchoolBookConvolution(Tensor<Element>),
+    SchoolBookConvolution(Convolution),
     Activation(Activation),
     // this is the output quant info. Since we always do a requant layer after each dense,
     // then we assume the inputs requant info are default()
@@ -55,8 +56,9 @@ impl Layer {
             Layer::Convolution(ref filter) => LayerOutput::ConvOut(filter.op(input)),
             // Traditional convolution is used for debug purposes. That is because the actual convolution
             // we use relies on the FFT algorithm. This convolution does not have a snark implementation.
-            Layer::SchoolBookConvolution(ref filter) => {
-                LayerOutput::NormalOut(filter.cnn_naive_convolution(input))
+            Layer::SchoolBookConvolution(ref conv_pair) => {
+                // LayerOutput::NormalOut(filter.cnn_naive_convolution(input))
+                LayerOutput::NormalOut(input.conv2d(&conv_pair.filter, &conv_pair.bias, 1))
             }
 
             Layer::Requant(info) => {
@@ -122,12 +124,14 @@ impl Layer {
 /// produces each token one by one.
 #[derive(Clone, Debug)]
 pub struct Model {
+    padded_in_shape: Vec<usize>,
     layers: Vec<Layer>,
 }
 
 impl Model {
     pub fn new() -> Self {
         Self {
+            padded_in_shape: Vec::new(),
             layers: Default::default(),
         }
     }
@@ -151,9 +155,22 @@ impl Model {
         }
     }
 
+    pub fn set_input_shape(&mut self, padded_in_shape: Vec<usize>) {
+        self.padded_in_shape = padded_in_shape;
+    }
+
     pub fn prepare_input(&self, input: Tensor<Element>) -> Tensor<Element> {
         match self.layers[0] {
             Layer::Dense(ref dense) => input.pad_1d(dense.ncols()),
+            Layer::Convolution(_) | Layer::SchoolBookConvolution(_) => {
+                assert!(
+                    self.padded_in_shape.len() > 0,
+                    "Set the input shape using `set_input_shape`"
+                );
+                let mut input = input;
+                input.pad_to_shape(self.padded_in_shape.clone());
+                input
+            }
             _ => {
                 panic!("unable to deal with non-vector input yet");
             }
@@ -188,6 +205,7 @@ impl Model {
                     trace.push_step(step);
                 }
                 LayerOutput::ConvOut((output, conv_data)) => {
+                    debug!("step: {}: output: {:?}", id, output);
                     let step = InferenceStep {
                         layer,
                         output,
@@ -208,10 +226,17 @@ impl Model {
     pub fn input_shape(&self) -> Vec<usize> {
         if let Layer::Dense(mat) = &self.layers[0] {
             vec![mat.matrix.nrows_2d()]
-        } else if let Layer::Convolution(filter) = &self.layers[0] {
-            vec![filter.ncols_2d()]
+        } else if matches!(
+            &self.layers[0],
+            Layer::Convolution(_) | Layer::SchoolBookConvolution(_)
+        ) {
+            assert!(
+                self.padded_in_shape.len() > 0,
+                "Set the input shape using `set_input_shape`"
+            );
+            self.padded_in_shape.clone()
         } else {
-            panic!("layer is not starting with a dense layer?")
+            panic!("layer is not starting with a dense or conv layer?")
         }
     }
 
@@ -381,7 +406,16 @@ pub(crate) mod test {
     use sumcheck::structs::{IOPProverState, IOPVerifierState};
 
     use crate::{
-        activation::{Activation, Relu}, convolution::Convolution, default_transcript, dense::Dense, model::Layer, pooling::{Maxpool2D, Pooling, MAXPOOL2D_KERNEL_SIZE}, quantization::TensorFielder, tensor::Tensor, testing::{random_bool_vector, random_vector}, Element
+        Element,
+        activation::{Activation, Relu},
+        convolution::Convolution,
+        default_transcript,
+        dense::Dense,
+        model::Layer,
+        pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
+        quantization::TensorFielder,
+        tensor::Tensor,
+        testing::{NextPowerOfTwo, random_bool_vector, random_vector},
     };
 
     use super::Model;
@@ -444,9 +478,9 @@ pub(crate) mod test {
 
             let minimum_initial_size = (1 << num_layers) * (3usize);
 
-            let mut input_shape = (0..4)
+            let mut input_shape = (0..3)
                 .map(|i| {
-                    if i < 2 {
+                    if i < 1 {
                         rng.gen_range(1..5usize).next_power_of_two()
                     } else {
                         (minimum_initial_size + rng.gen_range(1..4usize)).next_power_of_two()
@@ -460,7 +494,7 @@ pub(crate) mod test {
             for _ in 0..num_layers {
                 input_shape
                     .iter_mut()
-                    .skip(2)
+                    .skip(1)
                     .for_each(|dim| *dim = (*dim - info.kernel_size) / info.stride + 1);
                 model.add_layer::<F>(Layer::Pooling(Pooling::Maxpool2D(info)));
             }
@@ -508,9 +542,10 @@ pub(crate) mod test {
     }
 
     fn random_vector_quant(n: usize) -> Vec<Element> {
-        //vec![thread_rng().gen_range(-128..128); n]
+        // vec![thread_rng().gen_range(-128..128); n]
         random_vector(n)
     }
+
     #[test]
     fn test_cnn() {
         let mut in_dimensions: Vec<Vec<usize>> =
@@ -521,41 +556,53 @@ pub(crate) mod test {
                 in_dimensions[i][j] = (in_dimensions[i][j]).next_power_of_two();
             }
         }
+        // println!("in_dimensions: {:?}", in_dimensions);
         let w1 = random_vector_quant(16 * 16);
         let w2 = random_vector_quant(16 * 4 * 16);
         let w3 = random_vector_quant(16 * 8);
+
+        let shape1 = vec![1 << 4, 1 << 0, 1 << 2, 1 << 2]; // [16, 1, 4, 4]
+        let shape2 = vec![1 << 2, 1 << 4, 1 << 2, 1 << 2]; // [4, 16, 4, 4]
+        let shape3 = vec![1 << 1, 1 << 2, 1 << 2, 1 << 2]; // [2, 4, 4, 4]
         let conv1 = Tensor::new_conv(
-            vec![1 << 4, 1 << 0, 1 << 2, 1 << 2],
+            shape1.clone(),
+            // [1, 32, 32]
             in_dimensions[0].clone(),
             w1.clone(),
         );
         let conv2 = Tensor::new_conv(
-            vec![1 << 2, 1 << 4, 1 << 2, 1 << 2],
+            shape2.clone(),
+            // [16, 32, 32]
             in_dimensions[1].clone(),
             w2.clone(),
         );
         let conv3 = Tensor::new_conv(
-            vec![1 << 1, 1 << 2, 1 << 2, 1 << 2],
+            shape3.clone(),
+            // [4, 32, 32]
             in_dimensions[2].clone(),
             w3.clone(),
         );
 
-        let trad_conv1 = Tensor::new(vec![1 << 4, 1 << 0, 1 << 2, 1 << 2], w1.clone());
-        let trad_conv2 = Tensor::new(vec![1 << 2, 1 << 4, 1 << 2, 1 << 2], w2.clone());
-        let trad_conv3 = Tensor::new(vec![1 << 1, 1 << 2, 1 << 2, 1 << 2], w3.clone());
+        let bias1 = Tensor::zeros(vec![shape1[0]]);
+        let bias2 = Tensor::zeros(vec![shape2[0]]);
+        let bias3 = Tensor::zeros(vec![shape3[0]]);
+
+        let trad_conv1 = Tensor::new(shape1.clone(), w1.clone());
+        let trad_conv2 = Tensor::new(shape2.clone(), w2.clone());
+        let trad_conv3 = Tensor::new(shape3.clone(), w3.clone());
 
         let mut model = Model::new();
         model.add_layer::<F>(Layer::Convolution(Convolution::new(
             conv1.clone(),
-            Tensor::new(vec![conv1.kw()], random_vector_quant(conv1.kw())),
+            bias1.clone(),
         )));
         model.add_layer::<F>(Layer::Convolution(Convolution::new(
             conv2.clone(),
-            Tensor::new(vec![conv2.kw()], random_vector_quant(conv2.kw())),
+            bias2.clone(),
         )));
         model.add_layer::<F>(Layer::Convolution(Convolution::new(
             conv3.clone(),
-            Tensor::new(vec![conv3.kw()], random_vector_quant(conv3.kw())),
+            bias3.clone(),
         )));
 
         let input = Tensor::new(vec![1, 32, 32], random_vector_quant(1024));
@@ -563,9 +610,15 @@ pub(crate) mod test {
             model.run::<F>(input.clone());
 
         let mut model2 = Model::new();
-        model2.add_layer::<F>(Layer::SchoolBookConvolution(trad_conv1));
-        model2.add_layer::<F>(Layer::SchoolBookConvolution(trad_conv2));
-        model2.add_layer::<F>(Layer::SchoolBookConvolution(trad_conv3));
+        model2.add_layer::<F>(Layer::SchoolBookConvolution(Convolution::new(
+            trad_conv1, bias1,
+        )));
+        model2.add_layer::<F>(Layer::SchoolBookConvolution(Convolution::new(
+            trad_conv2, bias2,
+        )));
+        model2.add_layer::<F>(Layer::SchoolBookConvolution(Convolution::new(
+            trad_conv3, bias3,
+        )));
         let trace2 = model.run::<F>(input.clone());
 
         check_tensor_consistency_field::<GoldilocksExt2>(
@@ -573,7 +626,31 @@ pub(crate) mod test {
             trace.final_output().clone().to_fields(),
         );
 
-        // let out1: &Tensor<i128> = trace.final_output();
+        let _out1: &Tensor<i128> = trace.final_output();
+    }
+
+    #[test]
+    fn test_conv_maxpool() {
+        let input_shape_padded = vec![3usize, 32, 32].next_power_of_two();
+        let shape1 = vec![6, 3, 5, 5].next_power_of_two();
+
+        let filter1 = Tensor::new_conv(
+            shape1.clone(),
+            input_shape_padded.clone(),
+            random_vector_quant(shape1.prod()),
+        );
+
+        let bias1 = Tensor::random(vec![shape1[0]]);
+
+        let mut model = Model::new();
+        model.add_layer::<F>(Layer::Convolution(Convolution::new(
+            filter1.clone(),
+            bias1.clone(),
+        )));
+        model.add_layer::<F>(Layer::Pooling(Pooling::Maxpool2D(Maxpool2D::default())));
+
+        let input = Tensor::random(input_shape_padded.clone());
+        let _: crate::model::InferenceTrace<'_, _, GoldilocksExt2> = model.run::<F>(input.clone());
     }
 
     #[test]
@@ -809,9 +886,9 @@ pub(crate) mod test {
 
     #[test]
     fn test_cnn_prover() {
-        for i in (0)..(3) {
-            for j in (2)..(5) {
-                for l in (0)..(4) {
+        for i in 0..3 {
+            for j in 2..5 {
+                for l in 0..4 {
                     for n in 1..(j - 1) {
                         let n_w = 1 << n;
                         let k_w = 1 << l;
