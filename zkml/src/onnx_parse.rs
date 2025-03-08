@@ -688,7 +688,7 @@ mod tests {
     // cargo test --release --package zkml -- onnx_parse::tests::test_tract --nocapture
 
     #[test]
-    fn test_tract() {
+    fn test_load_mlp() {
         let filepath = "assets/scripts/MLP/mlp-iris-01.onnx";
         let result = load_model::<Element>(&filepath, ModelType::MLP);
 
@@ -696,7 +696,7 @@ mod tests {
     }
 
     #[test]
-    fn test_model_run() {
+    fn test_mlp_model_run() {
         let filepath = "assets/scripts/MLP/mlp-iris-01.onnx";
 
         let model = load_model::<Element>(&filepath, ModelType::MLP).unwrap();
