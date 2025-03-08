@@ -188,6 +188,7 @@ impl Model {
                     trace.push_step(step);
                 }
                 LayerOutput::ConvOut((output, conv_data)) => {
+                    debug!("step: {}: output: {:?}", id, output);
                     let step = InferenceStep {
                         layer,
                         output,

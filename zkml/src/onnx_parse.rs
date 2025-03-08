@@ -420,8 +420,9 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
             op if RESHAPE.contains(&op) => {
                 assert!(input_shape_padded.iter().all(|d| d.is_power_of_two()));
                 input_shape_padded = vec![input_shape_padded.iter().product()];
+                // TODO: Pad dense layer to remove junk/garbage FFT values from Conv
             }
-            _ => (),
+            _ => bail!("Unsupported operation"),
         };
         debug!(
             "{}. {}'s output shape: {:?}",
