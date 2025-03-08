@@ -103,14 +103,14 @@ impl Convolution {
         assert!(max_range.ilog2() as usize > *quantization::BIT_LEN);
         // TODO: this is wrong, as the formula comes from dense layer and not conv
         // see https://www.notion.so/lagrangelabs/sumcheck-example-19028d1c65a880a3abf6ca37318148ea?pvs=4#1ab28d1c65a88040b076e511ff98ae39
-        let shift = max_range.ilog2() as usize - *quantization::BIT_LEN;
+        let shift = (2*max_range).ilog2() as usize - *quantization::BIT_LEN;
 
         // let ind_range = (*quantization::MAX as i64 - *quantization::MIN as i64) as usize;
         // let max_range = (2*ind_range + self.filter.ncols_2d() as usize * ind_range).next_power_of_two();
         // let shift = (max_range.ilog2() as usize) - (*quantization::BIT_LEN as usize);
         Requant {
             // range: (max_val - min_val) as usize,
-            range: max_range as usize,
+            range: 2*max_range as usize,
             right_shift: shift,
             after_range: 1 << *quantization::BIT_LEN,
         }

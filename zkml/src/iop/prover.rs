@@ -737,15 +737,15 @@ where
         #[allow(deprecated)]
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
 
-        let mut claims = state.get_mle_final_evaluations();
-        let v = (E::ONE - proof.point[proof.point.len() - 1])
-            .invert()
-            .unwrap(); //(E::ONE - proof.point[proof.point.len()-1]).invert();
-        claims[0] = claims[0] * v;
+        //let mut claims = state.get_mle_final_evaluations();
+        //let v = (E::ONE - proof.point[proof.point.len() - 1])
+        //    .invert()
+        //    .unwrap(); //(E::ONE - proof.point[proof.point.len()-1]).invert();
+        //claims[0] = claims[0] * v;
 
         (
             proof.clone(),
-            claims,
+            state.get_mle_final_evaluations(),
             self.delegate_matrix_evaluation(&mut f_middle, r1.clone(), proof.point.clone(), false),
         )
     }
@@ -1020,6 +1020,16 @@ where
         let mut input_point = fft_proof.point.clone();
         let mut v = input_point.pop().unwrap();
         v = (E::ONE - v).invert().unwrap();
+
+        debug_assert!({
+            let p = [input_point.clone(),hadamard_proof.point[((filter.filter_size() * 2).ilog2() as usize)..].to_vec()].concat();
+            println!("({},{}), {}",proving_data.input.len(),proving_data.input[0].len(),p.len());
+            let y =  proving_data.input.clone().into_iter().flat_map(|v| v.into_iter()).collect::<Vec<E>>().into_mle().evaluate(&p);
+            assert_eq!(y,fft_claim[0] * v,"Error in input eval CONV PROVER");
+            assert_eq!(proving_data.real_input.clone().into_mle().evaluate(&p),fft_claim[0] * v,"Error in real input eval CONV PROVER");
+            proving_data.real_input.clone().into_mle().evaluate(&p) == fft_claim[0] * v
+        });
+
         let final_claim = Claim {
             point: [
                 input_point.clone(),

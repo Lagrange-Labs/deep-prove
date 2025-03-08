@@ -192,6 +192,7 @@ where
             }
             (StepProof::<E>::Convolution(proof), StepInfo::<E>::Convolution(info)) => {
                 verify_convolution(output_claim, &proof, info, &mut commit_verifier, transcript)?
+                
             }
             _ => bail!(
                 "Step proof: {} and step info: {} did not match",
@@ -606,6 +607,7 @@ where
         identity_eval(&proof.ifft_proof.point, &proof.hadamard_proof.point),
         "Error in Beta evaluation"
     );
+    
 
     commit_verifier.add_claim(
         info.poly_id,
@@ -616,6 +618,15 @@ where
             ]
             .concat(),
             proof.hadamard_clams[0],
+        ),
+    )?;
+
+    println!(">> {}",last_claim.point[(proof.ifft_delegation_proof.len())..].to_vec().len());
+    commit_verifier.add_claim(
+        info.bias_poly_id,
+        Claim::new(
+            last_claim.point[(proof.ifft_delegation_proof.len()+1)..].to_vec(),
+            proof.bias_claim
         ),
     )?;
     // >>>>>> TODO : 1) Dont forget beta evaluation 2) verification of the last step of delegation <<<<<<<
@@ -675,6 +686,9 @@ where
     let mut v = input_point.pop().unwrap();
     v = (E::ONE - v).invert().unwrap();
     // the output claim for this step that is going to be verified at next step
+    //for i in 0..input_point.len(){
+    //    input_point[i] = E::ONE-input_point[i];
+    //}
     Ok(Claim {
         // the new randomness to fix at next layer is the randomness from the sumcheck !
         point: [
