@@ -43,6 +43,15 @@ where
     ConvOut((Tensor<Element>, ConvData<F>)),
 }
 
+impl<F: ExtensionField> LayerOutput<F> {
+    pub fn describe(&self) -> String {
+        format!("{:?}", match self {
+            LayerOutput::NormalOut(tensor) => tensor.dims(),
+            LayerOutput::ConvOut((tensor, _)) => tensor.dims(),
+        })
+    }
+}
+
 impl Layer {
     /// Run the operation associated with that layer with the given input
     // TODO: move to tensor library : right now it works because we assume there is only Dense
@@ -168,6 +177,7 @@ impl Model {
         for (id, layer) in self.layers() {
             let input = trace.last_input();
             let output = layer.op(input);
+            println!("step: {}: input shape {:?}, output shape {:?}", id, input.dims(), output.describe());
             match output {
                 LayerOutput::NormalOut(output) => {
                     debug!("step: {}: output: {:?}", id, output);
@@ -380,16 +390,7 @@ pub(crate) mod test {
     use sumcheck::structs::{IOPProverState, IOPVerifierState};
 
     use crate::{
-        Element,
-        activation::{Activation, Relu},
-        convolution::Convolution,
-        default_transcript,
-        dense::Dense,
-        model::Layer,
-        pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
-        quantization::TensorFielder,
-        tensor::Tensor,
-        testing::random_bool_vector,
+        activation::{Activation, Relu}, convolution::Convolution, default_transcript, dense::Dense, model::Layer, pooling::{Maxpool2D, Pooling, MAXPOOL2D_KERNEL_SIZE}, quantization::{self, TensorFielder}, tensor::Tensor, testing::{random_bool_vector, random_vector}, Element
     };
 
     use super::Model;
@@ -515,8 +516,9 @@ pub(crate) mod test {
         }
     }
 
-    fn random_vector_quant(n: usize) -> Vec<Element> {
-        vec![thread_rng().gen_range(-128..128); n]
+    pub fn random_vector_quant(n: usize) -> Vec<Element> {
+        //vec![thread_rng().gen_range(-128..128); n]
+        random_vector(n)
     }
     #[test]
     fn test_cnn() {
@@ -841,13 +843,15 @@ pub(crate) mod test {
                         );
 
                         let mut model = Model::new();
-                        model.add_layer::<F>(Layer::Convolution(Convolution::new(
+                        let layer = Layer::Convolution(Convolution::new(
                             conv1.clone(),
                             Tensor::new(vec![conv1.kw()], random_vector_quant(conv1.kw())),
-                        )));
-                        model.describe();
+                        ));
                         let input =
                             Tensor::new(vec![k_x, n_x, n_x], random_vector_quant(n_x * n_x * k_x));
+                        layer.op::<F>(&input);
+                        model.add_layer::<F>(layer);
+                        model.describe();
                         let trace: crate::model::InferenceTrace<'_, _, GoldilocksExt2> =
                             model.run::<F>(input.clone());
                         let mut tr: BasicTranscript<GoldilocksExt2> =

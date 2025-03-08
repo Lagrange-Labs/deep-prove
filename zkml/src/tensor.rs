@@ -18,10 +18,7 @@ use std::{
 };
 
 use crate::{
-    Element,
-    pooling::MAXPOOL2D_KERNEL_SIZE,
-    quantization::{Fieldizer, IntoElement},
-    to_bit_sequence_le,
+    pooling::MAXPOOL2D_KERNEL_SIZE, quantization::{Fieldizer, IntoElement, TensorFielder}, to_bit_sequence_le, Element
 };
 
 // Function testing the consistency between the actual convolution implementation and
@@ -92,11 +89,8 @@ pub fn index_u<E: ExtensionField>(u: Vec<E>, n: usize) -> Vec<E> {
 pub fn index_x<E: ExtensionField>(x: Vec<Element>, vec: &mut Vec<E>, n: usize) {
     for i in 0..n {
         for j in 0..n {
-            if x[n * (n - 1 - i) + n - 1 - j] < 0 {
-                vec[i * n + j] = -E::from((0 - x[n * (n - 1 - i) + n - 1 - j]) as u64);
-            } else {
-                vec[i * n + j] = E::from((x[n * (n - 1 - i) + n - 1 - j]) as u64);
-            }
+            let val = x[n * (n - 1 - i) + n - 1 - j];
+            vec[i * n + j] = val.to_field();
         }
     }
 }
@@ -318,14 +312,7 @@ impl Tensor<Element> {
     ) -> (Tensor<Element>, ConvData<F>) {
         let n_x = x.shape[1].next_power_of_two();
         let mut x_vec = vec![vec![F::ZERO; n_x * n_x]; x.shape[0].next_power_of_two()];
-        let mut w_fft = vec![F::ZERO; self.data.len()];
-        for i in 0..w_fft.len() {
-            if self.data[i] < 0 {
-                w_fft[i] = -F::from((-self.data[i]) as u64);
-            } else {
-                w_fft[i] = F::from((self.data[i]) as u64);
-            }
-        }
+        let w_fft: Vec<F> = self.data.iter().map(|w| w.to_field()).collect_vec();
 
         for i in 0..x_vec.len() {
             index_x(
@@ -365,13 +352,7 @@ impl Tensor<Element> {
         let mut out_element: Vec<Element> = vec![0; out.len() * out[0].len()];
         for i in 0..out.len() {
             for j in 0..out[i].len() {
-                if F::to_canonical_u64_vec(&out[i][j])[0] as u64 > (1 << 60 as u64) {
-                    out_element[i * out[i].len() + j] =
-                        -(F::to_canonical_u64_vec(&(-out[i][j]))[0] as Element);
-                } else {
-                    out_element[i * out[i].len() + j] =
-                        F::to_canonical_u64_vec(&(out[i][j]))[0] as Element;
-                }
+                out_element[i * out[i].len() + j] = out[i][j].into_element();
             }
         }
 

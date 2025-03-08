@@ -219,6 +219,7 @@ where
                             poly_id: id,
                             num_vars: last_output_shape
                                 .iter()
+                                //.skip(last_output_shape.len() - 2)
                                 .map(|dim| ceil_log2(*dim))
                                 .sum::<usize>(),
                         })
