@@ -20,7 +20,7 @@ import torch.optim as optim
 parser = argparse.ArgumentParser(description="mlp generator --num-dense and --layer-width")
 parser.add_argument("--num-dense", type=int, required=True, help="Number of dense layers")
 parser.add_argument("--layer-width", type=int, required=True, help="Width of each layer")
-parser.add_argument("--export", type=Path, required=False, default=Path("."), help="folder where to export model and input")
+parser.add_argument("--export", type=Path, default=Path('bench'), help="Directory to export the model to (default: bench)")
 parser.add_argument("--num-samples", type=int, default=100, help="Number of test samples to export")
 
 args = parser.parse_args()
@@ -125,8 +125,8 @@ print("Expected:", test_y[0], "Predicted", torch.argmax(y_pred, dim=0))
 
 from pathlib import Path
 
-model_path = args.export / "mlp-model.onnx"
-data_path = args.export / "mlp-input.json"
+model_path = args.export / "model.onnx"
+data_path = args.export / "input.json"
 
 x = test_X[0].reshape(1, 4)
 model.eval()

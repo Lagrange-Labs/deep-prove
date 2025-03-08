@@ -13,7 +13,7 @@ use csv::WriterBuilder;
 use goldilocks::GoldilocksExt2;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt};
-use zkml::{ModelType, load_model, quantization::Quantizer};
+use zkml::{load_model, model::Model, quantization::Quantizer, ModelType};
 
 use serde::{Deserialize, Serialize};
 use zkml::{
@@ -24,6 +24,10 @@ use zkml::{
 use rmp_serde::encode::to_vec_named;
 
 type F = GoldilocksExt2;
+
+// Add constants for model types
+const MODEL_TYPE_MLP: &str = "mlp";
+const MODEL_TYPE_CNN: &str = "cnn";
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -122,7 +126,9 @@ const CSV_PROOF_SIZE: &str = "proof size (KB)";
 
 fn run(args: Args) -> anyhow::Result<()> {
     info!("[+] Reading onnx model");
-    let model = load_model::<Element>(&args.onnx, ModelType::MLP).context("loading model:")?;
+    let mtype = ModelType::from_onnx(&args.onnx)?;
+    info!("Loading model with type: {:?}", mtype);
+    let model = load_model::<F>(&args.onnx, mtype)?;
     model.describe();
     info!("[+] Reading input/output from pytorch");
     let (inputs, given_outputs) =

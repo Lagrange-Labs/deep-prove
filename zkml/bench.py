@@ -32,6 +32,11 @@ PROOF_SIZE = "proof size (KB)"
 SAMPLE = "sample"
 EZKL_FULL_PROVING = "ezkl_full_proving (ms)"  # New constant for full proving time
 
+# Constants for file paths
+MODEL = "model.onnx"
+INPUT = "input.json"
+EZKL_KZG_PARAMS = "kzg.params"
+
 class CSVBencher:
     def __init__(self, headers: List[str]):
         self.headers = headers
@@ -112,9 +117,6 @@ def ex(cmd, verbose=False):
 # Default paths
 DEFAULT_BENCH_FOLDER = Path("./bench/")
 PYTORCH_SCRIPT = "./assets/scripts/MLP/mlp.py"
-MODEL = "mlp-model.onnx"
-INPUT = "mlp-input.json"
-EZKL_KZG_PARAMS = "kzg.params"
 
 def create_model(num_dense, layer_width, output_dir, verbose, num_samples, model_type):
     """Create a model with the specified parameters"""
@@ -160,12 +162,8 @@ def create_model(num_dense, layer_width, output_dir, verbose, num_samples, model
         print(result.stdout)
     
     # Return paths to model and input/output file
-    if model_type == "mlp":
-        model_path = output_dir / "mlp-model.onnx"
-        input_path = output_dir / "mlp-input.json"
-    else:  # model_type == "cnn"
-        model_path = output_dir / "cifar-cnn.onnx"
-        input_path = output_dir / "cifar-input.json"
+    model_path = output_dir / MODEL
+    input_path = output_dir / INPUT
     
     if not model_path.exists() or not input_path.exists():
         missing = []
@@ -666,7 +664,7 @@ def parse_arguments():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Run benchmarks for ZKML and EZKL")
     parser.add_argument("--configs", type=str, default="1,10:2,20",
-                        help="Model configurations to benchmark in format 'dense,width:dense,width'")
+                        help="Model configurations for mlp to benchmark in format 'dense,width:dense,width'")
     parser.add_argument("--repeats", type=int, default=3,
                         help="Number of times to repeat each benchmark")
     parser.add_argument("--run-ezkl", action="store_true",

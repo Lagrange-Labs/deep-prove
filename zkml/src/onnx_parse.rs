@@ -155,6 +155,14 @@ impl ModelType {
             }
         }
     }
+    pub fn from_onnx(filepath: &str) -> Result<ModelType> {
+        let model_type = if is_cnn(filepath)? {
+            ModelType::CNN
+        } else {
+            ModelType::MLP
+        };
+        Ok(model_type)
+    }
 }
 
 /// Unified model loading function that handles both MLP and CNN models
