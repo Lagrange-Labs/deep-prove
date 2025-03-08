@@ -1,4 +1,3 @@
-use crate::{convolution::Convolution, dense::Dense};
 use ff_ext::ExtensionField;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use tracing::debug;
@@ -6,6 +5,8 @@ use tracing::debug;
 use crate::{
     Element,
     activation::{Activation, Relu},
+    convolution::Convolution,
+    dense::Dense,
     pooling::Pooling,
     quantization::{Requant, TensorFielder},
     tensor::{ConvData, Tensor},
@@ -21,7 +22,7 @@ pub enum Layer {
     Convolution(Convolution),
     // Traditional convolution is used for debug purposes. That is because the actual convolution
     // we use relies on the FFT algorithm. This convolution does not have a snark implementation.
-    SchoolBookConvolution(Tensor<Element>),
+    SchoolBookConvolution(Convolution),
     Activation(Activation),
     // this is the output quant info. Since we always do a requant layer after each dense,
     // then we assume the inputs requant info are default()
@@ -55,8 +56,9 @@ impl Layer {
             Layer::Convolution(ref filter) => LayerOutput::ConvOut(filter.op(input)),
             // Traditional convolution is used for debug purposes. That is because the actual convolution
             // we use relies on the FFT algorithm. This convolution does not have a snark implementation.
-            Layer::SchoolBookConvolution(ref filter) => {
-                LayerOutput::NormalOut(filter.cnn_naive_convolution(input))
+            Layer::SchoolBookConvolution(ref conv_pair) => {
+                // LayerOutput::NormalOut(filter.cnn_naive_convolution(input))
+                LayerOutput::NormalOut(input.conv2d(&conv_pair.filter, &conv_pair.bias, 1))
             }
 
             Layer::Requant(info) => {
@@ -122,12 +124,14 @@ impl Layer {
 /// produces each token one by one.
 #[derive(Clone, Debug)]
 pub struct Model {
+    padded_in_shape: Vec<usize>,
     layers: Vec<Layer>,
 }
 
 impl Model {
     pub fn new() -> Self {
         Self {
+            padded_in_shape: Vec::new(),
             layers: Default::default(),
         }
     }
@@ -139,7 +143,7 @@ impl Model {
                 // default quantization inputs for matrix and vector
                 Some(Layer::Requant(dense.requant_info()))
             }
-            Layer::Convolution(ref filter) => Some(Layer::Requant(filter.requant_info::<F>())),
+            // Layer::Convolution(ref filter) => Some(Layer::Requant(filter.requant_info::<F>())),
             // Layer::Traditional_Convolution(ref filter) => {
             // Some(Layer::Requant(Requant::from_matrix_default(filter)))
             // }
@@ -151,9 +155,22 @@ impl Model {
         }
     }
 
+    pub fn set_input_shape(&mut self, padded_in_shape: Vec<usize>) {
+        self.padded_in_shape = padded_in_shape;
+    }
+
     pub fn prepare_input(&self, input: Tensor<Element>) -> Tensor<Element> {
         match self.layers[0] {
             Layer::Dense(ref dense) => input.pad_1d(dense.ncols()),
+            Layer::Convolution(_) | Layer::SchoolBookConvolution(_) => {
+                assert!(
+                    self.padded_in_shape.len() > 0,
+                    "Set the input shape using `set_input_shape`"
+                );
+                let mut input = input;
+                input.pad_to_shape(self.padded_in_shape.clone());
+                input
+            }
             _ => {
                 panic!("unable to deal with non-vector input yet");
             }
@@ -209,10 +226,17 @@ impl Model {
     pub fn input_shape(&self) -> Vec<usize> {
         if let Layer::Dense(mat) = &self.layers[0] {
             vec![mat.matrix.nrows_2d()]
-        } else if let Layer::Convolution(filter) = &self.layers[0] {
-            vec![filter.ncols_2d()]
+        } else if matches!(
+            &self.layers[0],
+            Layer::Convolution(_) | Layer::SchoolBookConvolution(_)
+        ) {
+            assert!(
+                self.padded_in_shape.len() > 0,
+                "Set the input shape using `set_input_shape`"
+            );
+            self.padded_in_shape.clone()
         } else {
-            panic!("layer is not starting with a dense layer?")
+            panic!("layer is not starting with a dense or conv layer?")
         }
     }
 
@@ -542,8 +566,11 @@ pub(crate) mod test {
         );
 
         let trad_conv1 = Tensor::new(vec![1 << 4, 1 << 0, 1 << 2, 1 << 2], w1.clone());
+        let trad_conv1_bias = Tensor::zeros(vec![trad_conv1.dims()[0]]);
         let trad_conv2 = Tensor::new(vec![1 << 2, 1 << 4, 1 << 2, 1 << 2], w2.clone());
+        let trad_conv2_bias = Tensor::zeros(vec![trad_conv2.dims()[0]]);
         let trad_conv3 = Tensor::new(vec![1 << 1, 1 << 2, 1 << 2, 1 << 2], w3.clone());
+        let trad_conv3_bias = Tensor::zeros(vec![trad_conv3.dims()[0]]);
 
         let mut model = Model::new();
         model.add_layer::<F>(Layer::Convolution(Convolution::new(
@@ -564,9 +591,18 @@ pub(crate) mod test {
             model.run::<F>(input.clone());
 
         let mut model2 = Model::new();
-        model2.add_layer::<F>(Layer::SchoolBookConvolution(trad_conv1));
-        model2.add_layer::<F>(Layer::SchoolBookConvolution(trad_conv2));
-        model2.add_layer::<F>(Layer::SchoolBookConvolution(trad_conv3));
+        model2.add_layer::<F>(Layer::SchoolBookConvolution(Convolution::new(
+            trad_conv1,
+            trad_conv1_bias,
+        )));
+        model2.add_layer::<F>(Layer::SchoolBookConvolution(Convolution::new(
+            trad_conv2,
+            trad_conv2_bias,
+        )));
+        model2.add_layer::<F>(Layer::SchoolBookConvolution(Convolution::new(
+            trad_conv3,
+            trad_conv3_bias,
+        )));
         let trace2 = model.run::<F>(input.clone());
 
         check_tensor_consistency_field::<GoldilocksExt2>(

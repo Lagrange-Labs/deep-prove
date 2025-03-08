@@ -293,6 +293,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
         .iter()
         .map(|i| i.next_power_of_two())
         .collect_vec();
+    let model_in_shape = input_shape_padded.clone();
     debug!("Padded input shape: {:?}", input_shape_padded);
     let mut initializers: HashMap<String, Tensor> = HashMap::new();
     for item in graph.initializer {
@@ -403,7 +404,9 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
                 weight.update_input_shape(&input_shape_padded);
                 let dims = weight.dims(); // save the shape of the filter to compute the output shape
 
-                let layer = Layer::Convolution(Convolution::new(weight, _bias));
+                // let layer = Layer::Convolution(Convolution::new(weight, _bias));
+                let layer = Layer::SchoolBookConvolution(Convolution::new(weight, _bias));
+
                 layers.push(layer);
 
                 input_shape_padded[0] = dims[0]
@@ -434,7 +437,9 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
 
     // Create and return the model
     let mut model = Model::new();
+    model.set_input_shape(model_in_shape);
     for layer in layers {
+        debug!("Added the layer: {}", layer.describe());
         model.add_layer::<F>(layer);
     }
     // model.describe();
@@ -751,6 +756,15 @@ mod tests {
         let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
         let result = load_model::<Element>(&filepath, ModelType::CNN);
 
+        // let z = Vec::<usize>::new();
+        // println!("Size: {}", z.len());
+
         assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
+
+        let model = result.unwrap();
+        let input = crate::tensor::Tensor::random(model.input_shape());
+        let input = model.prepare_input(input);
+        let trace = model.run::<F>(input.clone());
+        println!("Result: {:?}", trace.final_output());
     }
 }
