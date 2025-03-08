@@ -634,19 +634,20 @@ pub(crate) mod test {
         let input_shape_padded = vec![3usize, 32, 32].next_power_of_two();
         let shape1 = vec![6, 3, 5, 5].next_power_of_two();
 
-        println!(
-            "input_shape_padded shape: {:?}. shape: {:?}",
-            input_shape_padded, shape1
+        let filter1 = Tensor::new_conv(
+            shape1.clone(),
+            input_shape_padded.clone(),
+            random_vector_quant(shape1.prod()),
         );
-        let mut filter1 = Tensor::random(shape1.clone());
+
         let bias1 = Tensor::random(vec![shape1[0]]);
-        filter1.update_input_shape(&input_shape_padded);
 
         let mut model = Model::new();
         model.add_layer::<F>(Layer::Convolution(Convolution::new(
             filter1.clone(),
             bias1.clone(),
         )));
+        model.add_layer::<F>(Layer::Pooling(Pooling::Maxpool2D(Maxpool2D::default())));
 
         let input = Tensor::random(input_shape_padded.clone());
         let _: crate::model::InferenceTrace<'_, _, GoldilocksExt2> = model.run::<F>(input.clone());

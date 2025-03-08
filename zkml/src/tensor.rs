@@ -425,6 +425,12 @@ impl<T> Tensor<T> {
         self.shape.clone()
     }
 
+    /// Get the dimensions of the tensor
+    pub fn get_input_shape(&self) -> Vec<usize> {
+        assert!(self.shape.len() > 0, "Empty tensor");
+        self.input_shape.clone()
+    }
+
     /// Is vector
     pub fn is_vector(&self) -> bool {
         self.dims().len() == 1

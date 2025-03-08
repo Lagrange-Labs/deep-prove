@@ -196,7 +196,7 @@ fn check_cnn_input(input_shape: &[usize]) -> Result<bool> {
 
 /// Assumes stride=1, padding=0, and dilation=1
 /// https://pytorch.org/docs/stable/generated/torch.nn.Conv2d.html
-fn _conv2d_shape(input_shape: &[usize], filter_shape: &[usize]) -> Vec<usize> {
+fn conv2d_shape(input_shape: &[usize], filter_shape: &[usize]) -> Vec<usize> {
     let result = check_filter(filter_shape);
     assert!(result.is_ok(), "conv2d: Failed {:?}", result.unwrap_err());
 
@@ -294,8 +294,8 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
         .map(|i| i.next_power_of_two())
         .collect_vec();
     let model_in_shape = input_shape_padded.clone();
-    println!("Input shape: {:?}", input_shape);
-    println!("Padded input shape: {:?}", input_shape_padded);
+    debug!("Input shape: {:?}", input_shape);
+    debug!("Padded input shape: {:?}", input_shape_padded);
     let mut initializers: HashMap<String, Tensor> = HashMap::new();
     for item in graph.initializer {
         let dt = tract_onnx::pb::tensor_proto::DataType::from_i32(item.data_type)
@@ -369,7 +369,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
                     &initializers,
                     global_max_abs,
                 )?;
-                let mut _bias =
+                let mut bias =
                     fetch_weight_bias_as_tensor::<Q>("bias", node, &initializers, global_max_abs)?;
 
                 let weight_shape = weight.dims();
@@ -377,13 +377,13 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
                 let shape_test = check_filter(&weight_shape);
                 assert!(shape_test.is_ok(), "Failed: {:?}", shape_test.unwrap_err());
                 assert!(
-                    weight_shape[0] == _bias.dims()[0],
+                    weight_shape[0] == bias.dims()[0],
                     "Bias length doesn't match filter shape"
                 );
 
                 // Pad the tensors to the next power of two.
                 weight = weight.pad_next_power_of_two();
-                _bias = _bias.pad_next_power_of_two();
+                bias = bias.pad_next_power_of_two();
 
                 // Make sure that input shape is already padded and is well formed
                 assert!(input_shape_padded.iter().all(|d| d.is_power_of_two()));
@@ -399,18 +399,29 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
                     "Filter dimensions have to be smaller than input dimensions"
                 );
 
-                weight = weight.pad_last_two_dimensions(vec![input_height, input_weight]);
+                // weight = weight.pad_last_two_dimensions(vec![input_height, input_weight]);
 
                 // Filter need to know the shape of the input
-                weight.update_input_shape(&input_shape_padded);
-                let dims = weight.dims(); // save the shape of the filter to compute the output shape
+                // weight.update_input_shape(&input_shape_padded);
 
-                let layer = Layer::Convolution(Convolution::new(weight, _bias));
+                let dims = weight.dims();
+                let weight = crate::tensor::Tensor::new_conv(
+                    weight.dims(),
+                    input_shape_padded.clone(),
+                    weight.get_data().to_vec(),
+                );
+                // let dims = weight.dims(); // save the shape of the filter to compute the output shape
+
+                let layer = Layer::Convolution(Convolution::new(weight, bias));
                 // let layer = Layer::SchoolBookConvolution(Convolution::new(weight, _bias));
 
                 layers.push(layer);
 
-                input_shape_padded[0] = dims[0]
+                let output_shape = conv2d_shape(&input_shape_padded, &dims);
+                input_shape_padded = output_shape
+                    .iter()
+                    .map(|i| i.next_power_of_two())
+                    .collect_vec();
             }
             op if DOWNSAMPLING.contains(&op) => {
                 // Make sure that input shape is already padded and is well formed
@@ -687,7 +698,9 @@ mod tests {
 
     use super::*;
 
+    use crate::{Context, IO, Prover, lookup, quantization::TensorFielder, verify};
     use goldilocks::GoldilocksExt2;
+    use transcript::BasicTranscript;
 
     type F = GoldilocksExt2;
 
@@ -757,15 +770,25 @@ mod tests {
         let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
         let result = load_model::<Element>(&filepath, ModelType::CNN);
 
-        // let z = Vec::<usize>::new();
-        // println!("Size: {}", z.len());
-
         assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
 
         let model = result.unwrap();
         let input = crate::tensor::Tensor::random(model.input_shape());
         let input = model.prepare_input(input);
         let trace = model.run::<F>(input.clone());
-        println!("Result: {:?}", trace.final_output());
+        // println!("Result: {:?}", trace.final_output());
+
+        let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
+        let ctx = Context::<GoldilocksExt2>::generate(&model, Some(input.dims()))
+            .expect("Unable to generate context");
+        let output = trace.final_output().clone();
+
+        let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, lookup::LogUp> =
+            Prover::new(&ctx, &mut tr);
+        let proof = prover.prove(trace).expect("unable to generate proof");
+        let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
+            BasicTranscript::new(b"m2vec");
+        let io = IO::new(input.to_fields(), output.to_fields());
+        verify::<_, _, lookup::LogUp>(ctx, proof, io, &mut verifier_transcript).unwrap();
     }
 }
