@@ -64,20 +64,22 @@ impl Convolution {
         let min_quant = *quantization::MIN as Element;
         let max_quant = *quantization::MAX as Element;
 
-        let mut max_range: u128 = 0;
+        let mut max_output: Element = 0;
+        let mut min_output: Element = 0;
         let max_bias = self.bias.get_data().iter().max().unwrap();
+        let min_bias = self.bias.get_data().iter().min().unwrap();
 
         // Keep the original iteration order: first over kernel height (i), then kernel width (j), then output channels (k)
         for i in 0..self.kw() {
             for j in 0..self.kx() {
-                let mut min_temp: Element = 0;
-                let mut max_temp: Element = 0;
+                let mut min_temp: Element = *min_bias;
+                let mut max_temp: Element = *max_bias;
 
                 // Loop over output channels (k) and apply weights and bias
                 for k in 0..(self.nw() * self.nw()) {
                     let weight = weights[i][j][k];
                     // PANICKING HERE
-                    //let bias = self.bias.data[k]; // Bias for the current output channel
+                    // let bias = self.bias.data[k]; // Bias for the current output channel
                     let bias = *max_bias;
 
                     if weight != 0 {
@@ -97,17 +99,13 @@ impl Convolution {
                 }
 
                 // After processing all output channels for this (i, j) location, update the global min and max
-                max_range = max_range.max((max_temp - min_temp).unsigned_abs().next_power_of_two());
+                max_output = max_output.max(max_temp);
+                min_output = min_output.min(min_temp);
             }
         }
+        let max_range = 2*(max_output - min_output).unsigned_abs().next_power_of_two();
         assert!(max_range.ilog2() as usize > *quantization::BIT_LEN);
-        // TODO: this is wrong, as the formula comes from dense layer and not conv
-        // see https://www.notion.so/lagrangelabs/sumcheck-example-19028d1c65a880a3abf6ca37318148ea?pvs=4#1ab28d1c65a88040b076e511ff98ae39
-        let shift = max_range.ilog2() as usize - *quantization::BIT_LEN;
-
-        // let ind_range = (*quantization::MAX as i64 - *quantization::MIN as i64) as usize;
-        // let max_range = (2*ind_range + self.filter.ncols_2d() as usize * ind_range).next_power_of_two();
-        // let shift = (max_range.ilog2() as usize) - (*quantization::BIT_LEN as usize);
+        let shift = (2*max_range).ilog2() as usize - *quantization::BIT_LEN;
         Requant {
             // range: (max_val - min_val) as usize,
             range: max_range as usize,
@@ -119,12 +117,14 @@ impl Convolution {
 
 #[cfg(test)]
 mod test {
+    use crate::testing::random_vector;
+
     use super::*;
-    use ark_std::rand::{Rng, thread_rng};
     use goldilocks::GoldilocksExt2;
 
     fn random_vector_quant(n: usize) -> Vec<Element> {
-        vec![thread_rng().gen_range(-128..128); n]
+        //vec![thread_rng().gen_range(-128..128); n]
+        random_vector(n)
     }
 
     #[test]

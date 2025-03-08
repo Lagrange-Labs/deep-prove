@@ -173,6 +173,7 @@ impl Model {
                     debug!("step: {}: output: {:?}", id, output);
                     let empty_matrix: Vec<Vec<E>> = vec![vec![Default::default(); 0]; 0];
                     let conv_data = ConvData::<E>::new(
+                        vec![Default::default(); 0],
                         empty_matrix.clone(),
                         empty_matrix.clone(),
                         empty_matrix.clone(),
@@ -380,16 +381,7 @@ pub(crate) mod test {
     use sumcheck::structs::{IOPProverState, IOPVerifierState};
 
     use crate::{
-        Element,
-        activation::{Activation, Relu},
-        convolution::Convolution,
-        default_transcript,
-        dense::Dense,
-        model::Layer,
-        pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
-        quantization::TensorFielder,
-        tensor::Tensor,
-        testing::random_bool_vector,
+        activation::{Activation, Relu}, convolution::Convolution, default_transcript, dense::Dense, model::Layer, pooling::{Maxpool2D, Pooling, MAXPOOL2D_KERNEL_SIZE}, quantization::TensorFielder, tensor::Tensor, testing::{random_bool_vector, random_vector}, Element
     };
 
     use super::Model;
@@ -516,7 +508,8 @@ pub(crate) mod test {
     }
 
     fn random_vector_quant(n: usize) -> Vec<Element> {
-        vec![thread_rng().gen_range(-128..128); n]
+        //vec![thread_rng().gen_range(-128..128); n]
+        random_vector(n)
     }
     #[test]
     fn test_cnn() {

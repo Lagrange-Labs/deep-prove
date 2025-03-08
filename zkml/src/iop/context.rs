@@ -227,7 +227,7 @@ where
                     Layer::Convolution(filter) => {
                         // TO SEE
                         // last_output_size = filter.nrows_2d();
-
+                        /*
                         let filter_shape = filter.filter.dims();
                         let total_dims = last_output_shape.len();
                         last_output_shape = std::iter::once(filter_shape[0])
@@ -238,7 +238,11 @@ where
                                     .map(|&dim| ceil_log2(dim)),
                             )
                             .collect::<Vec<usize>>();
-
+                         */
+                        let mut filter_shape = filter.filter.dims();
+                        filter_shape.remove(1);
+                        last_output_shape = filter_shape;
+                        
                         let mut delegation_fft: Vec<VPAuxInfo<E>> = Vec::new();
                         let mut delegation_ifft: Vec<VPAuxInfo<E>> = Vec::new();
                         // println!("{},{}",id,filter.filter_size());
