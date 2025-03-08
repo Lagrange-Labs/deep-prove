@@ -294,7 +294,8 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
         .map(|i| i.next_power_of_two())
         .collect_vec();
     let model_in_shape = input_shape_padded.clone();
-    debug!("Padded input shape: {:?}", input_shape_padded);
+    println!("Input shape: {:?}", input_shape);
+    println!("Padded input shape: {:?}", input_shape_padded);
     let mut initializers: HashMap<String, Tensor> = HashMap::new();
     for item in graph.initializer {
         let dt = tract_onnx::pb::tensor_proto::DataType::from_i32(item.data_type)

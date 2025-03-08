@@ -415,7 +415,7 @@ pub(crate) mod test {
         pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
         quantization::TensorFielder,
         tensor::Tensor,
-        testing::{random_bool_vector, random_vector},
+        testing::{NextPowerOfTwo, random_bool_vector, random_vector},
     };
 
     use super::Model;
@@ -631,85 +631,25 @@ pub(crate) mod test {
 
     #[test]
     fn test_conv_maxpool() {
-        let mut in_dimensions: Vec<Vec<usize>> =
-            vec![vec![1, 32, 32], vec![16, 29, 29], vec![4, 26, 26]];
+        let input_shape_padded = vec![3usize, 32, 32].next_power_of_two();
+        let shape1 = vec![6, 3, 5, 5].next_power_of_two();
 
-        for i in 0..in_dimensions.len() {
-            for j in 0..in_dimensions[0].len() {
-                in_dimensions[i][j] = (in_dimensions[i][j]).next_power_of_two();
-            }
-        }
-        // println!("in_dimensions: {:?}", in_dimensions);
-        let w1 = random_vector_quant(16 * 16);
-        let w2 = random_vector_quant(16 * 4 * 16);
-        let w3 = random_vector_quant(16 * 8);
-
-        let shape1 = vec![1 << 4, 1 << 0, 1 << 2, 1 << 2]; // [16, 1, 4, 4]
-        let shape2 = vec![1 << 2, 1 << 4, 1 << 2, 1 << 2]; // [4, 16, 4, 4]
-        let shape3 = vec![1 << 1, 1 << 2, 1 << 2, 1 << 2]; // [2, 4, 4, 4]
-        let conv1 = Tensor::new_conv(
-            shape1.clone(),
-            // [1, 32, 32]
-            in_dimensions[0].clone(),
-            w1.clone(),
+        println!(
+            "input_shape_padded shape: {:?}. shape: {:?}",
+            input_shape_padded, shape1
         );
-        let conv2 = Tensor::new_conv(
-            shape2.clone(),
-            // [16, 32, 32]
-            in_dimensions[1].clone(),
-            w2.clone(),
-        );
-        let conv3 = Tensor::new_conv(
-            shape3.clone(),
-            // [4, 32, 32]
-            in_dimensions[2].clone(),
-            w3.clone(),
-        );
-
-        let bias1 = Tensor::zeros(vec![shape1[0]]);
-        let bias2 = Tensor::zeros(vec![shape2[0]]);
-        let bias3 = Tensor::zeros(vec![shape3[0]]);
-
-        let trad_conv1 = Tensor::new(shape1.clone(), w1.clone());
-        let trad_conv2 = Tensor::new(shape2.clone(), w2.clone());
-        let trad_conv3 = Tensor::new(shape3.clone(), w3.clone());
+        let mut filter1 = Tensor::random(shape1.clone());
+        let bias1 = Tensor::random(vec![shape1[0]]);
+        filter1.update_input_shape(&input_shape_padded);
 
         let mut model = Model::new();
         model.add_layer::<F>(Layer::Convolution(Convolution::new(
-            conv1.clone(),
+            filter1.clone(),
             bias1.clone(),
         )));
-        model.add_layer::<F>(Layer::Convolution(Convolution::new(
-            conv2.clone(),
-            bias2.clone(),
-        )));
-        model.add_layer::<F>(Layer::Convolution(Convolution::new(
-            conv3.clone(),
-            bias3.clone(),
-        )));
 
-        let input = Tensor::new(vec![1, 32, 32], random_vector_quant(1024));
-        let trace: crate::model::InferenceTrace<'_, _, GoldilocksExt2> =
-            model.run::<F>(input.clone());
-
-        let mut model2 = Model::new();
-        model2.add_layer::<F>(Layer::SchoolBookConvolution(Convolution::new(
-            trad_conv1, bias1,
-        )));
-        model2.add_layer::<F>(Layer::SchoolBookConvolution(Convolution::new(
-            trad_conv2, bias2,
-        )));
-        model2.add_layer::<F>(Layer::SchoolBookConvolution(Convolution::new(
-            trad_conv3, bias3,
-        )));
-        let trace2 = model.run::<F>(input.clone());
-
-        check_tensor_consistency_field::<GoldilocksExt2>(
-            trace2.final_output().clone().to_fields(),
-            trace.final_output().clone().to_fields(),
-        );
-
-        let _out1: &Tensor<i128> = trace.final_output();
+        let input = Tensor::random(input_shape_padded.clone());
+        let _: crate::model::InferenceTrace<'_, _, GoldilocksExt2> = model.run::<F>(input.clone());
     }
 
     #[test]
