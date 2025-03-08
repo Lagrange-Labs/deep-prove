@@ -319,15 +319,15 @@ impl Tensor<Element> {
         x: &Tensor<Element>,
     ) -> (Tensor<Element>, ConvData<F>) {
         let n_x = x.shape[1].next_power_of_two();
-        let mut real_input = vec![F::ZERO;x.data.len()];
-        for i in 0..real_input.len(){
-            if x.data[i] < 0{
+        let mut real_input = vec![F::ZERO; x.data.len()];
+        for i in 0..real_input.len() {
+            if x.data[i] < 0 {
                 real_input[i] = -F::from((-x.data[i]) as u64);
-            }else{
+            } else {
                 real_input[i] = F::from(x.data[i] as u64);
             }
         }
-        
+
         let mut x_vec = vec![vec![F::ZERO; n_x * n_x]; x.shape[0].next_power_of_two()];
         let mut w_fft = vec![F::ZERO; self.data.len()];
         for i in 0..w_fft.len() {
@@ -374,7 +374,7 @@ impl Tensor<Element> {
             for j in 0..out[i].len() {
                 let val = out[i][j].into_element();
                 out_element[i * out[i].len() + j] = val;
-                //if F::to_canonical_u64_vec(&out[i][j])[0] as u64 > (1 << 60 as u64) {
+                // if F::to_canonical_u64_vec(&out[i][j])[0] as u64 > (1 << 60 as u64) {
                 //    out_element[i * out[i].len() + j] =
                 //        -(F::to_canonical_u64_vec(&(-out[i][j]))[0] as Element);
                 //} else {
@@ -1709,12 +1709,8 @@ mod test {
         let shape_a = vec![3, 1, 1];
         let tensor_a = Tensor::<Element>::new(shape_a.clone(), vec![1; shape_a.iter().product()]);
 
-        let shape_b = vec![3, 4, 4];
-        let tensor_b = Tensor::<Element>::new(shape_b, vec![
-            1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0,
-            0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0,
-        ]);
+        let shape_b = vec![4, 1, 1];
+        let tensor_b = Tensor::<Element>::new(shape_b, vec![1, 1, 1, 0]);
 
         let tensor_c = tensor_a.pad_next_power_of_two();
         assert_eq!(tensor_b, tensor_c);

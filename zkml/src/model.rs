@@ -143,7 +143,7 @@ impl Model {
                 // default quantization inputs for matrix and vector
                 Some(Layer::Requant(dense.requant_info()))
             }
-            // Layer::Convolution(ref filter) => Some(Layer::Requant(filter.requant_info::<F>())),
+            Layer::Convolution(ref filter) => Some(Layer::Requant(filter.requant_info::<F>())),
             // Layer::Traditional_Convolution(ref filter) => {
             // Some(Layer::Requant(Requant::from_matrix_default(filter)))
             // }
@@ -406,7 +406,16 @@ pub(crate) mod test {
     use sumcheck::structs::{IOPProverState, IOPVerifierState};
 
     use crate::{
-        activation::{Activation, Relu}, convolution::Convolution, default_transcript, dense::Dense, model::Layer, pooling::{Maxpool2D, Pooling, MAXPOOL2D_KERNEL_SIZE}, quantization::TensorFielder, tensor::Tensor, testing::{random_bool_vector, random_vector}, Element
+        Element,
+        activation::{Activation, Relu},
+        convolution::Convolution,
+        default_transcript,
+        dense::Dense,
+        model::Layer,
+        pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
+        quantization::TensorFielder,
+        tensor::Tensor,
+        testing::{random_bool_vector, random_vector},
     };
 
     use super::Model;
@@ -533,7 +542,7 @@ pub(crate) mod test {
     }
 
     fn random_vector_quant(n: usize) -> Vec<Element> {
-        //vec![thread_rng().gen_range(-128..128); n]
+        // vec![thread_rng().gen_range(-128..128); n]
         random_vector(n)
     }
     #[test]

@@ -404,8 +404,8 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
                 weight.update_input_shape(&input_shape_padded);
                 let dims = weight.dims(); // save the shape of the filter to compute the output shape
 
-                // let layer = Layer::Convolution(Convolution::new(weight, _bias));
-                let layer = Layer::SchoolBookConvolution(Convolution::new(weight, _bias));
+                let layer = Layer::Convolution(Convolution::new(weight, _bias));
+                // let layer = Layer::SchoolBookConvolution(Convolution::new(weight, _bias));
 
                 layers.push(layer);
 
@@ -442,7 +442,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
         debug!("Added the layer: {}", layer.describe());
         model.add_layer::<F>(layer);
     }
-    // model.describe();
+    model.describe();
     Ok(model)
 }
 
