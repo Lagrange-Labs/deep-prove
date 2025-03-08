@@ -13,7 +13,7 @@ use csv::WriterBuilder;
 use goldilocks::GoldilocksExt2;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt};
-use zkml::{load_model, model::Model, quantization::Quantizer, ModelType};
+use zkml::{load_model, quantization::Quantizer, ModelType};
 
 use serde::{Deserialize, Serialize};
 use zkml::{
@@ -124,7 +124,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     info!("[+] Reading onnx model");
     let mtype = ModelType::from_onnx(&args.onnx)?;
     info!("Loading model with type: {:?}", mtype);
-    let model = load_model::<F>(&args.onnx, mtype)?;
+    let model = load_model::<Element>(&args.onnx, mtype)?;
     model.describe();
     info!("[+] Reading input/output from pytorch");
     let (inputs, given_outputs) =

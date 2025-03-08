@@ -700,7 +700,7 @@ where
         #[allow(deprecated)]
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
 
-        let mut claims = state.get_mle_final_evaluations();
+        let claims = state.get_mle_final_evaluations();
 
         (
             proof.clone(),
