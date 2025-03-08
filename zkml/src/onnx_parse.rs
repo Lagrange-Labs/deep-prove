@@ -155,6 +155,7 @@ fn model_input_shape(graph: &GraphProto) -> Vec<usize> {
                                 }
                                 DimParam(param) => {
                                     debug!("  Symbolic dimension: {}", param);
+                                    input_shape.push(1 as usize);
                                 }
                             },
                             None => {
@@ -292,13 +293,18 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
     let graph = model.graph.unwrap();
 
     let mut input_shape = model_input_shape(&graph);
+
+    assert!(
+        input_shape[0] == 1,
+        "First dimension of the CNNs or MLP's input should 1."
+    );
+    input_shape.remove(0);
     if model_type == ModelType::CNN {
-        assert!(
-            input_shape[0] == 1,
-            "First dimension of the CNN's input should 1."
-        );
-        input_shape.remove(0);
+        assert!(input_shape.len() == 3);
+    } else {
+        assert!(input_shape.len() == 1);
     }
+
     let mut input_shape_padded = input_shape
         .iter()
         .map(|i| i.next_power_of_two())
