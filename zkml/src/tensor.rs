@@ -1522,6 +1522,14 @@ mod test {
                         let big_x = Tensor::new(vec![k_x,n_x,n_x],vec![3;n_x*n_x*k_x]);//random_vector(n_x*n_x*k_x));
                         let (out_2,_) = filter_1.fft_conv::<GoldilocksExt2>(&big_x);
                         let out_1 = filter_2.cnn_naive_convolution(&big_x);
+
+                        // println!("Shapes:");
+                        // println!("\t filter1: {:?}", filter_1.dims());
+                        // println!("\t big_x: {:?}", big_x.dims());
+                        // println!("\t out_2: {:?}", out_2.dims());
+                        // println!("\t filter2: {:?}", filter_2.dims());
+                        // println!("\t out_1: {:?}", out_1.dims());
+
                         check_tensor_consistency(out_1,out_2);
                         /*
 

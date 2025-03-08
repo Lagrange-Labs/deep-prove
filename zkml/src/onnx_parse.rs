@@ -196,7 +196,7 @@ fn check_cnn_input(input_shape: &[usize]) -> Result<bool> {
 
 /// Assumes stride=1, padding=0, and dilation=1
 /// https://pytorch.org/docs/stable/generated/torch.nn.Conv2d.html
-fn conv2d_shape(input_shape: &[usize], filter_shape: &[usize]) -> Vec<usize> {
+fn _conv2d_shape(input_shape: &[usize], filter_shape: &[usize]) -> Vec<usize> {
     let result = check_filter(filter_shape);
     assert!(result.is_ok(), "conv2d: Failed {:?}", result.unwrap_err());
 
@@ -233,6 +233,7 @@ fn maxpool2d_shape(input_shape: &[usize]) -> Vec<usize> {
 
     vec![d1, d2, d2]
 }
+
 /// Enum representing the different types of models that can be loaded
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelType {
@@ -279,22 +280,20 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
         .map_err(|e| Error::msg(format!("Failed to load model: {:?}", e)))?;
 
     let graph = model.graph.unwrap();
+
     let mut input_shape = model_input_shape(&graph);
     if model_type == ModelType::CNN {
         assert!(
             input_shape[0] == 1,
-            "First dimension of the input should 1."
+            "First dimension of the CNN's input should 1."
         );
         input_shape.remove(0);
     }
-    // let mut input_shape_padded = input_shape
-    //     .iter()
-    //     .map(|i| i.next_power_of_two())
-    //     .collect_vec();
-    // println!(
-    //     "Input shape: {:?}. Padded shape: {:?}",
-    //     input_shape, input_shape_padded
-    // );
+    let mut input_shape_padded = input_shape
+        .iter()
+        .map(|i| i.next_power_of_two())
+        .collect_vec();
+    debug!("Padded input shape: {:?}", input_shape_padded);
     let mut initializers: HashMap<String, Tensor> = HashMap::new();
     for item in graph.initializer {
         let dt = tract_onnx::pb::tensor_proto::DataType::from_i32(item.data_type)
@@ -309,7 +308,6 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
     let mut layers: Vec<Layer> = Vec::new();
     // we need to keep track of the last shape because when we pad to next power of two one layer, we need to make sure
     // the next layer's expected input matches.
-    let mut prev_layer_shape: Option<Vec<usize>> = None;
     for (i, node) in graph.node.iter().enumerate() {
         match node.op_type.as_str() {
             op if LINEAR_ALG.contains(&op) => {
@@ -329,38 +327,36 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
                     bias.get_data().len(),
                     nrows
                 );
-                input_shape = vec![weight.nrows_2d()];
+                assert!(input_shape_padded.iter().all(|d| d.is_power_of_two()));
+                assert!(input_shape_padded.len() == 1);
+
                 let mut new_cols = weight.ncols_2d();
-                if let Some(prev_shape) = prev_layer_shape {
-                    assert!(prev_shape.iter().all(|d| d.is_power_of_two()));
-                    // Check if previous output's vector length is equal to the number of columns of this matrix
-                    if weight.ncols_2d() != prev_shape[0] {
-                        if weight.ncols_2d() < prev_shape[0] {
-                            new_cols = prev_shape[0];
-                        } else {
-                            // If we have too many columns, we can't shrink without losing information
-                            panic!(
-                                "Matrix has more columns ({}) than previous layer output size ({}).
-                                Cannot shrink without losing information.",
-                                weight.ncols_2d(),
-                                prev_shape[0]
-                            );
-                        }
+                if weight.ncols_2d() != input_shape_padded[0] {
+                    if weight.ncols_2d() < input_shape_padded[0] {
+                        new_cols = input_shape_padded[0];
+                    } else {
+                        // If we have too many columns, we can't shrink without losing information
+                        panic!(
+                            "Matrix has more columns ({}) than previous layer output size ({}).
+                            Cannot shrink without losing information.",
+                            weight.ncols_2d(),
+                            input_shape_padded[0]
+                        );
                     }
                 }
 
                 let ncols = new_cols.next_power_of_two();
                 let nrows = weight.nrows_2d().next_power_of_two();
-
                 // Pad to power of two dimensions
                 weight.reshape_to_fit_inplace_2d(vec![nrows, ncols]);
                 let bias = bias.pad_1d(nrows);
-                // Update prev_output_size to reflect the padded size
-                prev_layer_shape = Some(weight.dims());
+                input_shape_padded = vec![nrows];
+
                 debug!("layer idx {} -> final shape {:?}", i, weight.dims());
                 layers.push(Layer::Dense(Dense::new(weight, bias)));
             }
             op if ACTIVATION.contains(&op) => {
+                assert!(input_shape_padded.iter().all(|d| d.is_power_of_two()));
                 let layer = Layer::Activation(Activation::Relu(Relu::new()));
                 layers.push(layer);
             }
@@ -371,34 +367,68 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
                     &initializers,
                     global_max_abs,
                 )?;
-                let _bias =
+                let mut _bias =
                     fetch_weight_bias_as_tensor::<Q>("bias", node, &initializers, global_max_abs)?;
-                // Filter know the shape of the input on which filter will be applied
-                weight.update_input_shape(&input_shape);
+
+                let weight_shape = weight.dims();
+                // Perform basic sanity checks on the tensor dimensions
+                let shape_test = check_filter(&weight_shape);
+                assert!(shape_test.is_ok(), "Failed: {:?}", shape_test.unwrap_err());
+                assert!(
+                    weight_shape[0] == _bias.dims()[0],
+                    "Bias length doesn't match filter shape"
+                );
+
+                // Pad the tensors to the next power of two.
+                weight = weight.pad_next_power_of_two();
+                _bias = _bias.pad_next_power_of_two();
+
+                // Make sure that input shape is already padded and is well formed
+                assert!(input_shape_padded.iter().all(|d| d.is_power_of_two()));
+                assert!(input_shape_padded.len() == 3);
+
+                // Since we are doing an FFT based conv, we need to pad the last two dimensions of the filter to match the input.
+                let weight_shape = weight.dims();
+                let (filter_height, filter_weight) = (weight_shape[2], weight_shape[3]);
+                let (input_height, input_weight) = (input_shape_padded[1], input_shape_padded[2]);
+
+                assert!(
+                    filter_height <= input_height && filter_weight <= input_weight,
+                    "Filter dimensions have to be smaller than input dimensions"
+                );
+
+                weight = weight.pad_last_two_dimensions(vec![input_height, input_weight]);
+
+                // Filter need to know the shape of the input
+                weight.update_input_shape(&input_shape_padded);
                 let dims = weight.dims(); // save the shape of the filter to compute the output shape
 
                 let layer = Layer::Convolution(Convolution::new(weight, _bias));
                 layers.push(layer);
 
-                input_shape = conv2d_shape(&input_shape, &dims);
+                input_shape_padded[0] = dims[0]
             }
             op if DOWNSAMPLING.contains(&op) => {
+                // Make sure that input shape is already padded and is well formed
+                assert!(input_shape_padded.iter().all(|d| d.is_power_of_two()));
+
                 let _ = fetch_maxpool_attributes(node)?;
                 let layer = Layer::Pooling(Pooling::Maxpool2D(Maxpool2D::default()));
                 layers.push(layer);
-                input_shape = maxpool2d_shape(&input_shape);
+                input_shape_padded = maxpool2d_shape(&input_shape_padded);
             }
             op if RESHAPE.contains(&op) => {
-                input_shape = vec![input_shape.iter().product()];
+                assert!(input_shape_padded.iter().all(|d| d.is_power_of_two()));
+                input_shape_padded = vec![input_shape_padded.iter().product()];
             }
             _ => (),
         };
-        // println!(
-        //     "{}. {}'s output shape: {:?}",
-        //     i,
-        //     node.op_type.as_str(),
-        //     input_shape
-        // );
+        debug!(
+            "{}. {}'s output shape: {:?}",
+            i + 1,
+            node.op_type.as_str(),
+            input_shape_padded
+        );
     }
 
     // Create and return the model
@@ -406,6 +436,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
     for layer in layers {
         model.add_layer::<F>(layer);
     }
+    // model.describe();
     Ok(model)
 }
 
@@ -713,12 +744,12 @@ mod tests {
         assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
     }
 
-    // #[test]
-    // fn test_load_cnn() {
-    //    // let filepath = "assets/scripts/CNN/lenet-mnist-01.onnx";
-    //    let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
-    //    let result = load_model::<Element>(&filepath, ModelType::CNN);
+    #[test]
+    fn test_load_cnn() {
+        // let filepath = "assets/scripts/CNN/lenet-mnist-01.onnx";
+        let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
+        let result = load_model::<Element>(&filepath, ModelType::CNN);
 
-    //    assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
-    //}
+        assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
+    }
 }
