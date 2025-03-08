@@ -763,6 +763,58 @@ where
         result
     }
 
+    pub fn pad_to_shape(&mut self, target_shape: Vec<usize>) {
+        if target_shape.len() != self.shape.len() {
+            panic!("Target shape must have the same number of dimensions as the tensor.");
+        }
+
+        let current_shape = &self.shape;
+
+        assert!(current_shape.iter().zip(&target_shape).all(|(c, t)| c <= t));
+        // if current_shape.iter().zip(&target_shape).all(|(c, t)| c <= t) {
+        //     // No padding is needed if all dimensions are already the correct size
+        //     return;
+        // }
+
+        let mut new_data = vec![T::default(); target_shape.iter().product()];
+
+        let mut strides: Vec<usize> = vec![1; current_shape.len()];
+        for i in (0..current_shape.len() - 1).rev() {
+            strides[i] = strides[i + 1] * current_shape[i + 1];
+        }
+
+        let mut target_strides: Vec<usize> = vec![1; target_shape.len()];
+        for i in (0..target_shape.len() - 1).rev() {
+            target_strides[i] = target_strides[i + 1] * target_shape[i + 1];
+        }
+
+        for index in 0..self.data.len() {
+            let mut original_indices = vec![0; current_shape.len()];
+            let mut remaining = index;
+
+            for (j, stride) in strides.iter().enumerate() {
+                original_indices[j] = remaining / stride;
+                remaining %= stride;
+            }
+
+            if original_indices
+                .iter()
+                .zip(&target_shape)
+                .all(|(idx, max)| idx < max)
+            {
+                let new_index: usize = original_indices
+                    .iter()
+                    .zip(&target_strides)
+                    .map(|(idx, stride)| idx * stride)
+                    .sum();
+                new_data[new_index] = self.data[index].clone();
+            }
+        }
+
+        self.data = new_data;
+        self.shape = target_shape;
+    }
+
     /// Perform matrix-matrix multiplication
     pub fn matmul(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(
@@ -1682,6 +1734,22 @@ mod test {
 
         let tensor_c = tensor_a.pad_last_two_dimensions(target_dim);
         assert_eq!(tensor_b, tensor_c);
+    }
+
+    #[test]
+    fn test_tensor_pad_to_shape() {
+        let shape_a = vec![3, 1, 1];
+        let mut tensor_a =
+            Tensor::<Element>::new(shape_a.clone(), vec![1; shape_a.iter().product()]);
+
+        let shape_b = vec![3, 4, 4];
+        let tensor_b = Tensor::<Element>::new(shape_b.clone(), vec![
+            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
+
+        tensor_a.pad_to_shape(shape_b);
+        assert_eq!(tensor_b, tensor_a);
     }
 
     #[test]
