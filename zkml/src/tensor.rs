@@ -18,7 +18,10 @@ use std::{
 };
 
 use crate::{
-    pooling::MAXPOOL2D_KERNEL_SIZE, quantization::{Fieldizer, IntoElement, TensorFielder}, to_bit_sequence_le, Element
+    Element,
+    pooling::MAXPOOL2D_KERNEL_SIZE,
+    quantization::{Fieldizer, IntoElement, TensorFielder},
+    to_bit_sequence_le,
 };
 
 // Function testing the consistency between the actual convolution implementation and

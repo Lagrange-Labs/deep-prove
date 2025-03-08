@@ -79,7 +79,7 @@ impl Convolution {
                 for k in 0..(self.nw() * self.nw()) {
                     let weight = weights[i][j][k];
                     // PANICKING HERE
-                    //let bias = self.bias.data[k]; // Bias for the current output channel
+                    // let bias = self.bias.data[k]; // Bias for the current output channel
                     let bias = *max_bias;
 
                     if weight != 0 {

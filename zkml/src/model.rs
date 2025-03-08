@@ -177,7 +177,12 @@ impl Model {
         for (id, layer) in self.layers() {
             let input = trace.last_input();
             let output = layer.op(input);
-            println!("step: {}: input shape {:?}, output shape {:?}", id, input.dims(), output.describe());
+            println!(
+                "step: {}: input shape {:?}, output shape {:?}",
+                id,
+                input.dims(),
+                output.describe()
+            );
             match output {
                 LayerOutput::NormalOut(output) => {
                     debug!("step: {}: output: {:?}", id, output);
@@ -390,7 +395,16 @@ pub(crate) mod test {
     use sumcheck::structs::{IOPProverState, IOPVerifierState};
 
     use crate::{
-        activation::{Activation, Relu}, convolution::Convolution, default_transcript, dense::Dense, model::Layer, pooling::{Maxpool2D, Pooling, MAXPOOL2D_KERNEL_SIZE}, quantization::{self, TensorFielder}, tensor::Tensor, testing::{random_bool_vector, random_vector}, Element
+        Element,
+        activation::{Activation, Relu},
+        convolution::Convolution,
+        default_transcript,
+        dense::Dense,
+        model::Layer,
+        pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
+        quantization::{self, TensorFielder},
+        tensor::Tensor,
+        testing::{random_bool_vector, random_vector},
     };
 
     use super::Model;
@@ -517,7 +531,7 @@ pub(crate) mod test {
     }
 
     pub fn random_vector_quant(n: usize) -> Vec<Element> {
-        //vec![thread_rng().gen_range(-128..128); n]
+        // vec![thread_rng().gen_range(-128..128); n]
         random_vector(n)
     }
     #[test]

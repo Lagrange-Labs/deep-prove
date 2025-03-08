@@ -64,9 +64,9 @@ use multilinear_extensions::{
     virtual_poly::{ArcMultilinearExtension, VirtualPolynomial},
 };
 use serde::{Serialize, de::DeserializeOwned};
-use timed::timed_instrument;
 use std::marker::PhantomData;
 use sumcheck::structs::{IOPProverState, IOPVerifierState};
+use timed::timed_instrument;
 use tracing::{debug, instrument, trace, warn};
 use transcript::Transcript;
 
@@ -173,7 +173,7 @@ where
         claim
     }
 
-    #[timed::timed_instrument(level="debug")]
+    #[timed::timed_instrument(level = "debug")]
     fn prove_lookup(
         &mut self,
         last_claim: &Claim<E>,
@@ -1037,7 +1037,7 @@ where
         Ok(final_claim)
     }
 
-    #[timed::timed_instrument(level="debug")]
+    #[timed::timed_instrument(level = "debug")]
     fn prove_dense_step(
         &mut self,
         // last random claim made
@@ -1051,7 +1051,7 @@ where
     ) -> anyhow::Result<Claim<E>> {
         let matrix = &dense.matrix;
         let (nrows, ncols) = (matrix.nrows_2d(), matrix.ncols_2d());
-        debug!("dense proving nrows: {} ncols: {}",nrows,ncols);
+        debug!("dense proving nrows: {} ncols: {}", nrows, ncols);
         assert_eq!(
             nrows,
             output.get_data().len(),
@@ -1223,7 +1223,7 @@ where
     }
 
     /// Looks at all the individual polys to accumulate from the witnesses and create the context from that.
-    #[timed_instrument(level="debug")]
+    #[timed_instrument(level = "debug")]
     fn instantiate_witness_ctx<'b>(
         &mut self,
         trace: &InferenceTrace<'b, Element, E>,

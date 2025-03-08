@@ -1,5 +1,4 @@
 use std::{
-
     collections::HashMap,
     fs::{File, OpenOptions},
     io::BufReader,
@@ -47,12 +46,11 @@ pub fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .finish();
 
-   tracing::subscriber::set_global_default(subscriber).expect("Failed to set global subscriber");
+    tracing::subscriber::set_global_default(subscriber).expect("Failed to set global subscriber");
     let args = Args::parse();
     run(args).context("error running bench:")?;
     Ok(())
 }
-
 
 #[derive(Serialize, Deserialize)]
 struct InputJSON {
