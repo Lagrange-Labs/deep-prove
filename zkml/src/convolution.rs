@@ -103,9 +103,9 @@ impl Convolution {
                 min_output = min_output.min(min_temp);
             }
         }
-        let max_range = (max_output - min_output).unsigned_abs().next_power_of_two();
+        let max_range = 2*(max_output - min_output).unsigned_abs().next_power_of_two();
         assert!(max_range.ilog2() as usize > *quantization::BIT_LEN);
-        let shift = max_range.ilog2() as usize - *quantization::BIT_LEN;
+        let shift = (2*max_range).ilog2() as usize - *quantization::BIT_LEN;
         Requant {
             // range: (max_val - min_val) as usize,
             range: max_range as usize,

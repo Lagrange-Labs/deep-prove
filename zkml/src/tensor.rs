@@ -169,6 +169,8 @@ pub struct ConvData<E>
 where
     E: Clone + ExtensionField,
 {
+    // real_input: For debugging purposes
+    pub real_input: Vec<E>,
     pub input: Vec<Vec<E>>,
     pub input_fft: Vec<Vec<E>>,
     pub prod: Vec<Vec<E>>,
@@ -180,12 +182,14 @@ where
     E: Copy + ExtensionField,
 {
     pub fn new(
+        real_input: Vec<E>,
         input: Vec<Vec<E>>,
         input_fft: Vec<Vec<E>>,
         prod: Vec<Vec<E>>,
         output: Vec<Vec<E>>,
     ) -> Self {
         Self {
+            real_input,
             input,
             input_fft,
             prod,
@@ -199,6 +203,7 @@ where
 {
     fn clone(&self) -> Self {
         ConvData {
+            real_input: self.real_input.clone(),
             input: self.input.clone(),
             input_fft: self.input_fft.clone(),
             prod: self.prod.clone(),
@@ -314,6 +319,15 @@ impl Tensor<Element> {
         x: &Tensor<Element>,
     ) -> (Tensor<Element>, ConvData<F>) {
         let n_x = x.shape[1].next_power_of_two();
+        let mut real_input = vec![F::ZERO;x.data.len()];
+        for i in 0..real_input.len(){
+            if x.data[i] < 0{
+                real_input[i] = -F::from((-x.data[i]) as u64);
+            }else{
+                real_input[i] = F::from(x.data[i] as u64);
+            }
+        }
+        
         let mut x_vec = vec![vec![F::ZERO; n_x * n_x]; x.shape[0].next_power_of_two()];
         let mut w_fft = vec![F::ZERO; self.data.len()];
         for i in 0..w_fft.len() {
@@ -372,7 +386,7 @@ impl Tensor<Element> {
 
         return (
             Tensor::new(vec![self.shape[0], n_x, n_x], out_element),
-            ConvData::new(input, input_fft, prod, output),
+            ConvData::new(real_input, input, input_fft, prod, output),
         );
     }
 

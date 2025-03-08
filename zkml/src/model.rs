@@ -173,6 +173,7 @@ impl Model {
                     debug!("step: {}: output: {:?}", id, output);
                     let empty_matrix: Vec<Vec<E>> = vec![vec![Default::default(); 0]; 0];
                     let conv_data = ConvData::<E>::new(
+                        vec![Default::default(); 0],
                         empty_matrix.clone(),
                         empty_matrix.clone(),
                         empty_matrix.clone(),
