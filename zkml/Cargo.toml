@@ -12,10 +12,10 @@ version.workspace = true
 anyhow.workspace = true
 ark-std.workspace = true
 clap = { version = "4", features = ["derive"] }
-code-timing-macros = { version =  "0.0.6",features = ["tracing"]}
-timed = { workspace = true }
+code-timing-macros = { version = "0.0.6", features = ["tracing"] }
 csv = "1.3.1"
 derive_more = { version = "2.0.1", features = ["full"] }
+env_logger = { version = "0.11.6" }
 ff.workspace = true
 ff_ext = { version = "0.1.0", path = "../ff_ext" }
 gkr = { version = "0.1.0", path = "../gkr" }
@@ -34,6 +34,7 @@ serde.workspace = true
 serde_json.workspace = true
 simple-frontend = { path = "../simple-frontend" }
 sumcheck = { version = "0.1.0", path = "../sumcheck" }
+timed = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 tract-onnx = "0.21.9"

@@ -2951,6 +2951,7 @@ dependencies = [
  "code-timing-macros",
  "csv",
  "derive_more",
+ "env_logger",
  "ff",
  "ff_ext",
  "gkr",
