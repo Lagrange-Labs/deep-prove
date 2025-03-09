@@ -316,17 +316,25 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples,
             with open("proof.json", "r") as f:
                 proof_data = json.load(f)
             
-            ezkl_outputs = [float(x) for x in proof_data["pretty_public_inputs"]["rescaled_outputs"][0]]
+            # Get full EZKL outputs
+            full_ezkl_outputs = [float(x) for x in proof_data["pretty_public_inputs"]["rescaled_outputs"][0]]
+            
+            # Get expected PyTorch outputs
+            pytorch_outputs = [float(x) for x in temp_input["output_data"][0]]
+            expected_output_length = len(pytorch_outputs)
+            
+            # Truncate EZKL outputs to match expected length
+            ezkl_outputs = full_ezkl_outputs[:expected_output_length]
+            
+            # Now calculate argmax on the correctly sized outputs
             ezkl_argmax = ezkl_outputs.index(max(ezkl_outputs))
+            pytorch_argmax = pytorch_outputs.index(max(pytorch_outputs))
+            
             # Only print detailed output if show_accuracy is enabled
             if show_accuracy:
-                print(f"EZKL outputs len: {len(proof_data['pretty_public_inputs']['rescaled_outputs'])}")
+                print(f"EZKL outputs (full length: {len(full_ezkl_outputs)}, using first {expected_output_length})")
                 print(f"EZKL output: {ezkl_outputs}, argmax: {ezkl_argmax}")
-            
-            pytorch_outputs = [float(x) for x in temp_input["output_data"][0]]
-            pytorch_argmax = pytorch_outputs.index(max(pytorch_outputs))
-            if show_accuracy:
-                print(f"PyTorch output: {pytorch_outputs} (len {len(pytorch_outputs)}), argmax: {pytorch_argmax}")
+                print(f"PyTorch output: {pytorch_outputs}, argmax: {pytorch_argmax}")
             
             is_correct = 1 if ezkl_argmax == pytorch_argmax else 0
             bencher.set(ACCURACY, str(is_correct))

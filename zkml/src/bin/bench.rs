@@ -187,8 +187,9 @@ fn run(args: Args) -> anyhow::Result<()> {
 }
 
 fn compare<A: PartialOrd, B: PartialOrd>(given_output: &[A], computed_output: &[B]) -> usize {
-    let a_max = argmax(given_output);
-    let b_max = argmax(computed_output);
+    let compare_size = std::cmp::min(given_output.len(), computed_output.len());
+    let a_max = argmax(&given_output[..compare_size]);
+    let b_max = argmax(&computed_output[..compare_size]);
     info!("Accuracy: {}", if a_max == b_max { 1 } else { 0 });
     if a_max == b_max { 1 } else { 0 }
 }
