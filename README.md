@@ -1,24 +1,26 @@
-# 🚀 ZKML: Zero-Knowledge Machine Learning Inference
+# 🚀 DeepProve: Zero-Knowledge Machine Learning (zkml) Inference
 
-Welcome to **ZKML**, a cutting-edge framework designed to prove neural network inference using zero-knowledge cryptographic techniques. Whether you're working with Multi-Layer Perceptrons (MLPs) or Convolutional Neural Networks (CNNs), ZKML offers a fast and efficient way to verify computations without revealing the underlying data.
+Welcome to **DeepProve**, a cutting-edge framework designed to prove neural network inference using zero-knowledge cryptographic techniques. Whether you're working with Multi-Layer Perceptrons (MLPs) or Convolutional Neural Networks (CNNs), DeepProve offers a fast and efficient way to verify computations without revealing the underlying data.
+zkml is the name of the subcrate implementing the proving logic.
 
-## 🤔 What Does ZKML Do?
+## 🤔 What Does DeepProve Do?
 
-ZKML leverages advanced cryptographic methods like sumchecks and logup GKR to achieve sublinear proving times. This means you can prove the correctness of your model's inference faster than ever before!
+DeepProve leverages advanced cryptographic methods like sumchecks and logup GKR to achieve sublinear proving times. This means you can prove the correctness of your model's inference faster than ever before!
 
 ### 📊 Benchmark Highlights
 
-CNN 264k: This runs a CNN on the cifar 10 dataset for a total of 264k parameters.
-Dense 4M: This runs a multiple dense layers for a total of 4 million parameters.
+CNN 264k: This runs a CNN on the cifar 10 dataset for a total of 264k parameters. DeepProve is proving 158x faster at this size!
+Dense 4M: This runs a multiple dense layers for a total of 4 million parameters. DeepProve is proving 54x faster at this size!
 
 | Model Type | ZKML Proving Time (ms) | ZKML Verification Time (ms) | EZKL Proving Time (ms) | EZKL Verification Time (ms) |
 |------------|------------------------|-----------------------------|------------------------|-----------------------------|
 | CNN 264k   | 1242                   | 599                         | 196567.01              | 312505                      |
 | Dense 4M   | 2335                   | 520                         | 126831.3               | 1112                        |
 
+
 ## 📜 Licensing
 
-- **ZKML folder**: Licensed under a special Lagrange license.
+- **zkml folder**: Licensed under a special Lagrange license.
 - **Rest of the Code**: Licensed under Apache + MIT, as per the original repository.
 
 ## 🌟 Potential Use Cases
