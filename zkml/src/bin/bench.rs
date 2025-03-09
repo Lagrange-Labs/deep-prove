@@ -1,5 +1,4 @@
 use std::{
-
     collections::HashMap,
     fs::{File, OpenOptions},
     io::BufReader,
@@ -13,7 +12,7 @@ use csv::WriterBuilder;
 use goldilocks::GoldilocksExt2;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt};
-use zkml::{load_model, quantization::Quantizer, ModelType};
+use zkml::{ModelType, load_model, quantization::Quantizer};
 
 use serde::{Deserialize, Serialize};
 use zkml::{
@@ -47,12 +46,11 @@ pub fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .finish();
 
-   tracing::subscriber::set_global_default(subscriber).expect("Failed to set global subscriber");
+    tracing::subscriber::set_global_default(subscriber).expect("Failed to set global subscriber");
     let args = Args::parse();
     run(args).context("error running bench:")?;
     Ok(())
 }
-
 
 #[derive(Serialize, Deserialize)]
 struct InputJSON {
