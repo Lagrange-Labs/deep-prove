@@ -1,46 +1,25 @@
-# Ceno: Non-uniform, Segment and Parallel Risc-V Zero-knowledge Virtual Machine
+# ZKML: Zero-Knowledge Machine Learning Inference
 
-Please see [the slightly outdated paper](https://eprint.iacr.org/2024/387) for an introduction to Ceno.
+Welcome to **ZKML**, a cutting-edge framework designed to prove neural network inference using zero-knowledge cryptographic techniques. Whether you're working with Multi-Layer Perceptrons (MLPs) or Convolutional Neural Networks (CNNs), ZKML offers a fast and efficient way to verify computations without revealing the underlying data.
 
-🚧 This project is currently under construction and not suitable for use in production. 🚧
+## What Does ZKML Do?
 
-If you are unfamiliar with the RISC-V instruction set, please have a look at the [RISC-V instruction set reference](https://github.com/jameslzhu/riscv-card/releases/download/latest/riscv-card.pdf).
+ZKML leverages advanced cryptographic methods like sumchecks and logup GKR to achieve sublinear proving times. This means you can prove the correctness of your model's inference faster than ever before!
 
-## Local build requirements
+### Benchmark Highlights
 
-Ceno is built in Rust, so [installing the Rust toolchain](https://www.rust-lang.org/tools/install) is a pre-requisite if you want to develop on your local machine.  We also use [cargo-make](https://sagiegurari.github.io/cargo-make/) to build Ceno. You can install cargo-make with the following command:
+- **Proving Time**: _[Insert Proving Time Here]_
+- **Verification Time**: _[Insert Verification Time Here]_
 
-```sh
-cargo install cargo-make
-```
+## Licensing
 
-You will also need to install the Risc-V target for Rust. You can do this with the following command:
+- **ZKML**: Licensed under a special Lagrange license.
+- **Rest of the Code**: Licensed under Apache + MIT, as per the original repository.
 
-```sh
-rustup target add riscv32im-unknown-none-elf
-```
+## Acknowledgements
 
-## Building Ceno and running tests
+This project builds upon the work from scroll-tech/ceno, reusing the sumcheck and GKR implementation from their codebase. Check out their work at [scroll-tech/ceno](https://github.com/scroll-tech/ceno).
 
-To run the tests, you can use the following command:
+For more technical details and usage instructions, dive into the [ZKML README](zkml/README.md).
 
-```sh
-cargo make tests
-```
-
-Clippy and check work as usual:
-
-```sh
-cargo check
-cargo clippy
-cargo build
-```
-
-### Setting up self-hosted CI docker container
-
-To set up docker container for CI, you can run the following command:
-
-```sh
-docker build -t ceno-runner scripts/ci/
-docker run -d ceno-runner
-```
+Happy proving!
