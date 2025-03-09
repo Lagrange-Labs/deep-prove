@@ -465,7 +465,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
 
     // Create and return the model
     let mut model = Model::new();
-    model.set_input_shape(model_in_shape);
+    model.set_input_shape(input_shape);
     for layer in layers {
         debug!("Added the layer: {}", layer.describe());
         model.add_layer::<F>(layer);
@@ -783,7 +783,8 @@ mod tests {
     #[test]
     fn test_load_cnn() {
         // let filepath = "assets/scripts/CNN/lenet-mnist-01.onnx";
-        let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
+        //let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
+        let filepath = "assets/scripts/CNN/cifar-cnn.onnx";
         let result = load_model::<Element>(&filepath, ModelType::CNN);
 
         assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());

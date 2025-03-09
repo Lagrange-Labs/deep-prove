@@ -150,8 +150,12 @@ fn run(args: Args) -> anyhow::Result<()> {
         // Store the setup time in the bencher (without re-running setup)
         bencher.set(CSV_SETUP, setup_time);
 
-        let input_tensor = Tensor::<Element>::new(vec![input.len()], input);
-        let input_tensor = model.prepare_input(input_tensor);
+        //let input_tensor = Tensor::<Element>::new(vec![input.len()], input);
+        //let input_tensor = Tensor::<Element>::new(model.input_shape(),input);
+        //let input_tensor = Tensor::<Element>::new(vec![3, 32, 32] ,input);
+        //let input_tensor = Tensor::<Element>::new(model.input_not_padded(),input);
+        //let input_tensor = model.prepare_input(input_tensor);
+        let input_tensor = model.load_input_flat(input);
 
         info!("[+] Running inference");
         let trace = bencher.r(CSV_INFERENCE, || model.run(input_tensor.clone()));
