@@ -1,5 +1,4 @@
 use std::{
-
     collections::HashMap,
     fs::{File, OpenOptions},
     io::BufReader,
@@ -18,7 +17,7 @@ use zkml::{ModelType, load_model, quantization::Quantizer};
 use serde::{Deserialize, Serialize};
 use zkml::{
     Context, Element, IO, Prover, argmax, default_transcript, lookup::LogUp,
-    quantization::TensorFielder, tensor::Tensor, verify,
+    quantization::TensorFielder, verify,
 };
 
 use rmp_serde::encode::to_vec_named;
@@ -47,12 +46,11 @@ pub fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .finish();
 
-   tracing::subscriber::set_global_default(subscriber).expect("Failed to set global subscriber");
+    tracing::subscriber::set_global_default(subscriber).expect("Failed to set global subscriber");
     let args = Args::parse();
     run(args).context("error running bench:")?;
     Ok(())
 }
-
 
 #[derive(Serialize, Deserialize)]
 struct InputJSON {
@@ -122,7 +120,9 @@ const CSV_PROOF_SIZE: &str = "proof size (KB)";
 
 fn run(args: Args) -> anyhow::Result<()> {
     info!("[+] Reading onnx model");
-    let model = load_model::<Element>(&args.onnx, ModelType::MLP).context("loading model:")?;
+    let mtype = ModelType::from_onnx(&args.onnx)?;
+    info!("Loading model with type: {:?}", mtype);
+    let model = load_model::<Element>(&args.onnx, mtype)?;
     model.describe();
     info!("[+] Reading input/output from pytorch");
     let (inputs, given_outputs) =
@@ -148,8 +148,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         // Store the setup time in the bencher (without re-running setup)
         bencher.set(CSV_SETUP, setup_time);
 
-        let input_tensor = Tensor::<Element>::new(vec![input.len()], input);
-        let input_tensor = model.prepare_input(input_tensor);
+        let input_tensor = model.load_input_flat(input);
 
         info!("[+] Running inference");
         let trace = bencher.r(CSV_INFERENCE, || model.run(input_tensor.clone()));
@@ -188,8 +187,9 @@ fn run(args: Args) -> anyhow::Result<()> {
 }
 
 fn compare<A: PartialOrd, B: PartialOrd>(given_output: &[A], computed_output: &[B]) -> usize {
-    let a_max = argmax(given_output);
-    let b_max = argmax(computed_output);
+    let compare_size = std::cmp::min(given_output.len(), computed_output.len());
+    let a_max = argmax(&given_output[..compare_size]);
+    let b_max = argmax(&computed_output[..compare_size]);
     info!("Accuracy: {}", if a_max == b_max { 1 } else { 0 });
     if a_max == b_max { 1 } else { 0 }
 }

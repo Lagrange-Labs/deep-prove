@@ -1,4 +1,5 @@
 use ff_ext::ExtensionField;
+use itertools::Itertools;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use tracing::debug;
 
@@ -124,6 +125,7 @@ impl Layer {
 /// produces each token one by one.
 #[derive(Clone, Debug)]
 pub struct Model {
+    input_not_padded: Vec<usize>,
     padded_in_shape: Vec<usize>,
     layers: Vec<Layer>,
 }
@@ -131,6 +133,7 @@ pub struct Model {
 impl Model {
     pub fn new() -> Self {
         Self {
+            input_not_padded: Vec::new(),
             padded_in_shape: Vec::new(),
             layers: Default::default(),
         }
@@ -155,8 +158,16 @@ impl Model {
         }
     }
 
-    pub fn set_input_shape(&mut self, padded_in_shape: Vec<usize>) {
-        self.padded_in_shape = padded_in_shape;
+    pub fn set_input_shape(&mut self, not_padded: Vec<usize>) {
+        self.padded_in_shape = not_padded
+            .iter()
+            .map(|dim| dim.next_power_of_two())
+            .collect_vec();
+        self.input_not_padded = not_padded;
+    }
+    pub fn load_input_flat(&self, input: Vec<Element>) -> Tensor<Element> {
+        let input_tensor = Tensor::<Element>::new(self.input_not_padded.clone(), input);
+        self.prepare_input(input_tensor)
     }
 
     pub fn prepare_input(&self, input: Tensor<Element>) -> Tensor<Element> {
@@ -223,6 +234,9 @@ impl Model {
         self.layers.iter().enumerate()
     }
 
+    pub fn input_not_padded(&self) -> Vec<usize> {
+        self.input_not_padded.clone()
+    }
     pub fn input_shape(&self) -> Vec<usize> {
         if let Layer::Dense(mat) = &self.layers[0] {
             vec![mat.matrix.nrows_2d()]

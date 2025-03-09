@@ -260,6 +260,16 @@ impl ModelType {
             }
         }
     }
+    pub fn from_onnx(filepath: &str) -> Result<ModelType> {
+        let model_type = if is_cnn(filepath)? {
+            ModelType::CNN
+        } else if is_mlp(filepath)? {
+            ModelType::MLP
+        } else {
+            bail!("Model is not a valid MLP or CNN architecture");
+        };
+        Ok(model_type)
+    }
 }
 
 /// Unified model loading function that handles both MLP and CNN models
@@ -299,7 +309,6 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
         .iter()
         .map(|i| i.next_power_of_two())
         .collect_vec();
-    let model_in_shape = input_shape_padded.clone();
     debug!("Input shape: {:?}", input_shape);
     debug!("Padded input shape: {:?}", input_shape_padded);
     let mut initializers: HashMap<String, Tensor> = HashMap::new();
@@ -455,7 +464,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
 
     // Create and return the model
     let mut model = Model::new();
-    model.set_input_shape(model_in_shape);
+    model.set_input_shape(input_shape);
     for layer in layers {
         debug!("Added the layer: {}", layer.describe());
         model.add_layer::<F>(layer);

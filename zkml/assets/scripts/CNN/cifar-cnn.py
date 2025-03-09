@@ -70,8 +70,8 @@ from pathlib import Path
 
 # Add argument parser similar to mlp.py
 parser = argparse.ArgumentParser(description="CIFAR10 CNN with ONNX export")
-parser.add_argument("--export", type=Path, required=False, default=Path("."), 
-                    help="folder where to export model and input")
+parser.add_argument("--export", type=Path, default=Path('bench'), 
+                    help="Directory to export the model to (default: bench)")
 parser.add_argument("--num-samples", type=int, default=100, 
                     help="Number of test samples to export")
 
@@ -242,7 +242,7 @@ torch.save(net.state_dict(), PATH)
 
 net.eval()
 dummy_input = torch.randn(1, 3, 32, 32)
-model_path = args.export / "cifar-cnn.onnx"
+model_path = args.export / "model.onnx"
 torch.onnx.export(net, dummy_input, model_path, export_params=True, opset_version=12,
                   do_constant_folding=True, input_names=['input'], output_names=['output'],
                   dynamic_axes={'input': {0: 'batch_size'},
@@ -464,6 +464,6 @@ data = {
     "pytorch_output": pytorch_output
 }
 
-data_path = args.export / "cifar-input.json"
-json.dump(data, open(data_path, 'w'), indent=2)
-print(f"Input/Output data for {num_samples} samples exported to {data_path}")
+input_path = args.export / "input.json"
+json.dump(data, open(input_path, 'w'), indent=2)
+print(f"Input/Output data for {num_samples} samples exported to {input_path}")

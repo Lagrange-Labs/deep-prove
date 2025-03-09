@@ -32,6 +32,11 @@ PROOF_SIZE = "proof size (KB)"
 SAMPLE = "sample"
 EZKL_FULL_PROVING = "ezkl_full_proving (ms)"  # New constant for full proving time
 
+# Constants for file paths
+MODEL = "model.onnx"
+INPUT = "input.json"
+EZKL_KZG_PARAMS = "kzg.params"
+
 class CSVBencher:
     def __init__(self, headers: List[str]):
         self.headers = headers
@@ -112,9 +117,6 @@ def ex(cmd, verbose=False):
 # Default paths
 DEFAULT_BENCH_FOLDER = Path("./bench/")
 PYTORCH_SCRIPT = "./assets/scripts/MLP/mlp.py"
-MODEL = "mlp-model.onnx"
-INPUT = "mlp-input.json"
-EZKL_KZG_PARAMS = "kzg.params"
 
 def create_model(num_dense, layer_width, output_dir, verbose, num_samples, model_type):
     """Create a model with the specified parameters"""
@@ -160,12 +162,8 @@ def create_model(num_dense, layer_width, output_dir, verbose, num_samples, model
         print(result.stdout)
     
     # Return paths to model and input/output file
-    if model_type == "mlp":
-        model_path = output_dir / "mlp-model.onnx"
-        input_path = output_dir / "mlp-input.json"
-    else:  # model_type == "cnn"
-        model_path = output_dir / "cifar-cnn.onnx"
-        input_path = output_dir / "cifar-input.json"
+    model_path = output_dir / MODEL
+    input_path = output_dir / INPUT
     
     if not model_path.exists() or not input_path.exists():
         missing = []
@@ -294,10 +292,13 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples,
             bencher.set(PROVING, f"{total_proving_time_ms:.2f}")
             
             # Run verification with error handling
-            start_time = time.perf_counter()
-            verify_result = subprocess.run(["ezkl", "verify", "--srs-path", EZKL_KZG_PARAMS], 
-                                          capture_output=True, text=True)
-            elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+            verify_out = ex(["ezkl", "verify", "--srs-path", EZKL_KZG_PARAMS], verbose=verbose)
+            # start_time = time.perf_counter()
+            # verify_result = subprocess.run(["ezkl", "verify", "--srs-path", EZKL_KZG_PARAMS], 
+            #                               capture_output=True, text=True)
+            # elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+            elapsed_ms = verify_out["elapsed_time_ms"]
+            verify_result = verify_out["stdout"]
             
             # Store the time regardless of success or failure
             bencher.set(VERIFYING, str(elapsed_ms))
@@ -315,17 +316,25 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples,
             with open("proof.json", "r") as f:
                 proof_data = json.load(f)
             
-            ezkl_outputs = [float(x) for x in proof_data["pretty_public_inputs"]["rescaled_outputs"][0]]
+            # Get full EZKL outputs
+            full_ezkl_outputs = [float(x) for x in proof_data["pretty_public_inputs"]["rescaled_outputs"][0]]
+            
+            # Get expected PyTorch outputs
+            pytorch_outputs = [float(x) for x in temp_input["output_data"][0]]
+            expected_output_length = len(pytorch_outputs)
+            
+            # Truncate EZKL outputs to match expected length
+            ezkl_outputs = full_ezkl_outputs[:expected_output_length]
+            
+            # Now calculate argmax on the correctly sized outputs
             ezkl_argmax = ezkl_outputs.index(max(ezkl_outputs))
+            pytorch_argmax = pytorch_outputs.index(max(pytorch_outputs))
+            
             # Only print detailed output if show_accuracy is enabled
             if show_accuracy:
-                print(f"EZKL outputs len: {len(proof_data['pretty_public_inputs']['rescaled_outputs'])}")
+                print(f"EZKL outputs (full length: {len(full_ezkl_outputs)}, using first {expected_output_length})")
                 print(f"EZKL output: {ezkl_outputs}, argmax: {ezkl_argmax}")
-            
-            pytorch_outputs = [float(x) for x in temp_input["output_data"][0]]
-            pytorch_argmax = pytorch_outputs.index(max(pytorch_outputs))
-            if show_accuracy:
-                print(f"PyTorch output: {pytorch_outputs} (len {len(pytorch_outputs)}), argmax: {pytorch_argmax}")
+                print(f"PyTorch output: {pytorch_outputs}, argmax: {pytorch_argmax}")
             
             is_correct = 1 if ezkl_argmax == pytorch_argmax else 0
             bencher.set(ACCURACY, str(is_correct))
@@ -352,7 +361,7 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples,
         os.chdir(original_dir)
 
 def run_benchmark(num_dense, layer_width, run_index, output_dir, verbose, run_ezkl, num_samples, model_type, 
-                skip_ezkl_calibration=False, ezkl_check_mode="safe", show_accuracy=False):
+                skip_ezkl_calibration=False, ezkl_check_mode="safe", show_accuracy=False, skip_model_creation=False):
     """Run a single benchmark with the specified parameters"""
     config_name = f"d{num_dense}_w{layer_width}" if model_type == "mlp" else f"cnn"
     
@@ -360,8 +369,22 @@ def run_benchmark(num_dense, layer_width, run_index, output_dir, verbose, run_ez
     print(f"Running benchmark: model={model_type}, dense={num_dense}, width={layer_width}, run={run_index}")
     print(f"{'='*80}\n")
     
-    # Step 1: Create model with specified number of samples
-    create_model(num_dense, layer_width, output_dir, verbose, num_samples, model_type)
+    # Step 1: Create model with specified number of samples (if not skipped)
+    if not skip_model_creation:
+        print(f"Creating model: {model_type} with {num_dense} dense layers of width {layer_width}")
+        create_model(num_dense, layer_width, output_dir, verbose, num_samples, model_type)
+    else:
+        print(f"Skipping model creation, using existing model and input files")
+        # Check if required files exist
+        model_path = output_dir / MODEL
+        input_path = output_dir / INPUT
+        if not model_path.exists() or not input_path.exists():
+            print(f"❌ Error: Skipping model creation but required files don't exist:")
+            if not model_path.exists():
+                print(f"  Missing model file: {model_path}")
+            if not input_path.exists():
+                print(f"  Missing input file: {input_path}")
+            sys.exit(1)
     
     # Step 2: Run ZKML benchmark
     zkml_csv = run_zkml_benchmark(config_name, output_dir, verbose, num_samples)
@@ -665,8 +688,8 @@ def print_summary_table(summary_df, run_ezkl, show_accuracy=False):
 def parse_arguments():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Run benchmarks for ZKML and EZKL")
-    parser.add_argument("--configs", type=str, default="1,10:2,20",
-                        help="Model configurations to benchmark in format 'dense,width:dense,width'")
+    parser.add_argument("--configs", type=str, default="1,10",
+                        help="Model configurations for mlp to benchmark in format 'dense,width:dense,width'")
     parser.add_argument("--repeats", type=int, default=3,
                         help="Number of times to repeat each benchmark")
     parser.add_argument("--run-ezkl", action="store_true",
@@ -687,6 +710,8 @@ def parse_arguments():
                         help="Number of input/output samples to process for both ZKML and EZKL (default: 30)")
     parser.add_argument("--model-type", type=str, choices=["mlp", "cnn"], default="mlp",
                         help="Type of model to benchmark: 'mlp' for MLP, 'cnn' for CNN (default: mlp)")
+    parser.add_argument("--skip-model-creation", action="store_true",
+                        help="Skip model creation and use existing model files and input data (default: False, will regenerate models)")
     return parser.parse_args()
 
 def setup_environment(args):
@@ -715,7 +740,8 @@ def run_configurations(configs, args):
             zkml_csv, ezkl_csv, pytorch_csv = run_benchmark(
                 num_dense, layer_width, run_idx, output_dir, 
                 args.verbose, args.run_ezkl, args.samples, args.model_type,
-                args.skip_ezkl_calibration, args.ezkl_check_mode, args.show_accuracy
+                args.skip_ezkl_calibration, args.ezkl_check_mode, args.show_accuracy,
+                args.skip_model_creation
             )
             
             if zkml_csv:
