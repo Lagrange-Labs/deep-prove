@@ -216,7 +216,9 @@ support GPU code. Installing the CPU version from the source code is the only wa
 
 - **Performance Variability**: For the most consistent results, close other resource-intensive applications when running benchmarks and consider using the `--num-threads` option.
 
+
 ## Acknowledgements
 
 This project is built on top of the work from scroll-tech/ceno - it re-uses the sumcheck and gkr implementation
 from the codebase at https://github.com/scroll-tech/ceno
+
