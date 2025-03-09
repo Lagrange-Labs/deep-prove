@@ -3,7 +3,7 @@ use anyhow::{Context, Error, Result, bail, ensure};
 use goldilocks::GoldilocksExt2;
 use itertools::Itertools;
 use std::{collections::HashMap, i8, path::Path};
-use tracing::debug;
+use tracing::{debug, info};
 use tract_onnx::{
     pb::{GraphProto, NodeProto},
     prelude::*,
@@ -261,21 +261,23 @@ impl ModelType {
         }
     }
     pub fn from_onnx(filepath: &str) -> Result<ModelType> {
-        let model_type = if is_mlp(filepath)? {
-            ModelType::MLP
-        } else if is_cnn(filepath)? {
-            ModelType::MLP
-        } else {
-            bail!("Model is not a valid MLP or CNN architecture");
-        };
-        Ok(model_type)
+        let is_mlp = is_mlp(filepath);
+        if is_mlp.is_ok() {
+            return Ok(ModelType::MLP);
+        }
+        let is_cnn = is_cnn(filepath);
+        if is_cnn.is_ok() {
+            return Ok(ModelType::CNN);
+        }
+        bail!("Model is not a valid MLP or CNN architecture: not mlp: {} and not cnn: {}", is_mlp.unwrap_err(), is_cnn.unwrap_err())
     }
 }
 
 /// Unified model loading function that handles both MLP and CNN models
-pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) -> Result<Model> {
+pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
     // Validate that the model matches the expected type
-    model_type.validate(filepath)?;
+    let model_type = ModelType::from_onnx(filepath).context("can't prove unknown model:")?;
+    info!("Model type detected: {:?}", model_type);
 
     // Get global weight ranges first
     let (global_min, global_max) = analyze_model_weight_ranges(filepath)?;
@@ -724,7 +726,8 @@ mod tests {
     #[test]
     fn test_load_mlp() {
         let filepath = "assets/scripts/MLP/mlp-iris-01.onnx";
-        let result = load_model::<Element>(&filepath, ModelType::MLP);
+        ModelType::MLP.validate(filepath).unwrap();
+        let result = load_model::<Element>(&filepath);
 
         assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
     }
@@ -732,8 +735,8 @@ mod tests {
     #[test]
     fn test_mlp_model_run() {
         let filepath = "assets/scripts/MLP/mlp-iris-01.onnx";
-
-        let model = load_model::<Element>(&filepath, ModelType::MLP).unwrap();
+        ModelType::MLP.validate(filepath).unwrap();
+        let model = load_model::<Element>(&filepath).unwrap();
         let input = crate::tensor::Tensor::random(vec![model.input_shape()[0]]);
         let input = model.prepare_input(input);
         let trace = model.run::<F>(input.clone());
@@ -783,7 +786,8 @@ mod tests {
     fn test_load_cnn() {
         // let filepath = "assets/scripts/CNN/lenet-mnist-01.onnx";
         let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
-        let result = load_model::<Element>(&filepath, ModelType::CNN);
+        ModelType::CNN.validate(filepath).unwrap();
+        let result = load_model::<Element>(&filepath);
 
         assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
 

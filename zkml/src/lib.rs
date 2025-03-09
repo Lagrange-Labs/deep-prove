@@ -169,8 +169,8 @@ mod test {
 
     fn test_model_run_helper<L: LookupProtocol<E>>() -> anyhow::Result<()> {
         let filepath = workspace_root().join("zkml/assets/model.onnx");
-
-        let model = load_model::<Element>(&filepath.to_string_lossy(), ModelType::MLP).unwrap();
+        ModelType::MLP.validate(&filepath.to_string_lossy()).unwrap();
+        let model = load_model::<Element>(&filepath.to_string_lossy()).unwrap();
         println!("[+] Loaded onnx file");
         let ctx = Context::<E>::generate(&model, None).expect("unable to generate context");
         println!("[+] Setup parameters");
