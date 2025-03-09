@@ -261,9 +261,9 @@ impl ModelType {
         }
     }
     pub fn from_onnx(filepath: &str) -> Result<ModelType> {
-        let model_type = if is_cnn(filepath)? {
-            ModelType::CNN
-        } else if is_mlp(filepath)? {
+        let model_type = if is_mlp(filepath)? {
+            ModelType::MLP
+        } else if is_cnn(filepath)? {
             ModelType::MLP
         } else {
             bail!("Model is not a valid MLP or CNN architecture");

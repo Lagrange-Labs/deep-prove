@@ -292,13 +292,13 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples,
             bencher.set(PROVING, f"{total_proving_time_ms:.2f}")
             
             # Run verification with error handling
-            verify_out = ex(["ezkl", "verify", "--srs-path", EZKL_KZG_PARAMS], verbose=verbose)
-            # start_time = time.perf_counter()
-            # verify_result = subprocess.run(["ezkl", "verify", "--srs-path", EZKL_KZG_PARAMS], 
-            #                               capture_output=True, text=True)
-            # elapsed_ms = int((time.perf_counter() - start_time) * 1000)
-            elapsed_ms = verify_out["elapsed_time_ms"]
-            verify_result = verify_out["stdout"]
+            #verify_out = ex(["ezkl", "verify", "--srs-path", EZKL_KZG_PARAMS], verbose=verbose)
+            start_time = time.perf_counter()
+            verify_result = subprocess.run(["ezkl", "verify", "--srs-path", EZKL_KZG_PARAMS], 
+                                           capture_output=True, text=True)
+            elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+            #elapsed_ms = verify_out["elapsed_time_ms"]
+            #verify_result = verify_out["stdout"]
             
             # Store the time regardless of success or failure
             bencher.set(VERIFYING, str(elapsed_ms))
