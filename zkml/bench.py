@@ -118,7 +118,7 @@ def ex(cmd, verbose=False):
 DEFAULT_BENCH_FOLDER = Path("./bench/")
 PYTORCH_SCRIPT = "./assets/scripts/MLP/mlp.py"
 
-def create_model(num_dense, layer_width, output_dir, verbose, num_samples, model_type):
+def create_model(num_dense, layer_width, output_dir, verbose, num_samples, model_type, param_cnn=None):
     """Create a model with the specified parameters"""
     print(f"\n⚡ Creating {model_type.upper()} model with {num_dense} dense layers, each with width {layer_width}")
     
@@ -148,6 +148,9 @@ def create_model(num_dense, layer_width, output_dir, verbose, num_samples, model
             "--export", str(output_dir),
             "--num-samples", str(num_samples)
         ]
+        # Add parameter count for CNN if specified
+        if param_cnn is not None:
+            cmd.extend(["--num-params", str(param_cnn)])
     
     if verbose:
         print(f"📋 Running command: {' '.join(cmd)}")
@@ -361,8 +364,10 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples,
         os.chdir(original_dir)
 
 def run_benchmark(num_dense, layer_width, run_index, output_dir, verbose, run_ezkl, num_samples, model_type, 
-                skip_ezkl_calibration=False, ezkl_check_mode="safe", show_accuracy=False, skip_model_creation=False):
-    """Run a single benchmark with the specified parameters"""
+                 skip_ezkl_calibration=False, ezkl_check_mode="safe", show_accuracy=False, 
+                 skip_model_creation=False, param_cnn=None):
+    """Run a benchmark for a specific model configuration and parameter."""
+    # Create directory for this configuration if it doesn't exist
     config_name = f"d{num_dense}_w{layer_width}" if model_type == "mlp" else f"cnn"
     
     print(f"\n{'='*80}")
@@ -371,8 +376,7 @@ def run_benchmark(num_dense, layer_width, run_index, output_dir, verbose, run_ez
     
     # Step 1: Create model with specified number of samples (if not skipped)
     if not skip_model_creation:
-        print(f"Creating model: {model_type} with {num_dense} dense layers of width {layer_width}")
-        create_model(num_dense, layer_width, output_dir, verbose, num_samples, model_type)
+        create_model(num_dense, layer_width, output_dir, verbose, num_samples, model_type, param_cnn)
     else:
         print(f"Skipping model creation, using existing model and input files")
         # Check if required files exist
@@ -712,6 +716,8 @@ def parse_arguments():
                         help="Type of model to benchmark: 'mlp' for MLP, 'cnn' for CNN (default: mlp)")
     parser.add_argument("--skip-model-creation", action="store_true",
                         help="Skip model creation and use existing model files and input data (default: False, will regenerate models)")
+    parser.add_argument("--param-cnn", type=int, default=None,
+                        help="Target parameter count for CNN model (only used when model-type is cnn) 62k default")
     return parser.parse_args()
 
 def setup_environment(args):
@@ -736,12 +742,12 @@ def run_configurations(configs, args):
         clean_output_directory(output_dir, config_name)
         
         for run_idx in range(args.repeats):
-            # Pass all EZKL-related parameters
+            # Pass all EZKL-related parameters and CNN parameter count
             zkml_csv, ezkl_csv, pytorch_csv = run_benchmark(
                 num_dense, layer_width, run_idx, output_dir, 
                 args.verbose, args.run_ezkl, args.samples, args.model_type,
                 args.skip_ezkl_calibration, args.ezkl_check_mode, args.show_accuracy,
-                args.skip_model_creation
+                args.skip_model_creation, args.param_cnn
             )
             
             if zkml_csv:

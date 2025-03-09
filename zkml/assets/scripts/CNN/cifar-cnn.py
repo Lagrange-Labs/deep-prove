@@ -74,6 +74,8 @@ parser.add_argument("--export", type=Path, default=Path('bench'),
                     help="Directory to export the model to (default: bench)")
 parser.add_argument("--num-samples", type=int, default=100, 
                     help="Number of test samples to export")
+parser.add_argument("--num-params", type=int, default=None,
+                    help="Target number of parameters for the model (default: None, uses default model)")
 
 args = parser.parse_args()
 
@@ -158,28 +160,92 @@ print(' '.join(f'{classes[labels[j]]:5s}' for j in range(batch_size)))
 # Copy the neural network from the Neural Networks section before and modify it to
 # take 3-channel images (instead of 1-channel images as it was defined).
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+def estimate_params(c1, c2, fc1, fc2, fc3):
+    conv1_params = (3 * 5 * 5 + 1) * c1
+    conv2_params = (c1 * 5 * 5 + 1) * c2
+    fc1_params = (c2 * 5 * 5 + 1) * fc1
+    fc2_params = (fc1 + 1) * fc2
+    fc3_params = (fc2 + 1) * fc3
+    return conv1_params + conv2_params + fc1_params + fc2_params + fc3_params
 
 class Net(nn.Module):
-    def __init__(self):
+    def __init__(self, target_params=None):
         super().__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)
+        
+        # Default values
+        c1, c2 = 6, 16
+        fc1, fc2, fc3 = 120, 84, 10
+        
+        if target_params:
+            # Adjust parameters iteratively to fit within target
+            scale = (target_params / estimate_params(c1, c2, fc1, fc2, fc3)) ** 0.5
+            c1, c2 = int(c1 * scale), int(c2 * scale)
+            fc1, fc2 = int(fc1 * scale), int(fc2 * scale)
+            
+            # Recalculate to get final parameter count
+            final_params = estimate_params(c1, c2, fc1, fc2, fc3)
+            assert abs(final_params - target_params) / target_params <= 0.05, "Final params exceed 5% tolerance"
+        
+        self.conv1 = nn.Conv2d(3, c1, 5)
         self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(6, 16, 5)
-        self.fc1 = nn.Linear(16 * 5 * 5, 120)
-        self.fc2 = nn.Linear(120, 84)
-        self.fc3 = nn.Linear(84, 10)
-
+        self.conv2 = nn.Conv2d(c1, c2, 5)
+        self.fc1 = nn.Linear(c2 * 5 * 5, fc1)
+        self.fc2 = nn.Linear(fc1, fc2)
+        self.fc3 = nn.Linear(fc2, fc3)
+    
     def forward(self, x):
         x = self.pool(F.relu(self.conv1(x)))
         x = self.pool(F.relu(self.conv2(x)))
-        x = torch.flatten(x, 1)  # flatten all dimensions except batch
+        x = torch.flatten(x, 1)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
         return x
 
 
-net = Net()
+#class Net(nn.Module):
+#    def __init__(self):
+#        super().__init__()
+#        self.conv1 = nn.Conv2d(3, 6, 5)
+#        self.pool = nn.MaxPool2d(2, 2)
+#        self.conv2 = nn.Conv2d(6, 16, 5)
+#        self.fc1 = nn.Linear(16 * 5 * 5, 120)
+#        self.fc2 = nn.Linear(120, 84)
+#        self.fc3 = nn.Linear(84, 10)
+#
+#    def forward(self, x):
+#        x = self.pool(F.relu(self.conv1(x)))
+#        x = self.pool(F.relu(self.conv2(x)))
+#        x = torch.flatten(x, 1)  # flatten all dimensions except batch
+#        x = F.relu(self.fc1(x))
+#        x = F.relu(self.fc2(x))
+#        x = self.fc3(x)
+#        return x
+
+
+if args.num_params:
+    print(f"🏗️ Initializing neural network with target parameter count: {args.num_params:,}...")
+    try:
+        net = Net(target_params=args.num_params)
+        total_params = sum(p.numel() for p in net.parameters())
+        print(f"✅ Model created with {total_params:,} parameters")
+        print(f"   Conv1: {net.conv1.out_channels} channels")
+        print(f"   Conv2: {net.conv2.out_channels} channels")
+        print(f"   FC1: {net.fc1.out_features} features")
+        print(f"   FC2: {net.fc2.out_features} features")
+    except AssertionError as e:
+        print(f"❌ Error: {e}")
+        print(f"Using default model instead.")
+        net = Net()  # Use default parameters
+else:
+    print("🏗️ Initializing default neural network...")
+    net = Net()  # Use the default parameters
+    total_params = sum(p.numel() for p in net.parameters())
+    print(f"✅ Default model created with {total_params:,} parameters")
 
 # Add after class definition
 print("🏗️ Initializing neural network...")
@@ -272,13 +338,6 @@ images, labels = next(dataiter)
 # print images
 # imshow(torchvision.utils.make_grid(images))
 print('GroundTruth: ', ' '.join(f'{classes[labels[j]]:5s}' for j in range(4)))
-
-########################################################################
-# Next, let's load back in our saved model (note: saving and re-loading the model
-# wasn't necessary here, we only did it to illustrate how to do so):
-
-net = Net()
-net.load_state_dict(torch.load(PATH, weights_only=True))
 
 ########################################################################
 # Okay, now let us see what the neural network thinks these examples above are:
