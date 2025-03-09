@@ -159,12 +159,15 @@ impl Model {
     }
 
     pub fn set_input_shape(&mut self, not_padded: Vec<usize>) {
-        self.padded_in_shape = not_padded.iter().map(|dim| dim.next_power_of_two()).collect_vec();
+        self.padded_in_shape = not_padded
+            .iter()
+            .map(|dim| dim.next_power_of_two())
+            .collect_vec();
         self.input_not_padded = not_padded;
     }
     pub fn load_input_flat(&self, input: Vec<Element>) -> Tensor<Element> {
-        let input_tensor= Tensor::<Element>::new(self.input_not_padded.clone(), input);
-        self.prepare_input(input_tensor) 
+        let input_tensor = Tensor::<Element>::new(self.input_not_padded.clone(), input);
+        self.prepare_input(input_tensor)
     }
 
     pub fn prepare_input(&self, input: Tensor<Element>) -> Tensor<Element> {

@@ -309,7 +309,6 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str, model_type: ModelType) 
         .iter()
         .map(|i| i.next_power_of_two())
         .collect_vec();
-    let model_in_shape = input_shape_padded.clone();
     debug!("Input shape: {:?}", input_shape);
     debug!("Padded input shape: {:?}", input_shape_padded);
     let mut initializers: HashMap<String, Tensor> = HashMap::new();
@@ -783,7 +782,7 @@ mod tests {
     #[test]
     fn test_load_cnn() {
         // let filepath = "assets/scripts/CNN/lenet-mnist-01.onnx";
-        //let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
+        // let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
         let filepath = "assets/scripts/CNN/cifar-cnn.onnx";
         let result = load_model::<Element>(&filepath, ModelType::CNN);
 

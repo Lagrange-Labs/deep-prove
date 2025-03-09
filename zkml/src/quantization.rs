@@ -95,7 +95,7 @@ pub(crate) trait IntoElement {
 impl<F: ExtensionField> IntoElement for F {
     fn into_element(&self) -> Element {
         let e = self.to_canonical_u64_vec()[0] as Element;
-        let modulus_half= <F::BaseField as SmallField>::MODULUS_U64 >> 1;
+        let modulus_half = <F::BaseField as SmallField>::MODULUS_U64 >> 1;
         // That means he's a positive number
         if *self == F::ZERO {
             0

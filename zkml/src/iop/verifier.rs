@@ -612,21 +612,21 @@ where
         Claim::new(
             [
                 proof.hadamard_proof.point.clone(),
-                last_claim.point[(( info.filter_size).ilog2() as usize)..].to_vec(),
+                last_claim.point[((info.filter_size).ilog2() as usize)..].to_vec(),
             ]
             .concat(),
             proof.hadamard_clams[0],
         ),
     )?;
-    
+
     commit_verifier.add_claim(
         info.bias_poly_id,
         Claim::new(
             last_claim.point[(proof.ifft_delegation_proof.len())..].to_vec(),
-            proof.bias_claim
+            proof.bias_claim,
         ),
     )?;
-    
+
     // >>>>>> TODO : 1) Dont forget beta evaluation 2) verification of the last step of delegation <<<<<<<
     // Verify fft sumcheck
     IOPVerifierState::<E>::verify(proof.hadamard_clams[1], &proof.fft_proof, &info.fft_aux, t);
@@ -683,7 +683,7 @@ where
     let mut input_point = proof.fft_proof.point.clone();
     let mut v = input_point.pop().unwrap();
     v = (E::ONE - v).invert().unwrap();
-    for i in 0..input_point.len(){
+    for i in 0..input_point.len() {
         input_point[i] = E::ONE - input_point[i];
     }
     // the output claim for this step that is going to be verified at next step
