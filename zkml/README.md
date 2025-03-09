@@ -2,11 +2,19 @@
 
 **WARNING**: **This codebase is not audited and not production ready and is provided as is. Use at your own risk.**
 
+<<<<<<< HEAD
 **Welcome back to Deep Prove framework!** This document will guide you through the inner workings of ZKML, how to install it, and how to make the most of its capabilities.
 
 ## 🌐 Overview
 
 DeepProve is a framework for proving inference of neural networks using cryptographic techniques based on sumchecks, and logup GKR mostly. Thanks to these techniques, the proving time is actually sublinear in the size of the model and is able to provide an order of magnitude speedups compared to other inference frameworks.
+=======
+**Welcome back to ZKML!** This document will guide you through the inner workings of ZKML, how to install it, and how to make the most of its capabilities.
+
+## 🌐 Overview
+
+ZKML is a framework for proving inference of neural networks using cryptographic techniques based on sumchecks, and logup GKR mostly. Thanks to these techniques, the proving time is actually sublinear in the size of the model and is able to provide an order of magnitude speedups compared to other inference frameworks.
+>>>>>>> master
 The framework currently supports proving inference for both Multi-Layer Perceptron (MLP) models and Convolutional Neural Networks (CNN). Namely, it supports dense layers, relu, maxpool and convolutions.
 The framework requantizes the output after each layer into a fixed zero-centered range; by default we are using [-128;127] quantization range. 
 
