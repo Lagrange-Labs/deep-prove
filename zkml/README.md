@@ -1,10 +1,43 @@
-# 🔍 ZKML Inference Proving: Deep Dive
+# ZKML Inference Proving
+
+**WARNING**: **This codebase is not audited and not production ready and is provided as is. Use at your own risk.**
 
 **Welcome back to ZKML!** This document will guide you through the inner workings of ZKML, how to install it, and how to make the most of its capabilities.
 
 ## 🌐 Overview
 
-ZKML is a framework for proving inference of neural networks using cryptographic techniques based on sumchecks and logup GKR. Thanks to these techniques, the proving time is sublinear in the size of the model, providing significant speedups compared to other inference frameworks.
+ZKML is a framework for proving inference of neural networks using cryptographic techniques based on sumchecks, and logup GKR mostly. Thanks to these techniques, the proving time is actually sublinear in the size of the model and is able to provide an order of magnitude speedups compared to other inference frameworks.
+The framework currently supports proving inference for both Multi-Layer Perceptron (MLP) models and Convolutional Neural Networks (CNN). Namely, it supports dense layers, relu, maxpool and convolutions.
+The framework requantizes the output after each layer into a fixed zero-centered range; by default we are using [-128;127] quantization range. 
+
+Stay tuned for a blog post explaining the technical details of the framework !
+
+## Status & Roadmap
+
+This is a research driven project and the codebase is improving on a fast pace. Here is the current status of the project:
+
+**Features**:
+
+[x] Prove inference of Dense layers
+[x] Prove inference of ReLU
+[x] Prove inference of MaxPool
+[x] Prove inference of Convolution
+[ ] Add support for more layers types (BatchNorm, Dropout, etc)
+
+**Accuracy**:
+[x] Layer-wise requantization (a single scaling factor per layer)
+[ ] Allowing BIT_LEN to grow without loosing performance (lookup related)
+[ ] Add supports for row-wise quantization for each layer to provide better accuracy
+
+**Performance**:
+[ ] Better lookup usage with more small tables 
+[ ] Implement simpler GKR for logup - no need to have a full generic GKR
+[ ] Improved parallelism for logup, gkr, sumchecks
+[ ] GPU support
+
+## Benchmark
+
+This repo provides bench.py, a tool measuring critical metrics including:
 
 The framework currently supports proving inference for both Multi-Layer Perceptron (MLP) models and Convolutional Neural Networks (CNN). It supports dense layers, ReLU, maxpool, and convolutions. The framework requantizes the output after each layer into a fixed zero-centered range; by default, we use a [-128;127] quantization range.
 
@@ -27,54 +60,107 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source $HOME/.cargo/env
 ```
 
+Visit the [official Rust installation page](https://www.rust-lang.org/tools/install) for platform-specific instructions.
+
+### Installing EZKL
+
+If you plan to run EZKL comparisons, refer to the [EZKL documentation](https://github.com/zkonduit/ezkl#installation).
+
 ### Python Dependencies
 
 ```bash
 pip install -r assets/scripts/requirements.txt
 ```
-
-## 🏃‍♂️ Customizing and Running Benchmarks
+**NOTE**: If you prefer to use a separated environment, you can do first:
+```bash
+python -m venv venv
+source venv/bin/activate
+```
 
 ZKML allows you to customize Python scripts located in `zkml/assets/scripts/` to suit your needs. Once set up, you can run the `bench.py` script to test different configurations and measure performance.
 
 ### Example Command
 
 ```bash
+cargo build --release
+```
+
+## Running Benchmarks
+
+The main benchmark script is `bench.py`, which supports various configurations and options.
+
+### Basic Usage
+
+```bash
+python bench.py [options]
+```
+
+### Example Commands
+
+Simple benchmark with default settings:
+```bash
+python bench.py
+```
+
+Benchmark specific MLP model configurations with multiple runs:
+```bash
 python bench.py --configs 5,100:7,50 --repeats 5
 ```
 
-## 📥 Input Requirements
+Benchmark a CNN model:
+```bash
+python bench.py --model-type cnn
+```
 
-ZKML expects an ONNX model and an input JSON file to perform inference proving. Customize these inputs to match your specific model and data requirements.
+Comparative benchmarking with EZKL:
+```bash
+python bench.py --configs 4,128 --run-ezkl --verbose
+```
+
+Resource-constrained benchmarking with fewer samples:
+```bash
+python bench.py --num-threads 8 --configs 5,64 --samples 10
+```
 
 ## 🎈 Try It Out
 
-Feel free to tweak the Python scripts and run `bench.py` to explore the full potential of ZKML. Whether you're optimizing for speed or accuracy, ZKML provides the tools you need to succeed.
+Feel free to tweak the Python scripts and run `bench.py` to explore the full potential of ZKML. 
+This is a research-driven project and the codebase is improving at a fast pace. Here is the current status of the project:
+- `zkml_d{dense}_w{width}.csv`: ZKML benchmark results for MLP models
+- `zkml_cnn.csv`: ZKML benchmark results for CNN models
+- `ezkl_d{dense}_w{width}.csv`: EZKL benchmark results (if enabled) for MLP models
+- `ezkl_cnn.csv`: EZKL benchmark results (if enabled) for CNN models
+
+Each CSV file contains these performance metrics for each run:
+- Setup time (ms)
+- Inference time (ms) 
+- Proving time (ms)
+- EZKL full proving time (ms) - Total time for witness generation + proving in EZKL
+- Verification time (ms)
+- Accuracy (boolean, 1=correct, 0=incorrect)
+- Proof size (KB)
+
+The script also generates a summary table showing averages across all runs for each configuration.
 
 Stay curious and keep experimenting! 🌟
 
-## 🛤️ Status & Roadmap
 
-This is a research-driven project and the codebase is improving at a fast pace. Here is the current status of the project:
 
-**Features**:
+## Caveats on EZKL comparison
 
-[x] Prove inference of Dense layers  
-[x] Prove inference of ReLU  
-[x] Prove inference of MaxPool  
-[x] Prove inference of Convolution  
-[ ] Add support for more layer types (BatchNorm, Dropout, etc)
+**Unfair comparison**: The ezkl binary does not allow to configure the exact amount of logrows used for proving.
+Therefore, it uses the fastest possible way to prove but incurring a MUCH larger time to verify.
+In production scenario, the proving time should be way higher with a much smaller verification time.
 
-**Accuracy**:
-[x] Layer-wise requantization (a single scaling factor per layer)  
-[ ] Allowing BIT_LEN to grow without losing performance (lookup related)  
-[ ] Add support for row-wise quantization for each layer to provide better accuracy
+The TLDR is that it is hard to get a fair apple-to-apple comparison between ZKML and EZKL.
 
-**Performance**:
-[ ] Better lookup usage with more small tables  
-[ ] Implement simpler GKR for logup - no need to have a full generic GKR  
-[ ] Improved parallelism for logup, GKR, sumchecks  
-[ ] GPU support
+**Invalid Verification**: 
+* When not using the calibration step, EZKL verification actually fails, and proving time is much higher.
+* Calibration makes verification succeed but force to trim the KZG params at proving time, which takes a lot of time.
+So both time, proving + trimming and proving alone are included in the benchmark since both are offering different trade-offs that don't seem to be customizable from the CLI.
+
+**GPU Code**: By default on MacOS with Apple Silicon, the ezkl binary is compiled with GPU support. We currently do not  
+support GPU code. Installing the CPU version from the source code is the only way to go. 
 
 ## 🛠️ Troubleshooting
 
