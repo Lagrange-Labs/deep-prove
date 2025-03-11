@@ -1,0 +1,6 @@
+[book]
+authors = ["Lagrange Labs"]
+language = "en"
+multilingual = false
+src = "src"
+title = "DeepProve: Lagrange's zkML"
