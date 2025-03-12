@@ -147,6 +147,19 @@ The script also generates a summary table showing averages across all runs for e
 
 Stay curious and keep experimenting! 🌟
 
+### Documentation
+
+We use [mdBook](https://github.com/rust-lang/mdBook) to produce technical documentation related to DeepProve, if you already have Cargo and Rust installed you can simply run
+```bash
+cargo install mdbook
+```
+to install it, for more info on installing mdBook check out their guide [here](https://rust-lang.github.io/mdBook/guide/installation.html).
+
+To build and open the docs, from the `zkml` directory run: 
+```bash 
+mdbook build docs --open
+```
+This will open a copy of the docs in your default web browser.
 
 
 ## Caveats on EZKL comparison
