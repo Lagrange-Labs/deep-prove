@@ -156,9 +156,13 @@ Stay curious and keep experimenting! 🌟
 
 ### Documentation
 
-We use [mdBook](https://github.com/rust-lang/mdBook) to produce technical documentation related to DeepProve, if you already have Cargo and Rust installed you can simply run
+We use [mdBook](https://github.com/rust-lang/mdBook) together with a [katex extension](https://github.com/lzanini/mdbook-katex) to produce technical documentation related to DeepProve, if you already have Cargo and Rust installed you can simply run
 ```bash
 cargo install mdbook
+```
+followed  by 
+```bash
+cargo install mdbook-katex
 ```
 to install it, for more info on installing mdBook check out their guide [here](https://rust-lang.github.io/mdBook/guide/installation.html).
 
