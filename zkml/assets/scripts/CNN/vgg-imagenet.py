@@ -2,13 +2,37 @@ from torchvision import transforms
 from PIL import Image
 import urllib
 import torch
+from torchvision.models import vgg11, vgg11_bn, vgg13, vgg13_bn, vgg16, vgg16_bn, vgg19, vgg19_bn
+from torchvision.models import VGG11_Weights, VGG11_BN_Weights
+from torchvision.models import VGG13_Weights, VGG13_BN_Weights
+from torchvision.models import VGG16_Weights, VGG16_BN_Weights
+from torchvision.models import VGG19_Weights, VGG19_BN_Weights
 
 available_vgg = ['vgg11', 'vgg11_bn', 'vgg13', 'vgg13_bn',
                  'vgg16', 'vgg16_bn', 'vgg19', 'vgg19_bn']
 
+# Map VGG config names to their model functions and weights
+vgg_model_map = {
+    'vgg11': (vgg11, VGG11_Weights.IMAGENET1K_V1),
+    'vgg11_bn': (vgg11_bn, VGG11_BN_Weights.IMAGENET1K_V1),
+    'vgg13': (vgg13, VGG13_Weights.IMAGENET1K_V1),
+    'vgg13_bn': (vgg13_bn, VGG13_BN_Weights.IMAGENET1K_V1),
+    'vgg16': (vgg16, VGG16_Weights.IMAGENET1K_V1),
+    'vgg16_bn': (vgg16_bn, VGG16_BN_Weights.IMAGENET1K_V1),
+    'vgg19': (vgg19, VGG19_Weights.IMAGENET1K_V1),
+    'vgg19_bn': (vgg19_bn, VGG19_BN_Weights.IMAGENET1K_V1),
+}
+
 
 def gen_vgg_onnx(vgg_cfg):
-    model = torch.hub.load('pytorch/vision:v0.10.0', vgg_cfg, pretrained=True)
+    if vgg_cfg not in vgg_model_map:
+        raise ValueError(f"Unsupported VGG config: {vgg_cfg}")
+
+    # Get the model function and weights
+    model_fn, weights = vgg_model_map[vgg_cfg]
+
+    # Load the model with weights
+    model = model_fn(weights=weights)
     model.eval()
 
     """All pre-trained models expect input images normalized in the same way,
@@ -64,8 +88,8 @@ def gen_vgg_onnx(vgg_cfg):
         export_params=True,     # Store trained parameter weights
         opset_version=13,       # ONNX opset version (11 is widely compatible)
         do_constant_folding=True,  # Optimize by folding constants
-        # input_names=['input'],  # Name of the input tensor
-        # output_names=['output']  # Name of the output tensor
+        input_names=['input'],  # Name of the input tensor
+        output_names=['output']  # Name of the output tensor
     )
 
     print(f"Model has been saved as {onnx_file_path}")
