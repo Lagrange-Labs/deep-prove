@@ -78,7 +78,7 @@ def gen_vgg_onnx(vgg_cfg):
     # print(probabilities)
 
     # Define the output ONNX file name
-    onnx_file_path = f"{vgg_cfg}.onnx"
+    onnx_file_path = f"{vgg_cfg}-trained.onnx"
 
     # Export the model to ONNX format
     torch.onnx.export(
