@@ -48,7 +48,6 @@ pub fn check_tensor_consistency(real_tensor: Tensor<Element>, padded_tensor: Ten
         }
     }
 }
-
 pub fn get_root_of_unity<E: ExtensionField>(n: usize) -> E {
     let mut rou = E::ROOT_OF_UNITY;
 
@@ -58,7 +57,6 @@ pub fn get_root_of_unity<E: ExtensionField>(n: usize) -> E {
 
     return rou;
 }
-
 // Properly pad a filter
 pub fn index_w<E: ExtensionField>(w: Vec<Element>, vec: &mut Vec<E>, n_real: usize, n: usize) {
     // let mut vec = vec![E::ZERO;n*n];
@@ -72,7 +70,6 @@ pub fn index_w<E: ExtensionField>(w: Vec<Element>, vec: &mut Vec<E>, n_real: usi
         }
     }
 }
-
 // let u = [u[1],...,u[n*n]]
 // output vec = [u[n*n-1],u[n*n-2],...,u[n*n-n],....,u[0]]
 // Note that y_eval =  f_vec(r) = f_u(1-r)
@@ -85,7 +82,6 @@ pub fn index_u<E: ExtensionField>(u: Vec<E>, n: usize) -> Vec<E> {
     }
     return vec;
 }
-
 // let x: [x[0][0],...,x[0][n],x[1][0],...,x[n][n]]
 // output vec = [x[n][n], x[n][n-1],...,x[n][0],x[n-1]x[n],...,x[0][0]]
 // Note that y_eval = f_vec(r) = f_x(1-r)
@@ -97,7 +93,6 @@ pub fn index_x<E: ExtensionField>(x: Vec<Element>, vec: &mut Vec<E>, n: usize) {
         }
     }
 }
-
 // FFT implementation,
 // flag: false -> FFT
 // flag: true -> iFFT
@@ -158,13 +153,6 @@ pub fn fft<E: ExtensionField>(v: &mut Vec<E>, flag: bool) {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Tensor<T> {
-    pub data: Vec<T>,
-    pub shape: Vec<usize>,
-    input_shape: Vec<usize>,
-}
-
 pub struct ConvData<E>
 where
     E: Clone + ExtensionField,
@@ -210,6 +198,13 @@ where
             output: self.output.clone(),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct Tensor<T> {
+    pub data: Vec<T>,
+    pub shape: Vec<usize>,
+    input_shape: Vec<usize>,
 }
 
 impl Tensor<Element> {
@@ -267,7 +262,6 @@ impl Tensor<Element> {
             input_shape,
         }
     }
-
     pub fn get_real_weights<F: ExtensionField>(&self) -> Vec<Vec<Vec<Element>>> {
         let mut w_fft =
             vec![
@@ -310,7 +304,6 @@ impl Tensor<Element> {
         }
         real_weights
     }
-
     // Convolution algorithm using FFTs.
     // When invoking this algorithm the prover generates all withness/intermidiate evaluations
     // needed to generate a convolution proof
@@ -389,7 +382,6 @@ impl Tensor<Element> {
             ConvData::new(real_input, input, input_fft, prod, output),
         );
     }
-
     pub fn kx(&self) -> usize {
         self.input_shape[0]
     }
@@ -402,6 +394,42 @@ impl Tensor<Element> {
     // Returns the size of an individual filter
     pub fn filter_size(&self) -> usize {
         self.shape[2] * self.shape[2]
+    }
+    /// Returns the evaluation point, in order for (row,col) addressing
+    pub fn evals_2d<F: ExtensionField>(&self) -> Vec<F> {
+        assert!(self.is_matrix(), "Tensor is not a matrix");
+        self.evals_flat()
+    }
+    pub fn evals_flat<F: ExtensionField>(&self) -> Vec<F> {
+        self.data.par_iter().map(|e| e.to_field()).collect()
+    }
+    pub fn get_conv_weights<F: ExtensionField>(&self) -> Vec<F> {
+        let mut data = vec![F::ZERO; self.data.len()];
+        for i in 0..data.len() {
+            if self.data[i] < 0 {
+                data[i] = -F::from((-self.data[i]) as u64);
+            } else {
+                data[i] = F::from(self.data[i] as u64);
+            }
+        }
+        data
+    }
+    /// Returns a MLE of the matrix that can be evaluated.
+    pub fn to_mle_2d<F: ExtensionField>(&self) -> DenseMultilinearExtension<F> {
+        assert!(self.is_matrix(), "Tensor is not a matrix");
+        assert!(
+            self.nrows_2d().is_power_of_two(),
+            "number of rows {} is not a power of two",
+            self.nrows_2d()
+        );
+        assert!(
+            self.ncols_2d().is_power_of_two(),
+            "number of columns {} is not a power of two",
+            self.ncols_2d()
+        );
+        // N variable to address 2^N rows and M variables to address 2^M columns
+        let num_vars = self.nrows_2d().ilog2() + self.ncols_2d().ilog2();
+        DenseMultilinearExtension::from_evaluations_ext_vec(num_vars as usize, self.evals_2d())
     }
 }
 
@@ -418,23 +446,21 @@ impl<T> Tensor<T> {
             input_shape: vec![0],
         }
     }
-
     /// Get the dimensions of the tensor
     pub fn dims(&self) -> Vec<usize> {
         assert!(self.shape.len() > 0, "Empty tensor");
         self.shape.clone()
     }
-
     /// Get the dimensions of the tensor
     pub fn get_input_shape(&self) -> Vec<usize> {
         assert!(self.shape.len() > 0, "Empty tensor");
         self.input_shape.clone()
     }
-
     /// Is vector
     pub fn is_vector(&self) -> bool {
         self.dims().len() == 1
     }
+    ///
     pub fn is_convolution(&self) -> bool {
         self.dims().len() == 4
     }
@@ -442,7 +468,6 @@ impl<T> Tensor<T> {
     pub fn is_matrix(&self) -> bool {
         self.dims().len() == 2
     }
-
     /// Get the number of rows from the matrix
     pub fn nrows_2d(&self) -> usize {
         let mut cols = 0;
@@ -455,7 +480,6 @@ impl<T> Tensor<T> {
         assert!(cols != 0, "Tensor is not a matrix or convolution");
         cols
     }
-
     /// Get the number of cols from the matrix
     pub fn ncols_2d(&self) -> usize {
         let mut cols = 0;
@@ -471,7 +495,6 @@ impl<T> Tensor<T> {
 
         return cols;
     }
-
     /// Returns the number of boolean variables needed to address any row, and any columns
     pub fn num_vars_2d(&self) -> (usize, usize) {
         assert!(self.is_matrix(), "Tensor is not a matrix");
@@ -480,12 +503,11 @@ impl<T> Tensor<T> {
             self.ncols_2d().ilog2() as usize,
         )
     }
-
     ///
     pub fn get_data(&self) -> &[T] {
         &self.data
     }
-
+    /// TODO: Delete
     pub fn update_input_shape(&mut self, input: &[usize]) {
         // TODO: Need to assert the input_shape with self.shape
         self.input_shape = input.to_vec();
@@ -509,7 +531,6 @@ where
             input_shape: vec![0],
         }
     }
-
     pub fn get_shape(&self) -> Vec<usize> {
         return self.shape.clone();
     }
@@ -527,7 +548,6 @@ where
                 .collect(),
         }
     }
-
     /// Element-wise subtraction
     pub fn sub(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(self.shape == other.shape, "Shape mismatch for subtraction.");
@@ -542,7 +562,6 @@ where
                 .collect(),
         }
     }
-
     /// Element-wise multiplication
     pub fn mul(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(
@@ -560,7 +579,6 @@ where
                 .collect(),
         }
     }
-
     /// Scalar multiplication
     pub fn scalar_mul(&self, scalar: &T) -> Tensor<T> {
         Tensor {
@@ -569,7 +587,6 @@ where
             data: self.data.iter().map(|x| *x * *scalar).collect(),
         }
     }
-
     pub fn from_coeffs_2d(data: Vec<Vec<T>>) -> anyhow::Result<Self> {
         let n_rows = data.len();
         let n_cols = data.first().expect("at least one row in a matrix").len();
@@ -586,7 +603,6 @@ where
             input_shape: vec![0],
         })
     }
-
     /// Returns the boolean iterator indicating the given row in the right endianness to be
     /// evaluated by an MLE
     pub fn row_to_boolean_2d<F: ExtensionField>(&self, row: usize) -> impl Iterator<Item = F> {
@@ -594,7 +610,6 @@ where
         let (nvars_rows, _) = self.num_vars_2d();
         to_bit_sequence_le(row, nvars_rows).map(|b| F::from(b as u64))
     }
-
     /// Returns the boolean iterator indicating the given row in the right endianness to be
     /// evaluated by an MLE
     pub fn col_to_boolean_2d<F: ExtensionField>(&self, col: usize) -> impl Iterator<Item = F> {
@@ -602,7 +617,6 @@ where
         let (_, nvars_col) = self.num_vars_2d();
         to_bit_sequence_le(col, nvars_col).map(|b| F::from(b as u64))
     }
-
     /// From a given row and a given column, return the vector of field elements in the right
     /// format to evaluate the MLE.
     /// little endian so we need to read cols before rows
@@ -612,7 +626,6 @@ where
             .chain(self.row_to_boolean_2d(row))
             .collect_vec()
     }
-
     /// Create a tensor filled with zeros
     pub fn zeros(shape: Vec<usize>) -> Self {
         let size = shape.iter().product();
@@ -623,7 +636,6 @@ where
             input_shape: vec![0],
         }
     }
-
     pub fn pad_1d(mut self, new_len: usize) -> Self {
         assert!(
             self.shape.len() == 1,
@@ -633,7 +645,6 @@ where
         self.shape[0] = new_len;
         self
     }
-
     pub fn pad_next_power_of_two_2d(mut self) -> Self {
         assert!(self.is_matrix(), "Tensor is not a matrix");
         // assume the matrix is already well formed and there is always n_rows and n_cols
@@ -678,7 +689,6 @@ where
 
         self
     }
-
     /// Recursively pads the tensor so its ready to be viewed as an MLE
     pub fn pad_next_power_of_two(&self) -> Self {
         let shape = self.dims();
@@ -692,7 +702,6 @@ where
 
         Tensor::<T>::new(padded_shape, padded_data)
     }
-
     fn recursive_pad(data: &[T], remaining_dims: &[usize]) -> Vec<T> {
         match remaining_dims.len() {
             // If the remaining dims show we are a vector simply pad
@@ -724,7 +733,6 @@ where
             }
         }
     }
-
     pub fn pad_last_two_dimensions(&self, target: Vec<usize>) -> Self {
         assert!(self.shape.len() > 2, "Tensor must have 2 dimensions.");
         assert!(target.len() == 2, "Tensor must have at least 2 dimensions.");
@@ -768,7 +776,6 @@ where
         result.update_input_shape(&self.input_shape);
         result
     }
-
     pub fn pad_to_shape(&mut self, target_shape: Vec<usize>) {
         if target_shape.len() != self.shape.len() {
             panic!("Target shape must have the same number of dimensions as the tensor.");
@@ -820,7 +827,6 @@ where
         self.data = new_data;
         self.shape = target_shape;
     }
-
     /// Perform matrix-matrix multiplication
     pub fn matmul(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(
@@ -854,7 +860,6 @@ where
 
         result
     }
-
     /// Perform matrix-vector multiplication
     /// TODO: actually getting the result should be done via proper tensor-like libraries
     pub fn matvec(&self, vector: &Tensor<T>) -> Tensor<T> {
@@ -877,7 +882,6 @@ where
 
         result
     }
-
     pub fn conv_prod(&self, x: &Vec<Vec<T>>, w: &Vec<Vec<T>>, ii: usize, jj: usize) -> T {
         let mut sum = Default::default();
         for i in 0..w.len() {
@@ -887,7 +891,6 @@ where
         }
         return sum;
     }
-
     pub fn single_naive_conv(&self, w: Vec<Vec<T>>, x: Vec<Vec<T>>) -> Vec<Vec<T>> {
         let mut out: Vec<Vec<T>> =
             vec![vec![Default::default(); x[0].len() - w[0].len() + 1]; x.len() - w.len() + 1];
@@ -898,7 +901,6 @@ where
         }
         return out;
     }
-
     pub fn add_matrix(&self, m1: &mut Vec<Vec<T>>, m2: Vec<Vec<T>>) -> Vec<Vec<T>> {
         let mut m = vec![vec![Default::default(); m1[0].len()]; m1.len()];
         for i in 0..m.len() {
@@ -908,7 +910,6 @@ where
         }
         return m;
     }
-
     // Implementation of the stadard convolution algorithm.
     // This is needed mostly for debugging purposes
     pub fn cnn_naive_convolution(&self, xt: &Tensor<T>) -> Tensor<T> {
@@ -960,7 +961,6 @@ where
                 .collect(),
         );
     }
-
     /// Transpose the matrix (2D tensor)
     pub fn transpose(&self) -> Tensor<T> {
         assert!(self.is_matrix(), "Tensor is not a matrix.");
@@ -974,7 +974,6 @@ where
         }
         result
     }
-
     /// Concatenate a matrix (2D tensor) with a vector (1D tensor) as columns
     pub fn concat_matvec_col(&self, vector: &Tensor<T>) -> Tensor<T> {
         assert!(self.is_matrix(), "First tensor is not a matrix.");
@@ -1034,48 +1033,6 @@ where
             }
         }
         *self = result;
-    }
-}
-
-impl Tensor<Element> {
-    /// Returns the evaluation point, in order for (row,col) addressing
-    pub fn evals_2d<F: ExtensionField>(&self) -> Vec<F> {
-        assert!(self.is_matrix(), "Tensor is not a matrix");
-        self.evals_flat()
-    }
-
-    pub fn evals_flat<F: ExtensionField>(&self) -> Vec<F> {
-        self.data.par_iter().map(|e| e.to_field()).collect()
-    }
-
-    pub fn get_conv_weights<F: ExtensionField>(&self) -> Vec<F> {
-        let mut data = vec![F::ZERO; self.data.len()];
-        for i in 0..data.len() {
-            if self.data[i] < 0 {
-                data[i] = -F::from((-self.data[i]) as u64);
-            } else {
-                data[i] = F::from(self.data[i] as u64);
-            }
-        }
-        data
-    }
-
-    /// Returns a MLE of the matrix that can be evaluated.
-    pub fn to_mle_2d<F: ExtensionField>(&self) -> DenseMultilinearExtension<F> {
-        assert!(self.is_matrix(), "Tensor is not a matrix");
-        assert!(
-            self.nrows_2d().is_power_of_two(),
-            "number of rows {} is not a power of two",
-            self.nrows_2d()
-        );
-        assert!(
-            self.ncols_2d().is_power_of_two(),
-            "number of columns {} is not a power of two",
-            self.ncols_2d()
-        );
-        // N variable to address 2^N rows and M variables to address 2^M columns
-        let num_vars = self.nrows_2d().ilog2() + self.ncols_2d().ilog2();
-        DenseMultilinearExtension::from_evaluations_ext_vec(num_vars as usize, self.evals_2d())
     }
 }
 
@@ -1139,7 +1096,6 @@ where
             input_shape: vec![0],
         }
     }
-
     pub fn padded_maxpool2d(&self) -> (Tensor<T>, Tensor<T>) {
         let kernel_size = MAXPOOL2D_KERNEL_SIZE;
         let stride = MAXPOOL2D_KERNEL_SIZE;
@@ -1370,43 +1326,6 @@ impl PartialEq for Tensor<Element> {
     }
 }
 
-impl Tensor<GoldilocksExt2> {
-    // /// Creates a random matrix with a given number of rows and cols.
-    // /// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
-    // /// sync which is not true for basic rng core.
-    // pub fn random(shape: Vec<usize>) -> Self {
-    //     let mut rng = thread_rng();
-    //     let size = shape.iter().product();
-    //     let data = (0..size)
-    //         .map(|_| GoldilocksExt2::random(&mut rng))
-    //         .collect_vec();
-
-    //     Self { data, shape }
-    // }
-
-    /// Creates a random matrix with a given number of rows and cols.
-    /// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
-    /// sync which is not true for basic rng core.
-    pub fn random_seed(shape: Vec<usize>, seed: Option<u64>) -> Self {
-        let seed = seed.unwrap_or(rand::random::<u64>()); // Use provided seed or default
-
-        let size = shape.iter().product();
-        let data = (0..size)
-            .into_par_iter()
-            .map(|i| {
-                let mut rng = StdRng::seed_from_u64(seed + i as u64);
-                GoldilocksExt2::random(&mut rng)
-            })
-            .collect::<Vec<GoldilocksExt2>>();
-
-        Self {
-            data,
-            shape,
-            input_shape: vec![0],
-        }
-    }
-}
-
 impl PartialEq for Tensor<GoldilocksExt2> {
     fn eq(&self, other: &Self) -> bool {
         self.shape == other.shape && self.data == other.data
@@ -1594,17 +1513,6 @@ mod test {
     }
 
     type E = GoldilocksExt2;
-
-    // pub fn random_vector<E: ExtensionField>(n: usize) -> Vec<E> {
-    // let mut rng = thread_rng();
-    // let mut arr = vec![E::ZERO; n];
-    // for i in 0..n{
-    // arr[i] = E::from(i as u64);
-    // }
-    // arr
-    // (0..n).map(|_| E::from(&mut rng)).collect_vec()
-    // (0..n).map(|_| E::random(&mut rng)).collect_vec()
-    // }
 
     #[test]
     fn test_conv() {
