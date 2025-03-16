@@ -1,7 +1,7 @@
 use crate::{quantization, quantization::Requant};
 use itertools::Itertools;
 
-use crate::{Element, tensor::Tensor};
+use crate::{Element, tensors::Tensor};
 
 #[derive(Clone, Debug)]
 pub struct Dense {

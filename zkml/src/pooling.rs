@@ -1,4 +1,4 @@
-use crate::{Element, quantization::TensorFielder, tensor::Tensor};
+use crate::{Element, quantization::TensorFielder, tensors::Tensor};
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
 use itertools::Itertools;

@@ -10,7 +10,7 @@ use crate::{
     dense::Dense,
     pooling::Pooling,
     quantization::{Requant, TensorFielder},
-    tensor::{ConvData, Tensor},
+    tensors::{ConvData, Tensor},
 };
 
 // The index of the step, starting from the input layer. (proving is done in the opposite flow)
@@ -428,7 +428,7 @@ pub(crate) mod test {
         model::Layer,
         pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
         quantization::TensorFielder,
-        tensor::Tensor,
+        tensors::Tensor,
         testing::{NextPowerOfTwo, random_bool_vector, random_vector},
     };
 

@@ -1,10 +1,10 @@
 use crate::{
     quantization::{self, Requant},
-    tensor::ConvData,
+    tensors::ConvData,
 };
 use ff_ext::ExtensionField;
 
-use crate::{Element, tensor::Tensor};
+use crate::{Element, tensors::Tensor};
 
 #[derive(Clone, Debug)]
 pub struct Convolution {

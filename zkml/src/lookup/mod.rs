@@ -23,7 +23,7 @@ use crate::{
     model::{InferenceTrace, StepIdx},
     pooling::Maxpool2D,
     quantization::{BIT_LEN, Fieldizer, Requant},
-    tensor::Tensor,
+    tensors::Tensor,
 };
 use gkr_circuits::{
     lookups_circuit::lookup_wire_fractional_sumcheck, table_circuit::table_fractional_sumcheck,

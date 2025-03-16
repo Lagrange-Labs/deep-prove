@@ -3,7 +3,7 @@ use crate::{
     commit::{self, identity_eval, precommit, same_poly},
     iop::{ChallengeStorage, StepProof, context::StepInfo},
     lookup::{self, LookupProtocol, TableInfo},
-    tensor::{Tensor, get_root_of_unity},
+    tensors::{Tensor, get_root_of_unity},
 };
 use anyhow::{anyhow, bail, ensure};
 use ff_ext::ExtensionField;

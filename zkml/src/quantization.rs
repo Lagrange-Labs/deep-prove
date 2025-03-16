@@ -11,7 +11,7 @@ use std::env;
 use tracing::debug;
 use transcript::Transcript;
 
-use crate::{Element, tensor::Tensor};
+use crate::{Element, tensors::Tensor};
 
 // Get BIT_LEN from environment variable or use default value
 pub static BIT_LEN: Lazy<usize> = Lazy::new(|| {
@@ -164,8 +164,8 @@ pub struct Requant {
 }
 
 impl Requant {
-    pub fn op(&self, input: &crate::tensor::Tensor<Element>) -> crate::tensor::Tensor<Element> {
-        crate::tensor::Tensor::<Element>::new(
+    pub fn op(&self, input: &crate::tensors::Tensor<Element>) -> crate::tensors::Tensor<Element> {
+        crate::tensors::Tensor::<Element>::new(
             input.dims(),
             input.get_data().iter().map(|e| self.apply(e)).collect_vec(),
         )

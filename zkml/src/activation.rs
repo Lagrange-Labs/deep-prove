@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Element,
     quantization::{self, BIT_LEN, Fieldizer},
-    tensor::Tensor,
+    tensors::Tensor,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, Copy)]

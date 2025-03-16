@@ -11,7 +11,7 @@ use crate::{
     iop::{ActivationProof, ConvProof, DenseProof, PoolingProof},
     lookup::{self, LookupProtocol, LookupType},
     model::{InferenceStep, InferenceTrace, Layer},
-    tensor::{ConvData, Tensor, get_root_of_unity},
+    tensors::{ConvData, Tensor, get_root_of_unity},
 };
 use anyhow::{Context as CC, anyhow, bail};
 use ff_ext::ExtensionField;

@@ -22,7 +22,7 @@ pub mod pooling;
 pub mod quantization;
 pub use onnx_parse::{ModelType, load_model};
 
-pub mod tensor;
+pub mod tensors;
 #[cfg(test)]
 mod testing;
 
@@ -147,7 +147,7 @@ mod test {
         lookup::{LogUp, LookupProtocol},
         onnx_parse::ModelType,
         quantization::TensorFielder,
-        tensor::Tensor,
+        tensors::Tensor,
         to_bit_sequence_le,
     };
     use ff_ext::ff::Field;
@@ -169,7 +169,9 @@ mod test {
 
     fn test_model_run_helper<L: LookupProtocol<E>>() -> anyhow::Result<()> {
         let filepath = workspace_root().join("zkml/assets/model.onnx");
-        ModelType::MLP.validate(&filepath.to_string_lossy()).unwrap();
+        ModelType::MLP
+            .validate(&filepath.to_string_lossy())
+            .unwrap();
         let model = load_model::<Element>(&filepath.to_string_lossy()).unwrap();
         println!("[+] Loaded onnx file");
         let ctx = Context::<E>::generate(&model, None).expect("unable to generate context");
