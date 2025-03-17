@@ -31,7 +31,7 @@ impl Dense {
     }
 
     pub fn pad_next_power_of_two(self) -> Self {
-        let matrix = self.matrix.pad_next_power_of_two_2d();
+        let matrix = self.matrix.pad_next_power_of_two();
         let bias = self.bias.pad_1d(matrix.nrows_2d());
         Self::new(matrix, bias)
     }
