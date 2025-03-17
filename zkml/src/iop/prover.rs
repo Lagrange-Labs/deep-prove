@@ -24,9 +24,9 @@ use multilinear_extensions::{
 use serde::{Serialize, de::DeserializeOwned};
 use std::marker::PhantomData;
 use sumcheck::structs::{IOPProverState, IOPVerifierState};
+use timed::timed_instrument;
 use tracing::{debug, instrument, trace, warn};
 use transcript::Transcript;
-use timed::timed_instrument;
 
 pub fn compute_betas<E: ExtensionField>(r: Vec<E>) -> Vec<E> {
     let mut beta = vec![E::ZERO; 1 << r.len()];
