@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use crate::{
     Claim, VectorTranscript,
+    activation::{Activation, Sigmoid},
     commit::{aggregated_rlc, compute_beta_eval_poly, compute_betas_eval},
     iop::context::BIAS_POLY_ID,
     model::{Layer, Model},
@@ -28,6 +29,7 @@ use super::Pcs;
 /// A polynomial has an unique ID associated to it.
 pub type PolyID = usize;
 
+pub const SIGMOID_TABLE_POLY_ID: usize = 123456789;
 // TODO: separate context into verifier and prover ctx once thing is working
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
@@ -94,6 +96,13 @@ where
                         Some((id, m.filter.get_conv_weights())),
                         Some((BIAS_POLY_ID + id, m.bias.evals_flat())),
                     ],
+                    Layer::Activation(Activation::Sigmoid) => {
+                        let (_, out_values) = Sigmoid::to_mle::<E>();
+                        vec![Some((
+                            SIGMOID_TABLE_POLY_ID,
+                            out_values.into_iter().map(E::from).collect::<Vec<E>>(),
+                        ))]
+                    }
                     _ => vec![None],
                 })
                 .flatten()

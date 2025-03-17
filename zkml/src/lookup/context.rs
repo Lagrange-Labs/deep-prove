@@ -4,13 +4,14 @@ use std::collections::{BTreeSet, HashMap};
 
 use ff::Field;
 use ff_ext::ExtensionField;
+use multilinear_extensions::mle::{DenseMultilinearExtension, MultilinearExtension};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use transcript::Transcript;
 
 use crate::{
-    Element,
-    activation::Relu,
-    commit::precommit::Context,
+    Claim, Element,
+    activation::{Activation, Relu, Sigmoid},
+    commit::precommit::{CommitVerifier, Context, SIGMOID_TABLE_POLY_ID},
     iop::ChallengeStorage,
     lookup::logup_gkr::structs::LogUpInput,
     model::{InferenceTrace, Layer},
@@ -23,6 +24,7 @@ use super::logup_gkr::error::LogUpError;
 pub enum TableType {
     Relu,
     Range,
+    Sigmoid,
 }
 
 impl TableType {
@@ -58,6 +60,23 @@ impl TableType {
                     .unzip();
                 (element_out, vec![field])
             }
+            TableType::Sigmoid => {
+                let (comb, field): (Vec<Element>, Vec<(E::BaseField, E::BaseField)>) =
+                    (*quantization::MIN..=*quantization::MAX)
+                        .map(|i| {
+                            let out = Sigmoid::apply(i);
+                            let i_field: E = i.to_field();
+                            let out_field: E = out.to_field();
+                            (
+                                i + out * column_separator,
+                                (i_field.as_bases()[0], out_field.as_bases()[0]),
+                            )
+                        })
+                        .unzip();
+                let (col_one, col_two): (Vec<E::BaseField>, Vec<E::BaseField>) =
+                    field.into_iter().unzip();
+                (comb, vec![col_one, col_two])
+            }
         }
     }
 
@@ -65,13 +84,19 @@ impl TableType {
         match self {
             TableType::Relu => "Relu".to_string(),
             TableType::Range => "Range".to_string(),
+            TableType::Sigmoid => "Sigmoid".to_string(),
         }
     }
 
     pub fn evaluate_table_columns<E: ExtensionField>(
         &self,
         point: &[E],
-    ) -> Result<Vec<E>, LogUpError> {
+        commit_verifier: &mut CommitVerifier<E>,
+    ) -> Result<Vec<E>, LogUpError>
+    where
+        E::BaseField: Serialize + DeserializeOwned,
+        E: Serialize + DeserializeOwned,
+    {
         match self {
             TableType::Range => {
                 if point.len() != *quantization::BIT_LEN {
@@ -113,16 +138,62 @@ impl TableType {
                     });
                 Ok(vec![first_column, second_column])
             }
+            TableType::Sigmoid => {
+                if point.len() != *quantization::BIT_LEN {
+                    return Err(LogUpError::VerifierError(format!(
+                        "Point was not the correct size to produce a relu table evaluation, point size: {}, expected: {}",
+                        point.len(),
+                        *quantization::BIT_LEN
+                    )));
+                }
+                // For Sigmoid we have to open the second column of the table
+                let (_, output_mle) = Sigmoid::to_mle::<E>();
+                let eval = DenseMultilinearExtension::<E>::from_evaluations_vec(
+                    *quantization::BIT_LEN,
+                    output_mle,
+                )
+                .evaluate(point);
+
+                commit_verifier
+                    .add_claim(SIGMOID_TABLE_POLY_ID, Claim::<E>::new(point.to_vec(), eval)).map_err(|e| LogUpError::VerifierError(format!("Error adding Sigmoid second column evaluations to commitment verifier: {{ inner: {:?} }}", e)))?;
+
+                let first_column = point
+                    .iter()
+                    .enumerate()
+                    .fold(E::ZERO, |acc, (index, p)| acc + *p * E::from(1u64 << index))
+                    - E::from(1u64 << (*quantization::BIT_LEN - 1));
+
+                Ok(vec![first_column])
+            }
         }
     }
 
     pub fn generate_challenge<E: ExtensionField, T: Transcript<E>>(&self, transcript: &mut T) -> E {
         match self {
             TableType::Relu => transcript.get_and_append_challenge(b"Relu").elements,
+            TableType::Sigmoid => transcript.get_and_append_challenge(b"Sigmoid").elements,
             TableType::Range => {
                 // Theres only one column for a range check so we don't need to generate a challenge
                 E::ONE
             }
+        }
+    }
+}
+
+impl From<Activation> for TableType {
+    fn from(value: Activation) -> Self {
+        match value {
+            Activation::Relu => TableType::Relu,
+            Activation::Sigmoid => TableType::Sigmoid,
+        }
+    }
+}
+
+impl From<&Activation> for TableType {
+    fn from(value: &Activation) -> Self {
+        match value {
+            Activation::Relu => TableType::Relu,
+            Activation::Sigmoid => TableType::Sigmoid,
         }
     }
 }
@@ -169,8 +240,9 @@ where
     trace.iter().for_each(|(step_input, step)| {
         total_steps += 1;
         match step.layer {
-            Layer::Activation(..) => {
-                tables.insert(TableType::Relu);
+            Layer::Activation(activation) => {
+                let table_type = activation.into();
+                tables.insert(table_type);
 
                 // Calculate the column_evals and also the merged lookups
                 let (merged_lookups, field): (Vec<Element>, Vec<(E::BaseField, E::BaseField)>) =
@@ -191,7 +263,7 @@ where
                 let (col_one, col_two): (Vec<E::BaseField>, Vec<E::BaseField>) =
                     field.into_iter().unzip();
                 let table_lookup_map = table_lookups
-                    .entry(TableType::Relu)
+                    .entry(table_type)
                     .or_insert_with(|| HashMap::default());
 
                 merged_lookups
@@ -206,7 +278,7 @@ where
                         .map(Fieldizer::<E>::to_field)
                         .collect(),
                 ));
-                lookups_no_challenges.push((vec![col_one, col_two], 2, TableType::Relu));
+                lookups_no_challenges.push((vec![col_one, col_two], 2, table_type));
             }
 
             Layer::Requant(requant) => {

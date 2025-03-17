@@ -4,19 +4,34 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Element,
-    quantization::{self, BIT_LEN, Fieldizer},
+    quantization::{self, BIT_LEN, Fieldizer, Quantizer},
     tensor::Tensor,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, Copy)]
 pub enum Activation {
-    Relu(Relu),
+    Relu,
+    Sigmoid,
 }
 
 impl Activation {
     pub fn op(&self, input: &Tensor<Element>) -> Tensor<Element> {
         match self {
-            Activation::Relu(relu) => relu.op(input),
+            Activation::Relu => Relu::op(input),
+            Activation::Sigmoid => Sigmoid::op(input),
+        }
+    }
+
+    pub fn shape(&self) -> Vec<usize> {
+        match self {
+            Activation::Relu | Activation::Sigmoid => vec![],
+        }
+    }
+
+    pub fn name(&self) -> String {
+        match self {
+            Activation::Relu => format!("RELU: {}", 1 << *quantization::BIT_LEN),
+            Activation::Sigmoid => format!("Sigmoid: {}", 1 << *quantization::BIT_LEN),
         }
     }
 }
@@ -50,7 +65,7 @@ impl Relu {
             .unzip()
     }
 
-    pub fn op(&self, input: &Tensor<Element>) -> Tensor<Element> {
+    pub fn op(input: &Tensor<Element>) -> Tensor<Element> {
         Tensor::new(
             input.dims(),
             input
@@ -64,6 +79,37 @@ impl Relu {
     #[inline(always)]
     pub fn apply(e: Element) -> Element {
         if e.is_negative() { 0 } else { e }
+    }
+}
+
+pub struct Sigmoid;
+
+impl Sigmoid {
+    pub fn to_mle<E: ExtensionField>() -> (Vec<E::BaseField>, Vec<E::BaseField>) {
+        (*quantization::MIN..=*quantization::MAX)
+            .map(|i| {
+                let val: E = i.to_field();
+                let op_val: E = Relu::apply(i as i128).to_field();
+                (val.as_bases()[0], op_val.as_bases()[0])
+            })
+            .unzip()
+    }
+
+    pub fn op(input: &Tensor<Element>) -> Tensor<Element> {
+        Tensor::new(
+            input.dims(),
+            input
+                .get_data()
+                .par_iter()
+                .map(|e| Self::apply(*e))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    pub fn apply(e: Element) -> Element {
+        let e_float = e as f32 / (1 << (*quantization::BIT_LEN - 1)) as f32;
+        let output_float = 1f32 / (1f32 + (-e_float).exp());
+        <Element as Quantizer<Element>>::from_f32_unsafe(&output_float)
     }
 }
 
@@ -101,7 +147,6 @@ mod test {
 
     #[test]
     fn test_activation_relu_mle() {
-        let relu = Relu::new();
         let (input_poly, output_poly) = Relu::to_mle::<F>();
 
         assert_eq!(input_poly.len(), output_poly.len());
@@ -118,7 +163,7 @@ mod test {
         assert_eq!(input_mle.num_vars(), output_mle.num_vars());
         assert_eq!(input_mle.num_vars(), Relu::num_vars());
         let inputs = Tensor::random(vec![10]);
-        let outputs = relu.op(&inputs);
+        let outputs = Relu::op(&inputs);
         assert_eq!(inputs.dims(), outputs.dims());
         for (input, output) in inputs.get_data().iter().zip(outputs.get_data().iter()) {
             // here putting input works because every random input is a u8, so it's already within [0;256] so

@@ -209,6 +209,7 @@ where
                 *table_type,
                 table_poly_id,
                 &mut witness_verifier,
+                &mut commit_verifier,
                 transcript,
                 constant_challenge,
                 column_separation_challenge,
@@ -727,6 +728,7 @@ fn verify_table<E: ExtensionField, T: Transcript<E>>(
     table_type: TableType,
     poly_id: usize,
     witness_verifier: &mut commit::precommit::CommitVerifier<E>,
+    commit_verifier: &mut commit::precommit::CommitVerifier<E>,
     t: &mut T,
     constant_challenge: E,
     column_separation_challenge: E,
@@ -754,7 +756,8 @@ where
             .clone(),
     )?;
     // Hard indexing is okay here because we checked above that at least one claim exists
-    let expected_claim_evals = table_type.evaluate_table_columns::<E>(&poly_claims[0].point)?;
+    let expected_claim_evals =
+        table_type.evaluate_table_columns::<E>(&poly_claims[0].point, commit_verifier)?;
 
     ensure!(
         expected_claim_evals.len() == (poly_claims.len() - 1),

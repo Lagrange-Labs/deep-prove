@@ -100,7 +100,7 @@ where
             (Layer::Convolution(filter), StepInfo::Convolution(info)) => {
                 self.prove_convolution_step(last_claim, &step.output, &step.conv_data, info, filter)
             }
-            (Layer::Activation(Activation::Relu(..)), StepInfo::Activation(..))
+            (Layer::Activation(Activation::Relu), StepInfo::Activation(..))
             | (Layer::Requant(..), StepInfo::Requant(..)) => {
                 self.prove_lookup(&last_claim, &step.output.get_data(), info)
             }

@@ -5,7 +5,7 @@ use tracing::debug;
 
 use crate::{
     Element,
-    activation::{Activation, Relu},
+    activation::Activation,
     convolution::Convolution,
     dense::Dense,
     pooling::Pooling,
@@ -77,7 +77,7 @@ impl Layer {
             Layer::Convolution(ref filter) => filter.get_shape(),
             Layer::SchoolBookConvolution(ref filter) => filter.get_shape(),
 
-            Layer::Activation(Activation::Relu(_)) => Relu::shape(),
+            Layer::Activation(activation) => activation.shape(),
             Layer::Requant(info) => info.shape(),
             Layer::Pooling(Pooling::Maxpool2D(info)) => vec![info.kernel_size, info.kernel_size],
         }
@@ -107,9 +107,7 @@ impl Layer {
                     "Conv: Traditional convolution for debug purposes" /* matrix.fmt_integer() */
                 )
             }
-            Layer::Activation(Activation::Relu(_)) => {
-                format!("RELU: {}", 1 << Relu::num_vars())
-            }
+            Layer::Activation(activation) => activation.name(),
             Layer::Requant(info) => {
                 format!("Requant: {}", info.shape()[1])
             }
@@ -421,7 +419,7 @@ pub(crate) mod test {
 
     use crate::{
         Element,
-        activation::{Activation, Relu},
+        activation::Activation,
         convolution::Convolution,
         default_transcript,
         dense::Dense,
@@ -457,7 +455,7 @@ pub(crate) mod test {
                         Dense::random(vec![nrows, ncols]).pad_next_power_of_two(),
                     ));
                 } else if selector % MOD_SELECTOR == SELECTOR_RELU {
-                    model.add_layer::<F>(Layer::Activation(Activation::Relu(Relu::new())));
+                    model.add_layer::<F>(Layer::Activation(Activation::Relu));
                     // no need to change the `last_row` since RELU layer keeps the same shape
                     // of outputs
                 } else if selector % MOD_SELECTOR == SELECTOR_POOLING {

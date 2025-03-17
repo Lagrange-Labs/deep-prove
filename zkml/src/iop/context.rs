@@ -188,10 +188,10 @@ where
                         });
                         dense_info
                     }
-                    Layer::Activation(Activation::Relu(relu)) => {
-                        tables.insert(TableType::Relu);
+                    Layer::Activation(activation) => {
+                        tables.insert(activation.into());
                         StepInfo::Activation(ActivationInfo {
-                            op: Activation::Relu(*relu),
+                            op: *activation,
                             poly_id: id,
                             num_vars: last_output_shape
                                 .iter()

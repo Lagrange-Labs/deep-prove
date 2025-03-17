@@ -18,7 +18,7 @@ type F = GoldilocksExt2;
 
 use crate::{
     Element,
-    activation::{Activation, Relu},
+    activation::Activation,
     model::{Layer, Model},
     pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
     quantization::Quantizer,
@@ -396,7 +396,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
             }
             op if ACTIVATION.contains(&op) => {
                 assert!(input_shape_padded.iter().all(|d| d.is_power_of_two()));
-                let layer = Layer::Activation(Activation::Relu(Relu::new()));
+                let layer = Layer::Activation(Activation::Relu);
                 layers.push(layer);
             }
             op if CONVOLUTION.contains(&op) => {
