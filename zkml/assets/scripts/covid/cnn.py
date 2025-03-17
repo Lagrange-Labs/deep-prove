@@ -88,7 +88,8 @@ class CNNModel(nn.Module):
         x = self.pool(x)
         x = self.dropout1(x)
         # Flatten
-        x = x.view(x.size(0), -1)  # Flatten dynamically based on batch size
+        # x = x.view(x.size(0), -1)  # Flatten dynamically based on batch size
+        x = torch.flatten(x, 1)
         
         # Dense layers with dropout
         x = self.relu(self.fc1(x))
