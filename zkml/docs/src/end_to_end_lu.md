@@ -26,3 +26,8 @@ At the end of the entire protocol we have GKR proofs, together with claimed nume
 After model inference has been completed we can use the inputs and outputs of each of the layers requiring a lookup argument to generate the witness. 
 
 For each of the different table types we employ we collect together all of the lookups into those tables across all steps of the inference. We then use these to calculate a single multiplicity polynomial for each table type. These multiplicity polynomials are then committed and a (batched) PCS opening proof for them is provided to the verifier.
+
+This means that even if we have $`n`$ layers that use $`\mathrm{Table}_{A}`$, we only have to run the GKR circuit for the fractional sumcheck on $`\mathrm{Table}_{A}`$ once. Likewise we only commit and open on multiplicity polynomial for $`\mathrm{Table}_{A}`$.
+
+## Commitments
+When proving inference, for every layer that requires a lookup the prover has to provide a commitment and an opening proof to the output of that layer. We also have to provide one commitment for each different table type used.
