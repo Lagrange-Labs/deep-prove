@@ -52,7 +52,7 @@ impl Relu {
 
     pub fn op(&self, input: &Tensor<Element>) -> Tensor<Element> {
         Tensor::new(
-            input.dims(),
+            input.get_shape(),
             input
                 .get_data()
                 .par_iter()
@@ -119,7 +119,7 @@ mod test {
         assert_eq!(input_mle.num_vars(), Relu::num_vars());
         let inputs = Tensor::random(vec![10]);
         let outputs = relu.op(&inputs);
-        assert_eq!(inputs.dims(), outputs.dims());
+        assert_eq!(inputs.get_shape(), outputs.get_shape());
         for (input, output) in inputs.get_data().iter().zip(outputs.get_data().iter()) {
             // here putting input works because every random input is a u8, so it's already within [0;256] so
             // its value "is" the index. Normally if this is not true, we should get the index of the row corresponding to that input

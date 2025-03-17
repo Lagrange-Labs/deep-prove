@@ -11,7 +11,7 @@ pub struct Dense {
 
 impl Dense {
     pub fn new(matrix: Tensor<Element>, bias: Tensor<Element>) -> Self {
-        assert_eq!(matrix.nrows_2d(), bias.dims()[0]);
+        assert_eq!(matrix.nrows_2d(), bias.get_shape()[0]);
         Self { matrix, bias }
     }
     pub fn ncols(&self) -> usize {
@@ -22,7 +22,7 @@ impl Dense {
     }
 
     pub fn op(&self, input: &Tensor<Element>) -> Tensor<Element> {
-        if input.dims().len() != 1 {
+        if input.get_shape().len() != 1 {
             let flat_input = input.flatten();
             self.matrix.matvec(&flat_input).add(&self.bias)
         } else {
@@ -104,12 +104,12 @@ mod test {
             let padded = dense.pad_next_power_of_two();
 
             // Check padded dimensions are powers of two
-            let padded_dims = padded.matrix.dims();
+            let padded_dims = padded.matrix.get_shape();
             assert_eq!(padded_dims[0], 4); // Next power of 2 after 3
             assert_eq!(padded_dims[1], 4); // Next power of 2 after 3
 
             // Check bias is padded
-            let bias_dims = padded.bias.dims();
+            let bias_dims = padded.bias.get_shape();
             assert_eq!(bias_dims[0], 4); // Next power of 2 after 3
 
             // Check original values are preserved
@@ -150,12 +150,12 @@ mod test {
             let padded = dense.clone().pad_next_power_of_two();
 
             // Check dimensions remain the same
-            let padded_dims = padded.matrix.dims();
+            let padded_dims = padded.matrix.get_shape();
             assert_eq!(padded_dims[0], 4);
             assert_eq!(padded_dims[1], 4);
 
             // Check bias dimensions remain the same
-            let bias_dims = padded.bias.dims();
+            let bias_dims = padded.bias.get_shape();
             assert_eq!(bias_dims[0], 4);
 
             // Check values are preserved
@@ -185,12 +185,12 @@ mod test {
             let padded = dense.pad_next_power_of_two();
 
             // Check dimensions are padded correctly
-            let padded_dims = padded.matrix.dims();
+            let padded_dims = padded.matrix.get_shape();
             assert_eq!(padded_dims[0], 4); // Next power of 2 after 3
             assert_eq!(padded_dims[1], 4); // Already a power of 2
 
             // Check bias is padded
-            let bias_dims = padded.bias.dims();
+            let bias_dims = padded.bias.get_shape();
             assert_eq!(bias_dims[0], 4); // Next power of 2 after 3
 
             // Check original values are preserved and padding is zeros

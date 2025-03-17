@@ -127,7 +127,7 @@ where
 {
     fn to_fields(self) -> Tensor<F> {
         Tensor::new(
-            self.dims(),
+            self.get_shape(),
             self.get_data()
                 .into_iter()
                 .map(|i| i.to_field())
@@ -166,7 +166,7 @@ pub struct Requant {
 impl Requant {
     pub fn op(&self, input: &crate::tensors::Tensor<Element>) -> crate::tensors::Tensor<Element> {
         crate::tensors::Tensor::<Element>::new(
-            input.dims(),
+            input.get_shape(),
             input.get_data().iter().map(|e| self.apply(e)).collect_vec(),
         )
     }

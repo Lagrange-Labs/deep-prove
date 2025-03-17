@@ -14,7 +14,7 @@ pub struct Convolution {
 
 impl Convolution {
     pub fn new(filter: Tensor<Element>, bias: Tensor<Element>) -> Self {
-        assert_eq!(filter.kw(), bias.dims()[0]);
+        assert_eq!(filter.kw(), bias.get_shape()[0]);
         Self { filter, bias }
     }
     pub fn add_bias(&self, conv_out: &Tensor<Element>) -> Tensor<Element> {

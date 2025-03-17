@@ -885,7 +885,7 @@ pub(crate) mod test {
         let trace: crate::model::InferenceTrace<'_, _, GoldilocksExt2> =
             model.run::<F>(input.clone());
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
-        let ctx = Context::<GoldilocksExt2>::generate(&model, Some(input.dims()))
+        let ctx = Context::<GoldilocksExt2>::generate(&model, Some(input.get_shape()))
             .expect("Unable to generate context");
         let output = trace.final_output().clone();
 
@@ -936,7 +936,7 @@ pub(crate) mod test {
                             model.run::<F>(input.clone());
                         let mut tr: BasicTranscript<GoldilocksExt2> =
                             BasicTranscript::new(b"m2vec");
-                        let ctx = Context::<GoldilocksExt2>::generate(&model, Some(input.dims()))
+                        let ctx = Context::<GoldilocksExt2>::generate(&model, Some(input.get_shape()))
                             .expect("Unable to generate context");
                         let output = trace.final_output().clone();
                         let prover: Prover<

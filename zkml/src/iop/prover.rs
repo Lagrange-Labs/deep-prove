@@ -293,7 +293,7 @@ where
         output: &Tensor<E>,
         info: &PoolingInfo,
     ) -> anyhow::Result<Claim<E>> {
-        assert_eq!(input.dims().len(), 3, "Maxpool needs 3D inputs.");
+        assert_eq!(input.get_shape().len(), 3, "Maxpool needs 3D inputs.");
         // Create the range check proof for the diff
         let prover_info = self
             .lookup_witness
@@ -408,7 +408,7 @@ where
             input.get_data(),
         );
         let mut same_poly_prover = same_poly::Prover::<E>::new(input_mle.clone());
-        let padded_input_shape = input.dims();
+        let padded_input_shape = input.get_shape();
         let padded_input_row_length_log = ceil_log2(padded_input_shape[2]);
         // We can batch all of the claims for the input poly with 00, 10, 01, 11 fixed into one with random challenges
         let [r1, r2] = [self

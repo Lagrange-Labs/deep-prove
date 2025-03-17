@@ -236,7 +236,7 @@ where
                         // .map(|&dim| ceil_log2(dim)),
                         // )
                         // .collect::<Vec<usize>>();
-                        let mut filter_shape = filter.filter.dims();
+                        let mut filter_shape = filter.filter.get_shape();
                         filter_shape.remove(1);
                         last_output_shape = filter_shape;
 

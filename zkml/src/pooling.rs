@@ -71,12 +71,12 @@ impl Maxpool2D {
         input: &Tensor<E>,
         output: &Tensor<E>,
     ) -> Vec<Vec<E::BaseField>> {
-        assert_eq!(input.dims().len(), 3, "Maxpool needs 3D inputs.");
+        assert_eq!(input.get_shape().len(), 3, "Maxpool needs 3D inputs.");
         let padded_input = input.pad_next_power_of_two();
 
         let padded_output = output.pad_next_power_of_two();
 
-        let padded_input_shape = padded_input.dims();
+        let padded_input_shape = padded_input.get_shape();
 
         let num_vars = padded_input.get_data().len().ilog2() as usize;
 
@@ -234,7 +234,7 @@ mod tests {
 
             let padded_output = output.pad_next_power_of_two();
 
-            let padded_input_shape = padded_input.dims();
+            let padded_input_shape = padded_input.get_shape();
 
             let num_vars = padded_input.get_data().len().ilog2() as usize;
             let output_num_vars = padded_output.get_data().len().ilog2() as usize;
