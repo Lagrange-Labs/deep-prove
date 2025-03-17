@@ -41,6 +41,7 @@ serde_json = "1.0"
 tracing = { version = "0.1.41", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 timed = { git = "https://github.com/nikkolasg/timed-rs" }
+timed-core = { git = "https://github.com/nikkolasg/timed-rs" }
 
 [profile.dev]
 lto = "thin"
@@ -54,3 +55,7 @@ opt-level = 3
 
 [profile.release]
 lto = "thin"
+
+#[patch."https://github.com/nikkolasg/timed-rs"]
+#timed = { path = "/Users/nalos/prog/timed/timed" }
+#timed-core = { path = "/Users/nalos/prog/timed/timed-core" }

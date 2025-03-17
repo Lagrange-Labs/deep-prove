@@ -125,6 +125,13 @@ Resource-constrained benchmarking with fewer samples:
 python bench.py --num-threads 8 --configs 5,64 --samples 10
 ```
 
+## Breakdown of deeo prove performance
+
+Add a env var before running the script where you will get a CSV file where each line is one invocation of a function. Aggregating these lines on a spreadsheet engine will give you a good idea where the bottlenecks are:
+```bash
+TIMED_OUTPUT=prover_perf.csv python bench.py ...
+```
+
 ## 🎈 Try It Out
 
 Feel free to tweak the Python scripts and run `bench.py` to explore the full potential of ZKML. 

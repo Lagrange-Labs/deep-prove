@@ -2326,11 +2326,26 @@ dependencies = [
 [[package]]
 name = "timed"
 version = "0.1.0"
-source = "git+https://github.com/nikkolasg/timed-rs#7443eb5625e9126f14c7782f4d4e5a191d5b2322"
+source = "git+https://github.com/nikkolasg/timed-rs#243cb82bd259b36fff96d7963675eb25c4d7d3ba"
 dependencies = [
+ "csv",
+ "once_cell",
  "proc-macro2",
  "quote",
+ "serde",
  "syn 1.0.109",
+ "timed-core",
+ "tracing",
+]
+
+[[package]]
+name = "timed-core"
+version = "0.1.0"
+source = "git+https://github.com/nikkolasg/timed-rs#243cb82bd259b36fff96d7963675eb25c4d7d3ba"
+dependencies = [
+ "csv",
+ "once_cell",
+ "serde",
  "tracing",
 ]
 
@@ -2969,6 +2984,7 @@ dependencies = [
  "simple-frontend",
  "sumcheck",
  "timed",
+ "timed-core",
  "tracing",
  "tracing-subscriber",
  "tract-onnx",
