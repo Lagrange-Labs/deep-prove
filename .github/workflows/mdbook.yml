@@ -1,11 +1,12 @@
 name: Deploy mdBook
 
 on:
+  pull_request:
   push:
-    branches:
-      - main  # or your default branch
-    paths:
-      - 'docs/**'  # Only trigger when docs are updated
+    #branches:
+    #  - main  # or your default branch
+    #paths:
+    #  - 'docs/**'  # Only trigger when docs are updated
 
 jobs:
   deploy:
