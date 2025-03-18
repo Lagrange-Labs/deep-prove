@@ -9,11 +9,11 @@ use transcript::Transcript;
 
 use crate::{
     Element,
-    activation::Relu,
     commit::precommit::Context,
     iop::ChallengeStorage,
+    layers::{Layer, activation::Relu},
     lookup::logup_gkr::structs::LogUpInput,
-    model::{InferenceTrace, Layer},
+    model::InferenceTrace,
     quantization::{self, Fieldizer},
 };
 

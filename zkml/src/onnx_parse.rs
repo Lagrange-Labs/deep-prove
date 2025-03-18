@@ -1,4 +1,4 @@
-use crate::{convolution::Convolution, dense::Dense};
+use crate::layers::{convolution::Convolution, dense::Dense};
 use anyhow::{Context, Error, Result, bail, ensure};
 use goldilocks::GoldilocksExt2;
 use itertools::Itertools;
@@ -18,9 +18,12 @@ type F = GoldilocksExt2;
 
 use crate::{
     Element,
-    activation::{Activation, Relu},
-    model::{Layer, Model},
-    pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
+    layers::{
+        Layer,
+        activation::{Activation, Relu},
+        pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
+    },
+    model::Model,
     quantization::Quantizer,
 };
 

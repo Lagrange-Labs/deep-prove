@@ -4,16 +4,14 @@ use super::{
 };
 use crate::{
     Claim, Element, VectorTranscript,
-    activation::Activation,
     commit::{compute_betas_eval, precommit, same_poly},
-    convolution::Convolution,
-    dense,
     iop::{ActivationProof, ConvProof, DenseProof, PoolingProof},
+    layers::{Layer, activation::Activation, convolution::Convolution, dense},
     lookup::{
         context::generate_lookup_witnesses,
         logup_gkr::{prover::batch_prove, structs::LogUpInput},
     },
-    model::{InferenceStep, InferenceTrace, Layer},
+    model::{InferenceStep, InferenceTrace},
     tensor::{ConvData, Tensor, get_root_of_unity},
 };
 use anyhow::{Context as CC, anyhow, bail};

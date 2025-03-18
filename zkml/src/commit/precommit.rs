@@ -9,7 +9,8 @@ use crate::{
     Claim, VectorTranscript,
     commit::{aggregated_rlc, compute_beta_eval_poly, compute_betas_eval},
     iop::context::BIAS_POLY_ID,
-    model::{Layer, Model},
+    layers::Layer,
+    model::Model,
 };
 use anyhow::{Context as CC, ensure};
 use ff_ext::ExtensionField;

@@ -19,7 +19,7 @@ use std::{
 
 use crate::{
     Element,
-    pooling::MAXPOOL2D_KERNEL_SIZE,
+    layers::pooling::MAXPOOL2D_KERNEL_SIZE,
     quantization::{Fieldizer, IntoElement},
     to_bit_sequence_le,
 };

@@ -1,9 +1,12 @@
 use crate::{
-    activation::Activation,
     iop::precommit::{self, PolyID},
+    layers::{
+        Layer,
+        activation::Activation,
+        pooling::{Maxpool2D, Pooling},
+    },
     lookup::context::{LookupContext, TableType},
-    model::{Layer, Model},
-    pooling::{Maxpool2D, Pooling},
+    model::Model,
     quantization::Requant,
 };
 use anyhow::Context as CC;
