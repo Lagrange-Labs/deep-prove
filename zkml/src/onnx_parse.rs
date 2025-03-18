@@ -400,6 +400,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                 layers.push(layer);
             }
             op if CONVOLUTION.contains(&op) => {
+                let _ = fetch_conv2d_attributes(node)?;
                 let mut weight = fetch_weight_bias_as_tensor::<Q>(
                     "weight",
                     node,
@@ -617,6 +618,31 @@ fn fetch_weight_bias_as_tensor<Q: Quantizer<Element>>(
     let tensor_result = crate::tensor::Tensor::new(tensor_shape, tensor_f);
 
     Ok(tensor_result)
+}
+
+fn fetch_conv2d_attributes(node: &NodeProto) -> Result<()> {
+    let get_attr = |name: &str| -> Vec<i64> {
+        node.attribute
+            .iter()
+            .find(|x| x.name.contains(name))
+            .map_or_else(Vec::new, |x| x.ints.clone())
+    };
+
+    let (strides, pads, kernel_shape, dilations) = (
+        get_attr("strides"),
+        get_attr("pads"),
+        get_attr("kernel_shape"),
+        get_attr("dilations"),
+    );
+
+    assert!(strides.iter().all(|&x| x == 1), "Strides must be {}", 1);
+    assert!(pads.iter().all(|&x| x == 0), "Padding must be 0s");
+    assert!(
+        dilations.iter().all(|&x| x == 1),
+        "Dilations shape must be 1"
+    );
+
+    Ok(())
 }
 
 fn fetch_maxpool_attributes(node: &NodeProto) -> Result<()> {
