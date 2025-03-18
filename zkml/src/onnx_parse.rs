@@ -800,6 +800,40 @@ mod tests {
     }
 
     #[test]
+    fn test_covid_cnn() {
+        let subscriber = tracing_subscriber::fmt::Subscriber::builder()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .finish();
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("Failed to set global subscriber");
+
+        let filepath = "assets/scripts/covid/cnn-covid.onnx";
+        ModelType::CNN.validate(filepath).unwrap();
+        let result = load_model::<Element>(&filepath);
+
+        assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
+
+        let model = result.unwrap();
+        let input = crate::tensor::Tensor::random(model.input_shape());
+        let input = model.prepare_input(input);
+        let trace = model.run::<F>(input.clone());
+        // println!("Result: {:?}", trace.final_output());
+
+        let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
+        let ctx = Context::<GoldilocksExt2>::generate(&model, Some(input.dims()))
+            .expect("Unable to generate context");
+        let output = trace.final_output().clone();
+
+        let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>> =
+            Prover::new(&ctx, &mut tr);
+        let proof = prover.prove(trace).expect("unable to generate proof");
+        let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
+            BasicTranscript::new(b"m2vec");
+        let io = IO::new(input.to_fields(), output.to_fields());
+        verify::<_, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
+    }
+
+    #[test]
     fn test_is_cnn() {
         let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
         let result = is_cnn(&filepath);
