@@ -2,7 +2,7 @@ name: Deploy mdBook
 
 on:
   pull_request:
-  push:
+  # push:
     #branches:
     #  - main  # or your default branch
     #paths:
