@@ -60,6 +60,6 @@ The verifier computes $e_{y} = e_y' - e_b$. Recall that $y + b = y'$ or $y = y -
 
 Both parties run the matrix to vector sumcheck for proving that $y' = Wx$ as described in previous section.
 
-The prover stores the evaluation claims of the MLEs of $b$ and $w$ so that they will be accumulated later.
+The prover stores the evaluation claims of the MLEs of $b$ and $w$ so that they will be accumulated and proven at the end of the full process.
 
 **Note**: There is a well known trick to extend the matrix by one more row to deal with the bias in a single sumcheck. Our first implementation was using it but then due to padding issues, the solution to deal with padding individually was preferred.
