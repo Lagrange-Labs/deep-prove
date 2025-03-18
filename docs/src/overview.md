@@ -12,7 +12,7 @@ Specifically, we support the following layer:
 * [MaxPool](https://deepai.org/machine-learning-glossary-and-terms/max-pooling),
 * [Convolutions](https://en.wikipedia.org/wiki/Convolutional_neural_network)
 
-Deep-prove is able to parse such models represented in the ONNX file format.
+Deep-prove is able to parse such models represented in the [ONNX file format](https://onnx.ai/).
 
 ## Proving Flow
 
