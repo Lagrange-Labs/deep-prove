@@ -25,7 +25,7 @@ use crate::{
 };
 
 // Supported operators
-const ACTIVATION: [&str; 1] = ["Relu"];
+const ACTIVATION: [&str; 2] = ["Relu", "Sigmoid"];
 const CONVOLUTION: [&str; 1] = ["Conv"];
 const DOWNSAMPLING: [&str; 1] = ["MaxPool"];
 const LINEAR_ALG: [&str; 2] = ["Gemm", "MatMul"];

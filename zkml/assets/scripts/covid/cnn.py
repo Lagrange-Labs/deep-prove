@@ -52,10 +52,11 @@ class CNNModel(nn.Module):
         super(CNNModel, self).__init__()
         
         # Convolutional layers
-        self.conv1 = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, stride=2, padding=0)
-        self.conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=2, padding=0)
-        self.conv3 = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=2, padding=0)
-        self.conv4 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=2, padding=0)
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, stride=1, padding=0)
+        self.conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=0)
+        self.conv3 = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=0)
+        self.conv4 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=0)
+        self.conv5 = nn.Conv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1, padding=0)
         
         # Pooling layer
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
@@ -66,12 +67,12 @@ class CNNModel(nn.Module):
         
         # Flatten (handled in forward pass)
         # Dense layers
-        self.fc1 = nn.Linear(128, 64)  # Adjust input size based on pooling
+        self.fc1 = nn.Linear(18432, 64)  # Adjust input size based on pooling
         self.fc2 = nn.Linear(64, 1)
         
         # Activation functions
         self.relu = nn.ReLU()
-        # self.sigmoid = nn.Sigmoid()
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         # Convolutional and pooling layers with dropout
@@ -87,6 +88,10 @@ class CNNModel(nn.Module):
         x = self.relu(self.conv4(x))
         x = self.pool(x)
         x = self.dropout1(x)
+        
+        x = self.relu(self.conv5(x))
+        x = self.pool(x)
+        x = self.dropout1(x)
         # Flatten
         # x = x.view(x.size(0), -1)  # Flatten dynamically based on batch size
         x = torch.flatten(x, 1)
@@ -94,8 +99,8 @@ class CNNModel(nn.Module):
         # Dense layers with dropout
         x = self.relu(self.fc1(x))
         x = self.dropout2(x)
-        #x = self.sigmoid(
-        x = self.relu(self.fc2(x))
+        x = self.sigmoid(self.fc2(x))
+        #x = self.relu(self.fc2(x))
         
         return x
 
@@ -151,9 +156,9 @@ def export_test_data(model, val_loader, num_samples=5):
             images, labels = images.to(device), labels.to(device)
             outputs = model(images)
 
-            test_data["input_data"].append(images.cpu().tolist())  # Raw input
-            test_data["output_data"].append(labels.cpu().tolist())  # True labels
-            test_data["pytorch_output"].append(outputs.cpu().tolist())
+            test_data["input_data"].append(images.cpu().reshape([-1]).tolist())  # Raw input
+            test_data["output_data"].append(labels.cpu().reshape([-1]).tolist())  # True labels
+            test_data["pytorch_output"].append(outputs.cpu().reshape([-1]).tolist())
 
 
     data_path = args.export / "input.json"
