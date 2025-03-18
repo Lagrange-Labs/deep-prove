@@ -620,6 +620,7 @@ fn fetch_weight_bias_as_tensor<Q: Quantizer<Element>>(
     Ok(tensor_result)
 }
 
+/// Get the conv2d attributes and assert if supported by DeepProve
 fn fetch_conv2d_attributes(node: &NodeProto) -> Result<()> {
     let get_attr = |name: &str| -> Vec<i64> {
         node.attribute
@@ -645,6 +646,7 @@ fn fetch_conv2d_attributes(node: &NodeProto) -> Result<()> {
     Ok(())
 }
 
+/// Get the maxpool attributes and assert if supported by DeepProve
 fn fetch_maxpool_attributes(node: &NodeProto) -> Result<()> {
     let get_attr = |name: &str| -> Vec<i64> {
         node.attribute
