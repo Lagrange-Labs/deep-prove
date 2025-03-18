@@ -1,4 +1,5 @@
 # Relu
+
 The size of the Relu table depends on the quantisation bit size. It has two columns, one for inputs and one for outputs, both of which are of size `1 << BIT_LEN`. We give a simple 3 bit example table below:
 
 | Input Column | Output Column |
