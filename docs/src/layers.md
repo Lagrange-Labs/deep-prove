@@ -3,6 +3,6 @@ We currently support a number of different layers in our models. We describe the
 
 * [Relu](./relu.md), we prove correct execution of this function using a [lookup argument](./lookups.md)
 * We need to do a [range Checks](./range_check.md) for requantization.
-* [Dense layer](./dense.md) 
+* [Dense layer](./dense.md), aka. matrix vector multiplication.
 * [Convolution](./conv.md)
 * [MaxPool](./maxpool.md)

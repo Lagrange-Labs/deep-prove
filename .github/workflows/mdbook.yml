@@ -5,11 +5,13 @@ on:
     branches:
       - main  # or your default branch
     paths:
-      - 'zkml/docs/**'  # Only trigger when docs are updated
+      - 'docs/**'  # Only trigger when docs are updated
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v3
 
@@ -23,13 +25,12 @@ jobs:
 
       - name: Build Book
         run: |
-          cd zkml/docs  # Change to your docs directory
+          cd docs  # Change to your docs directory
           mdbook build
 
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          destination_dir: ./zkml/docs/book  # Path to your built book
-          publish_dir: ./zkml/docs/public  # Optional: specify a subdirectory on gh-pages
+          publish_dir: ./docs/book
 
