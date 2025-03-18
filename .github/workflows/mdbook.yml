@@ -1,0 +1,35 @@
+name: Deploy mdBook
+
+on:
+  push:
+    branches:
+      - main  # or your default branch
+    paths:
+      - 'zkml/docs/**'  # Only trigger when docs are updated
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup mdBook
+        uses: peaceiris/actions-mdbook@v1
+        with:
+          mdbook-version: 'latest'
+
+      - name: Install mdbook-katex
+        run: cargo install mdbook-katex
+
+      - name: Build Book
+        run: |
+          cd zkml/docs  # Change to your docs directory
+          mdbook build
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          destination_dir: ./zkml/docs/book  # Path to your built book
+          publish_dir: ./zkml/docs/public  # Optional: specify a subdirectory on gh-pages
+
