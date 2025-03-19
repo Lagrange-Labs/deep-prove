@@ -1,5 +1,4 @@
 use anyhow::bail;
-use ark_std::rand::{self, SeedableRng, rngs::StdRng};
 use ff::Field;
 use ff_ext::ExtensionField;
 use goldilocks::GoldilocksExt2;
@@ -446,27 +445,17 @@ impl<T> Tensor<T> {
             input_shape: vec![0],
         }
     }
-    /// Get the dimensions of the tensor
-    pub fn get_shape(&self) -> Vec<usize> {
-        assert!(self.shape.len() > 0, "Empty tensor");
-        self.shape.clone()
-    }
-    /// Get the dimensions of the tensor
-    pub fn get_input_shape(&self) -> Vec<usize> {
-        assert!(self.shape.len() > 0, "Empty tensor");
-        self.input_shape.clone()
-    }
     /// Is vector
     pub fn is_vector(&self) -> bool {
         self.get_shape().len() == 1
     }
-    ///
-    pub fn is_convolution(&self) -> bool {
-        self.get_shape().len() == 4
-    }
     /// Is matrix
     pub fn is_matrix(&self) -> bool {
         self.get_shape().len() == 2
+    }
+    ///
+    pub fn is_convolution(&self) -> bool {
+        self.get_shape().len() == 4
     }
     /// Get the number of rows from the matrix
     pub fn nrows_2d(&self) -> usize {
@@ -503,6 +492,17 @@ impl<T> Tensor<T> {
             self.ncols_2d().ilog2() as usize,
         )
     }
+    /// Get the dimensions of the tensor
+    pub fn get_shape(&self) -> Vec<usize> {
+        assert!(self.shape.len() > 0, "Empty tensor");
+        self.shape.clone()
+    }
+    /// Get the input shape of the tensor
+    /// TODO: Remove it
+    pub fn get_input_shape(&self) -> Vec<usize> {
+        assert!(self.shape.len() > 0, "Empty tensor");
+        self.input_shape.clone()
+    }
     ///
     pub fn get_data(&self) -> &[T] {
         &self.data
@@ -516,10 +516,7 @@ impl<T> Tensor<T> {
 
 impl<T> Tensor<T>
 where
-    T: Copy + Clone + Send + Sync,
-    T: std::iter::Sum,
-    T: std::ops::Add<Output = T> + std::ops::Sub<Output = T> + std::ops::Mul<Output = T>,
-    T: std::default::Default,
+    T: Clone,
 {
     ///
     pub fn flatten(&self) -> Self {
@@ -531,6 +528,15 @@ where
             input_shape: vec![0],
         }
     }
+}
+
+impl<T> Tensor<T>
+where
+    T: Copy + Clone + Send + Sync,
+    T: std::iter::Sum,
+    T: std::ops::Add<Output = T> + std::ops::Sub<Output = T> + std::ops::Mul<Output = T>,
+    T: std::default::Default,
+{
     /// Element-wise addition
     pub fn add(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(self.shape == other.shape, "Shape mismatch for addition.");
