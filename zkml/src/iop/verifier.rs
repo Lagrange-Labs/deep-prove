@@ -1,35 +1,21 @@
 use crate::{
     Claim, VectorTranscript,
-    commit::{self, identity_eval, precommit, same_poly},
+    commit::{self, precommit},
     iop::ChallengeStorage,
     layers::{LayerCtx, LayerProof},
     lookup::{context::TableType, logup_gkr::verifier::verify_logup_proof},
-    quantization,
-    tensor::{Tensor, get_root_of_unity},
+    tensor::Tensor,
 };
 use anyhow::{anyhow, bail, ensure};
 use ff_ext::ExtensionField;
 
-use itertools::{Itertools, izip};
-use multilinear_extensions::{
-    mle::{IntoMLE, MultilinearExtension},
-    util::ceil_log2,
-    virtual_poly::VPAuxInfo,
-};
-use tracing::debug;
+use itertools::Itertools;
+use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 
 use serde::{Serialize, de::DeserializeOwned};
-use sumcheck::structs::IOPVerifierState;
 use transcript::Transcript;
 
 use super::{Context, Proof, TableProof};
-use crate::layers::{
-    activation::{ActivationCtx, ActivationProof},
-    convolution::{ConvCtx, ConvProof},
-    dense::{DenseCtx, DenseProof},
-    pooling::{PoolingCtx, PoolingProof},
-    requant::{RequantCtx, RequantProof},
-};
 
 /// What the verifier must have besides the proof
 pub struct IO<E> {
@@ -191,11 +177,7 @@ where
                     )?
                 }
                 (LayerProof::<E>::Convolution(proof), LayerCtx::<E>::Convolution(info)) => {
-                    info.verify_convolution(
-                        &mut self,
-                        output_claim,
-                        &proof,
-                    )?
+                    info.verify_convolution(&mut self, output_claim, &proof)?
                 }
                 _ => bail!(
                     "Step proof: {} and step info: {} did not match",

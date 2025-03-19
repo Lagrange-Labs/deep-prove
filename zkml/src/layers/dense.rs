@@ -1,6 +1,6 @@
 use crate::{
     Claim, Prover,
-    iop::context::ContextAux,
+    iop::{context::ContextAux, verifier::Verifier},
     layers::{LayerCtx, LayerProof, PolyID, requant::Requant},
     quantization,
 };

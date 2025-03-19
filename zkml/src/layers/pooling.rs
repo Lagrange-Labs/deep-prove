@@ -1,10 +1,14 @@
 use crate::{
     Claim, Element, Prover,
-    commit::{compute_betas_eval, precommit::PolyID, same_poly},
+    commit::{compute_betas_eval, identity_eval, precommit::PolyID, same_poly},
+    iop::verifier::Verifier,
     layers::{ContextAux, LayerProof},
     lookup::{
         context::TableType,
-        logup_gkr::{prover::batch_prove as logup_batch_prove, structs::LogUpProof},
+        logup_gkr::{
+            prover::batch_prove as logup_batch_prove, structs::LogUpProof,
+            verifier::verify_logup_proof,
+        },
     },
     quantization::{Fieldizer, IntoElement},
     tensor::Tensor,
@@ -15,10 +19,10 @@ use gkr::util::ceil_log2;
 use itertools::{Itertools, izip};
 use multilinear_extensions::{
     mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension, IntoMLE, MultilinearExtension},
-    virtual_poly::{ArcMultilinearExtension, VirtualPolynomial},
+    virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial},
 };
 use serde::de::DeserializeOwned;
-use sumcheck::structs::IOPProof;
+use sumcheck::structs::{IOPProof, IOPVerifierState};
 use transcript::Transcript;
 
 use rayon::prelude::*;
@@ -68,7 +72,7 @@ impl Pooling {
         }
     }
 
-    pub fn step_info<E: ExtensionField>(
+    pub(crate) fn step_info<E: ExtensionField>(
         &self,
         id: PolyID,
         mut aux: ContextAux,
@@ -280,7 +284,7 @@ impl Pooling {
 impl PoolingCtx {
     pub(crate) fn verify_pooling<E: ExtensionField, T: Transcript<E>>(
         &self,
-        &mut verifier: Verifier<E, T>,
+        verifier: &mut Verifier<E, T>,
         last_claim: Claim<E>,
         proof: &PoolingProof<E>,
         constant_challenge: E,
@@ -300,7 +304,7 @@ impl PoolingCtx {
         )?;
 
         // 2. Verify the sumcheck proof
-        let poly_aux = VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![info.num_vars; 5]]);
+        let poly_aux = VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![self.num_vars; 5]]);
         let batching_challenge = verifier
             .transcript
             .get_and_append_challenge(b"batch_pooling")
@@ -340,7 +344,10 @@ impl PoolingCtx {
             .add_claim(self.poly_id, commit_claim)?;
 
         // Challenegs used to batch input poly claims together and link them with zerocheck and lookup verification output
-        let [r1, r2] = [t.get_and_append_challenge(b"input_batching").elements; 2];
+        let [r1, r2] = [verifier
+            .transcript
+            .get_and_append_challenge(b"input_batching")
+            .elements; 2];
         let one_minus_r1 = E::ONE - r1;
         let one_minus_r2 = E::ONE - r2;
 

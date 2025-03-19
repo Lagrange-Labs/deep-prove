@@ -1,4 +1,7 @@
-use crate::{commit::same_poly, iop::verifier, lookup::logup_gkr::verifier::verify_logup_proof};
+use crate::{
+    Claim, commit::same_poly, iop::verifier::Verifier,
+    lookup::logup_gkr::verifier::verify_logup_proof, quantization,
+};
 use ff::Field;
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
@@ -57,7 +60,7 @@ impl Requant {
         )
     }
 
-    pub fn step_info<E: ExtensionField>(
+    pub(crate) fn step_info<E: ExtensionField>(
         &self,
         id: PolyID,
         mut aux: ContextAux,
@@ -277,7 +280,7 @@ impl Requant {
 impl RequantCtx {
     pub(crate) fn verify_requant<E: ExtensionField, T: Transcript<E>>(
         &self,
-        &mut verifier: Verifier<E, T>,
+        verifier: &mut Verifier<E, T>,
         last_claim: Claim<E>,
         proof: &RequantProof<E>,
         constant_challenge: E,
@@ -315,7 +318,7 @@ impl RequantCtx {
         );
         sp_verifier.add_claim(corrected_claim)?;
 
-        let new_output_claim = sp_verifier.verify(&proof.io_accumulation, t)?;
+        let new_output_claim = sp_verifier.verify(&proof.io_accumulation, verifier.transcript)?;
         // 3. Accumulate the new claim into the witness commitment protocol
         verifier
             .witness_verifier

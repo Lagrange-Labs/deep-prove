@@ -1,5 +1,10 @@
 use crate::{
-    commit::{compute_betas_eval, identity_eval}, iop::context::ContextAux, layers::{requant::Requant, LayerProof, PolyID}, quantization, tensor::{get_root_of_unity, ConvData}, Claim, Prover
+    Claim, Prover,
+    commit::{compute_betas_eval, identity_eval},
+    iop::{context::ContextAux, verifier::Verifier},
+    layers::{LayerProof, PolyID, requant::Requant},
+    quantization,
+    tensor::{ConvData, get_root_of_unity},
 };
 use anyhow::Context;
 use ff_ext::ExtensionField;
@@ -40,9 +45,7 @@ pub struct ConvCtx<E> {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SchoolBookConvCtx<E> {
-    pub dummy: E,
-}
+pub struct SchoolBookConvCtx;
 
 /// Contains proof material related to one step of the inference for a convolution layer
 #[derive(Default, Clone, Serialize, Deserialize)]
@@ -168,7 +171,7 @@ impl Convolution {
         }
     }
 
-    pub fn step_info<E: ExtensionField>(
+    pub(crate) fn step_info<E: ExtensionField>(
         &self,
         id: PolyID,
         mut aux: ContextAux,
@@ -474,20 +477,25 @@ impl Convolution {
     }
 }
 
-impl<E> ConvCtx<E> {
-    pub(crate) fn verify_convolution<E: ExtensionField, T: Transcript<E>>(
+impl<E> ConvCtx<E>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+    E: ExtensionField + Serialize + DeserializeOwned,
+{
+    pub(crate) fn verify_convolution<T: Transcript<E>>(
         &self,
-        &mut verifier: Verifier<E, T>,
+        verifier: &mut Verifier<E, T>,
         last_claim: Claim<E>,
         proof: &ConvProof<E>,
-    ) -> anyhow::Result<Claim<E>>
-    where
-        E::BaseField: Serialize + DeserializeOwned,
-        E: Serialize + DeserializeOwned,
-    {
+    ) -> anyhow::Result<Claim<E>> {
         let conv_claim = last_claim.eval - proof.bias_claim;
 
-        IOPVerifierState::<E>::verify(conv_claim, &proof.ifft_proof, &self.ifft_aux, t);
+        IOPVerifierState::<E>::verify(
+            conv_claim,
+            &proof.ifft_proof,
+            &self.ifft_aux,
+            verifier.transcript,
+        );
         assert_eq!(
             self.delegation_ifft.len(),
             proof.ifft_delegation_proof.len(),
@@ -572,7 +580,12 @@ impl<E> ConvCtx<E> {
 
         // >>>>>> TODO : 1) Dont forget beta evaluation 2) verification of the last step of delegation <<<<<<<
         // Verify fft sumcheck
-        IOPVerifierState::<E>::verify(proof.hadamard_clams[1], &proof.fft_proof, &self.fft_aux, t);
+        IOPVerifierState::<E>::verify(
+            proof.hadamard_clams[1],
+            &proof.fft_proof,
+            &self.fft_aux,
+            verifier.transcript,
+        );
         claim = proof.fft_claims[1];
 
         assert_eq!(
@@ -645,13 +658,14 @@ impl<E> ConvCtx<E> {
     }
 }
 
-impl<E: ExtensionField> SchoolBookConvCtx<E>
-where
-    E: Serialize + DeserializeOwned,
-    E::BaseField: Serialize + DeserializeOwned,
+impl SchoolBookConvCtx
 {
-    pub fn step_info(&self, _id: PolyID, aux: ContextAux) -> (LayerCtx<E>, ContextAux) {
-        let conv_info = LayerCtx::SchoolBookConvolution(SchoolBookConvCtx { dummy: E::ZERO });
+    pub(crate) fn step_info<E: ExtensionField>(&self, _id: PolyID, aux: ContextAux) -> (LayerCtx<E>, ContextAux) 
+    where
+        E::BaseField: Serialize + DeserializeOwned,
+        E: ExtensionField + Serialize + DeserializeOwned,
+    {
+        let conv_info = LayerCtx::SchoolBookConvolution(SchoolBookConvCtx);
         (conv_info, aux)
     }
 }

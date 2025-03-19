@@ -52,7 +52,7 @@ where
 {
     Dense(DenseCtx<E>),
     Convolution(ConvCtx<E>),
-    SchoolBookConvolution(SchoolBookConvCtx<E>),
+    SchoolBookConvolution(SchoolBookConvCtx),
     Activation(ActivationCtx),
     Requant(RequantCtx),
     Pooling(PoolingCtx),
@@ -103,7 +103,7 @@ where
     }
 }
 impl Layer {
-    pub fn step_info<E>(&self, id: PolyID, aux: ContextAux) -> (LayerCtx<E>, ContextAux)
+    pub(crate) fn step_info<E>(&self, id: PolyID, aux: ContextAux) -> (LayerCtx<E>, ContextAux)
     where
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
@@ -111,7 +111,7 @@ impl Layer {
         match self {
             Layer::Dense(dense) => dense.step_info(id, aux),
             Layer::Convolution(conv) => conv.step_info(id, aux),
-            Layer::SchoolBookConvolution(conv) => conv.step_info(id, aux),
+            Layer::SchoolBookConvolution(_conv) => SchoolBookConvCtx.step_info(id, aux),
             Layer::Activation(activation) => activation.step_info(id, aux),
             Layer::Requant(requant) => requant.step_info(id, aux),
             Layer::Pooling(pooling) => pooling.step_info(id, aux),

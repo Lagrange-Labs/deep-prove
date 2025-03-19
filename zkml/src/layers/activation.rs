@@ -1,6 +1,7 @@
 use crate::{
+    Claim,
     commit::same_poly,
-    iop::context::ContextAux,
+    iop::{context::ContextAux, verifier::Verifier},
     layers::{LayerCtx, PolyID},
     lookup::{
         context::TableType,
@@ -11,6 +12,7 @@ use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use transcript::Transcript;
 
 use crate::{
     Element,
@@ -49,7 +51,7 @@ impl Activation {
             Activation::Relu(relu) => relu.op(input),
         }
     }
-    pub fn step_info<E: ExtensionField>(
+    pub(crate) fn step_info<E: ExtensionField>(
         &self,
         id: PolyID,
         mut aux: ContextAux,
@@ -77,7 +79,7 @@ impl Activation {
 impl ActivationCtx {
     pub(crate) fn verify_activation<E: ExtensionField, T: Transcript<E>>(
         &self,
-        &mut verifier: Verifier<E, T>,
+        verifier: &mut Verifier<E, T>,
         last_claim: Claim<E>,
         proof: &ActivationProof<E>,
         constant_challenge: E,
@@ -93,7 +95,7 @@ impl ActivationCtx {
             1,
             constant_challenge,
             column_separation_challenge,
-            t,
+            verifier.transcript,
         )?;
 
         // 2. Verify the accumulation proof from last_claim + lookup claim into the new claim
