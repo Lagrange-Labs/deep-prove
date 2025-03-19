@@ -113,8 +113,8 @@ mod test {
         model.describe();
         let trace = model.run(input.clone());
         let output = trace.final_output();
-        let ctx =
-            Context::<F>::generate(&model, Some(input.get_shape())).expect("unable to generate context");
+        let ctx = Context::<F>::generate(&model, Some(input.get_shape()))
+            .expect("unable to generate context");
         let io = IO::new(input.to_fields(), output.clone().to_fields());
         let mut prover_transcript = default_transcript();
         let prover = Prover::<_, _>::new(&ctx, &mut prover_transcript);
