@@ -427,7 +427,7 @@ mod test {
                     rng.gen_range(3..24) as usize,
                     rng.gen_range(3..24) as usize,
                 ])
-                .pad_next_power_of_two_2d()
+                .pad_next_power_of_two()
             })
             .enumerate()
             .collect_vec();

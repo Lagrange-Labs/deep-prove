@@ -528,6 +528,45 @@ where
             input_shape: vec![0],
         }
     }
+    pub fn from_coeffs_2d(data: Vec<Vec<T>>) -> anyhow::Result<Self> {
+        let n_rows = data.len();
+        let n_cols = data.first().expect("at least one row in a matrix").len();
+        let data = data.into_iter().flatten().collect::<Vec<_>>();
+        if data.len() != n_rows * n_cols {
+            bail!(
+                "Number of rows and columns do not match with the total number of values in the Vec<Vec<>>"
+            );
+        };
+        let shape = vec![n_rows, n_cols];
+        Ok(Self {
+            data,
+            shape,
+            input_shape: vec![0],
+        })
+    }
+    /// Returns the boolean iterator indicating the given row in the right endianness to be
+    /// evaluated by an MLE
+    pub fn row_to_boolean_2d<F: ExtensionField>(&self, row: usize) -> impl Iterator<Item = F> {
+        assert!(self.is_matrix(), "Tensor is not a matrix");
+        let (nvars_rows, _) = self.num_vars_2d();
+        to_bit_sequence_le(row, nvars_rows).map(|b| F::from(b as u64))
+    }
+    /// Returns the boolean iterator indicating the given row in the right endianness to be
+    /// evaluated by an MLE
+    pub fn col_to_boolean_2d<F: ExtensionField>(&self, col: usize) -> impl Iterator<Item = F> {
+        assert!(self.is_matrix(), "Tensor is not a matrix");
+        let (_, nvars_col) = self.num_vars_2d();
+        to_bit_sequence_le(col, nvars_col).map(|b| F::from(b as u64))
+    }
+    /// From a given row and a given column, return the vector of field elements in the right
+    /// format to evaluate the MLE.
+    /// little endian so we need to read cols before rows
+    pub fn position_to_boolean_2d<F: ExtensionField>(&self, row: usize, col: usize) -> Vec<F> {
+        assert!(self.is_matrix(), "Tensor is not a matrix");
+        self.col_to_boolean_2d(col)
+            .chain(self.row_to_boolean_2d(row))
+            .collect_vec()
+    }
 }
 
 impl<T> Tensor<T>
@@ -537,6 +576,16 @@ where
     T: std::ops::Add<Output = T> + std::ops::Sub<Output = T> + std::ops::Mul<Output = T>,
     T: std::default::Default,
 {
+    /// Create a tensor filled with zeros
+    pub fn zeros(shape: Vec<usize>) -> Self {
+        let size = shape.iter().product();
+        Self {
+            // data: vec![T::zero(); size],
+            data: vec![Default::default(); size],
+            shape,
+            input_shape: vec![0],
+        }
+    }
     /// Element-wise addition
     pub fn add(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(self.shape == other.shape, "Shape mismatch for addition.");
@@ -590,55 +639,6 @@ where
             data: self.data.iter().map(|x| *x * *scalar).collect(),
         }
     }
-    pub fn from_coeffs_2d(data: Vec<Vec<T>>) -> anyhow::Result<Self> {
-        let n_rows = data.len();
-        let n_cols = data.first().expect("at least one row in a matrix").len();
-        let data = data.into_iter().flatten().collect::<Vec<_>>();
-        if data.len() != n_rows * n_cols {
-            bail!(
-                "Number of rows and columns do not match with the total number of values in the Vec<Vec<>>"
-            );
-        };
-        let shape = vec![n_rows, n_cols];
-        Ok(Self {
-            data,
-            shape,
-            input_shape: vec![0],
-        })
-    }
-    /// Returns the boolean iterator indicating the given row in the right endianness to be
-    /// evaluated by an MLE
-    pub fn row_to_boolean_2d<F: ExtensionField>(&self, row: usize) -> impl Iterator<Item = F> {
-        assert!(self.is_matrix(), "Tensor is not a matrix");
-        let (nvars_rows, _) = self.num_vars_2d();
-        to_bit_sequence_le(row, nvars_rows).map(|b| F::from(b as u64))
-    }
-    /// Returns the boolean iterator indicating the given row in the right endianness to be
-    /// evaluated by an MLE
-    pub fn col_to_boolean_2d<F: ExtensionField>(&self, col: usize) -> impl Iterator<Item = F> {
-        assert!(self.is_matrix(), "Tensor is not a matrix");
-        let (_, nvars_col) = self.num_vars_2d();
-        to_bit_sequence_le(col, nvars_col).map(|b| F::from(b as u64))
-    }
-    /// From a given row and a given column, return the vector of field elements in the right
-    /// format to evaluate the MLE.
-    /// little endian so we need to read cols before rows
-    pub fn position_to_boolean_2d<F: ExtensionField>(&self, row: usize, col: usize) -> Vec<F> {
-        assert!(self.is_matrix(), "Tensor is not a matrix");
-        self.col_to_boolean_2d(col)
-            .chain(self.row_to_boolean_2d(row))
-            .collect_vec()
-    }
-    /// Create a tensor filled with zeros
-    pub fn zeros(shape: Vec<usize>) -> Self {
-        let size = shape.iter().product();
-        Self {
-            // data: vec![T::zero(); size],
-            data: vec![Default::default(); size],
-            shape,
-            input_shape: vec![0],
-        }
-    }
     pub fn pad_1d(mut self, new_len: usize) -> Self {
         assert!(
             self.shape.len() == 1,
@@ -648,7 +648,7 @@ where
         self.shape[0] = new_len;
         self
     }
-    pub fn pad_next_power_of_two_2d(mut self) -> Self {
+    fn pad_next_power_of_two_2d(mut self) -> Self {
         assert!(self.is_matrix(), "Tensor is not a matrix");
         // assume the matrix is already well formed and there is always n_rows and n_cols
         // this is because we control the creation of the matrix in the first place
@@ -735,49 +735,6 @@ where
                 unpadded_data.concat()
             }
         }
-    }
-    pub fn pad_last_two_dimensions(&self, target: Vec<usize>) -> Self {
-        assert!(self.shape.len() > 2, "Tensor must have 2 dimensions.");
-        assert!(target.len() == 2, "Tensor must have at least 2 dimensions.");
-
-        let (target_x, target_y) = (target[0], target[1]);
-        let current_x = self.shape[self.shape.len() - 2];
-        let current_y = self.shape[self.shape.len() - 1];
-
-        let pad_x = target_x - current_x;
-        let pad_y = target_y - current_y;
-
-        if pad_x == 0 && pad_y == 0 {
-            return self.clone();
-        }
-
-        let mut new_shape = self.shape.clone();
-        new_shape[self.shape.len() - 2] = target_x;
-        new_shape[self.shape.len() - 1] = target_y;
-        let new_size: usize = new_shape.iter().product();
-
-        let mut new_data = vec![T::default(); new_size];
-
-        let mut old_index = 0;
-        let mut new_index = 0;
-
-        // Iterate over all dimensions except the last two
-        let outer_dims: usize = self.shape[..self.shape.len() - 2].iter().product();
-        for _ in 0..outer_dims {
-            // Copy the original rows
-            for row in 0..current_x {
-                for col in 0..current_y {
-                    new_data[new_index + row * target_y + col] =
-                        self.data[old_index + row * current_y + col].clone();
-                }
-            }
-            old_index += current_x * current_y;
-            new_index += target_x * target_y;
-        }
-
-        let mut result = Tensor::new(new_shape, new_data);
-        result.update_input_shape(&self.input_shape);
-        result
     }
     pub fn pad_to_shape(&mut self, target_shape: Vec<usize>) {
         if target_shape.len() != self.shape.len() {
@@ -1455,7 +1412,7 @@ mod test {
         let mat = Tensor::<Element>::random_seed(shape.clone(), Some(213));
         // println!("{}", mat);
         let new_shape = vec![shape[0].next_power_of_two(), shape[1].next_power_of_two()];
-        let new_mat = mat.pad_next_power_of_two_2d();
+        let new_mat = mat.pad_next_power_of_two();
         assert_eq!(
             new_mat.get_shape(),
             new_shape,
@@ -1481,7 +1438,7 @@ mod test {
     fn test_tensor_mle() {
         let mat = Tensor::random(vec![3, 5]);
         let shape = mat.get_shape();
-        let mat = mat.pad_next_power_of_two_2d();
+        let mat = mat.pad_next_power_of_two();
         println!("matrix {}", mat);
         let mut mle = mat.clone().to_mle_2d::<E>();
         let (chosen_row, chosen_col) = (
@@ -1675,22 +1632,6 @@ mod test {
         let tensor_b = Tensor::<Element>::new(shape_b, vec![1, 1, 1, 0]);
 
         let tensor_c = tensor_a.pad_next_power_of_two();
-        assert_eq!(tensor_b, tensor_c);
-    }
-
-    #[test]
-    fn test_tensor_pad_last_two() {
-        let shape_a = vec![3, 1, 1];
-        let tensor_a = Tensor::<Element>::new(shape_a.clone(), vec![1; shape_a.iter().product()]);
-
-        let target_dim = vec![4, 4];
-        let shape_b = vec![3, 4, 4];
-        let tensor_b = Tensor::<Element>::new(shape_b, vec![
-            1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        ]);
-
-        let tensor_c = tensor_a.pad_last_two_dimensions(target_dim);
         assert_eq!(tensor_b, tensor_c);
     }
 
