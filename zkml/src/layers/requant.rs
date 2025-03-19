@@ -61,7 +61,7 @@ where
 impl Requant {
     pub fn op(&self, input: &crate::tensors::Tensor<Element>) -> crate::tensors::Tensor<Element> {
         crate::tensors::Tensor::<Element>::new(
-            input.dims(),
+            input.get_shape(),
             input.get_data().iter().map(|e| self.apply(e)).collect_vec(),
         )
     }

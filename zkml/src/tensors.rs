@@ -447,7 +447,7 @@ impl<T> Tensor<T> {
         }
     }
     /// Get the dimensions of the tensor
-    pub fn dims(&self) -> Vec<usize> {
+    pub fn get_shape(&self) -> Vec<usize> {
         assert!(self.shape.len() > 0, "Empty tensor");
         self.shape.clone()
     }
@@ -458,20 +458,20 @@ impl<T> Tensor<T> {
     }
     /// Is vector
     pub fn is_vector(&self) -> bool {
-        self.dims().len() == 1
+        self.get_shape().len() == 1
     }
     ///
     pub fn is_convolution(&self) -> bool {
-        self.dims().len() == 4
+        self.get_shape().len() == 4
     }
     /// Is matrix
     pub fn is_matrix(&self) -> bool {
-        self.dims().len() == 2
+        self.get_shape().len() == 2
     }
     /// Get the number of rows from the matrix
     pub fn nrows_2d(&self) -> usize {
         let mut cols = 0;
-        let dims = self.dims();
+        let dims = self.get_shape();
         if self.is_matrix() {
             cols = dims[0];
         } else if self.is_convolution() {
@@ -483,7 +483,7 @@ impl<T> Tensor<T> {
     /// Get the number of cols from the matrix
     pub fn ncols_2d(&self) -> usize {
         let mut cols = 0;
-        let dims = self.dims();
+        let dims = self.get_shape();
         if self.is_matrix() {
             cols = dims[1];
         } else if self.is_convolution() {
@@ -530,9 +530,6 @@ where
             shape: new_shape,
             input_shape: vec![0],
         }
-    }
-    pub fn get_shape(&self) -> Vec<usize> {
-        return self.shape.clone();
     }
     /// Element-wise addition
     pub fn add(&self, other: &Tensor<T>) -> Tensor<T> {
@@ -691,7 +688,7 @@ where
     }
     /// Recursively pads the tensor so its ready to be viewed as an MLE
     pub fn pad_next_power_of_two(&self) -> Self {
-        let shape = self.dims();
+        let shape = self.get_shape();
 
         let padded_data = Self::recursive_pad(self.get_data(), &shape);
 
@@ -1042,7 +1039,7 @@ where
     T: std::default::Default,
 {
     pub fn maxpool2d(&self, kernel_size: usize, stride: usize) -> Tensor<T> {
-        let dims = self.dims().len();
+        let dims = self.get_shape().len();
         assert!(dims >= 2, "Input tensor must have at least 2 dimensions.");
 
         let (h, w) = (self.shape[dims - 2], self.shape[dims - 1]);
@@ -1102,7 +1099,7 @@ where
 
         let maxpool_result = self.maxpool2d(kernel_size, stride);
 
-        let dims: usize = self.dims().len();
+        let dims: usize = self.get_shape().len();
         assert!(dims >= 2, "Input tensor must have at least 2 dimensions.");
 
         let (h, w) = (self.shape[dims - 2], self.shape[dims - 1]);
@@ -1143,7 +1140,7 @@ where
 
         let padded_maxpool_tensor = Tensor {
             data: padded_maxpool_data,
-            shape: self.dims(),
+            shape: self.get_shape(),
             input_shape: vec![0],
         };
 
@@ -1180,9 +1177,12 @@ where
         let (n_size, c_size, h_size, w_size) = self.get4d();
         let (k_n, k_c, k_h, k_w) = kernels.get4d();
 
-        assert!(self.dims().len() <= 4, "Supports only at most 4D input.");
         assert!(
-            kernels.dims().len() <= 4,
+            self.get_shape().len() <= 4,
+            "Supports only at most 4D input."
+        );
+        assert!(
+            kernels.get_shape().len() <= 4,
             "Supports only at most 4D filters."
         );
         // Validate shapes
@@ -1255,7 +1255,7 @@ where
         assert!(mat_shp_pad.len() == 2 && self.shape.len() == 2);
 
         let mut new_data = vec![T::default(); mat_shp_pad.iter().product()];
-        let mat_shp_og = self.dims();
+        let mat_shp_og = self.get_shape();
         for row in 0..mat_shp_og[0] {
             for channel in 0..conv_shape_og[0] {
                 for h_in in 0..conv_shape_og[1] {
@@ -1451,7 +1451,7 @@ mod test {
         let new_shape = vec![shape[0].next_power_of_two(), shape[1].next_power_of_two()];
         let new_mat = mat.pad_next_power_of_two_2d();
         assert_eq!(
-            new_mat.dims(),
+            new_mat.get_shape(),
             new_shape,
             "Matrix padding to next power of two failed."
         );
@@ -1460,7 +1460,7 @@ mod test {
     impl Tensor<Element> {
         pub fn get_2d(&self, i: usize, j: usize) -> Element {
             assert!(self.is_matrix() == true);
-            self.data[i * self.dims()[1] + j]
+            self.data[i * self.get_shape()[1] + j]
         }
 
         pub fn random_eval_point(&self) -> Vec<E> {
@@ -1474,7 +1474,7 @@ mod test {
     #[test]
     fn test_tensor_mle() {
         let mat = Tensor::random(vec![3, 5]);
-        let shape = mat.dims();
+        let shape = mat.get_shape();
         let mat = mat.pad_next_power_of_two_2d();
         println!("matrix {}", mat);
         let mut mle = mat.clone().to_mle_2d::<E>();
@@ -1639,9 +1639,9 @@ mod test {
         let padded = input.pad_next_power_of_two();
 
         padded
-            .dims()
+            .get_shape()
             .iter()
-            .zip(input.dims().iter())
+            .zip(input.get_shape().iter())
             .for_each(|(padded_dim, input_dim)| {
                 assert_eq!(*padded_dim, input_dim.next_power_of_two())
             });

@@ -122,7 +122,7 @@ where
 {
     fn to_fields(self) -> Tensor<F> {
         Tensor::new(
-            self.dims(),
+            self.get_shape(),
             self.get_data()
                 .into_iter()
                 .map(|i| i.to_field())

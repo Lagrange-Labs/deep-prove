@@ -71,7 +71,7 @@ pub struct ConvProof<E: ExtensionField> {
 
 impl Convolution {
     pub fn new(filter: Tensor<Element>, bias: Tensor<Element>) -> Self {
-        assert_eq!(filter.kw(), bias.dims()[0]);
+        assert_eq!(filter.kw(), bias.get_shape()[0]);
         Self { filter, bias }
     }
     pub fn add_bias(&self, conv_out: &Tensor<Element>) -> Tensor<Element> {
@@ -192,7 +192,7 @@ impl Convolution {
         // .map(|&dim| ceil_log2(dim)),
         // )
         // .collect::<Vec<usize>>();
-        let mut filter_shape = self.filter.dims();
+        let mut filter_shape = self.filter.get_shape();
         filter_shape.remove(1);
         aux.last_output_shape = filter_shape;
 

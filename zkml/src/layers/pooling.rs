@@ -142,7 +142,7 @@ impl Pooling {
         E::BaseField: Serialize + DeserializeOwned,
         E: Serialize + DeserializeOwned,
     {
-        assert_eq!(input.dims().len(), 3, "Maxpool needs 3D inputs.");
+        assert_eq!(input.get_shape().len(), 3, "Maxpool needs 3D inputs.");
         // Create the range check proof for the diff
         let prover_info = prover.next_lookup_witness()?;
 
@@ -223,7 +223,7 @@ impl Pooling {
         // Now we must do the samething accumulating evals for the input poly as we fix variables on the input poly.
         // The point length is 2 longer because for now we only support MaxPool2D.
 
-        let padded_input_shape = input.dims();
+        let padded_input_shape = input.get_shape();
         let padded_input_row_length_log = ceil_log2(padded_input_shape[2]);
         // We can batch all of the claims for the input poly with 00, 10, 01, 11 fixed into one with random challenges
         let [r1, r2] = [prover
@@ -446,7 +446,7 @@ impl Maxpool2D {
         let padded_input = input.pad_next_power_of_two();
 
         let padded_output = self.op(&input).pad_next_power_of_two();
-        let padded_input_shape = padded_input.dims();
+        let padded_input_shape = padded_input.get_shape();
 
         let new_fixed = (0..padded_input_shape[2] << 1)
             .into_par_iter()
@@ -573,7 +573,7 @@ mod tests {
 
             let padded_output = output.pad_next_power_of_two();
 
-            let padded_input_shape = padded_input.dims();
+            let padded_input_shape = padded_input.get_shape();
 
             let num_vars = padded_input.get_data().len().ilog2() as usize;
             let output_num_vars = padded_output.get_data().len().ilog2() as usize;
