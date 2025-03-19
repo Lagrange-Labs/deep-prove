@@ -403,6 +403,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                 layers.push(layer);
             }
             op if CONVOLUTION.contains(&op) => {
+                let _ = fetch_conv2d_attributes(node)?;
                 let mut weight = fetch_weight_bias_as_tensor::<Q>(
                     "weight",
                     node,
@@ -446,7 +447,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                 // weight.update_input_shape(&input_shape_padded);
 
                 let dims = weight.get_shape();
-                let weight = crate::tensors::Tensor::new_conv(
+                let weight = crate::tensor::Tensor::new_conv(
                     weight.get_shape(),
                     input_shape_padded.clone(),
                     weight.get_data().to_vec(),
@@ -586,7 +587,7 @@ fn fetch_weight_bias_as_tensor<Q: Quantizer<Element>>(
     node: &NodeProto,
     initializers: &HashMap<String, Tensor>,
     global_max_abs: f32,
-) -> Result<crate::tensors::Tensor<Element>> {
+) -> Result<crate::tensor::Tensor<Element>> {
     // Extract the tensor data using the common function
     let (tensor_data, tensor_shape) =
         match extract_tensor_f32_data(weight_or_bias, node, initializers)? {
@@ -617,11 +618,38 @@ fn fetch_weight_bias_as_tensor<Q: Quantizer<Element>>(
         //.map(|x| Q::from_f32_unsafe_clamp(x, local_max_abs as f64))
         .collect_vec();
 
-    let tensor_result = crate::tensors::Tensor::new(tensor_shape, tensor_f);
+    let tensor_result = crate::tensor::Tensor::new(tensor_shape, tensor_f);
 
     Ok(tensor_result)
 }
 
+/// Get the conv2d attributes and assert if supported by DeepProve
+fn fetch_conv2d_attributes(node: &NodeProto) -> Result<()> {
+    let get_attr = |name: &str| -> Vec<i64> {
+        node.attribute
+            .iter()
+            .find(|x| x.name.contains(name))
+            .map_or_else(Vec::new, |x| x.ints.clone())
+    };
+
+    let (strides, pads, _kernel_shape, dilations) = (
+        get_attr("strides"),
+        get_attr("pads"),
+        get_attr("kernel_shape"),
+        get_attr("dilations"),
+    );
+
+    assert!(strides.iter().all(|&x| x == 1), "Strides must be {}", 1);
+    assert!(pads.iter().all(|&x| x == 0), "Padding must be 0s");
+    assert!(
+        dilations.iter().all(|&x| x == 1),
+        "Dilations shape must be 1"
+    );
+
+    Ok(())
+}
+
+/// Get the maxpool attributes and assert if supported by DeepProve
 fn fetch_maxpool_attributes(node: &NodeProto) -> Result<()> {
     let get_attr = |name: &str| -> Vec<i64> {
         node.attribute
@@ -765,7 +793,7 @@ mod tests {
         let filepath = "assets/scripts/MLP/mlp-iris-01.onnx";
         ModelType::MLP.validate(filepath).unwrap();
         let model = load_model::<Element>(&filepath).unwrap();
-        let input = crate::tensors::Tensor::random(vec![model.input_shape()[0]]);
+        let input = crate::tensor::Tensor::random(vec![model.input_shape()[0]]);
         let input = model.prepare_input(input);
         let trace = model.run::<F>(input.clone());
         println!("Result: {:?}", trace.final_output());
@@ -819,7 +847,7 @@ mod tests {
         assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
 
         let model = result.unwrap();
-        let input = crate::tensors::Tensor::random(model.input_shape());
+        let input = crate::tensor::Tensor::random(model.input_shape());
         let input = model.prepare_input(input);
         let trace = model.run::<F>(input.clone());
         // println!("Result: {:?}", trace.final_output());

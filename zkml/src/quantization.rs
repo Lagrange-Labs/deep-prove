@@ -6,7 +6,7 @@ use once_cell::sync::Lazy;
 use std::env;
 use tracing::debug;
 
-use crate::{Element, tensors::Tensor};
+use crate::{Element, tensor::Tensor};
 
 // Get BIT_LEN from environment variable or use default value
 pub static BIT_LEN: Lazy<usize> = Lazy::new(|| {

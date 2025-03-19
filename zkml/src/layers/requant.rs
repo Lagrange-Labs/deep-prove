@@ -59,8 +59,8 @@ where
     pub(crate) lookup: LogUpProof<E>,
 }
 impl Requant {
-    pub fn op(&self, input: &crate::tensors::Tensor<Element>) -> crate::tensors::Tensor<Element> {
-        crate::tensors::Tensor::<Element>::new(
+    pub fn op(&self, input: &crate::tensor::Tensor<Element>) -> crate::tensor::Tensor<Element> {
+        crate::tensor::Tensor::<Element>::new(
             input.get_shape(),
             input.get_data().iter().map(|e| self.apply(e)).collect_vec(),
         )

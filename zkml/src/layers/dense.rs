@@ -16,7 +16,7 @@ use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
 use tracing::{debug, trace};
 use transcript::Transcript;
 
-use crate::{Element, tensors::Tensor};
+use crate::{Element, tensor::Tensor};
 
 /// Bias to compute the bias ID polynomials. Since originally we take the index of each
 /// layer to be the index of the layer, we need to add a bias to avoid collision with other

@@ -7,7 +7,7 @@ use crate::{
     Element,
     layers::{Layer, LayerOutput},
     quantization::TensorFielder,
-    tensors::{ConvData, Tensor},
+    tensor::{ConvData, Tensor},
 };
 
 // The index of the step, starting from the input layer. (proving is done in the opposite flow)
@@ -321,7 +321,7 @@ pub(crate) mod test {
     use crate::{
         Element, default_transcript,
         quantization::TensorFielder,
-        tensors::Tensor,
+        tensor::Tensor,
         testing::{NextPowerOfTwo, random_bool_vector, random_vector},
     };
 

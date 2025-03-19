@@ -8,7 +8,7 @@ use crate::{
         logup_gkr::{prover::batch_prove as logup_batch_prove, structs::LogUpInput},
     },
     model::{InferenceStep, InferenceTrace},
-    tensors::{Tensor, get_root_of_unity},
+    tensor::{Tensor, get_root_of_unity},
 };
 use anyhow::{anyhow, bail};
 use ff_ext::ExtensionField;

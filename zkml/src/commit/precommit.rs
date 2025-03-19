@@ -408,7 +408,7 @@ mod test {
     use super::compute_betas_eval;
     use crate::{
         Claim, default_transcript, pad_vector,
-        tensors::Tensor,
+        tensor::Tensor,
         testing::{random_bool_vector, random_field_vector},
     };
 

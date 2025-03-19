@@ -21,7 +21,7 @@ use transcript::Transcript;
 use crate::{
     Element,
     quantization::{self, BIT_LEN, Fieldizer},
-    tensors::Tensor,
+    tensor::Tensor,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, Copy)]

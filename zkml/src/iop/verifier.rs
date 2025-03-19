@@ -4,7 +4,7 @@ use crate::{
     iop::ChallengeStorage,
     layers::{LayerCtx, LayerProof},
     lookup::{context::TableType, logup_gkr::verifier::verify_logup_proof},
-    tensors::Tensor,
+    tensor::Tensor,
 };
 use anyhow::{anyhow, bail, ensure};
 use ff_ext::ExtensionField;

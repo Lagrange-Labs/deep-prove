@@ -15,7 +15,7 @@ use crate::{
         pooling::Pooling,
         requant::{Requant, RequantProof},
     },
-    tensors::{ConvData, Tensor},
+    tensor::{ConvData, Tensor},
 };
 use activation::ActivationCtx;
 use convolution::{ConvCtx, ConvProof, SchoolBookConvCtx};
