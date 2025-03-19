@@ -446,7 +446,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                 // weight.update_input_shape(&input_shape_padded);
 
                 let dims = weight.dims();
-                let weight = crate::tensor::Tensor::new_conv(
+                let weight = crate::tensors::Tensor::new_conv(
                     weight.dims(),
                     input_shape_padded.clone(),
                     weight.get_data().to_vec(),
@@ -586,7 +586,7 @@ fn fetch_weight_bias_as_tensor<Q: Quantizer<Element>>(
     node: &NodeProto,
     initializers: &HashMap<String, Tensor>,
     global_max_abs: f32,
-) -> Result<crate::tensor::Tensor<Element>> {
+) -> Result<crate::tensors::Tensor<Element>> {
     // Extract the tensor data using the common function
     let (tensor_data, tensor_shape) =
         match extract_tensor_f32_data(weight_or_bias, node, initializers)? {
@@ -617,7 +617,7 @@ fn fetch_weight_bias_as_tensor<Q: Quantizer<Element>>(
         //.map(|x| Q::from_f32_unsafe_clamp(x, local_max_abs as f64))
         .collect_vec();
 
-    let tensor_result = crate::tensor::Tensor::new(tensor_shape, tensor_f);
+    let tensor_result = crate::tensors::Tensor::new(tensor_shape, tensor_f);
 
     Ok(tensor_result)
 }
@@ -765,7 +765,7 @@ mod tests {
         let filepath = "assets/scripts/MLP/mlp-iris-01.onnx";
         ModelType::MLP.validate(filepath).unwrap();
         let model = load_model::<Element>(&filepath).unwrap();
-        let input = crate::tensor::Tensor::random(vec![model.input_shape()[0]]);
+        let input = crate::tensors::Tensor::random(vec![model.input_shape()[0]]);
         let input = model.prepare_input(input);
         let trace = model.run::<F>(input.clone());
         println!("Result: {:?}", trace.final_output());
@@ -819,7 +819,7 @@ mod tests {
         assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
 
         let model = result.unwrap();
-        let input = crate::tensor::Tensor::random(model.input_shape());
+        let input = crate::tensors::Tensor::random(model.input_shape());
         let input = model.prepare_input(input);
         let trace = model.run::<F>(input.clone());
         // println!("Result: {:?}", trace.final_output());

@@ -19,7 +19,7 @@ pub mod model;
 mod onnx_parse;
 pub use onnx_parse::{ModelType, load_model};
 
-pub mod tensor;
+pub mod tensors;
 #[cfg(test)]
 mod testing;
 
@@ -143,7 +143,7 @@ mod test {
         load_model,
         onnx_parse::ModelType,
         quantization::TensorFielder,
-        tensor::Tensor,
+        tensors::Tensor,
         to_bit_sequence_le,
     };
     use ff_ext::ff::Field;

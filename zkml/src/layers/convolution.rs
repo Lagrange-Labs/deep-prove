@@ -4,7 +4,7 @@ use crate::{
     iop::{context::ContextAux, verifier::Verifier},
     layers::{LayerProof, PolyID, requant::Requant},
     quantization,
-    tensor::{ConvData, get_root_of_unity},
+    tensors::{ConvData, get_root_of_unity},
 };
 use anyhow::Context;
 use ff_ext::ExtensionField;
@@ -17,7 +17,7 @@ use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
 use tracing::instrument;
 use transcript::Transcript;
 
-use crate::{Element, tensor::Tensor};
+use crate::{Element, tensors::Tensor};
 
 use super::LayerCtx;
 

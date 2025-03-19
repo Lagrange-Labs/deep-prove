@@ -11,7 +11,7 @@ use crate::{
         },
     },
     quantization::{Fieldizer, IntoElement},
-    tensor::Tensor,
+    tensors::Tensor,
 };
 use anyhow::{Context, ensure};
 use ff_ext::ExtensionField;
