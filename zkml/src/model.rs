@@ -331,7 +331,6 @@ pub(crate) mod test {
     const SELECTOR_DENSE: usize = 0;
     const SELECTOR_RELU: usize = 1;
     const SELECTOR_POOLING: usize = 2;
-    // TODO: change to be 3 when `Model` is updated to work with higher dimensional tensors as input.
     const MOD_SELECTOR: usize = 2;
 
     impl Model {

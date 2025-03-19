@@ -1,15 +1,19 @@
 use crate::{
-    Claim,
+    Claim, Prover,
     commit::same_poly,
     iop::{context::ContextAux, verifier::Verifier},
-    layers::{LayerCtx, PolyID},
+    layers::{LayerCtx, LayerProof, PolyID},
     lookup::{
         context::TableType,
-        logup_gkr::{structs::LogUpProof, verifier::verify_logup_proof},
+        logup_gkr::{
+            prover::batch_prove as logup_batch_prove, structs::LogUpProof,
+            verifier::verify_logup_proof,
+        },
     },
 };
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
+use multilinear_extensions::mle::IntoMLE;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use transcript::Transcript;
@@ -73,6 +77,45 @@ impl Activation {
             }),
         };
         (info, aux)
+    }
+
+    pub(crate) fn prove_step<E: ExtensionField, T: Transcript<E>>(
+        &self,
+        prover: &mut Prover<E, T>,
+        last_claim: &Claim<E>,
+        output: &[E],
+        step: &ActivationCtx,
+    ) -> anyhow::Result<Claim<E>>
+    where
+        E: ExtensionField + Serialize + DeserializeOwned,
+        E::BaseField: Serialize + DeserializeOwned,
+    {
+        let prover_info = prover.next_lookup_witness()?;
+
+        // Run the lookup protocol and return the lookup proof
+        let logup_proof = logup_batch_prove(&prover_info, prover.transcript)?;
+
+        // We need to prove that the output of this step is the input to following activation function
+        let mut same_poly_prover = same_poly::Prover::<E>::new(output.to_vec().into_mle());
+        let same_poly_ctx = same_poly::Context::<E>::new(last_claim.point.len());
+        same_poly_prover.add_claim(last_claim.clone())?;
+        // Activation proofs have two columns, input and output
+        let input_claim = logup_proof.output_claims()[0].clone();
+        let output_claim = logup_proof.output_claims()[1].clone();
+
+        same_poly_prover.add_claim(output_claim)?;
+        let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, prover.transcript)?;
+        // order is (output,mult)
+        prover
+            .witness_prover
+            .add_claim(step.poly_id, claim_acc_proof.extract_claim())?;
+
+        // Add the proof in
+        prover.push_proof(LayerProof::Activation(ActivationProof {
+            io_accumulation: claim_acc_proof,
+            lookup: logup_proof,
+        }));
+        Ok(input_claim)
     }
 }
 

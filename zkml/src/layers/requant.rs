@@ -1,11 +1,17 @@
 use crate::{
-    Claim, commit::same_poly, iop::verifier::Verifier,
-    lookup::logup_gkr::verifier::verify_logup_proof, quantization,
+    Claim, Prover,
+    commit::same_poly,
+    iop::verifier::Verifier,
+    layers::LayerProof,
+    lookup::logup_gkr::{prover::batch_prove as logup_batch_prove, verifier::verify_logup_proof},
+    quantization,
 };
+use anyhow::anyhow;
 use ff::Field;
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
 use itertools::Itertools;
+use multilinear_extensions::mle::IntoMLE;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::ops::{Add, Mul, Sub};
 use transcript::Transcript;
@@ -274,6 +280,60 @@ impl Requant {
                     acc + E::from((self.after_range.pow(i as u32)) as u64) * (claim)
                 });
         tmp_eval - E::from(max_bit as u64)
+    }
+    pub(crate) fn prove_step<E: ExtensionField, T: Transcript<E>>(
+        &self,
+        prover: &mut Prover<E, T>,
+        last_claim: &Claim<E>,
+        output: &[E],
+        requant_info: &RequantCtx,
+    ) -> anyhow::Result<Claim<E>>
+    where
+        E: ExtensionField + Serialize + DeserializeOwned,
+        E::BaseField: Serialize + DeserializeOwned,
+    {
+        let prover_info = prover.next_lookup_witness()?;
+
+        // Run the lookup protocol and return the lookup proof
+        let logup_proof = logup_batch_prove(&prover_info, prover.transcript)?;
+
+        // We need to prove that the output of this step is the input to following activation function
+        let mut same_poly_prover = same_poly::Prover::<E>::new(output.to_vec().into_mle());
+        let same_poly_ctx = same_poly::Context::<E>::new(last_claim.point.len());
+        same_poly_prover.add_claim(last_claim.clone())?;
+        // For requant layers we have to extract the correct "chunk" from the list of claims
+        let eval_claims = logup_proof
+            .output_claims()
+            .iter()
+            .map(|claim| claim.eval)
+            .collect::<Vec<E>>();
+
+        let combined_eval = requant_info.requant.recombine_claims(&eval_claims);
+
+        // Pass the eval associated with the poly used in the activation step to the same poly prover
+        let first_claim = logup_proof
+            .output_claims()
+            .first()
+            .ok_or(anyhow!("No claims found"))?;
+        let point = first_claim.point.clone();
+
+        // Add the claim used in the activation function
+        same_poly_prover.add_claim(first_claim.clone())?;
+        let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, prover.transcript)?;
+
+        prover
+            .witness_prover
+            .add_claim(requant_info.poly_id, claim_acc_proof.extract_claim())?;
+
+        prover.push_proof(LayerProof::Requant(RequantProof {
+            io_accumulation: claim_acc_proof,
+            lookup: logup_proof,
+        }));
+
+        Ok(Claim {
+            point,
+            eval: combined_eval,
+        })
     }
 }
 

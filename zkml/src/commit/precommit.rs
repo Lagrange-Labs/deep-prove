@@ -28,7 +28,6 @@ use super::Pcs;
 /// A polynomial has an unique ID associated to it.
 pub type PolyID = usize;
 
-// TODO: separate context into verifier and prover ctx once thing is working
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct Context<E: ExtensionField>

@@ -658,9 +658,12 @@ where
     }
 }
 
-impl SchoolBookConvCtx
-{
-    pub(crate) fn step_info<E: ExtensionField>(&self, _id: PolyID, aux: ContextAux) -> (LayerCtx<E>, ContextAux) 
+impl SchoolBookConvCtx {
+    pub(crate) fn step_info<E: ExtensionField>(
+        &self,
+        _id: PolyID,
+        aux: ContextAux,
+    ) -> (LayerCtx<E>, ContextAux)
     where
         E::BaseField: Serialize + DeserializeOwned,
         E: ExtensionField + Serialize + DeserializeOwned,

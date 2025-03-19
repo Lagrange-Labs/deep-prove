@@ -1,12 +1,8 @@
 use super::{ChallengeStorage, Context, Proof, TableProof};
 use crate::{
     Claim, Element, VectorTranscript,
-    commit::{compute_betas_eval, precommit, same_poly},
-    layers::{
-        Layer, LayerCtx, LayerProof,
-        activation::{Activation, ActivationProof},
-        requant::RequantProof,
-    },
+    commit::{compute_betas_eval, precommit},
+    layers::{Layer, LayerCtx, LayerProof},
     lookup::{
         context::generate_lookup_witnesses,
         logup_gkr::{prover::batch_prove as logup_batch_prove, structs::LogUpInput},
@@ -102,10 +98,11 @@ where
             (Layer::Convolution(filter), LayerCtx::Convolution(info)) => {
                 filter.prove_convolution_step(self, last_claim, &step.output, &step.conv_data, info)
             }
-            (Layer::Activation(Activation::Relu(..)), LayerCtx::Activation(..))
-            | (Layer::Requant(..), LayerCtx::Requant(..)) => {
-                // TODO: the dependency mesh for lookup is complex; need to untangle this properly
-                self.prove_lookup(&last_claim, &step.output.get_data(), info)
+            (Layer::Activation(activation), LayerCtx::Activation(act_ctx)) => {
+                activation.prove_step(self, &last_claim, &step.output.get_data(), act_ctx)
+            }
+            (Layer::Requant(requant), LayerCtx::Requant(ctx)) => {
+                requant.prove_step(self, &last_claim, &step.output.get_data(), ctx)
             }
             (Layer::Pooling(pooling), LayerCtx::Pooling(info)) => {
                 pooling.prove_pooling(self, last_claim, input, &step.output, info)
@@ -118,93 +115,6 @@ where
         };
 
         claim
-    }
-
-    #[timed::timed_instrument(level = "debug")]
-    pub fn prove_lookup(
-        &mut self,
-        last_claim: &Claim<E>,
-        output: &[E],
-        step: &LayerCtx<E>,
-    ) -> anyhow::Result<Claim<E>> {
-        // First we check that the step requires lookup
-        if !step.requires_lookup() {
-            return Err(anyhow!(
-                "A step of type: {} does not require a lookup proof",
-                step.variant_name()
-            ));
-        }
-        let prover_info = self
-            .lookup_witness
-            .pop()
-            .ok_or(anyhow!("No more lookup witness!"))?;
-
-        // Run the lookup protocol and return the lookup proof
-        let logup_proof = logup_batch_prove(&prover_info, self.transcript)?;
-
-        // We need to prove that the output of this step is the input to following activation function
-        let mut same_poly_prover = same_poly::Prover::<E>::new(output.to_vec().into_mle());
-        let same_poly_ctx = same_poly::Context::<E>::new(last_claim.point.len());
-        same_poly_prover.add_claim(last_claim.clone())?;
-
-        match step {
-            LayerCtx::Activation(info) => {
-                // Activation proofs have two columns, input and output
-                let input_claim = logup_proof.output_claims()[0].clone();
-                let output_claim = logup_proof.output_claims()[1].clone();
-
-                same_poly_prover.add_claim(output_claim)?;
-                let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, self.transcript)?;
-                // order is (output,mult)
-                self.witness_prover
-                    .add_claim(info.poly_id, claim_acc_proof.extract_claim())?;
-
-                // Add the proof in
-                self.proofs.push(LayerProof::Activation(ActivationProof {
-                    io_accumulation: claim_acc_proof,
-                    lookup: logup_proof,
-                }));
-                Ok(input_claim)
-            }
-            LayerCtx::Requant(requant_info) => {
-                // For requant layers we have to extract the correct "chunk" from the list of claims
-                let eval_claims = logup_proof
-                    .output_claims()
-                    .iter()
-                    .map(|claim| claim.eval)
-                    .collect::<Vec<E>>();
-
-                let combined_eval = requant_info.requant.recombine_claims(&eval_claims);
-
-                // Pass the eval associated with the poly used in the activation step to the same poly prover
-                let first_claim = logup_proof
-                    .output_claims()
-                    .first()
-                    .ok_or(anyhow!("No claims found"))?;
-                let point = first_claim.point.clone();
-
-                // Add the claim used in the activation function
-                same_poly_prover.add_claim(first_claim.clone())?;
-                let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, self.transcript)?;
-
-                self.witness_prover
-                    .add_claim(requant_info.poly_id, claim_acc_proof.extract_claim())?;
-
-                self.proofs.push(LayerProof::Requant(RequantProof {
-                    io_accumulation: claim_acc_proof,
-                    lookup: logup_proof,
-                }));
-
-                Ok(Claim {
-                    point,
-                    eval: combined_eval,
-                })
-            }
-            _ => Err(anyhow!(
-                "Should not be in prove_lookup function for step: {}",
-                step.variant_name()
-            )),
-        }
     }
 
     #[timed::timed_instrument(level = "debug")]
