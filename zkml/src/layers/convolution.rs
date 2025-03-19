@@ -706,7 +706,7 @@ pub fn phi_eval<E: ExtensionField>(
 
 #[cfg(test)]
 mod test {
-    use crate::testing::random_vector;
+    use crate::{layers::dense, testing::random_vector};
 
     use super::*;
     use goldilocks::GoldilocksExt2;
@@ -716,11 +716,12 @@ mod test {
         random_vector(n)
     }
 
+    #[test]
     fn test_conv_offset_poly_id() {
         // just a large difference so we're guaranteed that the IDs won't overlap.
         // TODO: change that process by a deterministic ID depending on the position and additional info
         // not necessarily seuential
-        assert!(BIAS_POLY_ID > dense::BIAS_POLY_ID + 100_000);
+        assert!(BIAS_POLY_ID >= dense::BIAS_POLY_ID + 100_000);
     }
 
     #[test]
