@@ -8,8 +8,7 @@ use std::collections::HashMap;
 use crate::{
     Claim, VectorTranscript,
     commit::{aggregated_rlc, compute_beta_eval_poly, compute_betas_eval},
-    iop::context::BIAS_POLY_ID,
-    layers::Layer,
+    layers::{Layer, convolution, dense},
     model::Model,
 };
 use anyhow::{Context as CC, ensure};
@@ -89,11 +88,11 @@ where
                 .flat_map(|(id, l)| match l {
                     Layer::Dense(dense) => vec![
                         Some((id, dense.matrix.evals_2d())),
-                        Some((BIAS_POLY_ID + id, dense.bias.evals_flat())),
+                        Some((dense::BIAS_POLY_ID + id, dense.bias.evals_flat())),
                     ],
                     Layer::Convolution(m) => vec![
                         Some((id, m.filter.get_conv_weights())),
-                        Some((BIAS_POLY_ID + id, m.bias.evals_flat())),
+                        Some((convolution::BIAS_POLY_ID + id, m.bias.evals_flat())),
                     ],
                     _ => vec![None],
                 })

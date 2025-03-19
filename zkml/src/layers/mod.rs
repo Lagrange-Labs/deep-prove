@@ -2,18 +2,28 @@ pub mod activation;
 pub mod convolution;
 pub mod dense;
 pub mod pooling;
+pub mod requant;
+
 use crate::{
     Element,
+    commit::precommit::PolyID,
+    iop::context::{ContextAux, TableCtx},
     layers::{
-        activation::{Activation, Relu},
+        activation::{Activation, ActivationProof, Relu},
         convolution::Convolution,
         dense::Dense,
         pooling::Pooling,
+        requant::{Requant, RequantProof},
     },
-    quantization::Requant,
     tensor::{ConvData, Tensor},
 };
+use activation::ActivationCtx;
+use convolution::{ConvCtx, ConvProof, SchoolBookConvCtx};
+use dense::{DenseCtx, DenseProof};
 use ff_ext::ExtensionField;
+use pooling::{PoolingCtx, PoolingProof};
+use requant::RequantCtx;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 #[derive(Clone, Debug)]
 pub enum Layer {
     Dense(Dense),
@@ -29,12 +39,37 @@ pub enum Layer {
     Pooling(Pooling),
 }
 
-impl std::fmt::Display for Layer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.describe())
-    }
+/// Describes a steps wrt the polynomial to be proven/looked at. Verifier needs to know
+/// the sequence of steps and the type of each step from the setup phase so it can make sure the prover is not
+/// cheating on this.
+/// NOTE: The context automatically appends a requant step after each dense layer.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
+pub enum LayerCtx<E>
+where
+    E: ExtensionField + DeserializeOwned,
+    E::BaseField: Serialize + DeserializeOwned,
+{
+    Dense(DenseCtx<E>),
+    Convolution(ConvCtx<E>),
+    SchoolBookConvolution(SchoolBookConvCtx<E>),
+    Activation(ActivationCtx),
+    Requant(RequantCtx),
+    Pooling(PoolingCtx),
+    Table(TableCtx<E>),
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub enum LayerProof<E: ExtensionField>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+{
+    Dense(DenseProof<E>),
+    Convolution(ConvProof<E>),
+    Activation(ActivationProof<E>),
+    Requant(RequantProof<E>),
+    Pooling(PoolingProof<E>),
+}
 pub enum LayerOutput<F>
 where
     F: ExtensionField,
@@ -43,7 +78,45 @@ where
     ConvOut((Tensor<Element>, ConvData<F>)),
 }
 
+impl<E> LayerCtx<E>
+where
+    E: ExtensionField + DeserializeOwned,
+    E::BaseField: Serialize + DeserializeOwned,
+{
+    pub fn variant_name(&self) -> String {
+        match self {
+            Self::Dense(_) => "Dense".to_string(),
+            Self::SchoolBookConvolution(_) => "Traditional Convolution".to_string(),
+            Self::Convolution(_) => "Convolution".to_string(),
+            Self::Activation(_) => "Activation".to_string(),
+            Self::Requant(_) => "Requant".to_string(),
+            Self::Pooling(_) => "Pooling".to_string(),
+            Self::Table(..) => "Table".to_string(),
+        }
+    }
+
+    pub fn requires_lookup(&self) -> bool {
+        match self {
+            Self::Dense(..) => false,
+            _ => true,
+        }
+    }
+}
 impl Layer {
+    pub fn step_info<E>(&self, id: PolyID, aux: ContextAux) -> (LayerCtx<E>, ContextAux)
+    where
+        E: ExtensionField + DeserializeOwned,
+        E::BaseField: Serialize + DeserializeOwned,
+    {
+        match self {
+            Layer::Dense(dense) => dense.step_info(id, aux),
+            Layer::Convolution(conv) => conv.step_info(id, aux),
+            Layer::SchoolBookConvolution(conv) => conv.step_info(id, aux),
+            Layer::Activation(activation) => activation.step_info(id, aux),
+            Layer::Requant(requant) => requant.step_info(id, aux),
+            Layer::Pooling(pooling) => pooling.step_info(id, aux),
+        }
+    }
     /// Run the operation associated with that layer with the given input
     // TODO: move to tensor library : right now it works because we assume there is only Dense
     // layer which is matmul
@@ -116,5 +189,35 @@ impl Layer {
                 info.kernel_size, info.stride
             ),
         }
+    }
+}
+
+impl<E: ExtensionField> LayerProof<E>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+{
+    pub fn variant_name(&self) -> String {
+        match self {
+            Self::Dense(_) => "Dense".to_string(),
+            Self::Convolution(_) => "Convolution".to_string(),
+            Self::Activation(_) => "Activation".to_string(),
+            Self::Requant(_) => "Requant".to_string(),
+            Self::Pooling(_) => "Pooling".to_string(),
+        }
+    }
+
+    pub fn get_lookup_data(&self) -> Option<(Vec<E>, Vec<E>)> {
+        match self {
+            LayerProof::Dense(..) => None,
+            LayerProof::Convolution(..) => None,
+            LayerProof::Activation(ActivationProof { lookup, .. })
+            | LayerProof::Requant(RequantProof { lookup, .. })
+            | LayerProof::Pooling(PoolingProof { lookup, .. }) => Some(lookup.fractional_outputs()),
+        }
+    }
+}
+impl std::fmt::Display for Layer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.describe())
     }
 }

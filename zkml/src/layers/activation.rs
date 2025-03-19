@@ -1,6 +1,16 @@
+use crate::{
+    commit::same_poly,
+    iop::context::ContextAux,
+    layers::{LayerCtx, PolyID},
+    lookup::{
+        context::TableType,
+        logup_gkr::{structs::LogUpProof, verifier::verify_logup_proof},
+    },
+};
 use ff_ext::ExtensionField;
+use gkr::util::ceil_log2;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
     Element,
@@ -13,11 +23,95 @@ pub enum Activation {
     Relu(Relu),
 }
 
+/// Currently holds the poly info for the output polynomial of the RELU
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ActivationCtx {
+    pub op: Activation,
+    pub poly_id: PolyID,
+    pub num_vars: usize,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ActivationProof<E: ExtensionField>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+{
+    /// proof for the accumulation of the claim from m2v + claim from lookup for the same poly
+    /// e.g. the "link" between a m2v and relu layer
+    pub(crate) io_accumulation: same_poly::Proof<E>,
+    /// the lookup proof for the relu
+    pub(crate) lookup: LogUpProof<E>,
+}
+
 impl Activation {
     pub fn op(&self, input: &Tensor<Element>) -> Tensor<Element> {
         match self {
             Activation::Relu(relu) => relu.op(input),
         }
+    }
+    pub fn step_info<E: ExtensionField>(
+        &self,
+        id: PolyID,
+        mut aux: ContextAux,
+    ) -> (LayerCtx<E>, ContextAux)
+    where
+        E: ExtensionField + DeserializeOwned,
+        E::BaseField: Serialize + DeserializeOwned,
+    {
+        aux.tables.insert(TableType::Relu);
+        let info = match self {
+            Activation::Relu(relu) => LayerCtx::Activation(ActivationCtx {
+                op: Activation::Relu(*relu),
+                poly_id: id,
+                num_vars: aux
+                    .last_output_shape
+                    .iter()
+                    .map(|dim| ceil_log2(*dim))
+                    .sum::<usize>(),
+            }),
+        };
+        (info, aux)
+    }
+}
+
+impl ActivationCtx {
+    pub(crate) fn verify_activation<E: ExtensionField, T: Transcript<E>>(
+        &self,
+        &mut verifier: Verifier<E, T>,
+        last_claim: Claim<E>,
+        proof: &ActivationProof<E>,
+        constant_challenge: E,
+        column_separation_challenge: E,
+    ) -> anyhow::Result<Claim<E>>
+    where
+        E::BaseField: Serialize + DeserializeOwned,
+        E: Serialize + DeserializeOwned,
+    {
+        // 1. Verify the lookup proof
+        let verifier_claims = verify_logup_proof(
+            &proof.lookup,
+            1,
+            constant_challenge,
+            column_separation_challenge,
+            t,
+        )?;
+
+        // 2. Verify the accumulation proof from last_claim + lookup claim into the new claim
+        let sp_ctx = same_poly::Context::<E>::new(self.num_vars);
+        let mut sp_verifier = same_poly::Verifier::<E>::new(&sp_ctx);
+        sp_verifier.add_claim(last_claim)?;
+        verifier_claims.claims()[1..]
+            .iter()
+            .try_for_each(|claim| sp_verifier.add_claim(claim.clone()))?;
+
+        let new_output_claim = sp_verifier.verify(&proof.io_accumulation, verifier.transcript)?;
+        // 3. Accumulate the new claim into the witness commitment protocol
+        verifier
+            .witness_verifier
+            .add_claim(self.poly_id, new_output_claim)?;
+
+        // 4. return the input claim for to be proven at subsequent step
+        Ok(verifier_claims.claims()[0].clone())
     }
 }
 
