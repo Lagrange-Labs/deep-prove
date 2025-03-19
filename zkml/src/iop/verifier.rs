@@ -2,7 +2,8 @@ use crate::{
     Claim, VectorTranscript,
     commit::{self, identity_eval, precommit, same_poly},
     iop::{ChallengeStorage, StepProof, context::StepInfo},
-    lookup::{self, LookupProtocol, TableInfo},
+    lookup::{context::TableType, logup_gkr::verifier::verify_logup_proof},
+    quantization,
     tensor::{Tensor, get_root_of_unity},
 };
 use anyhow::{anyhow, bail, ensure};
@@ -11,6 +12,7 @@ use ff_ext::ExtensionField;
 use itertools::{Itertools, izip};
 use multilinear_extensions::{
     mle::{IntoMLE, MultilinearExtension},
+    util::ceil_log2,
     virtual_poly::VPAuxInfo,
 };
 use tracing::debug;
@@ -39,7 +41,7 @@ impl<E> IO<E> {
 }
 
 /// Verifies an inference proof given a context, a proof and the input / output of the model.
-pub fn verify<E: ExtensionField, T: Transcript<E>, L: LookupProtocol<E>>(
+pub fn verify<E: ExtensionField, T: Transcript<E>>(
     ctx: Context<E>,
     proof: Proof<E>,
     io: IO<E>,
@@ -54,8 +56,6 @@ where
         "VERIFIER: Proof Order: {:?}",
         proof.steps.iter().map(|p| p.variant_name()).collect_vec()
     );
-
-    let total_steps = proof.steps.len();
 
     // 1. Instatiate everything and append relevant info to the transcript
     let mut commit_verifier = precommit::CommitVerifier::new();
@@ -82,8 +82,9 @@ where
     });
 
     proof.table_proofs.iter().for_each(|proof| {
-        numerators.extend(proof.lookup.numerators().into_iter());
-        denominators.extend(proof.lookup.denominators().into_iter());
+        let (nums, denoms) = proof.lookup.fractional_outputs();
+        numerators.extend(nums.into_iter());
+        denominators.extend(denoms.into_iter());
     });
 
     // 2. Derive the first randomness
@@ -118,76 +119,64 @@ where
 
     // 4. Verify each proof sequentially, Always make sure the proof corresponds to the expected type of proof in the context.
     // We have two `HashSet`s, one for the type of table used and one for the lookup challenges used
-    for (i, proof_and_step) in proof.steps.iter().zip(ctx.steps_info.iter()).enumerate() {
+    for proof_and_step in proof.steps.iter().zip(ctx.steps_info.iter()) {
         output_claim = match proof_and_step {
             (StepProof::<E>::Activation(proof), StepInfo::Activation(info)) => {
-                let step = total_steps - 1 - i;
-                let (lookup_type, _) = ctx.lookup.get_circuit_and_type(step)?;
-                let (constant_challenge, column_separator_challenges) = challenge_storage
-                    .get_challenges(*lookup_type)
+                let (constant_challenge, column_separation_challenge) = challenge_storage
+                    .get_challenges_by_name(&TableType::Relu.name())
                     .ok_or(anyhow!(
                         "Couldn't get challenges at Step: {}, LookupType was: {}",
                         proof_and_step.1.variant_name(),
-                        lookup_type.name()
+                        TableType::Relu.name()
                     ))?;
-                verify_activation::<_, _, L>(
+                verify_activation::<_, _>(
                     output_claim,
                     &proof,
                     info,
                     &mut witness_verifier,
-                    &ctx.lookup,
                     transcript,
                     constant_challenge,
-                    &column_separator_challenges,
-                    step,
+                    column_separation_challenge,
                 )?
             }
             (StepProof::<E>::Dense(proof), StepInfo::Dense(info)) => {
                 verify_dense(output_claim, &proof, info, &mut commit_verifier, transcript)?
             }
             (StepProof::<E>::Requant(proof), StepInfo::Requant(info)) => {
-                let step = total_steps - 1 - i;
-                let (lookup_type, _) = ctx.lookup.get_circuit_and_type(step)?;
-                let (constant_challenge, column_separator_challenges) = challenge_storage
-                    .get_challenges(*lookup_type)
+                let (constant_challenge, column_separation_challenge) = challenge_storage
+                    .get_challenges_by_name(&TableType::Range.name())
                     .ok_or(anyhow!(
                         "Couldn't get challenges at Step: {}, LookupType was: {}",
                         proof_and_step.1.variant_name(),
-                        lookup_type.name()
+                        TableType::Range.name()
                     ))?;
-                verify_requant::<_, _, L>(
+                verify_requant::<_, _>(
                     output_claim,
                     &proof,
                     info,
                     &mut witness_verifier,
-                    &ctx.lookup,
                     transcript,
                     constant_challenge,
-                    &column_separator_challenges,
-                    step,
+                    column_separation_challenge,
                 )?
             }
             (StepProof::Pooling(proof), StepInfo::Pooling(info)) => {
-                let step = total_steps - 1 - i;
-                let (lookup_type, _) = ctx.lookup.get_circuit_and_type(step)?;
-                let (constant_challenge, column_separator_challenges) = challenge_storage
-                    .get_challenges(*lookup_type)
+                let (constant_challenge, column_separation_challenge) = challenge_storage
+                    .get_challenges_by_name(&TableType::Range.name())
                     .ok_or(anyhow!(
                         "Couldn't get challenges at Step: {}, LookupType was: {}",
                         proof_and_step.1.variant_name(),
-                        lookup_type.name()
+                        TableType::Range.name()
                     ))?;
 
-                verify_pooling::<_, _, L>(
+                verify_pooling::<_, _>(
                     output_claim,
                     proof,
                     info,
                     &mut witness_verifier,
-                    &ctx.lookup,
                     transcript,
                     constant_challenge,
-                    &column_separator_challenges,
-                    step,
+                    column_separation_challenge,
                 )?
             }
             (StepProof::<E>::Convolution(proof), StepInfo::<E>::Convolution(info)) => {
@@ -202,25 +191,32 @@ where
     }
 
     // 5. Verify the lookup table proofs
+    let mut table_poly_id = proof.steps.len();
     proof
         .table_proofs
         .iter()
-        .zip(ctx.lookup.get_table_circuits())
-        .try_for_each(|(table_proof, table_info)| {
-            let (constant_challenge, column_separator_challenges) = challenge_storage
-                .get_challenges(table_info.lookup_type)
+        .zip(ctx.lookup.iter())
+        .try_for_each(|(table_proof, table_type)| {
+            let (constant_challenge, column_separation_challenge) = challenge_storage
+                .get_challenges_by_name(&table_type.name())
                 .ok_or(anyhow!(
                     "No challenges found for table of type: {:?} during verification",
-                    table_info.lookup_type
+                    table_type.name()
                 ))?;
-            verify_table::<_, _, L>(
+
+            verify_table::<_, _>(
                 table_proof,
-                table_info,
+                *table_type,
+                table_poly_id,
                 &mut witness_verifier,
+                &mut commit_verifier,
                 transcript,
                 constant_challenge,
-                &column_separator_challenges,
-            )
+                column_separation_challenge,
+            )?;
+            table_poly_id += 1;
+
+            Result::<(), anyhow::Error>::Ok(())
         })?;
 
     // 6. input verification: evaluating the input at the random evaluation point from the sumcheck
@@ -255,38 +251,39 @@ where
     Ok(())
 }
 
-fn verify_pooling<E: ExtensionField, T: Transcript<E>, L: LookupProtocol<E>>(
+fn verify_pooling<E: ExtensionField, T: Transcript<E>>(
     last_claim: Claim<E>,
     proof: &PoolingProof<E>,
     info: &PoolingInfo,
     witness_verifier: &mut commit::precommit::CommitVerifier<E>,
-    lookup_ctx: &lookup::Context<E>,
     t: &mut T,
     constant_challenge: E,
-    column_separator_challenges: &[E],
-    step: usize,
+    column_separation_challenge: E,
 ) -> anyhow::Result<Claim<E>>
 where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
     // 1. Verify the lookup proof
-    let verifier_claims = L::verify(
-        lookup_ctx,
+    let verifier_claims = verify_logup_proof(
+        &proof.lookup,
+        4,
         constant_challenge,
-        column_separator_challenges,
-        step,
-        proof.lookup.clone(),
+        column_separation_challenge,
         t,
     )?;
 
     // 2. Verify the sumcheck proof
-    // Squeeze some randomness from the transcript to
-    let challenge_point = (0..info.num_vars)
-        .map(|_| t.get_and_append_challenge(b"zerocheck_challenge").elements)
-        .collect::<Vec<E>>();
     let poly_aux = VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![info.num_vars; 5]]);
-    let subclaim = IOPVerifierState::<E>::verify(E::ZERO, &proof.sumcheck, &poly_aux, t);
+    let batching_challenge = t.get_and_append_challenge(b"batch_pooling").elements;
+    let initial_value = verifier_claims
+        .claims()
+        .iter()
+        .fold((E::ZERO, batching_challenge), |(acc, comb), claim| {
+            (acc + claim.eval * comb, comb * batching_challenge)
+        })
+        .0;
+    let subclaim = IOPVerifierState::<E>::verify(initial_value, &proof.sumcheck, &poly_aux, t);
 
     // Run the same poly verifier for the output claims
     let sp_ctx = same_poly::Context::<E>::new(info.num_vars);
@@ -299,16 +296,12 @@ where
         .iter()
         .try_for_each(|claim| sp_verifier.add_claim(claim.clone()))?;
 
-    let [input_proof, output_proof] = &proof.io_accumulation;
+    let output_proof = &proof.io_accumulation;
 
     let commit_claim = sp_verifier.verify(output_proof, t)?;
 
     // Add the result of the same poly verifier to the commitment verifier.
     witness_verifier.add_claim(info.poly_id, commit_claim)?;
-
-    // Now we do the same poly verifiaction claims for the input poly
-    let sp_ctx = same_poly::Context::<E>::new(info.num_vars + 2);
-    let mut sp_verifier = same_poly::Verifier::<E>::new(&sp_ctx);
 
     // Challenegs used to batch input poly claims together and link them with zerocheck and lookup verification output
     let [r1, r2] = [t.get_and_append_challenge(b"input_batching").elements; 2];
@@ -321,111 +314,72 @@ where
         r1 * one_minus_r2,
         r1 * r2,
     ];
+    let zc_point = subclaim
+        .point
+        .iter()
+        .map(|chal| chal.elements)
+        .collect::<Vec<E>>();
+    let zerocheck_point = [
+        &[r1],
+        &zc_point[..proof.variable_gap],
+        &[r2],
+        &zc_point[proof.variable_gap..],
+    ]
+    .concat();
 
-    let mut zerocheck_point = proof.input_claims[0].point.clone();
-    zerocheck_point[0] = r1;
-    zerocheck_point[1 + proof.variable_gap] = r2;
+    let zerocheck_input_eval = izip!(proof.zerocheck_evals.iter(), eval_multiplicands.iter())
+        .fold(E::ZERO, |zerocheck_acc, (&ze, &me)| {
+            zerocheck_acc + (output_claims[0].eval - ze) * me
+        });
 
-    let mut lookup_point = proof.input_claims[1].point.clone();
-    lookup_point[0] = r1;
-    lookup_point[1 + proof.variable_gap] = r2;
-
-    let (zerocheck_input_eval_claims, lookup_input_eval_claims): (Vec<E>, Vec<E>) = proof
-        .input_claims
-        .chunks(2)
-        .map(|chunk| (chunk[0].eval, chunk[1].eval))
-        .unzip();
-
-    let (zerocheck_eval, lookup_eval) = izip!(
-        zerocheck_input_eval_claims.iter(),
-        lookup_input_eval_claims.iter(),
-        eval_multiplicands.iter()
-    )
-    .fold(
-        (E::ZERO, E::ZERO),
-        |(zerocheck_acc, lookup_acc), (&ze, &le, &me)| {
-            (zerocheck_acc + ze * me, lookup_acc + le * me)
-        },
-    );
-
-    sp_verifier.add_claim(Claim {
+    let out_claim = Claim {
         point: zerocheck_point,
-        eval: zerocheck_eval,
-    })?;
-    sp_verifier.add_claim(Claim {
-        point: lookup_point,
-        eval: lookup_eval,
-    })?;
-
-    // Run the same poly verifier, the output claim from this is what we pass to the next step of verification.
-    let out_claim = sp_verifier.verify(input_proof, t)?;
+        eval: zerocheck_input_eval,
+    };
 
     // Now we check consistency between the lookup/sumcheck proof claims and the claims passed to the same poly verifiers.
-    let input_claims = &proof.input_claims;
-    let zerocheck_claim_no_beta = input_claims
-        .iter()
-        .step_by(2)
-        .map(|claim| output_claims[0].eval - claim.eval)
-        .product::<E>();
-    let beta_eval = identity_eval(&output_claims[0].point, &challenge_point);
+    let beta_eval = identity_eval(&output_claims[0].point, &verifier_claims.claims()[0].point);
 
-    let computed_zerocheck_claim = beta_eval * zerocheck_claim_no_beta;
+    let computed_zerocheck_claim = proof
+        .zerocheck_evals
+        .iter()
+        .chain(std::iter::once(&beta_eval))
+        .product::<E>()
+        + proof
+            .zerocheck_evals
+            .iter()
+            .fold((E::ZERO, batching_challenge), |(acc, comb), v| {
+                (acc + *v * beta_eval * comb, comb * batching_challenge)
+            })
+            .0;
 
     ensure!(
         computed_zerocheck_claim == subclaim.expected_evaluation,
         "Computed zerocheck claim did not line up with output of sumcheck verification"
     );
 
-    let lookup_gkr_claim = verifier_claims.gkr_claim();
-    let gkr_point = &lookup_gkr_claim.point_and_evals[0].point;
-    let gkr_point_len = gkr_point.len();
-    let gkr1 = gkr_point[gkr_point_len - 2];
-    let gkr2 = gkr_point[gkr_point_len - 1];
-    let extra_multiplcands = [
-        (E::ONE - gkr1) * (E::ONE - gkr2),
-        (E::ONE - gkr1) * gkr2,
-        gkr1 * (E::ONE - gkr2),
-        gkr1 * gkr2,
-    ];
-    let lookup_claim = input_claims
-        .iter()
-        .skip(1)
-        .step_by(2)
-        .zip(extra_multiplcands)
-        .map(|(claim, m)| (output_claims[1].eval - claim.eval) * m)
-        .sum::<E>();
-
-    ensure!(
-        lookup_claim == lookup_gkr_claim.point_and_evals[0].eval,
-        "Lookup claim did not line up got {:?} expected {:?}",
-        lookup_claim,
-        lookup_gkr_claim.point_and_evals[0].eval
-    );
     Ok(out_claim)
 }
 
-fn verify_activation<E: ExtensionField, T: Transcript<E>, L: LookupProtocol<E>>(
+fn verify_activation<E: ExtensionField, T: Transcript<E>>(
     last_claim: Claim<E>,
     proof: &ActivationProof<E>,
     info: &ActivationInfo,
     witness_verifier: &mut commit::precommit::CommitVerifier<E>,
-    lookup_ctx: &lookup::Context<E>,
     t: &mut T,
     constant_challenge: E,
-    column_separator_challenges: &[E],
-    step: usize,
+    column_separation_challenge: E,
 ) -> anyhow::Result<Claim<E>>
 where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
     // 1. Verify the lookup proof
-    let verifier_claims = L::verify(
-        lookup_ctx,
+    let verifier_claims = verify_logup_proof(
+        &proof.lookup,
+        1,
         constant_challenge,
-        column_separator_challenges,
-        step,
-        proof.lookup.clone(),
+        column_separation_challenge,
         t,
     )?;
 
@@ -445,28 +399,26 @@ where
     Ok(verifier_claims.claims()[0].clone())
 }
 
-fn verify_requant<E: ExtensionField, T: Transcript<E>, L: LookupProtocol<E>>(
+fn verify_requant<E: ExtensionField, T: Transcript<E>>(
     last_claim: Claim<E>,
     proof: &RequantProof<E>,
     info: &RequantInfo,
     witness_verifier: &mut commit::precommit::CommitVerifier<E>,
-    lookup_ctx: &lookup::Context<E>,
     t: &mut T,
     constant_challenge: E,
-    column_separator_challenges: &[E],
-    step: usize,
+    column_separation_challenge: E,
 ) -> anyhow::Result<Claim<E>>
 where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
     // 1. Verify the lookup proof
-    let verifier_claims = L::verify(
-        lookup_ctx,
+    let num_instances = (info.requant.right_shift - 1) / ceil_log2(info.requant.after_range) + 2;
+    let verifier_claims = verify_logup_proof(
+        &proof.lookup,
+        num_instances,
         constant_challenge,
-        column_separator_challenges,
-        step,
-        proof.lookup.clone(),
+        column_separation_challenge,
         t,
     )?;
 
@@ -480,7 +432,12 @@ where
         .first()
         .ok_or(anyhow::anyhow!("No claims found"))?;
     let point = first_claim.point.clone();
-    sp_verifier.add_claim(first_claim.clone())?;
+    // The first claim needs to be shifted down as we add a value to make sure that all its evals are in the range 0..1 << BIT_LEn
+    let corrected_claim = Claim::<E>::new(
+        point.clone(),
+        first_claim.eval - E::from(1 << (*quantization::BIT_LEN - 1)),
+    );
+    sp_verifier.add_claim(corrected_claim)?;
 
     let new_output_claim = sp_verifier.verify(&proof.io_accumulation, t)?;
     // 3. Accumulate the new claim into the witness commitment protocol
@@ -766,36 +723,55 @@ where
     })
 }
 
-fn verify_table<E: ExtensionField, T: Transcript<E>, L: LookupProtocol<E>>(
+fn verify_table<E: ExtensionField, T: Transcript<E>>(
     proof: &TableProof<E>,
-    info: &TableInfo<E>,
+    table_type: TableType,
+    poly_id: usize,
     witness_verifier: &mut commit::precommit::CommitVerifier<E>,
+    commit_verifier: &mut commit::precommit::CommitVerifier<E>,
     t: &mut T,
     constant_challenge: E,
-    column_separator_challenges: &[E],
+    column_separation_challenge: E,
 ) -> anyhow::Result<()>
 where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
     // 1. Verify the lookup proof
-    let verifier_claims = L::verify_table(
+    let verifier_claims = verify_logup_proof(
+        &proof.lookup,
+        1,
         constant_challenge,
-        column_separator_challenges,
-        &info.circuit,
-        proof.lookup.clone(),
+        column_separation_challenge,
         t,
     )?;
 
     // 2. Accumulate the multiplicity poly claim into the witness commitment protocol
+    let poly_claims = verifier_claims.claims();
     witness_verifier.add_claim(
-        info.poly_id,
-        verifier_claims
-            .claims()
-            .last()
+        poly_id,
+        poly_claims
+            .first()
             .ok_or(anyhow!("Claims was empty in table verification!"))?
             .clone(),
     )?;
+    // Hard indexing is okay here because we checked above that at least one claim exists
+    let expected_claim_evals =
+        table_type.evaluate_table_columns::<E>(&poly_claims[0].point, commit_verifier)?;
 
+    ensure!(
+        expected_claim_evals.len() == (poly_claims.len() - 1),
+        "Expected {} table column evaluation claims, got {}",
+        expected_claim_evals.len(),
+        poly_claims.len() - 1
+    );
+    for (poly_claim, expected) in poly_claims[1..].iter().zip(expected_claim_evals.iter()) {
+        ensure!(
+            poly_claim.eval == *expected,
+            "Claimed table eval was wrong, claimed: {:?}, expected: {:?}",
+            poly_claim.eval,
+            expected
+        );
+    }
     Ok(())
 }

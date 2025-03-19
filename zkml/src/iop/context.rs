@@ -1,7 +1,7 @@
 use crate::{
     activation::Activation,
     iop::precommit::{self, PolyID},
-    lookup::Context as LookupContext,
+    lookup::context::{LookupContext, TableType},
     model::{Layer, Model},
     pooling::{Maxpool2D, Pooling},
     quantization::Requant,
@@ -13,8 +13,8 @@ use itertools::Itertools;
 use mpcs::BasefoldCommitment;
 use multilinear_extensions::virtual_poly::VPAuxInfo;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::collections::BTreeSet;
 use transcript::Transcript;
-
 /// Bias to compute the bias ID polynomials. Since originally we take the index of each
 /// layer to be the index of the layer, we need to add a bias to avoid collision with other
 /// layers poly id.
@@ -145,8 +145,8 @@ where
     /// Context related to the commitment and accumulation of claims related to the weights of model.
     /// This part contains the commitment of the weights.
     pub weights: precommit::Context<E>,
-    /// Context holding all lookup related inforamtion
-    pub lookup: LookupContext<E>,
+    /// Context holding all the different table types we use in lookups
+    pub lookup: LookupContext,
 }
 
 impl<E: ExtensionField> Context<E>
@@ -158,6 +158,7 @@ where
     /// to prove at each step.
     /// INFO: it _assumes_ the model is already well padded to power of twos.
     pub fn generate(model: &Model, input_shape: Option<Vec<usize>>) -> anyhow::Result<Self> {
+        let mut tables = BTreeSet::new();
         let mut last_output_shape = if let Some(shape) = input_shape {
             shape
         } else {
@@ -187,9 +188,10 @@ where
                         });
                         dense_info
                     }
-                    Layer::Activation(Activation::Relu(relu)) => {
+                    Layer::Activation(activation) => {
+                        tables.insert(activation.into());
                         StepInfo::Activation(ActivationInfo {
-                            op: Activation::Relu(*relu),
+                            op: *activation,
                             poly_id: id,
                             num_vars: last_output_shape
                                 .iter()
@@ -197,15 +199,19 @@ where
                                 .sum::<usize>(),
                         })
                     }
-                    Layer::Requant(info) => StepInfo::Requant(RequantInfo {
-                        requant: *info,
-                        poly_id: id,
-                        num_vars: last_output_shape
-                            .iter()
-                            .map(|dim| ceil_log2(*dim))
-                            .sum::<usize>(),
-                    }),
+                    Layer::Requant(info) => {
+                        tables.insert(TableType::Range);
+                        StepInfo::Requant(RequantInfo {
+                            requant: *info,
+                            poly_id: id,
+                            num_vars: last_output_shape
+                                .iter()
+                                .map(|dim| ceil_log2(*dim))
+                                .sum::<usize>(),
+                        })
+                    }
                     Layer::Pooling(Pooling::Maxpool2D(info)) => {
+                        tables.insert(TableType::Range);
                         // Pooling only affects the last two dimensions
                         let total_number_dims = last_output_shape.len();
 
@@ -287,12 +293,10 @@ where
         let commit_ctx = precommit::Context::generate_from_model(model)
             .context("can't generate context for commitment part")?;
 
-        let lookup = LookupContext::<E>::generate(&auxs)?;
-
         Ok(Self {
             steps_info: auxs.into_iter().rev().collect_vec(),
             weights: commit_ctx,
-            lookup,
+            lookup: LookupContext::new(&tables),
         })
     }
 

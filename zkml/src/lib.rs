@@ -144,7 +144,6 @@ mod test {
             verifier::{IO, verify},
         },
         load_model,
-        lookup::{LogUp, LookupProtocol},
         onnx_parse::ModelType,
         quantization::TensorFielder,
         tensor::Tensor,
@@ -156,7 +155,7 @@ mod test {
 
     #[test]
     fn test_model_run() -> anyhow::Result<()> {
-        test_model_run_helper::<LogUp>()?;
+        test_model_run_helper()?;
         Ok(())
     }
 
@@ -167,7 +166,7 @@ mod test {
         PathBuf::from(manifest_dir).parent().unwrap().to_path_buf()
     }
 
-    fn test_model_run_helper<L: LookupProtocol<E>>() -> anyhow::Result<()> {
+    fn test_model_run_helper() -> anyhow::Result<()> {
         let filepath = workspace_root().join("zkml/assets/model.onnx");
         ModelType::MLP
             .validate(&filepath.to_string_lossy())
@@ -187,13 +186,13 @@ mod test {
         println!("[+] Run inference. Result: {:?}", output);
 
         let mut prover_transcript = default_transcript();
-        let prover = Prover::<_, _, L>::new(&ctx, &mut prover_transcript);
+        let prover = Prover::<_, _>::new(&ctx, &mut prover_transcript);
         println!("[+] Run prover");
         let proof = prover.prove(trace).expect("unable to generate proof");
 
         let mut verifier_transcript = default_transcript();
         let io = IO::new(input.to_fields(), output.to_fields());
-        verify::<_, _, L>(ctx, proof, io, &mut verifier_transcript).expect("invalid proof");
+        verify::<_, _>(ctx, proof, io, &mut verifier_transcript).expect("invalid proof");
         println!("[+] Verify proof: valid");
         Ok(())
     }

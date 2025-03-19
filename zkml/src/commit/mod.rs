@@ -1,5 +1,5 @@
 use ff_ext::ExtensionField;
-use mpcs::{Basefold, BasefoldBasecodeParams};
+use mpcs::{Basefold, BasefoldRSParams};
 use rayon::iter::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
 };
@@ -7,7 +7,7 @@ use rayon::iter::{
 pub mod precommit;
 pub mod same_poly;
 
-pub(crate) type Pcs<E> = Basefold<E, BasefoldBasecodeParams>;
+pub(crate) type Pcs<E> = Basefold<E, BasefoldRSParams>;
 /// Compute the vector (beta(r,1), ... ,beta(r,2^{|r|}))
 /// This function uses the dynamic programing technique of Libra
 pub fn compute_betas_eval<E: ExtensionField>(r: &[E]) -> Vec<E> {

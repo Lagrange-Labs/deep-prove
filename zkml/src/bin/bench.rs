@@ -16,8 +16,7 @@ use zkml::{load_model, quantization::Quantizer};
 
 use serde::{Deserialize, Serialize};
 use zkml::{
-    Context, Element, IO, Prover, argmax, default_transcript, lookup::LogUp,
-    quantization::TensorFielder, verify,
+    Context, Element, IO, Prover, argmax, default_transcript, quantization::TensorFielder, verify,
 };
 
 use rmp_serde::encode::to_vec_named;
@@ -158,7 +157,7 @@ fn run(args: Args) -> anyhow::Result<()> {
 
         info!("[+] Running prover");
         let mut prover_transcript = default_transcript();
-        let prover = Prover::<_, _, LogUp>::new(&ctx, &mut prover_transcript);
+        let prover = Prover::<_, _>::new(&ctx, &mut prover_transcript);
         let proof = bencher.r(CSV_PROVING, move || {
             prover.prove(trace).expect("unable to generate proof")
         });
@@ -172,8 +171,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         let mut verifier_transcript = default_transcript();
         let io = IO::new(input_tensor.to_fields(), output.to_fields());
         bencher.r(CSV_VERIFYING, || {
-            verify::<_, _, LogUp>(ctx.clone(), proof, io, &mut verifier_transcript)
-                .expect("invalid proof")
+            verify::<_, _>(ctx.clone(), proof, io, &mut verifier_transcript).expect("invalid proof")
         });
         info!("[+] Verify proof: valid");
 

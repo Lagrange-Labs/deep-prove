@@ -1,8 +1,13 @@
-use crate::{Element, quantization::TensorFielder, tensor::Tensor};
+use crate::{
+    Element,
+    quantization::{Fieldizer, IntoElement},
+    tensor::Tensor,
+};
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
-use itertools::Itertools;
-use multilinear_extensions::mle::{DenseMultilinearExtension, MultilinearExtension};
+use itertools::{Itertools, izip};
+
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 pub const MAXPOOL2D_KERNEL_SIZE: usize = 2;
@@ -16,6 +21,29 @@ impl Pooling {
     pub fn op(&self, input: &Tensor<Element>) -> Tensor<Element> {
         match self {
             Pooling::Maxpool2D(maxpool2d) => maxpool2d.op(input),
+        }
+    }
+
+    pub fn gen_lookup_witness<E: ExtensionField>(
+        &self,
+        input: &Tensor<Element>,
+    ) -> (Vec<Element>, Vec<Vec<E::BaseField>>) {
+        match self {
+            Pooling::Maxpool2D(maxpool2d) => {
+                let field_vecs = maxpool2d.compute_polys::<E>(input);
+
+                let merged_lookups = field_vecs
+                    .iter()
+                    .flat_map(|vector| {
+                        vector
+                            .iter()
+                            .map(|&a| E::from(a).into_element())
+                            .collect::<Vec<Element>>()
+                    })
+                    .collect::<Vec<Element>>();
+
+                (merged_lookups, field_vecs)
+            }
         }
     }
 }
@@ -52,136 +80,90 @@ impl Maxpool2D {
     }
 
     /// Computes MLE evaluations related to proving Maxpool function.
-    /// The outputs of this function are ordered as follows
-    /// 1) Maxpool output
-    /// 2) four polynomials corresponding to the input to the Maxpool, each with two variables fixed
+    /// The outputs of this function are the four polynomials corresponding to the input to the Maxpool, each with two variables fixed
     /// so that PROD (Output - poly_i) == 0 at every evaluation point.
     pub fn compute_polys<E: ExtensionField>(
         &self,
         input: &Tensor<Element>,
     ) -> Vec<Vec<E::BaseField>> {
-        let output: Tensor<E> = self.op(&input).to_fields();
-        let input: Tensor<E> = input.clone().to_fields();
-
-        self.compute_polys_field(&input, &output)
-    }
-
-    pub fn compute_polys_field<E: ExtensionField>(
-        &self,
-        input: &Tensor<E>,
-        output: &Tensor<E>,
-    ) -> Vec<Vec<E::BaseField>> {
-        assert_eq!(input.dims().len(), 3, "Maxpool needs 3D inputs.");
         let padded_input = input.pad_next_power_of_two();
 
-        let padded_output = output.pad_next_power_of_two();
-
+        let padded_output = self.op(&input).pad_next_power_of_two();
         let padded_input_shape = padded_input.dims();
 
-        let num_vars = padded_input.get_data().len().ilog2() as usize;
-
-        let mle = DenseMultilinearExtension::<E>::from_evaluations_vec(
-            num_vars,
-            padded_input
-                .get_data()
-                .iter()
-                .map(|val| val.as_bases()[0])
-                .collect::<Vec<E::BaseField>>(),
-        );
-
-        // This should give all possible combinations of fixing the lowest three bits in ascending order
-
-        let fixed_mles = (0..padded_input_shape[2] << 1)
+        let new_fixed = (0..padded_input_shape[2] << 1)
+            .into_par_iter()
             .map(|i| {
-                let point = (0..ceil_log2(padded_input_shape[2]) + 1)
-                    .map(|n| E::from((i as u64 >> n) & 1))
-                    .collect::<Vec<E>>();
-
-                mle.fix_variables(&point)
+                padded_input
+                    .get_data()
+                    .iter()
+                    .skip(i)
+                    .step_by(padded_input_shape[2] << 1)
+                    .copied()
+                    .collect::<Vec<Element>>()
             })
-            .collect::<Vec<DenseMultilinearExtension<E>>>();
-        // f(0,x,0,..) = x * f(0,1,0,...) + (1 - x) * f(0,0,0,...)
-        let even_mles = fixed_mles
+            .collect::<Vec<Vec<Element>>>();
+
+        let new_even = new_fixed
             .iter()
-            .cloned()
             .step_by(2)
-            .collect::<Vec<DenseMultilinearExtension<E>>>();
-        let odd_mles = fixed_mles
-            .iter()
             .cloned()
+            .collect::<Vec<Vec<Element>>>();
+
+        let new_odd = new_fixed
+            .iter()
             .skip(1)
             .step_by(2)
-            .collect::<Vec<DenseMultilinearExtension<E>>>();
+            .cloned()
+            .collect::<Vec<Vec<Element>>>();
 
-        let even_merged = even_mles
-            .chunks(padded_input_shape[2] >> 1)
-            .map(|mle_chunk| {
-                let mut mles_vec = mle_chunk
-                    .iter()
-                    .map(|m| {
-                        m.get_ext_field_vec()
-                            .iter()
-                            .map(|e| e.as_bases()[0])
-                            .collect::<Vec<E::BaseField>>()
-                    })
-                    .collect::<Vec<Vec<E::BaseField>>>();
-                while mles_vec.len() > 1 {
-                    let half = mles_vec.len() / 2;
-
-                    mles_vec = mles_vec[..half]
+        let (even_diff, odd_diff): (Vec<Vec<E::BaseField>>, Vec<Vec<E::BaseField>>) = new_even
+            .par_chunks(padded_input_shape[2] >> 1)
+            .zip(new_odd.par_chunks(padded_input_shape[2] >> 1))
+            .map(|(even_chunk, odd_chunk)| {
+                let mut even_merged = even_chunk.to_vec();
+                let mut odd_merged = odd_chunk.to_vec();
+                for i in (0..ceil_log2(padded_input_shape[2]) - 1).rev() {
+                    let mid_point = 1 << i;
+                    let (even_low, even_high) = even_merged.split_at(mid_point);
+                    let (odd_low, odd_high) = odd_merged.split_at(mid_point);
+                    even_merged = even_low
                         .iter()
-                        .zip(mles_vec[half..].iter())
+                        .zip(even_high.iter())
                         .map(|(l, h)| {
                             l.iter()
                                 .interleave(h.iter())
                                 .copied()
-                                .collect::<Vec<E::BaseField>>()
+                                .collect::<Vec<Element>>()
                         })
-                        .collect::<Vec<Vec<E::BaseField>>>();
-                }
-
-                mles_vec[0].clone()
-            })
-            .collect::<Vec<Vec<E::BaseField>>>();
-
-        let odd_merged = odd_mles
-            .chunks(padded_input_shape[2] >> 1)
-            .map(|mle_chunk| {
-                let mut mles_vec = mle_chunk
-                    .iter()
-                    .map(|m| {
-                        m.get_ext_field_vec()
-                            .iter()
-                            .map(|e| e.as_bases()[0])
-                            .collect::<Vec<E::BaseField>>()
-                    })
-                    .collect::<Vec<Vec<E::BaseField>>>();
-                while mles_vec.len() > 1 {
-                    let half = mles_vec.len() / 2;
-
-                    mles_vec = mles_vec[..half]
+                        .collect::<Vec<Vec<Element>>>();
+                    odd_merged = odd_low
                         .iter()
-                        .zip(mles_vec[half..].iter())
+                        .zip(odd_high.iter())
                         .map(|(l, h)| {
                             l.iter()
                                 .interleave(h.iter())
                                 .copied()
-                                .collect::<Vec<E::BaseField>>()
+                                .collect::<Vec<Element>>()
                         })
-                        .collect::<Vec<Vec<E::BaseField>>>();
+                        .collect::<Vec<Vec<Element>>>();
                 }
 
-                mles_vec[0].clone()
+                izip!(
+                    even_merged[0].iter(),
+                    odd_merged[0].iter(),
+                    padded_output.get_data()
+                )
+                .map(|(e, o, data)| {
+                    let e_field: E = (data - e).to_field();
+                    let o_field: E = (data - o).to_field();
+                    (e_field.as_bases()[0], o_field.as_bases()[0])
+                })
+                .unzip::<_, _, Vec<E::BaseField>, Vec<E::BaseField>>()
             })
-            .collect::<Vec<Vec<E::BaseField>>>();
+            .unzip();
 
-        let output_mle = padded_output
-            .get_data()
-            .iter()
-            .map(|val| val.as_bases()[0])
-            .collect::<Vec<E::BaseField>>();
-
-        [&[output_mle], even_merged.as_slice(), odd_merged.as_slice()].concat()
+        [even_diff, odd_diff].concat()
     }
 }
 

@@ -7,7 +7,10 @@ use goldilocks::SmallField;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::env;
+use std::{
+    env,
+    ops::{Add, Mul, Sub},
+};
 use tracing::debug;
 use transcript::Transcript;
 
@@ -273,9 +276,10 @@ impl Requant {
         mle_evals
     }
 
-    /// Function to recombine claims of constituent MLEs into a single value to be used as the initial sumcheck evaluation
-    /// of the subsequent proof.
-    pub fn recombine_claims<E: ExtensionField>(&self, eval_claims: &[E]) -> E {
+    pub fn gen_lookup_witness<E: ExtensionField>(
+        &self,
+        input: &[Element],
+    ) -> (Vec<Element>, Vec<Vec<E::BaseField>>) {
         // We calculate how many chunks we will split each entry of `input` into.
         // Since outputs of a layer are centered around zero (i.e. some are negative) in order for all the shifting
         // and the like to give the correct result we make sure that everything is positive.
@@ -285,20 +289,81 @@ impl Requant {
         // `ceil_log2(self.after_range)` and then add one for the column that represents the output we will take to the next layer.
         let num_columns = (self.right_shift - 1) / ceil_log2(self.after_range) + 2;
 
+        let num_vars = ceil_log2(input.len());
+
+        let mut lookups = vec![vec![0i128; 1 << num_vars]; num_columns];
+        let mut lookups_field = vec![vec![E::BaseField::ZERO; 1 << num_vars]; num_columns];
+        // Bit mask for the bytes
+        let bit_mask = self.after_range as i128 - 1;
+
+        let max_bit = self.range << 1;
+        let subtract = max_bit >> self.right_shift;
+
+        input.iter().enumerate().for_each(|(index, val)| {
+            let pre_shift = val + max_bit as i128;
+            let tmp = pre_shift >> self.right_shift;
+            let input = tmp - subtract as i128 + (self.after_range as i128 >> 1);
+            let in_field: E = input.to_field();
+
+            lookups[0][index] = input;
+            lookups_field[0][index] = in_field.as_bases()[0];
+            // the value of an input should always be basefield elements
+
+            // This leaves us with only the part that is "discarded"
+            let mut remainder_vals = pre_shift - (tmp << self.right_shift);
+            lookups
+                .iter_mut()
+                .zip(lookups_field.iter_mut())
+                .skip(1)
+                .rev()
+                .for_each(|(discarded_lookup_chunk, discarded_field_chunk)| {
+                    let chunk = remainder_vals & bit_mask;
+                    let value = chunk as i128;
+                    let val_field: E = value.to_field();
+                    discarded_lookup_chunk[index] = value;
+                    discarded_field_chunk[index] = val_field.as_bases()[0];
+                    remainder_vals >>= self.after_range.ilog2();
+                });
+            debug_assert_eq!(remainder_vals, 0);
+        });
+
+        debug_assert!({
+            input.iter().enumerate().fold(true, |acc, (i, value)| {
+                let calc_evals = lookups_field
+                    .iter()
+                    .map(|col| E::from(col[i]))
+                    .collect::<Vec<E>>();
+
+                let field_value: E = value.to_field();
+                acc & (self.recombine_claims(&calc_evals) == field_value)
+            })
+        });
+        (lookups.concat(), lookups_field)
+    }
+
+    /// Function to recombine claims of constituent MLEs into a single value to be used as the initial sumcheck evaluation
+    /// of the subsequent proof.
+    pub fn recombine_claims<
+        E: From<u64> + Default + Add<Output = E> + Mul<Output = E> + Sub<Output = E> + Copy,
+    >(
+        &self,
+        eval_claims: &[E],
+    ) -> E {
         let max_bit = self.range << 1;
         let subtract = max_bit >> self.right_shift;
 
         // There may be padding claims so we only take the first `num_columns` claims
-        let actual_claims = &eval_claims[..num_columns];
-        let tmp_eval =
-            E::from(1 << self.right_shift as u64) * (actual_claims[0] + E::from(subtract as u64))
-                + actual_claims.iter().skip(1).rev().enumerate().fold(
-                    E::ZERO,
-                    |acc, (i, &claim)| {
-                        acc + E::from((self.after_range.pow(i as u32)) as u64)
-                            * (claim + E::from(self.after_range as u64 >> 1))
-                    },
-                );
+
+        let tmp_eval = E::from(1 << self.right_shift as u64)
+            * (eval_claims[0] + E::from(subtract as u64) - E::from(self.after_range as u64 >> 1))
+            + eval_claims
+                .iter()
+                .skip(1)
+                .rev()
+                .enumerate()
+                .fold(E::default(), |acc, (i, &claim)| {
+                    acc + E::from((self.after_range.pow(i as u32)) as u64) * (claim)
+                });
         tmp_eval - E::from(max_bit as u64)
     }
 }

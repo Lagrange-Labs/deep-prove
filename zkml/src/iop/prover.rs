@@ -9,7 +9,10 @@ use crate::{
     convolution::Convolution,
     dense,
     iop::{ActivationProof, ConvProof, DenseProof, PoolingProof},
-    lookup::{self, LookupProtocol, LookupType},
+    lookup::{
+        context::generate_lookup_witnesses,
+        logup_gkr::{prover::batch_prove, structs::LogUpInput},
+    },
     model::{InferenceStep, InferenceTrace, Layer},
     tensor::{ConvData, Tensor, get_root_of_unity},
 };
@@ -17,37 +20,20 @@ use anyhow::{Context as CC, anyhow, bail};
 use ff_ext::ExtensionField;
 
 use gkr::util::ceil_log2;
+use itertools::izip;
 use multilinear_extensions::{
     mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension, IntoMLE, MultilinearExtension},
     virtual_poly::{ArcMultilinearExtension, VirtualPolynomial},
 };
 use serde::{Serialize, de::DeserializeOwned};
-use std::marker::PhantomData;
+
 use sumcheck::structs::{IOPProverState, IOPVerifierState};
 use timed::timed_instrument;
 use tracing::{debug, instrument, trace, warn};
 use transcript::Transcript;
 
-pub fn compute_betas<E: ExtensionField>(r: Vec<E>) -> Vec<E> {
-    let mut beta = vec![E::ZERO; 1 << r.len()];
-    beta[0] = E::ONE;
-    for i in 0..r.len() {
-        let mut beta_temp = vec![E::ZERO; 1 << i];
-        for j in 0..(1 << i) {
-            beta_temp[j] = beta[j];
-        }
-        for j in 0..(1 << i) {
-            let num = j << 1;
-            let temp = r[r.len() - 1 - i] * beta_temp[j];
-            beta[num] = beta_temp[j] - temp;
-            beta[num + 1] = temp;
-        }
-    }
-    return beta;
-}
-
 /// Prover generates a series of sumcheck proofs to prove the inference of a model
-pub struct Prover<'a, E: ExtensionField, T: Transcript<E>, L: LookupProtocol<E>>
+pub struct Prover<'a, E: ExtensionField, T: Transcript<E>>
 where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
@@ -65,20 +51,20 @@ where
     witness_ctx: Option<precommit::Context<E>>,
     /// The prover related to proving multiple claims about different witness polyy (io of lookups etc)
     witness_prover: precommit::CommitProver<E>,
-    /// The context for the lookups
-    lookup_witness: lookup::WitnessContext<E>,
+    /// The lookup witnesses
+    lookup_witness: Vec<LogUpInput<E>>,
+    /// The Lookup table witness
+    table_witness: Vec<LogUpInput<E>>,
     /// Stores all the challenges for the different lookup/table types
     challenge_storage: ChallengeStorage<E>,
-    _phantom: PhantomData<L>,
 }
 
-impl<'a, E, T, L> Prover<'a, E, T, L>
+impl<'a, E, T> Prover<'a, E, T>
 where
     T: Transcript<E>,
     E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
-    L: LookupProtocol<E>,
 {
     pub fn new(ctx: &'a Context<E>, transcript: &'a mut T) -> Self {
         Self {
@@ -90,9 +76,9 @@ where
             // at this step, we can't build the ctx since we don't know the individual polys
             witness_ctx: None,
             witness_prover: precommit::CommitProver::new(),
-            lookup_witness: lookup::WitnessContext::default(),
+            lookup_witness: Vec::default(),
+            table_witness: Vec::default(),
             challenge_storage: ChallengeStorage::default(),
-            _phantom: PhantomData,
         }
     }
     //#[instrument(name="prove step",skip_all,fields(step = step.layer.describe()),level = "debug")]
@@ -114,7 +100,7 @@ where
             (Layer::Convolution(filter), StepInfo::Convolution(info)) => {
                 self.prove_convolution_step(last_claim, &step.output, &step.conv_data, info, filter)
             }
-            (Layer::Activation(Activation::Relu(..)), StepInfo::Activation(..))
+            (Layer::Activation(Activation::Relu), StepInfo::Activation(..))
             | (Layer::Requant(..), StepInfo::Requant(..)) => {
                 self.prove_lookup(&last_claim, &step.output.get_data(), info)
             }
@@ -147,23 +133,11 @@ where
         }
         let prover_info = self
             .lookup_witness
-            .next()
+            .pop()
             .ok_or(anyhow!("No more lookup witness!"))?;
-        // Retrieve challenges for this lookup
-        let (constant_challenge, column_separator_challenges) =
-            self.get_challenges(prover_info.lookup_type).ok_or(anyhow!(
-                "No challenges found for lookup of type: {} at step: {}",
-                prover_info.lookup_type.name(),
-                step.variant_name()
-            ))?;
+
         // Run the lookup protocol and return the lookup proof
-        let lookup_proof = L::prove(
-            &self.ctx.lookup,
-            &prover_info,
-            constant_challenge,
-            &column_separator_challenges,
-            self.transcript,
-        )?;
+        let logup_proof = batch_prove(&prover_info, self.transcript)?;
 
         // We need to prove that the output of this step is the input to following activation function
         let mut same_poly_prover = same_poly::Prover::<E>::new(output.to_vec().into_mle());
@@ -173,9 +147,8 @@ where
         match step {
             StepInfo::Activation(info) => {
                 // Activation proofs have two columns, input and output
-
-                let input_claim = lookup_proof.claims()[0].clone();
-                let output_claim = lookup_proof.claims()[1].clone();
+                let input_claim = logup_proof.output_claims()[0].clone();
+                let output_claim = logup_proof.output_claims()[1].clone();
 
                 same_poly_prover.add_claim(output_claim)?;
                 let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, self.transcript)?;
@@ -186,14 +159,14 @@ where
                 // Add the proof in
                 self.proofs.push(StepProof::Activation(ActivationProof {
                     io_accumulation: claim_acc_proof,
-                    lookup: lookup_proof,
+                    lookup: logup_proof,
                 }));
                 Ok(input_claim)
             }
             StepInfo::Requant(requant_info) => {
                 // For requant layers we have to extract the correct "chunk" from the list of claims
-                let eval_claims = lookup_proof
-                    .claims()
+                let eval_claims = logup_proof
+                    .output_claims()
                     .iter()
                     .map(|claim| claim.eval)
                     .collect::<Vec<E>>();
@@ -201,8 +174,8 @@ where
                 let combined_eval = requant_info.requant.recombine_claims(&eval_claims);
 
                 // Pass the eval associated with the poly used in the activation step to the same poly prover
-                let first_claim = lookup_proof
-                    .claims()
+                let first_claim = logup_proof
+                    .output_claims()
                     .first()
                     .ok_or(anyhow!("No claims found"))?;
                 let point = first_claim.point.clone();
@@ -216,7 +189,7 @@ where
 
                 self.proofs.push(StepProof::Requant(RequantProof {
                     io_accumulation: claim_acc_proof,
-                    lookup: lookup_proof,
+                    lookup: logup_proof,
                 }));
 
                 Ok(Claim {
@@ -231,55 +204,32 @@ where
         }
     }
 
+    #[timed::timed_instrument(level = "debug")]
     fn prove_tables(&mut self) -> anyhow::Result<()> {
-        let table_proving_info = self
-            .ctx
-            .lookup
-            .get_table_circuits()
+        let mut poly_id = self.ctx.steps_info.len();
+
+        self.table_witness
             .iter()
-            .map(|table_info| {
-                // Retrieve challenges for this table
-                let (constant_challenge, column_separator_challenges) =
-                    self.get_challenges(table_info.lookup_type).ok_or(anyhow!(
-                        "No challenges found for table lookup of type: {}",
-                        table_info.lookup_type.name(),
-                    ))?;
-                Ok((
-                    table_info.clone(),
-                    constant_challenge,
-                    column_separator_challenges,
-                ))
+            .zip(self.ctx.lookup.iter())
+            .try_for_each(|(table_witness, table_type)| {
+                println!("PROVING table of type: {}", table_type.name());
+
+                // Make the proof for the table
+                let table_proof = batch_prove(&table_witness, self.transcript)?;
+
+                // Add the multiplicity poly claim
+                self.witness_prover.add_claim(
+                    poly_id,
+                    table_proof.output_claims().first().unwrap().clone(),
+                )?;
+
+                self.table_proofs.push(TableProof {
+                    lookup: table_proof,
+                });
+
+                poly_id += 1;
+                Ok(())
             })
-            .collect::<Result<Vec<_>, anyhow::Error>>()?;
-
-        self.lookup_witness
-            .get_table_witnesses()
-            .iter()
-            .zip(table_proving_info.into_iter())
-            .try_for_each(
-                |(table_witness, (table_info, constant_challenge, column_separator_challenges))| {
-                    let poly_id = table_info.poly_id;
-                    println!("PROVING table of type: {:?}", table_info.lookup_type);
-
-                    // Make the proof for the table
-                    let table_proof = L::prove_table(
-                        &table_info.circuit,
-                        &table_witness,
-                        constant_challenge,
-                        &column_separator_challenges,
-                        self.transcript,
-                    )?;
-
-                    // Add the multiplicity poly claim
-                    self.witness_prover
-                        .add_claim(poly_id, table_proof.claims().last().unwrap().clone())?;
-
-                    self.table_proofs.push(TableProof {
-                        lookup: table_proof,
-                    });
-                    Ok(())
-                },
-            )
     }
 
     #[timed::timed_instrument(level = "debug")]
@@ -297,78 +247,61 @@ where
         // Create the range check proof for the diff
         let prover_info = self
             .lookup_witness
-            .next()
+            .pop()
             .ok_or(anyhow!("No more lookup witness!"))?;
-        // Retrieve challenges for this lookup
-        let (constant_challenge, column_separator_challenges) =
-            self.get_challenges(prover_info.lookup_type).ok_or(anyhow!(
-                "No challenges found for lookup of type: {} during prove pooling",
-                prover_info.lookup_type.name(),
-            ))?;
-        // Run the lookup protocol and return the lookup proof
-        let lookup_proof = L::prove(
-            &self.ctx.lookup,
-            &prover_info,
-            constant_challenge,
-            &column_separator_challenges,
-            self.transcript,
-        )?;
 
-        let max_pool_polys = info.poolinfo.compute_polys_field::<E>(input, output);
+        let logup_proof = batch_prove(&prover_info, self.transcript)?;
+
         // These are the polys that get passed to the zero check make sure their product is zero at every evaluation point
-        let diff_polys = max_pool_polys[1..]
+        let mut diff_polys = prover_info
+            .column_evals()
             .iter()
-            .map(|fixed_input| {
-                DenseMultilinearExtension::<E>::from_evaluations_vec(
-                    info.num_vars,
-                    max_pool_polys[0]
-                        .iter()
-                        .zip(fixed_input.iter())
-                        .map(|(output, input)| *output - *input)
-                        .collect::<Vec<E::BaseField>>(),
-                )
-                .into()
+            .map(|diff| {
+                DenseMultilinearExtension::<E>::from_evaluations_slice(info.num_vars, diff).into()
             })
             .collect::<Vec<ArcMultilinearExtension<E>>>();
 
         // Run the Zerocheck that checks enforces that output does contain the maximum value for the kernel
         let mut vp = VirtualPolynomial::<E>::new(info.num_vars);
 
-        // Squeeze some randomness from the transcript to
-        let challenge_point = (0..info.num_vars)
-            .map(|_| {
-                self.transcript
-                    .get_and_append_challenge(b"zerocheck_challenge")
-                    .elements
-            })
-            .collect::<Vec<E>>();
+        // We reuse the logup point here for the zerocheck challenge
+        let lookup_point = &logup_proof.output_claims()[0].point;
 
         // Comput the identity poly
-        let beta_eval = compute_betas_eval(&challenge_point);
+        let batch_challenge = self
+            .transcript
+            .get_and_append_challenge(b"batch_pooling")
+            .elements;
+
+        let beta_eval = compute_betas_eval(&lookup_point);
         let beta_poly: ArcDenseMultilinearExtension<E> =
             DenseMultilinearExtension::<E>::from_evaluations_ext_vec(info.num_vars, beta_eval)
                 .into();
+        let mut challenge_combiner = batch_challenge;
+        let lookup_parts = diff_polys
+            .iter()
+            .map(|diff| {
+                let out = (vec![diff.clone(), beta_poly.clone()], challenge_combiner);
+                challenge_combiner *= batch_challenge;
+                out
+            })
+            .collect::<Vec<(Vec<_>, E)>>();
 
-        vp.add_mle_list(diff_polys.clone(), E::ONE);
-        vp.mul_by_mle(beta_poly.clone(), E::BaseField::from(1));
+        diff_polys.push(beta_poly);
+        vp.add_mle_list(diff_polys, E::ONE);
+        lookup_parts
+            .into_iter()
+            .for_each(|(prod, coeff)| vp.add_mle_list(prod, coeff));
 
         #[allow(deprecated)]
-        let (proof, _) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
+        let (proof, sumcheck_state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
 
         // We need to prove that the output of this step is the input to following activation function
-        let mles = max_pool_polys
-            .iter()
-            .map(|evals| {
-                DenseMultilinearExtension::<E>::from_evaluations_slice(info.num_vars, evals)
-            })
-            .collect::<Vec<DenseMultilinearExtension<E>>>();
-        let mut same_poly_prover = same_poly::Prover::<E>::new(mles[0].clone());
+        let output_mle = output.get_data().to_vec().into_mle();
+        let mut same_poly_prover = same_poly::Prover::<E>::new(output_mle.clone());
 
         let zerocheck_point = &proof.point;
-        let output_zerocheck_eval = mles[0].evaluate(zerocheck_point);
-
-        let lookup_point = &lookup_proof.claims()[0].point;
-        let output_lookup_eval = mles[0].evaluate(lookup_point);
+        let output_zerocheck_eval = output_mle.evaluate(zerocheck_point);
 
         // Accumulate claims about the output polynomial in each of the protocols we ran together with the final claim from the previous proof.
         let mut output_claims = Vec::<Claim<E>>::new();
@@ -382,15 +315,6 @@ where
         same_poly_prover.add_claim(zerocheck_claim.clone())?;
         output_claims.push(zerocheck_claim);
 
-        let lookup_claim = Claim {
-            point: lookup_point.clone(),
-            eval: output_lookup_eval,
-        };
-
-        same_poly_prover.add_claim(lookup_claim.clone())?;
-
-        output_claims.push(lookup_claim);
-
         // This is the proof for the output poly
         let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, self.transcript)?;
 
@@ -401,13 +325,7 @@ where
             .context("unable to add claim")?;
         // Now we must do the samething accumulating evals for the input poly as we fix variables on the input poly.
         // The point length is 2 longer because for now we only support MaxPool2D.
-        let mut input_claims = Vec::<Claim<E>>::new();
-        let same_poly_ctx = same_poly::Context::<E>::new(last_claim.point.len() + 2);
-        let input_mle = DenseMultilinearExtension::<E>::from_evaluations_ext_slice(
-            last_claim.point.len() + 2,
-            input.get_data(),
-        );
-        let mut same_poly_prover = same_poly::Prover::<E>::new(input_mle.clone());
+
         let padded_input_shape = input.dims();
         let padded_input_row_length_log = ceil_log2(padded_input_shape[2]);
         // We can batch all of the claims for the input poly with 00, 10, 01, 11 fixed into one with random challenges
@@ -415,43 +333,26 @@ where
             .transcript
             .get_and_append_challenge(b"input_batching")
             .elements; 2];
+
+        let one_minus_r1 = E::ONE - r1;
+        let one_minus_r2 = E::ONE - r2;
         // To the input claims we add evaluations at both the zerocheck point and lookup point
         // in the order 00, 01, 10, 11. These will be used in conjunction with r1 and r2 by the verifier to link the claims output by the sumcheck and lookup GKR
         // proofs with the claims fed to the same poly verifier.
-        [[E::ZERO, E::ZERO], [E::ONE, E::ZERO], [E::ZERO, E::ONE], [
-            E::ONE,
-            E::ONE,
-        ]]
-        .iter()
-        .for_each(|pair| {
-            let point_1 = [
-                &[pair[0]],
-                &zerocheck_point[..padded_input_row_length_log - 1],
-                &[pair[1]],
-                &zerocheck_point[padded_input_row_length_log - 1..],
-            ]
-            .concat();
-            let eval = input_mle.evaluate(&point_1);
-            let zerocheck_claim = Claim {
-                point: point_1,
-                eval,
-            };
-            input_claims.push(zerocheck_claim);
-            let point_2 = [
-                &[pair[0]],
-                &lookup_point[..padded_input_row_length_log - 1],
-                &[pair[1]],
-                &lookup_point[padded_input_row_length_log - 1..],
-            ]
-            .concat();
-            let eval = input_mle.evaluate(&point_2);
 
-            let lookup_claim = Claim {
-                point: point_2,
-                eval,
-            };
+        let multiplicands = [
+            one_minus_r1 * one_minus_r2,
+            one_minus_r1 * r2,
+            r1 * one_minus_r2,
+            r1 * r2,
+        ];
 
-            input_claims.push(lookup_claim.clone());
+        let zc_in_claim = izip!(
+            multiplicands.iter(),
+            sumcheck_state.get_mle_final_evaluations().iter(),
+        )
+        .fold(E::ZERO, |zc_acc, (m, zc)| {
+            zc_acc + *m * (output_zerocheck_eval - *zc)
         });
 
         let point_1 = [
@@ -461,43 +362,22 @@ where
             &zerocheck_point[padded_input_row_length_log - 1..],
         ]
         .concat();
-        let eval = input_mle.evaluate(&point_1);
 
-        let zerocheck_claim = Claim {
+        let next_claim = Claim {
             point: point_1,
-            eval,
+            eval: zc_in_claim,
         };
 
-        same_poly_prover.add_claim(zerocheck_claim.clone())?;
+        // We don't need the last eval of the the sumcheck state as it is the beta poly
 
-        let point_2 = [
-            &[r1],
-            &lookup_point[..padded_input_row_length_log - 1],
-            &[r2],
-            &lookup_point[padded_input_row_length_log - 1..],
-        ]
-        .concat();
-        let eval = input_mle.evaluate(&point_2);
-
-        let lookup_claim = Claim {
-            point: point_2,
-            eval,
-        };
-
-        same_poly_prover.add_claim(lookup_claim)?;
-
-        // This is the proof for the input_poly
-        let input_claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, self.transcript)?;
-
-        let next_claim = input_claim_acc_proof.extract_claim();
-
+        let zerocheck_evals = sumcheck_state.get_mle_final_evaluations()[..4].to_vec();
         // Push the step proof to the list
         self.proofs.push(StepProof::Pooling(PoolingProof {
             sumcheck: proof,
-            lookup: lookup_proof,
-            io_accumulation: [input_claim_acc_proof, claim_acc_proof],
+            lookup: logup_proof,
+            io_accumulation: claim_acc_proof,
             output_claims,
-            input_claims,
+            zerocheck_evals,
             variable_gap: padded_input_row_length_log - 1,
         }));
         Ok(next_claim)
@@ -523,7 +403,7 @@ where
 
         for l in (0..(r1.len() - 1)).rev() {
             let mut phi = vec![E::ZERO; f_middle[l].len()];
-            let beta = compute_betas(r2[0..(r2.len() - 1)].to_vec().clone());
+            let beta = compute_betas_eval(&r2[0..(r2.len() - 1)]);
 
             for i in 0..(phi.len()) {
                 if !is_fft && l == f_middle.len() - 1 {
@@ -683,14 +563,6 @@ where
 
         f_m.fix_high_variables_in_place(&r2);
 
-        let beta = compute_betas(r2);
-        let mut m_red = vec![E::ZERO; x[0].len()];
-        for i in 0..x.len() {
-            for j in 0..x[i].len() {
-                m_red[j] += x[i][j] * beta[i];
-            }
-        }
-
         // Construct the virtual polynomial and run the sumcheck prover
 
         let f_red = w_red.into_mle();
@@ -701,11 +573,11 @@ where
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
 
         let claims = state.get_mle_final_evaluations();
-
+        let out_point = proof.point.clone();
         (
-            proof.clone(),
+            proof,
             claims,
-            self.delegate_matrix_evaluation(&mut f_middle, r1.clone(), proof.point.clone(), false),
+            self.delegate_matrix_evaluation(&mut f_middle, r1.clone(), out_point, false),
         )
     }
 
@@ -763,10 +635,11 @@ where
 
         let claims = state.get_mle_final_evaluations();
 
+        let out_point = proof.point.clone();
         (
-            proof.clone(),
+            proof,
             claims,
-            self.delegate_matrix_evaluation(&mut f_middle, r1.clone(), proof.point.clone(), true),
+            self.delegate_matrix_evaluation(&mut f_middle, r1.clone(), out_point, true),
         )
         // return Proof;
     }
@@ -775,6 +648,7 @@ where
     // and a 4D filter matrix W of dimension k_w * k_x * n_w * n_w. The output is a 3D matrix Y of dimension k_w * n_x * n_x
     // We want to batch prove the following: Y[i] = iFFT(sum_{j \in [n_x]}(FFT(X[j]) o FFT(W[i][j])).
 
+    #[instrument(name = "Prover::prove_convolution_step", skip_all, level = "debug")]
     #[timed::timed_instrument(level = "debug")]
     fn prove_convolution_step(
         &mut self,
@@ -890,52 +764,34 @@ where
             eval1 == eval2
         });
 
-        let r1: Vec<E> = r_ifft[(proving_data.output[0].len().ilog2() as usize)..].to_vec();
-        let r2: Vec<E> = r_ifft[..(proving_data.output[0].len().ilog2() as usize)].to_vec();
-        let beta1 = compute_betas(r1.clone());
-        let beta2 = compute_betas(r2.clone());
+        let r1 = &r_ifft[(proving_data.output[0].len().ilog2() as usize)..];
+        let r2 = &r_ifft[..(proving_data.output[0].len().ilog2() as usize)];
+
+        let beta2 = compute_betas_eval(r2);
         // Given beta1,beta2 observe that :
         // \sum_{i \in [k_w]} beta1[i]prod[i] = \sum_{i \in [k_w]}sum_{j \in [k_x]} x[j] o w[i][j] =
         // = sum_{j \in [k_x]}x[j]o(\sum_{i \in [k_w]}(beta[i]*w[i][j])). We let w_reduced[j] = \sum_{i \in [k_w]}(beta[i]*w[i][j])
         // We have  \sum_{i \in [k_w]} beta1[i]prod[i] = sum_{j \in [k_x]} x[j]o w_{reduced[j]}.
         // So here we compute w_reduced
 
-        let k_w = filter.kw();
-        let k_x = filter.kx();
-        let n_w = 2 * filter.nw() * filter.nw();
-        let mut w_red = vec![E::ZERO; n_w * k_x];
-        for i in 0..k_w {
-            for j in 0..k_x {
-                for k in 0..n_w {
-                    if filter.filter.data[i * k_x * n_w + j * n_w + k] < 0 {
-                        w_red[j * n_w + k] -= beta1[i]
-                            * E::from((-filter.filter.data[i * k_x * n_w + j * n_w + k]) as u64);
-                    } else {
-                        w_red[j * n_w + k] += beta1[i]
-                            * E::from((filter.filter.data[i * k_x * n_w + j * n_w + k]) as u64);
-                    }
-                }
-            }
-        }
-        let mut beta_acc = vec![E::ZERO; w_red.len()];
-        let mut ctr = 0;
-        for _ in 0..k_x {
-            for j in 0..beta2.len() {
-                beta_acc[ctr] = beta2[j];
-                ctr += 1;
-            }
-        }
+        let beta_acc = vec![beta2.clone(); filter.kx()].concat();
 
         // After computing w_reduced, observe that y = \sum_{k \in [n_x^2]} sum_{j \in [k_x]} beta2[k]*x[j][k]*w_reduced[j][k]
         // This is a cubic sumcheck where v1 = [x[0][0],...,x[k_x][n_x^2]], v2 = [w_reduced[0][0],...,w_reduced[k_x][n_x^2]]
         // and v3 = [beta2,..(k_x times)..,beta2]. So, first initialzie v3 and then invoke the cubic sumceck.
 
-        let f1 = w_red.into_mle();
+        // We need to fix the high variables in place for the filter at r1.
+        let f1 = filter
+            .filter
+            .evals_flat::<E>()
+            .into_mle()
+            .fix_high_variables(r1);
+
         let f2 = proving_data
             .input_fft
-            .clone()
-            .into_iter()
+            .iter()
             .flatten()
+            .copied()
             .collect::<Vec<_>>()
             .into_mle();
         let f3 = beta_acc.into_mle();
@@ -949,7 +805,7 @@ where
         let (hadamard_proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
         let hadamard_claims = state.get_mle_final_evaluations();
 
-        let point = [hadamard_proof.point.clone(), r1.clone()].concat();
+        let point = [hadamard_proof.point.as_slice(), r1].concat();
         // let eval = hadamard_claims[0];
         self.commit_prover
             .add_claim(info.poly_id, Claim::new(point, hadamard_claims[0]))
@@ -1212,25 +1068,27 @@ where
         &mut self,
         trace: &InferenceTrace<'b, Element, E>,
     ) -> anyhow::Result<()> {
-        let (lookup_witness, polys) =
-            lookup::WitnessContext::<E>::initialise_witness_ctx(&self.ctx.lookup, trace)?;
+        let (witness_ctx, challenge_storage, lookup_witnesses, table_witnesses) =
+            generate_lookup_witnesses::<E, T>(trace, self.transcript)?;
+        // let (lookup_witness, polys) =
+        //     lookup::WitnessContext::<E>::initialise_witness_ctx(&self.ctx.lookup, trace)?;
 
-        if !polys.is_empty() {
-            let ctx = precommit::Context::generate(polys)
-                .context("unable to generate ctx for witnesses")?;
-            ctx.write_to_transcript(self.transcript)?;
-            // Set the witness context
-            self.witness_ctx = Some(ctx);
-            // generate all the lookup related challenges
-            self.challenge_storage = ChallengeStorage::<E>::initialise(self.ctx, self.transcript);
-        } else {
-            warn!("no activation functions found - no witness commitment");
-        }
-        self.lookup_witness = lookup_witness;
+        self.witness_ctx = Some(witness_ctx);
+        self.challenge_storage = challenge_storage;
+        self.lookup_witness = lookup_witnesses;
+        self.table_witness = table_witnesses;
+        // if !polys.is_empty() {
+        //     let ctx = precommit::Context::generate(polys)
+        //         .context("unable to generate ctx for witnesses")?;
+        //     ctx.write_to_transcript(self.transcript)?;
+        //     // Set the witness context
+        //     self.witness_ctx = Some(ctx);
+        //     // generate all the lookup related challenges
+        //     self.challenge_storage = ChallengeStorage::<E>::initialise(self.ctx, self.transcript);
+        // } else {
+        //     warn!("no activation functions found - no witness commitment");
+        // }
+        // self.lookup_witness = lookup_witness;
         Ok(())
-    }
-
-    fn get_challenges(&self, lookup_type: LookupType) -> Option<(E, Vec<E>)> {
-        self.challenge_storage.get_challenges(lookup_type)
     }
 }

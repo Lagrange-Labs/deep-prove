@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::{
     Claim,
     commit::{precommit, same_poly},
-    lookup::{self, LookupType},
+    lookup::logup_gkr::structs::LogUpProof,
 };
 use ff_ext::ExtensionField;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -66,9 +66,7 @@ where
             StepProof::Convolution(..) => None,
             StepProof::Activation(ActivationProof { lookup, .. })
             | StepProof::Requant(RequantProof { lookup, .. })
-            | StepProof::Pooling(PoolingProof { lookup, .. }) => {
-                Some((lookup.numerators(), lookup.denominators()))
-            }
+            | StepProof::Pooling(PoolingProof { lookup, .. }) => Some(lookup.fractional_outputs()),
         }
     }
 }
@@ -82,7 +80,7 @@ where
     /// e.g. the "link" between a m2v and relu layer
     io_accumulation: same_poly::Proof<E>,
     /// the lookup proof for the relu
-    lookup: lookup::Proof<E>,
+    lookup: LogUpProof<E>,
 }
 
 /// Contains proof material related to one step of the inference
@@ -138,13 +136,13 @@ where
     /// the actual sumcheck proof proving that the product of correct terms is always zero
     sumcheck: IOPProof<E>,
     /// The lookup proof showing that the diff is always in the correct range
-    lookup: lookup::Proof<E>,
+    lookup: LogUpProof<E>,
     /// proof for the accumulation of the claim from the zerocheck + claim from lookup for the same poly for both input and output
-    io_accumulation: [same_poly::Proof<E>; 2],
+    io_accumulation: same_poly::Proof<E>,
     /// The claims that are accumulated for the output of this step
     output_claims: Vec<Claim<E>>,
-    /// The claim that are accumulated for the input of this step
-    input_claims: Vec<Claim<E>>,
+    /// The output evaluations of the diff polys produced by the zerocheck
+    zerocheck_evals: Vec<E>,
     /// This tells the verifier how far apart the variables get fixed on the input MLE
     variable_gap: usize,
 }
@@ -158,7 +156,7 @@ where
     /// e.g. the "link" between an activation and requant layer
     io_accumulation: same_poly::Proof<E>,
     /// the lookup proof for the requantization
-    lookup: lookup::Proof<E>,
+    lookup: LogUpProof<E>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -167,7 +165,7 @@ where
     E::BaseField: Serialize + DeserializeOwned,
 {
     /// the lookup protocol proof for the table fractional sumcheck
-    lookup: lookup::Proof<E>,
+    lookup: LogUpProof<E>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -175,7 +173,7 @@ pub struct ChallengeStorage<E: ExtensionField> {
     /// This is the constant challenge looked in the lookup PIOPs
     pub constant_challenge: E,
     /// This is the map containing different values related to different tables/lookups
-    pub challenge_map: HashMap<String, Vec<E>>,
+    pub challenge_map: HashMap<String, E>,
 }
 
 impl<E> ChallengeStorage<E>
@@ -189,32 +187,23 @@ where
             .elements;
         let challenge_map = ctx
             .lookup
-            .get_table_circuits()
             .iter()
-            .map(|table_info| {
-                let challenge = transcript
-                    .get_and_append_challenge(b"table_challenge")
-                    .elements;
-                let lt = table_info.lookup_type;
-                // We subtract one here because these are all table lookup types so number of columns per instance includes the multiplicity poly as well.
-                let num_columns = lt.num_columns_per_instance() - 1;
-                let column_separator_challenges =
-                    std::iter::successors(Some(E::ONE), |prev| Some(*prev * challenge))
-                        .take(num_columns)
-                        .collect::<Vec<E>>();
-                (lt.name(), column_separator_challenges)
+            .map(|table_type| {
+                let challenge = table_type.generate_challenge(transcript);
+
+                (table_type.name(), challenge)
             })
-            .collect::<HashMap<String, Vec<E>>>();
+            .collect::<HashMap<String, E>>();
         Self {
             constant_challenge,
             challenge_map,
         }
     }
 
-    pub fn get_challenges(&self, lookup_type: LookupType) -> Option<(E, Vec<E>)> {
+    pub fn get_challenges_by_name(&self, name: &String) -> Option<(E, E)> {
         self.challenge_map
-            .get(&lookup_type.name())
-            .and_then(|challenges| Some((self.constant_challenge, challenges.clone())))
+            .get(name)
+            .and_then(|challenges| Some((self.constant_challenge, *challenges)))
     }
 }
 
@@ -222,10 +211,7 @@ where
 mod test {
     use goldilocks::GoldilocksExt2;
 
-    use crate::{
-        default_transcript, init_test_logging, lookup::LogUp, model::Model,
-        quantization::TensorFielder,
-    };
+    use crate::{default_transcript, init_test_logging, model::Model, quantization::TensorFielder};
 
     use super::{
         Context,
@@ -245,10 +231,10 @@ mod test {
         let ctx = Context::<F>::generate(&model, None).expect("unable to generate context");
         let io = IO::new(input.to_fields(), output.clone().to_fields());
         let mut prover_transcript = default_transcript();
-        let prover = Prover::<_, _, LogUp>::new(&ctx, &mut prover_transcript);
+        let prover = Prover::<_, _>::new(&ctx, &mut prover_transcript);
         let proof = prover.prove(trace).expect("unable to generate proof");
         let mut verifier_transcript = default_transcript();
-        verify::<_, _, LogUp>(ctx, proof, io, &mut verifier_transcript).expect("invalid proof");
+        verify::<_, _>(ctx, proof, io, &mut verifier_transcript).expect("invalid proof");
     }
 
     #[test]
@@ -262,40 +248,9 @@ mod test {
             Context::<F>::generate(&model, Some(input.dims())).expect("unable to generate context");
         let io = IO::new(input.to_fields(), output.clone().to_fields());
         let mut prover_transcript = default_transcript();
-        let prover = Prover::<_, _, LogUp>::new(&ctx, &mut prover_transcript);
+        let prover = Prover::<_, _>::new(&ctx, &mut prover_transcript);
         let proof = prover.prove(trace).expect("unable to generate proof");
         let mut verifier_transcript = default_transcript();
-        verify::<_, _, LogUp>(ctx, proof, io, &mut verifier_transcript).expect("invalid proof");
+        verify::<_, _>(ctx, proof, io, &mut verifier_transcript).expect("invalid proof");
     }
-
-    //#[test]
-    // fn test_sumcheck_evals() {
-    //    type F = GoldilocksExt2;
-    //    let n = (10 as usize).next_power_of_two();
-    //    let mat = Matrix::random((2 * n, n)).pad_next_power_of_two();
-    //    let vec = random_vector(n);
-    //    let sum = mat.matmul(&vec);
-    //    let mle1 = mat.to_mle();
-    //    let mle2 = vector_to_mle(vec);
-
-    //    let vp = VirtualPolynomial::new(n.ilog2() as usize);
-    //    vp.add_mle_list(vec![mle1.clone().into(), mle2.clone().into()], F::ONE);
-    //    let poly_info = vp.aux_info.clone();
-    //    #[allow(deprecated)]
-    //    let (proof, _) = IOPProverState::<F>::prove_parallel(vp.clone(), &mut transcript);
-
-    //    let mut transcript = BasicTranscript::new(b"test");
-    //    let subclaim = IOPVerifierState::<F>::verify(sum, &proof, &poly_info, &mut transcript);
-    //    assert!(
-    //        vp.evaluate(
-    //            subclaim
-    //                .point
-    //                .iter()
-    //                .map(|c| c.elements)
-    //                .collect::<Vec<_>>()
-    //                .as_ref()
-    //        ) == subclaim.expected_evaluation,
-    //        "wrong subclaim"
-    //    );
-    //}
 }
