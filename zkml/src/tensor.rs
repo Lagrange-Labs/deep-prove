@@ -58,16 +58,15 @@ pub fn get_root_of_unity<E: ExtensionField>(n: usize) -> E {
 }
 // Properly pad a filter
 pub fn index_w<E: ExtensionField>(w: Vec<Element>, vec: &mut Vec<E>, n_real: usize, n: usize) {
-    // let mut vec = vec![E::ZERO;n*n];
-    for i in 0..n_real {
-        for j in 0..n_real {
-            if w[i * n_real + j] < 0 {
-                vec[i * n + j] = -E::from((0 - w[i * n_real + j]) as u64);
-            } else {
-                vec[i * n + j] = E::from((w[i * n_real + j]) as u64);
-            }
+    vec.par_iter_mut().enumerate().for_each(|(idx, elem)| {
+        let i = idx / n;
+        let j = idx % n;
+        if i < n_real && j < n_real {
+            *elem = w[i * n_real + j].to_field();
+        } else {
+            *elem = E::ZERO;
         }
-    }
+    });
 }
 // let u = [u[1],...,u[n*n]]
 // output vec = [u[n*n-1],u[n*n-2],...,u[n*n-n],....,u[0]]
@@ -95,7 +94,7 @@ pub fn index_x<E: ExtensionField>(x: Vec<Element>, vec: &mut Vec<E>, n: usize) {
 // FFT implementation,
 // flag: false -> FFT
 // flag: true -> iFFT
-pub fn fft<E: ExtensionField>(v: &mut Vec<E>, flag: bool) {
+pub fn fft<E: ExtensionField + Send + Sync>(v: &mut Vec<E>, flag: bool) {
     let n = v.len();
     let logn = ark_std::log2(n) as u32;
     let mut rev: Vec<usize> = vec![0; n];
@@ -118,25 +117,30 @@ pub fn fft<E: ExtensionField>(v: &mut Vec<E>, flag: bool) {
     for i in 2..n {
         w[i] = w[i - 1] * w[1];
     }
-    for i in 0..n {
-        if rev[i] < (i) {
-            let temp = v[i];
-            v[i] = v[rev[i]];
-            v[rev[i]] = temp;
-        }
+
+    // Collect indices that need to be swapped
+    let swaps: Vec<(usize, usize)> = (0..n)
+        .into_par_iter()
+        .filter_map(|i| if rev[i] < i { Some((i, rev[i])) } else { None })
+        .collect();
+
+    // Perform swaps sequentially
+    for (i, j) in swaps {
+        v.swap(i, j);
     }
-    let mut u: E;
-    let mut l: E;
+
     let mut i: usize = 2;
     while i <= n {
-        for j in (0..n).step_by(i) {
-            for k in 0..(i >> 1) {
-                u = v[j + k];
-                l = v[j + k + (i >> 1)] * w[n / i * k];
-                v[j + k] = u + l;
-                v[j + k + (i >> 1)] = u - l;
+        // Parallelize the FFT butterfly operations
+        v.par_chunks_mut(i).for_each(|chunk| {
+            let half_i = i >> 1;
+            for k in 0..half_i {
+                let u = chunk[k];
+                let l = chunk[k + half_i] * w[n / i * k];
+                chunk[k] = u + l;
+                chunk[k + half_i] = u - l;
             }
-        }
+        });
         i <<= 1;
     }
 
@@ -146,9 +150,9 @@ pub fn fft<E: ExtensionField>(v: &mut Vec<E>, flag: bool) {
         if ilen * E::from(n as u64) != E::ONE {
             println!("Error in inv\n");
         }
-        for i in 0..n {
-            v[i] = v[i] * ilen;
-        }
+        v.par_iter_mut().for_each(|val| {
+            *val = *val * ilen;
+        });
     }
 }
 
@@ -366,13 +370,6 @@ impl Tensor<Element> {
             for j in 0..out[i].len() {
                 let val = out[i][j].into_element();
                 out_element[i * out[i].len() + j] = val;
-                // if F::to_canonical_u64_vec(&out[i][j])[0] as u64 > (1 << 60 as u64) {
-                //    out_element[i * out[i].len() + j] =
-                //        -(F::to_canonical_u64_vec(&(-out[i][j]))[0] as Element);
-                //} else {
-                //    out_element[i * out[i].len() + j] =
-                //        F::to_canonical_u64_vec(&(out[i][j]))[0] as Element;
-                //}
             }
         }
 
