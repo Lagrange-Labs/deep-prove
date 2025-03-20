@@ -832,20 +832,20 @@ where
     pub fn single_naive_conv(&self, w: Vec<Vec<T>>, x: Vec<Vec<T>>) -> Vec<Vec<T>> {
         let mut out: Vec<Vec<T>> =
             vec![vec![Default::default(); x[0].len() - w[0].len() + 1]; x.len() - w.len() + 1];
-        for i in 0..out.len() {
-            for j in 0..out[i].len() {
-                out[i][j] = self.conv_prod(&x, &w, i, j);
-            }
-        }
-        return out;
+        out.par_iter_mut().enumerate().for_each(|(i, out_row)| {
+            out_row.par_iter_mut().enumerate().for_each(|(j, out_val)| {
+                *out_val = self.conv_prod(&x, &w, i, j);
+            });
+        });
+        out
     }
     pub fn add_matrix(&self, m1: &mut Vec<Vec<T>>, m2: Vec<Vec<T>>) -> Vec<Vec<T>> {
         let mut m = vec![vec![Default::default(); m1[0].len()]; m1.len()];
-        for i in 0..m.len() {
-            for j in 0..m[i].len() {
-                m[i][j] = m1[i][j] + m2[i][j];
-            }
-        }
+        m.par_iter_mut().enumerate().for_each(|(i, row)| {
+            row.par_iter_mut().enumerate().for_each(|(j, val)| {
+                *val = m1[i][j] + m2[i][j];
+            });
+        });
         return m;
     }
     // Implementation of the stadard convolution algorithm.
@@ -905,11 +905,16 @@ where
         let (m, n) = (self.shape[0], self.shape[1]);
 
         let mut result = Tensor::zeros(vec![n, m]);
-        for i in 0..m {
-            for j in 0..n {
-                result.data[j * m + i] = self.data[i * n + j];
-            }
-        }
+        result
+            .data
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(idx, val)| {
+                let i = idx % m; // Row in the result matrix
+                let j = idx / m; // Column in the result matrix
+                *val = self.data[i * n + j];
+            });
+
         result
     }
     /// Concatenate a matrix (2D tensor) with a vector (1D tensor) as columns
