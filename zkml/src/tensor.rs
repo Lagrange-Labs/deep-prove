@@ -1124,7 +1124,13 @@ where
         let flat_index = n * (c_size * h_size * w_size) + c * (h_size * w_size) + h * w_size + w;
         self.data[flat_index]
     }
-
+}
+impl<T> Tensor<T>
+where
+    T: Copy + Clone + Send + Sync,
+    T: Copy + Default + std::ops::Mul<Output = T> + std::iter::Sum,
+    T: std::ops::Add<Output = T> + std::ops::Sub<Output = T> + std::ops::Mul<Output = T>,
+{
     pub fn conv2d(&self, kernels: &Tensor<T>, bias: &Tensor<T>, stride: usize) -> Tensor<T> {
         let (n_size, c_size, h_size, w_size) = self.get4d();
         let (k_n, k_c, k_h, k_w) = kernels.get4d();
@@ -1149,35 +1155,64 @@ where
         let out_w = (w_size - k_w) / stride + 1;
         let out_shape = vec![n_size, k_n, out_h, out_w];
 
-        let mut output = vec![T::default(); n_size * k_n * out_h * out_w];
+        // let mut output = vec![T::default(); n_size * k_n * out_h * out_w];
+        // for n in 0..n_size {
+        //     for o in 0..k_n {
+        //         for oh in 0..out_h {
+        //             for ow in 0..out_w {
+        //                 let mut sum = T::default();
 
-        for n in 0..n_size {
-            for o in 0..k_n {
-                for oh in 0..out_h {
-                    for ow in 0..out_w {
-                        let mut sum = T::default();
+        //                 // Convolution
+        //                 for c in 0..c_size {
+        //                     for kh in 0..k_h {
+        //                         for kw in 0..k_w {
+        //                             let h = oh * stride + kh;
+        //                             let w = ow * stride + kw;
+        //                             sum = sum + self.get(n, c, h, w) * kernels.get(o, c, kh, kw);
+        //                         }
+        //                     }
+        //                 }
 
-                        // Convolution
-                        for c in 0..c_size {
-                            for kh in 0..k_h {
-                                for kw in 0..k_w {
-                                    let h = oh * stride + kh;
-                                    let w = ow * stride + kw;
-                                    sum = sum + self.get(n, c, h, w) * kernels.get(o, c, kh, kw);
-                                }
-                            }
+        //                 // Add bias for this output channel (o)
+        //                 sum = sum + bias.data[o];
+
+        //                 let output_index =
+        //                     n * (k_n * out_h * out_w) + o * (out_h * out_w) + oh * out_w + ow;
+        //                 output[output_index] = sum;
+        //             }
+        //         }
+        //     }
+        // }
+
+        // Compute output in parallel
+        let output: Vec<T> = (0..n_size * k_n * out_h * out_w)
+            .into_par_iter()
+            .map(|flat_idx| {
+                // Decompose flat index into (n, o, oh, ow)
+                let n = flat_idx / (k_n * out_h * out_w);
+                let rem1 = flat_idx % (k_n * out_h * out_w);
+                let o = rem1 / (out_h * out_w);
+                let rem2 = rem1 % (out_h * out_w);
+                let oh = rem2 / out_w;
+                let ow = rem2 % out_w;
+
+                let mut sum = T::default();
+
+                // Convolution
+                for c in 0..c_size {
+                    for kh in 0..k_h {
+                        for kw in 0..k_w {
+                            let h = oh * stride + kh;
+                            let w = ow * stride + kw;
+                            sum = sum + self.get(n, c, h, w) * kernels.get(o, c, kh, kw);
                         }
-
-                        // Add bias for this output channel (o)
-                        sum = sum + bias.data[o];
-
-                        let output_index =
-                            n * (k_n * out_h * out_w) + o * (out_h * out_w) + oh * out_w + ow;
-                        output[output_index] = sum;
                     }
                 }
-            }
-        }
+
+                // Add bias
+                sum + bias.data[o].clone()
+            })
+            .collect();
 
         Tensor {
             data: output,
