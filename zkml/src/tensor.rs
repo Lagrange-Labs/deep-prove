@@ -1,5 +1,4 @@
 use anyhow::bail;
-use ff::Field;
 use ff_ext::ExtensionField;
 use goldilocks::GoldilocksExt2;
 use itertools::Itertools;
@@ -229,46 +228,21 @@ impl Tensor<Element> {
         );
         assert!(shape.len() == 4, "Shape does not match data length.");
 
+        let i0 = input_shape[0];
+        let s2 = shape[2];
+        let rdata = &data[..];
         let n_w = (input_shape[1] - shape[2] + 1).next_power_of_two();
-        let mut w_fft =
-            vec![
-                vec![vec![GoldilocksExt2::ZERO; n_w * n_w]; input_shape[0].next_power_of_two()];
-                shape[0].next_power_of_two()
-            ];
-        for i in 0..shape[0] {
-            for j in 0..input_shape[0] {
-                w_fft[i][j] = index_w(
-                    &data[(i * input_shape[0] * shape[2] * shape[2] + j * shape[2] * shape[2])
-                        ..(i * input_shape[0] * shape[2] * shape[2]
-                            + (j + 1) * shape[2] * shape[2])],
-                    shape[2],
-                    n_w,
-                    2 * n_w * n_w,
-                )
-                .collect::<Vec<_>>();
-                fft(&mut w_fft[i][j], false);
-            }
-        }
-        let mut w: Vec<Element> = vec![0; w_fft.len() * w_fft[0].len() * w_fft[0][0].len()];
-        let mut ctr = 0;
-        for i in 0..w_fft.len() {
-            for j in 0..w_fft[0].len() {
-                for k in 0..w_fft[0][0].len() {
-                    if GoldilocksExt2::to_canonical_u64_vec(&w_fft[i][j][k])[0] as u64
-                        > (1 << 60 as u64)
-                    {
-                        w[ctr] = -(GoldilocksExt2::to_canonical_u64_vec(&(-w_fft[i][j][k]))[0]
-                            as Element);
-                    } else {
-                        w[ctr] =
-                            GoldilocksExt2::to_canonical_u64_vec(&(w_fft[i][j][k]))[0] as Element;
-                    }
-                    ctr = ctr + 1;
-                }
-            }
-        }
+        let w_fft = (0..shape[0]).into_par_iter().flat_map(move |i| {
+            (0..i0).into_par_iter().flat_map(move |j| {
+                let range = (i * i0 * s2 * s2 + j * s2 * s2) ..(i * i0 * s2 * s2 + (j + 1) * s2 * s2);
+                let mut w = index_w( &rdata[range], s2, n_w, 2*n_w*n_w
+                ).collect::<Vec<GoldilocksExt2>>();
+                fft(&mut w, false);
+                w.into_par_iter().map(|e| e.into_element())
+            })
+        }).collect::<Vec<_>>();
         Self {
-            data: w,
+            data: w_fft,
             shape: vec![shape[0], shape[1], n_w, n_w],
             input_shape,
         }
