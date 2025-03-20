@@ -8,6 +8,7 @@ use rayon::{
         IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
         IntoParallelRefMutIterator, ParallelIterator,
     },
+    prelude::ParallelSlice,
     slice::ParallelSliceMut,
 };
 use std::{
@@ -68,7 +69,7 @@ pub fn index_w<E: ExtensionField>(
     n_real: usize,
     n: usize,
     output_len: usize,
-) -> impl ParallelIterator<Item = E> + use<'_,E> {
+) -> impl ParallelIterator<Item = E> + use<'_, E> {
     (0..output_len).into_par_iter().map(move |idx| {
         let i = idx / n;
         let j = idx % n;
@@ -232,15 +233,19 @@ impl Tensor<Element> {
         let s2 = shape[2];
         let rdata = &data[..];
         let n_w = (input_shape[1] - shape[2] + 1).next_power_of_two();
-        let w_fft = (0..shape[0]).into_par_iter().flat_map(move |i| {
-            (0..i0).into_par_iter().flat_map(move |j| {
-                let range = (i * i0 * s2 * s2 + j * s2 * s2) ..(i * i0 * s2 * s2 + (j + 1) * s2 * s2);
-                let mut w = index_w( &rdata[range], s2, n_w, 2*n_w*n_w
-                ).collect::<Vec<GoldilocksExt2>>();
-                fft(&mut w, false);
-                w.into_par_iter().map(|e| e.into_element())
+        let w_fft = (0..shape[0])
+            .into_par_iter()
+            .flat_map(move |i| {
+                (0..i0).into_par_iter().flat_map(move |j| {
+                    let range =
+                        (i * i0 * s2 * s2 + j * s2 * s2)..(i * i0 * s2 * s2 + (j + 1) * s2 * s2);
+                    let mut w = index_w(&rdata[range], s2, n_w, 2 * n_w * n_w)
+                        .collect::<Vec<GoldilocksExt2>>();
+                    fft(&mut w, false);
+                    w.into_par_iter().map(|e| e.into_element())
+                })
             })
-        }).collect::<Vec<_>>();
+            .collect::<Vec<_>>();
         Self {
             data: w_fft,
             shape: vec![shape[0], shape[1], n_w, n_w],
@@ -684,7 +689,7 @@ where
             _ => {
                 let chunk_size = remaining_dims[1..].iter().product::<usize>();
                 let mut unpadded_data = data
-                    .chunks(chunk_size)
+                    .par_chunks(chunk_size)
                     .map(|data_chunk| Self::recursive_pad(data_chunk, &remaining_dims[1..]))
                     .collect::<Vec<Vec<T>>>();
                 let elem_size = unpadded_data[0].len();
