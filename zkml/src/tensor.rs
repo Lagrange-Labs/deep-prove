@@ -47,6 +47,13 @@ pub fn check_tensor_consistency(real_tensor: Tensor<Element>, padded_tensor: Ten
         }
     }
 }
+
+/// Returns an n-th root of unity by starting with a 32nd root of unity and squaring it (32-n) times.
+/// Each squaring operation halves the order of the root of unity:
+/// - For n=16: squares it 16 times (32-16) to get a 16th root of unity
+/// - For n=8:  squares it 24 times (32-8) to get an 8th root of unity
+/// - For n=4:  squares it 28 times (32-4) to get a 4th root of unity
+/// The initial ROOT_OF_UNITY constant is verified to be a 32nd root of unity in the field implementation.
 pub fn get_root_of_unity<E: ExtensionField>(n: usize) -> E {
     let mut rou = E::ROOT_OF_UNITY;
 
@@ -57,16 +64,21 @@ pub fn get_root_of_unity<E: ExtensionField>(n: usize) -> E {
     return rou;
 }
 // Properly pad a filter
-pub fn index_w<E: ExtensionField>(w: Vec<Element>, vec: &mut Vec<E>, n_real: usize, n: usize) {
-    vec.par_iter_mut().enumerate().for_each(|(idx, elem)| {
+pub fn index_w<E: ExtensionField>(
+    w: &[Element],
+    n_real: usize,
+    n: usize,
+    output_len: usize,
+) -> impl ParallelIterator<Item = E> + use<'_,E> {
+    (0..output_len).into_par_iter().map(move |idx| {
         let i = idx / n;
         let j = idx % n;
         if i < n_real && j < n_real {
-            *elem = w[i * n_real + j].to_field();
+            w[i * n_real + j].to_field()
         } else {
-            *elem = E::ZERO;
+            E::ZERO
         }
-    });
+    })
 }
 // let u = [u[1],...,u[n*n]]
 // output vec = [u[n*n-1],u[n*n-2],...,u[n*n-n],....,u[0]]
@@ -225,16 +237,15 @@ impl Tensor<Element> {
             ];
         for i in 0..shape[0] {
             for j in 0..input_shape[0] {
-                index_w(
-                    data[(i * input_shape[0] * shape[2] * shape[2] + j * shape[2] * shape[2])
+                w_fft[i][j] = index_w(
+                    &data[(i * input_shape[0] * shape[2] * shape[2] + j * shape[2] * shape[2])
                         ..(i * input_shape[0] * shape[2] * shape[2]
-                            + (j + 1) * shape[2] * shape[2])]
-                        .to_vec(),
-                    &mut w_fft[i][j],
+                            + (j + 1) * shape[2] * shape[2])],
                     shape[2],
                     n_w,
-                );
-                w_fft[i][j].resize(2 * n_w * n_w, GoldilocksExt2::ZERO);
+                    2 * n_w * n_w,
+                )
+                .collect::<Vec<_>>();
                 fft(&mut w_fft[i][j], false);
             }
         }
