@@ -157,6 +157,7 @@ mod test {
 
     #[test]
     fn test_identity_eval() {
+        // FAILING WITH THIS POINT
         let n = 4;
         let r1 = random_bool_vector::<F>(n);
         println!("r1: {:?}", r1);
@@ -168,8 +169,9 @@ mod test {
 
         // When vectors are different, should return 0
         let r2 = random_bool_vector::<F>(n);
+        println!("r2: {:?}", r2);
         let result = identity_eval(&r1, &r2);
-        assert_eq!(result, F::ZERO);
+        assert!(r1 == r2 || result == F::ZERO);
     }
 
     #[test]

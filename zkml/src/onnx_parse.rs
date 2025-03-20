@@ -1,4 +1,4 @@
-use crate::{convolution::Convolution, dense::Dense};
+use crate::layers::{convolution::Convolution, dense::Dense};
 use anyhow::{Context, Error, Result, bail, ensure};
 use goldilocks::GoldilocksExt2;
 use itertools::Itertools;
@@ -18,9 +18,12 @@ type F = GoldilocksExt2;
 
 use crate::{
     Element,
-    activation::{Activation, Relu},
-    model::{Layer, Model},
-    pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
+    layers::{
+        Layer,
+        activation::{Activation, Relu},
+        pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
+    },
+    model::Model,
     quantization::Quantizer,
 };
 
@@ -344,9 +347,9 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                 )?;
                 let bias =
                     fetch_weight_bias_as_tensor::<Q>("bias", node, &initializers, global_max_abs)?;
-                ensure!(bias.dims().len() == 1, "bias is not a vector");
-                input_shape_og = vec![weight.dims()[0]];
-                let nrows = weight.dims()[0];
+                ensure!(bias.get_shape().len() == 1, "bias is not a vector");
+                input_shape_og = vec![weight.get_shape()[0]];
+                let nrows = weight.get_shape()[0];
                 ensure!(
                     bias.get_data().len() == nrows,
                     "bias length {} does not match matrix width {}",
@@ -391,7 +394,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                 let bias = bias.pad_1d(nrows);
                 input_shape_padded = vec![nrows];
 
-                debug!("layer idx {} -> final shape {:?}", i, weight.dims());
+                debug!("layer idx {} -> final shape {:?}", i, weight.get_shape());
                 layers.push(Layer::Dense(Dense::new(weight, bias)));
             }
             op if ACTIVATION.contains(&op) => {
@@ -400,6 +403,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                 layers.push(layer);
             }
             op if CONVOLUTION.contains(&op) => {
+                let _ = fetch_conv2d_attributes(node)?;
                 let mut weight = fetch_weight_bias_as_tensor::<Q>(
                     "weight",
                     node,
@@ -409,13 +413,13 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                 let mut bias =
                     fetch_weight_bias_as_tensor::<Q>("bias", node, &initializers, global_max_abs)?;
 
-                input_shape_og = conv2d_shape(&input_shape_og, &weight.dims());
-                let weight_shape = weight.dims();
+                input_shape_og = conv2d_shape(&input_shape_og, &weight.get_shape());
+                let weight_shape = weight.get_shape();
                 // Perform basic sanity checks on the tensor dimensions
                 let shape_test = check_filter(&weight_shape);
                 assert!(shape_test.is_ok(), "Failed: {:?}", shape_test.unwrap_err());
                 assert!(
-                    weight_shape[0] == bias.dims()[0],
+                    weight_shape[0] == bias.get_shape()[0],
                     "Bias length doesn't match filter shape"
                 );
 
@@ -428,7 +432,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                 assert!(input_shape_padded.len() == 3);
 
                 // Since we are doing an FFT based conv, we need to pad the last two dimensions of the filter to match the input.
-                let weight_shape = weight.dims();
+                let weight_shape = weight.get_shape();
                 let (filter_height, filter_weight) = (weight_shape[2], weight_shape[3]);
                 let (input_height, input_weight) = (input_shape_padded[1], input_shape_padded[2]);
 
@@ -442,9 +446,9 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                 // Filter need to know the shape of the input
                 // weight.update_input_shape(&input_shape_padded);
 
-                let dims = weight.dims();
+                let dims = weight.get_shape();
                 let weight = crate::tensor::Tensor::new_conv(
-                    weight.dims(),
+                    weight.get_shape(),
                     input_shape_padded.clone(),
                     weight.get_data().to_vec(),
                 );
@@ -619,6 +623,33 @@ fn fetch_weight_bias_as_tensor<Q: Quantizer<Element>>(
     Ok(tensor_result)
 }
 
+/// Get the conv2d attributes and assert if supported by DeepProve
+fn fetch_conv2d_attributes(node: &NodeProto) -> Result<()> {
+    let get_attr = |name: &str| -> Vec<i64> {
+        node.attribute
+            .iter()
+            .find(|x| x.name.contains(name))
+            .map_or_else(Vec::new, |x| x.ints.clone())
+    };
+
+    let (strides, pads, _kernel_shape, dilations) = (
+        get_attr("strides"),
+        get_attr("pads"),
+        get_attr("kernel_shape"),
+        get_attr("dilations"),
+    );
+
+    assert!(strides.iter().all(|&x| x == 1), "Strides must be {}", 1);
+    assert!(pads.iter().all(|&x| x == 0), "Padding must be 0s");
+    assert!(
+        dilations.iter().all(|&x| x == 1),
+        "Dilations shape must be 1"
+    );
+
+    Ok(())
+}
+
+/// Get the maxpool attributes and assert if supported by DeepProve
 fn fetch_maxpool_attributes(node: &NodeProto) -> Result<()> {
     let get_attr = |name: &str| -> Vec<i64> {
         node.attribute
@@ -856,7 +887,7 @@ mod tests {
         // println!("Result: {:?}", trace.final_output());
 
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
-        let ctx = Context::<GoldilocksExt2>::generate(&model, Some(input.dims()))
+        let ctx = Context::<GoldilocksExt2>::generate(&model, Some(input.get_shape()))
             .expect("Unable to generate context");
         let output = trace.final_output().clone();
 

@@ -1,0 +1,12 @@
+[book]
+authors = ["Lagrange Labs"]
+language = "en"
+multilingual = false
+src = "src"
+title = "DeepProve: Lagrange's zkML"
+
+[output.html]
+mathjax-support = true
+
+[preprocessor.katex]
+after = ["links"]
