@@ -302,15 +302,15 @@ impl Tensor<Element> {
     ) -> (Tensor<Element>, ConvData<F>) {
         let n_x = x.shape[1].next_power_of_two();
         let mut real_input = vec![F::ZERO; x.data.len()];
-        for i in 0..real_input.len() {
-            real_input[i] = x.data[i].to_field();
-        }
+        real_input.par_iter_mut().enumerate().for_each(|(i, val)| {
+            *val = x.data[i].to_field();
+        });
 
         let mut x_vec = vec![vec![F::ZERO; n_x * n_x]; x.shape[0].next_power_of_two()];
         let mut w_fft = vec![F::ZERO; self.data.len()];
-        for i in 0..w_fft.len() {
-            w_fft[i] = self.data[i].to_field();
-        }
+        w_fft.par_iter_mut().enumerate().for_each(|(i, val)| {
+            *val = self.data[i].to_field();
+        });
 
         for i in 0..x_vec.len() {
             index_x(
@@ -503,7 +503,7 @@ where
             input_shape: vec![0],
         }
     }
-    pub fn from_coeffs_2d(data: Vec<Vec<T>>) -> anyhow::Result<Self> {
+    pub fn matix_from_coeffs(data: Vec<Vec<T>>) -> anyhow::Result<Self> {
         let n_rows = data.len();
         let n_cols = data.first().expect("at least one row in a matrix").len();
         let data = data.into_iter().flatten().collect::<Vec<_>>();
@@ -564,29 +564,29 @@ where
     /// Element-wise addition
     pub fn add(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(self.shape == other.shape, "Shape mismatch for addition.");
+        let mut data = vec![Default::default(); self.data.len()];
+        data.par_iter_mut().enumerate().for_each(|(i, val)| {
+            *val = self.data[i] + other.data[i];
+        });
+
         Tensor {
             shape: self.shape.clone(),
             input_shape: vec![0],
-            data: self
-                .data
-                .iter()
-                .zip(other.data.iter())
-                .map(|(a, b)| *a + *b)
-                .collect(),
+            data,
         }
     }
     /// Element-wise subtraction
     pub fn sub(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(self.shape == other.shape, "Shape mismatch for subtraction.");
+        let mut data = vec![Default::default(); self.data.len()];
+        data.par_iter_mut().enumerate().for_each(|(i, val)| {
+            *val = self.data[i] - other.data[i];
+        });
+
         Tensor {
             shape: self.shape.clone(),
             input_shape: vec![0],
-            data: self
-                .data
-                .iter()
-                .zip(other.data.iter())
-                .map(|(a, b)| *a - *b)
-                .collect(),
+            data,
         }
     }
     /// Element-wise multiplication
@@ -595,15 +595,15 @@ where
             self.shape == other.shape,
             "Shape mismatch for multiplication."
         );
+        let mut data = vec![Default::default(); self.data.len()];
+        data.par_iter_mut().enumerate().for_each(|(i, val)| {
+            *val = self.data[i] * other.data[i];
+        });
+
         Tensor {
             shape: self.shape.clone(),
             input_shape: vec![0],
-            data: self
-                .data
-                .iter()
-                .zip(other.data.iter())
-                .map(|(a, b)| *a * *b)
-                .collect(),
+            data,
         }
     }
     /// Scalar multiplication
@@ -611,7 +611,7 @@ where
         Tensor {
             shape: self.shape.clone(),
             input_shape: vec![0],
-            data: self.data.iter().map(|x| *x * *scalar).collect(),
+            data: self.data.par_iter().map(|x| *x * *scalar).collect(),
         }
     }
     pub fn pad_1d(mut self, new_len: usize) -> Self {
@@ -818,13 +818,16 @@ where
         result
     }
     pub fn conv_prod(&self, x: &Vec<Vec<T>>, w: &Vec<Vec<T>>, ii: usize, jj: usize) -> T {
-        let mut sum = Default::default();
-        for i in 0..w.len() {
-            for j in 0..w[i].len() {
-                sum = sum + w[i][j] * x[i + ii][j + jj];
-            }
-        }
-        return sum;
+        w.par_iter()
+            .enumerate()
+            .map(|(i, w_row)| {
+                w_row
+                    .par_iter()
+                    .enumerate()
+                    .map(|(j, &w_val)| w_val * x[i + ii][j + jj])
+                    .sum()
+            })
+            .sum()
     }
     pub fn single_naive_conv(&self, w: Vec<Vec<T>>, x: Vec<Vec<T>>) -> Vec<Vec<T>> {
         let mut out: Vec<Vec<T>> =

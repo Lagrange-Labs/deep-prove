@@ -376,7 +376,7 @@ mod test {
         fn test_dense_pad_next_power_of_two() {
             // Create a Dense layer with non-power-of-two dimensions
             let matrix =
-                Tensor::<Element>::from_coeffs_2d(vec![vec![1, 2, 3], vec![4, 5, 6], vec![
+                Tensor::<Element>::matix_from_coeffs(vec![vec![1, 2, 3], vec![4, 5, 6], vec![
                     7, 8, 9,
                 ]])
                 .unwrap();
@@ -419,7 +419,7 @@ mod test {
         #[test]
         fn test_dense_pad_already_power_of_two() {
             // Create a Dense layer with power-of-two dimensions
-            let matrix = Tensor::<Element>::from_coeffs_2d(vec![
+            let matrix = Tensor::<Element>::matix_from_coeffs(vec![
                 vec![1, 2, 3, 4],
                 vec![5, 6, 7, 8],
                 vec![9, 10, 11, 12],
@@ -456,11 +456,12 @@ mod test {
         #[test]
         fn test_dense_pad_mixed_dimensions() {
             // Create a Dense layer with one power-of-two dimension and one non-power-of-two
-            let matrix =
-                Tensor::<Element>::from_coeffs_2d(vec![vec![1, 2, 3, 4], vec![5, 6, 7, 8], vec![
-                    9, 10, 11, 12,
-                ]])
-                .unwrap();
+            let matrix = Tensor::<Element>::matix_from_coeffs(vec![
+                vec![1, 2, 3, 4],
+                vec![5, 6, 7, 8],
+                vec![9, 10, 11, 12],
+            ])
+            .unwrap();
 
             let bias = Tensor::<Element>::new(vec![3], vec![20, 21, 22]);
 
@@ -504,7 +505,7 @@ mod test {
 
             // Create a Dense layer
             let matrix =
-                Tensor::<Element>::from_coeffs_2d(vec![vec![1, 2, 3], vec![4, 5, 6]]).unwrap();
+                Tensor::<Element>::matix_from_coeffs(vec![vec![1, 2, 3], vec![4, 5, 6]]).unwrap();
 
             let bias = Tensor::<Element>::new(vec![2], vec![10, 11]);
 
