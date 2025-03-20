@@ -967,15 +967,20 @@ where
             new_cols
         );
 
-        let mut result = Tensor::<T>::zeros(new_shape);
+        let new_data: Vec<T> = (0..new_rows * new_cols)
+            .into_par_iter()
+            .map(|idx| {
+                let i = idx / new_cols;
+                let j = idx % new_cols;
+                if i < old_rows && j < old_cols {
+                    self.data[i * old_cols + j].clone()
+                } else {
+                    T::default() // Zero or default for padding
+                }
+            })
+            .collect();
 
-        // Create a new matrix with expanded dimensions
-        for i in 0..old_rows {
-            for j in 0..old_cols {
-                result.data[i * new_cols + j] = self.data[i * old_cols + j];
-            }
-        }
-        *self = result;
+        *self = Tensor::new(new_shape, new_data);
     }
 }
 
