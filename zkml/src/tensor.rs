@@ -73,23 +73,20 @@ pub fn index_w<E: ExtensionField>(w: Vec<Element>, vec: &mut Vec<E>, n_real: usi
 // Note that y_eval =  f_vec(r) = f_u(1-r)
 pub fn index_u<E: ExtensionField>(u: Vec<E>, n: usize) -> Vec<E> {
     let mut vec = vec![E::ZERO; u.len() / 2];
-    for i in 0..n {
-        for j in 0..n {
-            vec[i * n + j] = u[n * n - 1 - i * n - j];
-        }
-    }
+    let len = n * n;
+    vec.par_iter_mut().enumerate().for_each(|(i, val)| {
+        *val = u[len - 1 - i];
+    });
     return vec;
 }
 // let x: [x[0][0],...,x[0][n],x[1][0],...,x[n][n]]
 // output vec = [x[n][n], x[n][n-1],...,x[n][0],x[n-1]x[n],...,x[0][0]]
 // Note that y_eval = f_vec(r) = f_x(1-r)
 pub fn index_x<E: ExtensionField>(x: Vec<Element>, vec: &mut Vec<E>, n: usize) {
-    for i in 0..n {
-        for j in 0..n {
-            let val = x[n * (n - 1 - i) + n - 1 - j];
-            vec[i * n + j] = val.to_field();
-        }
-    }
+    let len = n * n;
+    vec.par_iter_mut().enumerate().for_each(|(i, val)| {
+        *val = x[len - 1 - i].to_field();
+    });
 }
 // FFT implementation,
 // flag: false -> FFT
@@ -275,11 +272,7 @@ impl Tensor<Element> {
         for i in 0..w_fft.len() {
             for j in 0..w_fft[i].len() {
                 for k in 0..w_fft[i][j].len() {
-                    if self.data[ctr] < 0 {
-                        w_fft[i][j][k] = -F::from((-self.data[ctr]) as u64);
-                    } else {
-                        w_fft[i][j][k] = F::from((self.data[ctr]) as u64);
-                    }
+                    w_fft[i][j][k] = self.data[ctr].to_field();
                     ctr += 1;
                 }
             }
@@ -294,14 +287,7 @@ impl Tensor<Element> {
         for i in 0..self.kw() {
             for j in 0..self.kx() {
                 for k in 0..(self.nw() * self.nw()) {
-                    if F::to_canonical_u64_vec(&w_fft[i][j][k])[0] as u64 > (1 << 60 as u64) {
-                        real_weights[i][j][k] =
-                            //-(F::to_canonical_u64_vec(&(-w_fft[i][j][k]))[0] as Element);
-                            w_fft[i][j][k].into_element();
-                    } else {
-                        real_weights[i][j][k] = w_fft[i][j][k].into_element();
-                        // F::to_canonical_u64_vec(&(w_fft[i][j][k]))[0] as Element;
-                    }
+                    real_weights[i][j][k] = w_fft[i][j][k].into_element();
                 }
             }
         }
@@ -317,11 +303,7 @@ impl Tensor<Element> {
         let n_x = x.shape[1].next_power_of_two();
         let mut real_input = vec![F::ZERO; x.data.len()];
         for i in 0..real_input.len() {
-            if x.data[i] < 0 {
-                real_input[i] = -F::from((-x.data[i]) as u64);
-            } else {
-                real_input[i] = F::from(x.data[i] as u64);
-            }
+            real_input[i] = x.data[i].to_field();
         }
 
         let mut x_vec = vec![vec![F::ZERO; n_x * n_x]; x.shape[0].next_power_of_two()];
@@ -1049,6 +1031,7 @@ where
             input_shape: vec![0],
         }
     }
+    // Replaces every value of a tensor with the maxpool of its kernel
     pub fn padded_maxpool2d(&self) -> (Tensor<T>, Tensor<T>) {
         let kernel_size = MAXPOOL2D_KERNEL_SIZE;
         let stride = MAXPOOL2D_KERNEL_SIZE;
