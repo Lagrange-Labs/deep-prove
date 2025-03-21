@@ -1,6 +1,6 @@
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::{
     Element,
@@ -171,11 +171,11 @@ impl<'a, F: ExtensionField> InferenceTrace<'a, Element, F> {
         let input = self.input.to_fields();
         let field_steps = self
             .steps
-            .par_iter()
+            .into_par_iter()
             .map(|step| InferenceStep {
                 id: step.id,
                 layer: step.layer,
-                output: step.output.clone().to_fields(),
+                output: step.output.to_fields(),
                 conv_data: step.conv_data.clone(),
             })
             .collect::<Vec<_>>();

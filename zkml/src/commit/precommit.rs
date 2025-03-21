@@ -260,9 +260,10 @@ where
         let sorted_claims = ctx.sort_claims(self.claims)?;
 
         ctx.write_to_transcript(t)?;
+        #[cfg(test)]
         let debug_transcript = t.clone();
         let fs_challenges = t.read_challenges(sorted_claims.len());
-        let (full_r, full_y): (Vec<Vec<_>>, Vec<_>) = sorted_claims
+        let (full_r, _full_y): (Vec<Vec<_>>, Vec<_>) = sorted_claims
             .into_iter()
             .map(|c| (c.claim.point, c.claim.eval))
             .multiunzip();
@@ -272,20 +273,27 @@ where
         assert_eq!(beta_mle.num_vars(), ctx.polys.num_vars());
         let mut full_poly = VirtualPolynomial::new(ctx.polys.num_vars());
 
-        // TODO: remove that clone
+        // NOTE that clone is unavoidable with the current sumcheck API and PCS API (The former requires 
+        // the value itself and the latter only the reference).
         full_poly.add_mle_list(vec![beta_mle.into(), ctx.polys.clone().into()], E::ONE);
 
         assert_eq!(full_poly.aux_info, ctx.poly_aux);
 
+        #[cfg(test)]
         #[allow(deprecated)]
         let (sumcheck_proof, state) = IOPProverState::<E>::prove_parallel(full_poly.clone(), t);
 
-        debug_assert!({
-            let computed_result = aggregated_rlc(&full_y, &fs_challenges);
+        #[cfg(not(test))]
+        #[allow(deprecated)]
+        let (sumcheck_proof, state) = IOPProverState::<E>::prove_parallel(full_poly, t);
+
+        #[cfg(test)]
+        assert!({
+            let computed_result = aggregated_rlc(&_full_y, &fs_challenges);
             debug_assert_eq!(sumcheck_proof.extract_sum(), computed_result,);
 
             let mut t = debug_transcript;
-            let y_agg = aggregated_rlc(&full_y, &fs_challenges);
+            let y_agg = aggregated_rlc(&_full_y, &fs_challenges);
             let subclaim =
                 IOPVerifierState::<E>::verify(y_agg, &sumcheck_proof, &ctx.poly_aux, &mut t);
             let computed = full_poly.evaluate(&subclaim.point_flat());

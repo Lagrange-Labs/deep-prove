@@ -94,11 +94,8 @@ pub fn index_u<E: ExtensionField>(u: Vec<E>, n: usize) -> Vec<E> {
 // let x: [x[0][0],...,x[0][n],x[1][0],...,x[n][n]]
 // output vec = [x[n][n], x[n][n-1],...,x[n][0],x[n-1]x[n],...,x[0][0]]
 // Note that y_eval = f_vec(r) = f_x(1-r)
-pub fn index_x<E: ExtensionField>(x: Vec<Element>, vec: &mut Vec<E>, n: usize) {
-    let len = n * n;
-    vec.par_iter_mut().enumerate().for_each(|(i, val)| {
-        *val = x[len - 1 - i].to_field();
-    });
+pub fn index_x<'a, E: ExtensionField>(x: &'a [&'a Element]) -> impl Iterator<Item = E> + Clone + use<'a, E> {
+    x.iter().rev().map(|e| e.to_field())
 }
 // FFT implementation,
 // flag: false -> FFT
@@ -165,7 +162,7 @@ pub fn fft<E: ExtensionField + Send + Sync>(v: &mut Vec<E>, flag: bool) {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default,Clone)]
 pub struct ConvData<E>
 where
     E: Clone + ExtensionField,
@@ -195,20 +192,6 @@ where
             input_fft,
             prod,
             output,
-        }
-    }
-}
-impl<E> Clone for ConvData<E>
-where
-    E: ExtensionField + Clone,
-{
-    fn clone(&self) -> Self {
-        ConvData {
-            real_input: self.real_input.clone(),
-            input: self.input.clone(),
-            input_fft: self.input_fft.clone(),
-            prod: self.prod.clone(),
-            output: self.output.clone(),
         }
     }
 }
@@ -297,24 +280,19 @@ impl Tensor<Element> {
             *val = x.data[i].to_field();
         });
 
-        let mut x_vec = vec![vec![F::ZERO; n_x * n_x]; x.shape[0].next_power_of_two()];
-        let mut w_fft = vec![F::ZERO; self.data.len()];
-        w_fft.par_iter_mut().enumerate().for_each(|(i, val)| {
-            *val = self.data[i].to_field();
-        });
-
-        for i in 0..x_vec.len() {
-            index_x(
-                x.data[i * n_x * n_x..(i + 1) * n_x * n_x].to_vec(),
-                &mut x_vec[i],
-                n_x,
-            );
-        }
+        let w_fft : Vec<F> = self.data.par_iter().map(|e| e.to_field()).collect::<Vec<_>>();
+        let mut x_vec = x.data.par_iter().chunks(n_x * n_x)
+                .map(|chunk| index_x(&chunk).collect::<Vec<_>>()).collect::<Vec<_>>();
+        let new_n= 2 * x_vec[0].len();
+        //let input = x_vec.par_iter().cloned().map(|mut xx| {
+        //    xx.resize(new_n, F::ZERO);
+        //    fft(&mut xx, false);
+        //    xx
+        //}).collect::<Vec<_>>();
 
         let input = x_vec.clone();
-        let n = 2 * x_vec[0].len();
         for i in 0..x_vec.len() {
-            x_vec[i].resize(n, F::ZERO);
+            x_vec[i].resize(new_n, F::ZERO);
             fft(&mut x_vec[i], false);
         }
 
@@ -325,7 +303,7 @@ impl Tensor<Element> {
         for i in 0..out.len() {
             for j in 0..x_vec.len() {
                 for k in 0..out[i].len() {
-                    out[i][k] += x_vec[j][k] * w_fft[i * n * x_vec.len() + j * n + k];
+                    out[i][k] += x_vec[j][k] * w_fft[i * new_n * x_vec.len() + j * new_n + k];
                 }
             }
         }
