@@ -120,6 +120,7 @@ const CSV_PROOF_SIZE: &str = "proof size (KB)";
 fn run(args: Args) -> anyhow::Result<()> {
     info!("[+] Reading onnx model");
     let model = load_model::<Element>(&args.onnx)?;
+    info!("[+] Model loaded");
     model.describe();
     info!("[+] Reading input/output from pytorch");
     let (inputs, given_outputs) =

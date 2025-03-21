@@ -125,6 +125,8 @@ def create_model(num_dense, layer_width, output_dir, verbose, num_samples, model
     # Create the model script path based on model type
     if model_type == "mlp":
         script_path = Path("assets/scripts/MLP/mlp.py")
+    elif model_type == "covid":
+        script_path = Path("assets/scripts/covid/cnn.py")
     else:  # model_type == "cnn"
         script_path = Path("assets/scripts/CNN/cifar-cnn.py")
     
@@ -141,6 +143,11 @@ def create_model(num_dense, layer_width, output_dir, verbose, num_samples, model
             "--layer-width", str(layer_width),
             "--export", str(output_dir),
             "--num-samples", str(num_samples)
+        ]
+    elif model_type == "covid":
+        cmd = [
+            "python", str(script_path),
+            "--export", str(output_dir),
         ]
     else:  # model_type == "cnn"
         cmd = [
@@ -712,7 +719,7 @@ def parse_arguments():
                         help="Limit the number of threads used (default: no limit)")
     parser.add_argument("--samples", type=int, default=30,
                         help="Number of input/output samples to process for both ZKML and EZKL (default: 30)")
-    parser.add_argument("--model-type", type=str, choices=["mlp", "cnn"], default="mlp",
+    parser.add_argument("--model-type", type=str, choices=["mlp", "cnn","covid"], default="mlp",
                         help="Type of model to benchmark: 'mlp' for MLP, 'cnn' for CNN (default: mlp)")
     parser.add_argument("--skip-model-creation", action="store_true",
                         help="Skip model creation and use existing model files and input data (default: False, will regenerate models)")

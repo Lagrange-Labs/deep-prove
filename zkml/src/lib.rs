@@ -5,21 +5,18 @@ use gkr::structs::PointAndEval;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use transcript::{BasicTranscript, Transcript};
-pub mod activation;
 mod commit;
 pub mod iop;
+pub mod quantization;
 pub use iop::{
     Context, Proof,
     prover::Prover,
     verifier::{IO, verify},
 };
-pub mod convolution;
-pub mod dense;
+pub mod layers;
 pub mod lookup;
 pub mod model;
 mod onnx_parse;
-pub mod pooling;
-pub mod quantization;
 pub use onnx_parse::{ModelType, load_model};
 
 pub mod tensor;

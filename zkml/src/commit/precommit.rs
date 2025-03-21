@@ -8,8 +8,8 @@ use std::collections::HashMap;
 use crate::{
     Claim, VectorTranscript,
     commit::{aggregated_rlc, compute_beta_eval_poly, compute_betas_eval},
-    iop::context::BIAS_POLY_ID,
-    model::{Layer, Model},
+    layers::{Layer, convolution, dense},
+    model::Model,
 };
 use anyhow::{Context as CC, ensure};
 use ff_ext::ExtensionField;
@@ -21,6 +21,7 @@ use multilinear_extensions::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
+use tracing::debug;
 use transcript::Transcript;
 
 use super::Pcs;
@@ -28,7 +29,6 @@ use super::Pcs;
 /// A polynomial has an unique ID associated to it.
 pub type PolyID = usize;
 
-// TODO: separate context into verifier and prover ctx once thing is working
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct Context<E: ExtensionField>
@@ -86,14 +86,42 @@ where
         Self::generate(
             m.layers()
                 .flat_map(|(id, l)| match l {
-                    Layer::Dense(dense) => vec![
-                        Some((id, dense.matrix.evals_2d())),
-                        Some((BIAS_POLY_ID + id, dense.bias.evals_flat())),
-                    ],
-                    Layer::Convolution(m) => vec![
-                        Some((id, m.filter.get_conv_weights())),
-                        Some((BIAS_POLY_ID + id, m.bias.evals_flat())),
-                    ],
+                    Layer::Dense(dense) => {
+                        let evals = dense.matrix.evals_2d();
+                        let bias_evals = dense.bias.evals_flat();
+                        debug!(
+                            "Commitment : dense layer ID {}: size {}",
+                            id,
+                            evals.len().ilog2()
+                        );
+                        debug!(
+                            "Commitment : dense layer bias ID {}: size {}",
+                            dense::BIAS_POLY_ID + id,
+                            bias_evals.len().ilog2()
+                        );
+                        vec![
+                            Some((id, evals)),
+                            Some((dense::BIAS_POLY_ID + id, bias_evals)),
+                        ]
+                    }
+                    Layer::Convolution(m) => {
+                        let filter_evals = m.filter.get_conv_weights();
+                        let bias_evals = m.bias.evals_flat();
+                        debug!(
+                            "Commitment : conv layer ID {}: size {}",
+                            id,
+                            filter_evals.len().ilog2()
+                        );
+                        debug!(
+                            "Commitment : conv layer bias ID {}: size {}",
+                            convolution::BIAS_POLY_ID + id,
+                            bias_evals.len().ilog2()
+                        );
+                        vec![
+                            Some((id, filter_evals)),
+                            Some((convolution::BIAS_POLY_ID + id, bias_evals)),
+                        ]
+                    }
                     _ => vec![None],
                 })
                 .flatten()
@@ -114,6 +142,12 @@ where
             .map(|(_, w_i)| w_i.len())
             .sum::<usize>()
             .next_power_of_two();
+        debug!(
+            "Commitment : for {} polys of sizes {:?} --> total padded {}",
+            polys.len(),
+            polys.iter().map(|(_, w_i)| w_i.len().ilog2()).collect_vec(),
+            padded_size.ilog2()
+        );
         // sort in decreasing order
         polys.sort_by(|(_, w_i), (_, y_i)| y_i.len().cmp(&w_i.len()));
         let sorted_ids = polys.iter().map(|(id, poly)| (id, poly.len()));
@@ -132,10 +166,14 @@ where
             .collect_vec();
         assert!(flattened.len().is_power_of_two());
         let num_vars = flattened.len().ilog2() as usize;
+        debug!("Commitment : setup (len {})...", flattened.len());
         let params = Pcs::setup(flattened.len()).expect("unable to setup commitment");
+        debug!("Commitment : trim...");
         let (pp, vp) = Pcs::trim(params, flattened.len()).unwrap();
         let mle = DenseMultilinearExtension::from_evaluations_ext_vec(num_vars, flattened);
+        debug!("Commitment : commit...");
         let comm = Pcs::commit(&pp, &mle).context("unable to commit")?;
+        debug!("Commitment : pure commitment...");
         let vcommitment = Pcs::get_pure_commitment(&comm);
         Ok(Self {
             pp,
@@ -222,9 +260,10 @@ where
         let sorted_claims = ctx.sort_claims(self.claims)?;
 
         ctx.write_to_transcript(t)?;
+        #[cfg(test)]
         let debug_transcript = t.clone();
         let fs_challenges = t.read_challenges(sorted_claims.len());
-        let (full_r, full_y): (Vec<Vec<_>>, Vec<_>) = sorted_claims
+        let (full_r, _full_y): (Vec<Vec<_>>, Vec<_>) = sorted_claims
             .into_iter()
             .map(|c| (c.claim.point, c.claim.eval))
             .multiunzip();
@@ -234,20 +273,27 @@ where
         assert_eq!(beta_mle.num_vars(), ctx.polys.num_vars());
         let mut full_poly = VirtualPolynomial::new(ctx.polys.num_vars());
 
-        // TODO: remove that clone
+        // NOTE that clone is unavoidable with the current sumcheck API and PCS API (The former requires
+        // the value itself and the latter only the reference).
         full_poly.add_mle_list(vec![beta_mle.into(), ctx.polys.clone().into()], E::ONE);
 
         assert_eq!(full_poly.aux_info, ctx.poly_aux);
 
+        #[cfg(test)]
         #[allow(deprecated)]
         let (sumcheck_proof, state) = IOPProverState::<E>::prove_parallel(full_poly.clone(), t);
 
-        debug_assert!({
-            let computed_result = aggregated_rlc(&full_y, &fs_challenges);
+        #[cfg(not(test))]
+        #[allow(deprecated)]
+        let (sumcheck_proof, state) = IOPProverState::<E>::prove_parallel(full_poly, t);
+
+        #[cfg(test)]
+        assert!({
+            let computed_result = aggregated_rlc(&_full_y, &fs_challenges);
             debug_assert_eq!(sumcheck_proof.extract_sum(), computed_result,);
 
             let mut t = debug_transcript;
-            let y_agg = aggregated_rlc(&full_y, &fs_challenges);
+            let y_agg = aggregated_rlc(&_full_y, &fs_challenges);
             let subclaim =
                 IOPVerifierState::<E>::verify(y_agg, &sumcheck_proof, &ctx.poly_aux, &mut t);
             let computed = full_poly.evaluate(&subclaim.point_flat());
@@ -428,7 +474,7 @@ mod test {
                     rng.gen_range(3..24) as usize,
                     rng.gen_range(3..24) as usize,
                 ])
-                .pad_next_power_of_two_2d()
+                .pad_next_power_of_two()
             })
             .enumerate()
             .collect_vec();

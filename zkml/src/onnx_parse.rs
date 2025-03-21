@@ -1,9 +1,9 @@
-use crate::{convolution::Convolution, dense::Dense};
+use crate::layers::{convolution::Convolution, dense::Dense};
 use anyhow::{Context, Error, Result, bail, ensure};
 use goldilocks::GoldilocksExt2;
 use itertools::Itertools;
-use std::{collections::HashMap, i8, path::Path};
-use tracing::{debug, info};
+use std::{collections::HashMap, i8, path::Path, time::Instant};
+use tracing::{debug, info, warn};
 use tract_onnx::{
     pb::{GraphProto, NodeProto},
     prelude::*,
@@ -18,14 +18,17 @@ type F = GoldilocksExt2;
 
 use crate::{
     Element,
-    activation::{Activation, Relu},
-    model::{Layer, Model},
-    pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
+    layers::{
+        Layer,
+        activation::{Activation, Relu},
+        pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
+    },
+    model::Model,
     quantization::Quantizer,
 };
 
 // Supported operators
-const ACTIVATION: [&str; 1] = ["Relu"];
+const ACTIVATION: [&str; 2] = ["Relu", "Sigmoid"];
 const CONVOLUTION: [&str; 1] = ["Conv"];
 const DOWNSAMPLING: [&str; 1] = ["MaxPool"];
 const LINEAR_ALG: [&str; 2] = ["Gemm", "MatMul"];
@@ -145,27 +148,24 @@ fn model_input_shape(graph: &GraphProto) -> Vec<usize> {
         match fact {
             Value::TensorType(result) => match &result.shape {
                 Some(shape) => {
-                    debug!("Input tensor shape dimensions:");
                     for dim in &shape.dim {
                         match &dim.value {
                             Some(value) => match value {
                                 DimValue(size) => {
-                                    debug!("  Fixed dimension: {}", size);
                                     input_shape.push(*size as usize);
                                 }
-                                DimParam(param) => {
-                                    debug!("  Symbolic dimension: {}", param);
+                                DimParam(_param) => {
                                     input_shape.push(1 as usize);
                                 }
                             },
                             None => {
-                                debug!("  Dimension not specified");
+                                warn!("  Dimension not specified");
                             }
                         }
                     }
                 }
                 None => {
-                    debug!("No shape information available");
+                    warn!("No shape information available");
                 }
             },
         }
@@ -333,6 +333,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
     let mut layers: Vec<Layer> = Vec::new();
     // we need to keep track of the last shape because when we pad to next power of two one layer, we need to make sure
     // the next layer's expected input matches.
+    info!("load_model:BEFORE loop of graph nodes extraction");
     for (i, node) in graph.node.iter().enumerate() {
         match node.op_type.as_str() {
             op if LINEAR_ALG.contains(&op) => {
@@ -344,9 +345,9 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                 )?;
                 let bias =
                     fetch_weight_bias_as_tensor::<Q>("bias", node, &initializers, global_max_abs)?;
-                ensure!(bias.dims().len() == 1, "bias is not a vector");
-                input_shape_og = vec![weight.dims()[0]];
-                let nrows = weight.dims()[0];
+                ensure!(bias.get_shape().len() == 1, "bias is not a vector");
+                input_shape_og = vec![weight.get_shape()[0]];
+                let nrows = weight.get_shape()[0];
                 ensure!(
                     bias.get_data().len() == nrows,
                     "bias length {} does not match matrix width {}",
@@ -391,7 +392,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                 let bias = bias.pad_1d(nrows);
                 input_shape_padded = vec![nrows];
 
-                debug!("layer idx {} -> final shape {:?}", i, weight.dims());
+                debug!("layer idx {} -> final shape {:?}", i, weight.get_shape());
                 layers.push(Layer::Dense(Dense::new(weight, bias)));
             }
             op if ACTIVATION.contains(&op) => {
@@ -400,6 +401,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                 layers.push(layer);
             }
             op if CONVOLUTION.contains(&op) => {
+                let now = Instant::now();
                 let _ = fetch_conv2d_attributes(node)?;
                 let mut weight = fetch_weight_bias_as_tensor::<Q>(
                     "weight",
@@ -410,13 +412,13 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                 let mut bias =
                     fetch_weight_bias_as_tensor::<Q>("bias", node, &initializers, global_max_abs)?;
 
-                input_shape_og = conv2d_shape(&input_shape_og, &weight.dims());
-                let weight_shape = weight.dims();
+                input_shape_og = conv2d_shape(&input_shape_og, &weight.get_shape());
+                let weight_shape = weight.get_shape();
                 // Perform basic sanity checks on the tensor dimensions
                 let shape_test = check_filter(&weight_shape);
                 assert!(shape_test.is_ok(), "Failed: {:?}", shape_test.unwrap_err());
                 assert!(
-                    weight_shape[0] == bias.dims()[0],
+                    weight_shape[0] == bias.get_shape()[0],
                     "Bias length doesn't match filter shape"
                 );
 
@@ -429,7 +431,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                 assert!(input_shape_padded.len() == 3);
 
                 // Since we are doing an FFT based conv, we need to pad the last two dimensions of the filter to match the input.
-                let weight_shape = weight.dims();
+                let weight_shape = weight.get_shape();
                 let (filter_height, filter_weight) = (weight_shape[2], weight_shape[3]);
                 let (input_height, input_weight) = (input_shape_padded[1], input_shape_padded[2]);
 
@@ -443,9 +445,9 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                 // Filter need to know the shape of the input
                 // weight.update_input_shape(&input_shape_padded);
 
-                let dims = weight.dims();
+                let dims = weight.get_shape();
                 let weight = crate::tensor::Tensor::new_conv(
-                    weight.dims(),
+                    weight.get_shape(),
                     input_shape_padded.clone(),
                     weight.get_data().to_vec(),
                 );
@@ -461,6 +463,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
                     .iter()
                     .map(|i| i.next_power_of_two())
                     .collect_vec();
+                debug!("EXTRACTIONG conv2d time: {:?}", now.elapsed());
             }
             op if DOWNSAMPLING.contains(&op) => {
                 input_shape_og = maxpool2d_shape(&input_shape_og);
@@ -489,6 +492,8 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
             input_shape_og
         );
     }
+
+    info!("load_model:AFTER loop of graph nodes extraction");
 
     // Create and return the model
     let mut model = Model::new();
@@ -546,12 +551,15 @@ fn extract_tensor_f32_data(
     }
 
     // Get the tensor data
-    let tensor_t = tensor_vec[0].clone();
+    let tensor_t = &tensor_vec[0];
     let tensor_shape = tensor_t.shape().to_vec();
-    let tensor_t_f32 = tensor_t.as_slice::<f32>().unwrap().to_vec();
-
     // Apply alpha/beta multiplier
-    let tensor_t_f32 = tensor_t_f32.iter().map(|x| x * alpha_or_beta).collect_vec();
+    let tensor_t_f32 = tensor_t
+        .as_slice::<f32>()
+        .unwrap()
+        .into_iter()
+        .map(|x| x * alpha_or_beta)
+        .collect_vec();
 
     Ok(Some((tensor_t_f32, tensor_shape)))
 }
@@ -629,7 +637,7 @@ fn fetch_conv2d_attributes(node: &NodeProto) -> Result<()> {
             .map_or_else(Vec::new, |x| x.ints.clone())
     };
 
-    let (strides, pads, kernel_shape, dilations) = (
+    let (strides, pads, _kernel_shape, dilations) = (
         get_attr("strides"),
         get_attr("pads"),
         get_attr("kernel_shape"),
@@ -828,6 +836,48 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    fn test_covid_cnn() {
+        let subscriber = tracing_subscriber::fmt::Subscriber::builder()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .finish();
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("Failed to set global subscriber");
+
+        let filepath = "assets/scripts/covid/cnn-covid.onnx";
+        ModelType::CNN.validate(filepath).unwrap();
+        let result = load_model::<Element>(&filepath);
+
+        assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
+
+        info!("CREAting random tensor input");
+        let model = result.unwrap();
+        let input = crate::tensor::Tensor::random(model.input_shape());
+        info!("random input tensor CREATED : {:?}", input.get_shape());
+        let input = model.prepare_input(input);
+        info!("RUNNING MODEL...");
+        let trace = model.run::<F>(input.clone());
+        info!("RUNNING MODEL DONE...");
+        // println!("Result: {:?}", trace.final_output());
+
+        let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
+        info!("GENERATING CONTEXT...");
+        let ctx = Context::<GoldilocksExt2>::generate(&model, Some(input.get_shape()))
+            .expect("Unable to generate context");
+        info!("GENERATING CONTEXT DONE...");
+        let output = trace.final_output().clone();
+        info!("GENERATING Proof...");
+        let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>> =
+            Prover::new(&ctx, &mut tr);
+        let proof = prover.prove(trace).expect("unable to generate proof");
+        info!("GENERATING Proof DONE...");
+        let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
+            BasicTranscript::new(b"m2vec");
+        let io = IO::new(input.to_fields(), output.to_fields());
+        verify::<_, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
+    }
+
+    #[test]
     fn test_is_cnn() {
         let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
         let result = is_cnn(&filepath);
@@ -850,7 +900,7 @@ mod tests {
         // println!("Result: {:?}", trace.final_output());
 
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
-        let ctx = Context::<GoldilocksExt2>::generate(&model, Some(input.dims()))
+        let ctx = Context::<GoldilocksExt2>::generate(&model, Some(input.get_shape()))
             .expect("Unable to generate context");
         let output = trace.final_output().clone();
 
