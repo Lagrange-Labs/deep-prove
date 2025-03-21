@@ -554,7 +554,12 @@ fn extract_tensor_f32_data(
     let tensor_t = &tensor_vec[0];
     let tensor_shape = tensor_t.shape().to_vec();
     // Apply alpha/beta multiplier
-    let tensor_t_f32 = tensor_t.as_slice::<f32>().unwrap().into_iter().map(|x| x * alpha_or_beta).collect_vec();
+    let tensor_t_f32 = tensor_t
+        .as_slice::<f32>()
+        .unwrap()
+        .into_iter()
+        .map(|x| x * alpha_or_beta)
+        .collect_vec();
 
     Ok(Some((tensor_t_f32, tensor_shape)))
 }

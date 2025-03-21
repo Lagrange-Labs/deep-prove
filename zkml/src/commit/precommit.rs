@@ -273,7 +273,7 @@ where
         assert_eq!(beta_mle.num_vars(), ctx.polys.num_vars());
         let mut full_poly = VirtualPolynomial::new(ctx.polys.num_vars());
 
-        // NOTE that clone is unavoidable with the current sumcheck API and PCS API (The former requires 
+        // NOTE that clone is unavoidable with the current sumcheck API and PCS API (The former requires
         // the value itself and the latter only the reference).
         full_poly.add_mle_list(vec![beta_mle.into(), ctx.polys.clone().into()], E::ONE);
 

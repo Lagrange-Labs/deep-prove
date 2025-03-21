@@ -6,7 +6,7 @@ use multilinear_extensions::mle::DenseMultilinearExtension;
 use rayon::{
     iter::{
         IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
-        IntoParallelRefMutIterator, ParallelIterator,
+        IntoParallelRefMutIterator, ParallelBridge, ParallelIterator,
     },
     prelude::ParallelSlice,
     slice::ParallelSliceMut,
@@ -83,19 +83,9 @@ pub fn index_w<E: ExtensionField>(
 // let u = [u[1],...,u[n*n]]
 // output vec = [u[n*n-1],u[n*n-2],...,u[n*n-n],....,u[0]]
 // Note that y_eval =  f_vec(r) = f_u(1-r)
-pub fn index_u<E: ExtensionField>(u: Vec<E>, n: usize) -> Vec<E> {
-    let mut vec = vec![E::ZERO; u.len() / 2];
+pub fn index_u<E: ExtensionField>(u: &[E], n: usize) -> impl Iterator<Item = E> + use<'_, E> {
     let len = n * n;
-    vec.par_iter_mut().enumerate().for_each(|(i, val)| {
-        *val = u[len - 1 - i];
-    });
-    return vec;
-}
-// let x: [x[0][0],...,x[0][n],x[1][0],...,x[n][n]]
-// output vec = [x[n][n], x[n][n-1],...,x[n][0],x[n-1]x[n],...,x[0][0]]
-// Note that y_eval = f_vec(r) = f_x(1-r)
-pub fn index_x<'a, E: ExtensionField>(x: &'a [&'a Element]) -> impl Iterator<Item = E> + Clone + use<'a, E> {
-    x.iter().rev().map(|e| e.to_field())
+    (0..u.len() / 2).into_iter().map(move |i| u[len - 1 - i])
 }
 // FFT implementation,
 // flag: false -> FFT
@@ -162,7 +152,7 @@ pub fn fft<E: ExtensionField + Send + Sync>(v: &mut Vec<E>, flag: bool) {
     }
 }
 
-#[derive(Debug, Default,Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct ConvData<E>
 where
     E: Clone + ExtensionField,
@@ -275,58 +265,63 @@ impl Tensor<Element> {
         x: &Tensor<Element>,
     ) -> (Tensor<Element>, ConvData<F>) {
         let n_x = x.shape[1].next_power_of_two();
-        let mut real_input = vec![F::ZERO; x.data.len()];
-        real_input.par_iter_mut().enumerate().for_each(|(i, val)| {
-            *val = x.data[i].to_field();
-        });
-
-        let w_fft : Vec<F> = self.data.par_iter().map(|e| e.to_field()).collect::<Vec<_>>();
-        let mut x_vec = x.data.par_iter().chunks(n_x * n_x)
-                .map(|chunk| index_x(&chunk).collect::<Vec<_>>()).collect::<Vec<_>>();
-        let new_n= 2 * x_vec[0].len();
-        //let input = x_vec.par_iter().cloned().map(|mut xx| {
-        //    xx.resize(new_n, F::ZERO);
-        //    fft(&mut xx, false);
-        //    xx
-        //}).collect::<Vec<_>>();
-
-        let input = x_vec.clone();
-        for i in 0..x_vec.len() {
-            x_vec[i].resize(new_n, F::ZERO);
-            fft(&mut x_vec[i], false);
-        }
-
-        let input_fft = x_vec.clone();
-
-        // proving_data.x_fft = x_vec;
-        let mut out = vec![vec![F::ZERO; x_vec[0].len()]; self.shape[0]];
-        for i in 0..out.len() {
-            for j in 0..x_vec.len() {
-                for k in 0..out[i].len() {
-                    out[i][k] += x_vec[j][k] * w_fft[i * new_n * x_vec.len() + j * new_n + k];
-                }
-            }
-        }
-        let prod = out.clone();
-        // proving_data.prod = out;
-        for i in 0..out.len() {
-            fft(&mut out[i], true);
-        }
+        let real_input = x.data.par_iter().map(|e| e.to_field()).collect::<Vec<_>>();
+        let w_fft: Vec<F> = self
+            .data
+            .par_iter()
+            .map(|e| e.to_field())
+            .collect::<Vec<_>>();
+        let new_n = 2 * n_x * n_x;
+        let (x_vec, input): (Vec<Vec<F>>, Vec<Vec<F>>) = real_input
+            .par_iter()
+            .chunks(n_x * n_x)
+            .map(|chunk| {
+                let xx_input = chunk.into_iter().cloned().rev().collect::<Vec<_>>();
+                let mut xx_fft = xx_input
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::repeat(F::ZERO))
+                    .take(new_n)
+                    .collect::<Vec<_>>();
+                fft(&mut xx_fft, false);
+                (xx_fft, xx_input)
+            })
+            .unzip();
+        let dim1 = x_vec.len();
+        let dim2 = x_vec[0].len();
+        let (mut out, prod): (Vec<_>, Vec<_>) = (0..self.shape[0])
+            .into_par_iter()
+            .map(|i| {
+                let mut outi = (0..dim2)
+                    .into_iter()
+                    .map(|k| {
+                        (0..dim1)
+                            .into_iter()
+                            .map(|j| x_vec[j][k] * w_fft[i * new_n * x_vec.len() + j * new_n + k])
+                            .sum::<F>()
+                    })
+                    .collect::<Vec<_>>();
+                // TODO: remove requirement to keep the product value intact
+                let prodi = outi.clone();
+                fft(&mut outi, true);
+                (outi, prodi)
+            })
+            .unzip();
+        // TODO: remove the requirement to keep the output value intact
         let output = out.clone();
-        for i in 0..out.len() {
-            out[i] = index_u(out[i].clone(), n_x);
-        }
-        let mut out_element: Vec<Element> = vec![0; out.len() * out[0].len()];
-        for i in 0..out.len() {
-            for j in 0..out[i].len() {
-                let val = out[i][j].into_element();
-                out_element[i * out[i].len() + j] = val;
-            }
-        }
+        let out_element = out
+            .into_par_iter()
+            .map(|e| {
+                index_u(e.as_slice(), n_x)
+                    .map(|e| e.into_element())
+                    .collect::<Vec<_>>()
+            })
+            .flatten()
+            .collect::<Vec<_>>();
 
         return (
             Tensor::new(vec![self.shape[0], n_x, n_x], out_element),
-            ConvData::new(real_input, input, input_fft, prod, output),
+            ConvData::new(real_input, input, x_vec, prod, output),
         );
     }
     pub fn kx(&self) -> usize {
