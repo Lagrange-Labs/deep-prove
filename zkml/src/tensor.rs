@@ -6,7 +6,7 @@ use multilinear_extensions::mle::DenseMultilinearExtension;
 use rayon::{
     iter::{
         IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
-        IntoParallelRefMutIterator, ParallelBridge, ParallelIterator,
+        IntoParallelRefMutIterator, ParallelIterator,
     },
     prelude::ParallelSlice,
     slice::ParallelSliceMut,
@@ -289,7 +289,7 @@ impl Tensor<Element> {
             .unzip();
         let dim1 = x_vec.len();
         let dim2 = x_vec[0].len();
-        let (mut out, prod): (Vec<_>, Vec<_>) = (0..self.shape[0])
+        let (out, prod): (Vec<_>, Vec<_>) = (0..self.shape[0])
             .into_par_iter()
             .map(|i| {
                 let mut outi = (0..dim2)
