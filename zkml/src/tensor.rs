@@ -23,14 +23,16 @@ use crate::{
     to_bit_sequence_le,
 };
 
-// Function testing the consistency between the actual convolution implementation and
-// the FFT one. Used for debugging purposes.
+/// Function testing the consistency between the actual convolution implementation and
+/// the FFT one. Used for debugging purposes.
+/// real_tensor is std conv2d (kw, nx-nw+1, nx-nw+1)
+/// padded_tensor is results from fft conv (kw, nx, nx)
 pub fn check_tensor_consistency(real_tensor: Tensor<Element>, padded_tensor: Tensor<Element>) {
     let n_x = padded_tensor.shape[1];
     for i in 0..real_tensor.shape[0] {
         for j in 0..real_tensor.shape[1] {
             for k in 0..real_tensor.shape[1] {
-                // if(real_tensor.data[i*real_tensor.shape[1]*real_tensor.shape[1]+j*real_tensor.shape[1]+k] > 0){
+                // TODO: test if real_tensor.shape[2] works here
                 assert!(
                     real_tensor.data[i * real_tensor.shape[1] * real_tensor.shape[1]
                         + j * real_tensor.shape[1]
@@ -38,12 +40,7 @@ pub fn check_tensor_consistency(real_tensor: Tensor<Element>, padded_tensor: Ten
                         == padded_tensor.data[i * n_x * n_x + j * n_x + k],
                     "Error in tensor consistency"
                 );
-                //}else{
-                //   assert!(-E::from(-real_tensor.data[i*real_tensor.shape[1]*real_tensor.shape[1]+j*real_tensor.shape[1]+k] as u64) == E::from(padded_tensor.data[i*n_x*n_x + j*n_x + k] as u64) ,"Error in tensor consistency");
-                //}
             }
-
-            // assert!(real_tensor.data[i*real_tensor.shape[1]*real_tensor.shape[1]+j ] == padded_tensor.data[i*n_x*n_x + j],"Error in tensor consistency");
         }
     }
 }
@@ -63,7 +60,10 @@ pub fn get_root_of_unity<E: ExtensionField>(n: usize) -> E {
 
     return rou;
 }
-// Properly pad a filter
+/// Properly pad a filter
+/// We use this function so that filter is amenable to FFT based conv2d
+/// Usually vec and n are powers of 2
+/// Output: [[F[0][0],…,F[0][n_w],0,…,0],[F[1][0],…,F[1][n_w],0,…,0],…]
 pub fn index_w<E: ExtensionField>(
     w: &[Element],
     n_real: usize,
@@ -87,9 +87,8 @@ pub fn index_u<E: ExtensionField>(u: &[E], n: usize) -> impl Iterator<Item = E> 
     let len = n * n;
     (0..u.len() / 2).into_iter().map(move |i| u[len - 1 - i])
 }
-// FFT implementation,
-// flag: false -> FFT
-// flag: true -> iFFT
+/// flag: false -> FFT
+/// flag: true -> iFFT
 pub fn fft<E: ExtensionField + Send + Sync>(v: &mut Vec<E>, flag: bool) {
     let n = v.len();
     let logn = ark_std::log2(n) as u32;
@@ -158,11 +157,11 @@ where
     E: Clone + ExtensionField,
 {
     // real_input: For debugging purposes
-    pub real_input: Vec<E>,
-    pub input: Vec<Vec<E>>,
-    pub input_fft: Vec<Vec<E>>,
-    pub prod: Vec<Vec<E>>,
-    pub output: Vec<Vec<E>>,
+    pub real_input: Vec<E>, // Actual data before applying FFT and it is already padded with zeros.
+    pub input: Vec<Vec<E>>, // This is the result of applying index_x to real_input
+    pub input_fft: Vec<Vec<E>>, // FFT(input)
+    pub prod: Vec<Vec<E>>,  // FFT(input) * FFT(weights)
+    pub output: Vec<Vec<E>>, // iFFT(FFT(input) * FFT(weights)) ==> conv
 }
 
 impl<E> ConvData<E>
@@ -221,17 +220,22 @@ impl Tensor<Element> {
             })
             .collect::<Vec<_>>();
         Self {
-            data: w_fft,
-            shape: vec![shape[0], shape[1], n_w, n_w],
+            data: w_fft, // Note that field elements are back into Element
+            shape: vec![shape[0], shape[1], n_w, n_w], // nw is the padded version of the input
             input_shape,
         }
     }
+    /// Recall that weights are not plain text to the "snark". Rather it is FFT(weights).
+    /// Aka there is no need to compute the FFT(input) "in-circuit".
+    /// It is okay to assume the inputs to the prover is already the FFT version and the prover can commit to the FFT values.
+    /// This function computes iFFT of the weights so that we can compute the scaling factors used.
     pub fn get_real_weights<F: ExtensionField>(&self) -> Vec<Vec<Vec<Element>>> {
         let mut w_fft =
             vec![
                 vec![vec![F::ZERO; 2 * self.nw() * self.nw()]; self.kx().next_power_of_two()];
                 self.kw().next_power_of_two()
             ];
+        // TODO: use par_iter
         let mut ctr = 0;
         for i in 0..w_fft.len() {
             for j in 0..w_fft[i].len() {
@@ -257,13 +261,14 @@ impl Tensor<Element> {
         }
         real_weights
     }
-    // Convolution algorithm using FFTs.
-    // When invoking this algorithm the prover generates all withness/intermidiate evaluations
-    // needed to generate a convolution proof
+    /// Convolution algorithm using FFTs.
+    /// When invoking this algorithm the prover generates all witness/intermediate evaluations
+    /// needed to generate a convolution proof
     pub fn fft_conv<F: ExtensionField>(
         &self,
         x: &Tensor<Element>,
     ) -> (Tensor<Element>, ConvData<F>) {
+        // input to field elements
         let n_x = x.shape[1].next_power_of_two();
         let real_input = x.data.par_iter().map(|e| e.to_field()).collect::<Vec<_>>();
         let w_fft: Vec<F> = self
@@ -445,11 +450,6 @@ impl<T> Tensor<T> {
     ///
     pub fn get_data(&self) -> &[T] {
         &self.data
-    }
-    /// TODO: Delete
-    pub fn update_input_shape(&mut self, input: &[usize]) {
-        // TODO: Need to assert the input_shape with self.shape
-        self.input_shape = input.to_vec();
     }
 }
 
@@ -950,7 +950,8 @@ where
 
 impl<T> Tensor<T>
 where
-    T: PartialOrd + Ord + Clone + Debug,
+    T: PartialOrd + Ord + Debug,
+    T: Copy + Clone + Send + Sync,
     T: std::default::Default,
 {
     pub fn maxpool2d(&self, kernel_size: usize, stride: usize) -> Tensor<T> {
@@ -972,31 +973,30 @@ where
         let out_w = (w - kernel_size) / stride + 1;
 
         let outer_dims: usize = self.shape[..dims - 2].iter().product();
-        let mut output = vec![T::default(); outer_dims * out_h * out_w];
+        let output: Vec<T> = (0..outer_dims * out_h * out_w)
+            .into_par_iter()
+            .map(|flat_idx| {
+                let n = flat_idx / (out_h * out_w);
+                let i = (flat_idx / out_w) % out_h;
+                let j = flat_idx % out_w;
 
-        for n in 0..outer_dims {
-            let matrix_idx = n * (h * w);
-            for i in 0..out_h {
-                for j in 0..out_w {
-                    let src_idx = matrix_idx + (i * stride) * w + (j * stride);
-                    let mut max_val = self.data[src_idx].clone();
+                let matrix_idx = n * (h * w);
+                let src_idx = matrix_idx + (i * stride) * w + (j * stride);
+                let mut max_val = self.data[src_idx].clone();
 
-                    for ki in 0..kernel_size {
-                        for kj in 0..kernel_size {
-                            let src_idx = matrix_idx + (i * stride + ki) * w + (j * stride + kj);
-                            let value = self.data[src_idx].clone();
-
-                            if value > max_val {
-                                max_val = value;
-                            }
+                for ki in 0..kernel_size {
+                    for kj in 0..kernel_size {
+                        let src_idx = matrix_idx + (i * stride + ki) * w + (j * stride + kj);
+                        let value = self.data[src_idx].clone();
+                        if value > max_val {
+                            max_val = value;
                         }
                     }
-
-                    let out_idx = n * out_h * out_w + i * out_w + j;
-                    output[out_idx] = max_val;
                 }
-            }
-        }
+
+                max_val
+            })
+            .collect();
 
         let mut new_shape = self.shape.clone();
         new_shape[dims - 2] = out_h;
@@ -1031,28 +1031,24 @@ where
             MAXPOOL2D_KERNEL_SIZE
         );
 
-        let mut padded_maxpool_data = vec![T::default(); self.shape.iter().product()];
-
         let outer_dims: usize = self.shape[..dims - 2].iter().product();
         let maxpool_h = (h - kernel_size) / stride + 1;
         let maxpool_w = (w - kernel_size) / stride + 1;
 
-        for n in 0..outer_dims {
-            let matrix_idx = n * (h * w);
-            for i in 0..maxpool_h {
-                for j in 0..maxpool_w {
-                    let maxpool_idx = n * maxpool_h * maxpool_w + i * maxpool_w + j;
-                    let maxpool_value = maxpool_result.data[maxpool_idx].clone();
+        let padded_maxpool_data: Vec<T> = (0..outer_dims * h * w)
+            .into_par_iter()
+            .map(|out_idx| {
+                let n = out_idx / (h * w);
+                let i_full = (out_idx / w) % h;
+                let j_full = out_idx % w;
 
-                    for ki in 0..kernel_size {
-                        for kj in 0..kernel_size {
-                            let out_idx = matrix_idx + (i * stride + ki) * w + (j * stride + kj);
-                            padded_maxpool_data[out_idx] = maxpool_value.clone();
-                        }
-                    }
-                }
-            }
-        }
+                let i = i_full / stride;
+                let j = j_full / stride;
+
+                let maxpool_idx = n * maxpool_h * maxpool_w + i * maxpool_w + j;
+                maxpool_result.data[maxpool_idx].clone()
+            })
+            .collect();
 
         let padded_maxpool_tensor = Tensor {
             data: padded_maxpool_data,
@@ -1119,35 +1115,6 @@ where
         let out_w = (w_size - k_w) / stride + 1;
         let out_shape = vec![n_size, k_n, out_h, out_w];
 
-        // let mut output = vec![T::default(); n_size * k_n * out_h * out_w];
-        // for n in 0..n_size {
-        //     for o in 0..k_n {
-        //         for oh in 0..out_h {
-        //             for ow in 0..out_w {
-        //                 let mut sum = T::default();
-
-        //                 // Convolution
-        //                 for c in 0..c_size {
-        //                     for kh in 0..k_h {
-        //                         for kw in 0..k_w {
-        //                             let h = oh * stride + kh;
-        //                             let w = ow * stride + kw;
-        //                             sum = sum + self.get(n, c, h, w) * kernels.get(o, c, kh, kw);
-        //                         }
-        //                     }
-        //                 }
-
-        //                 // Add bias for this output channel (o)
-        //                 sum = sum + bias.data[o];
-
-        //                 let output_index =
-        //                     n * (k_n * out_h * out_w) + o * (out_h * out_w) + oh * out_w + ow;
-        //                 output[output_index] = sum;
-        //             }
-        //         }
-        //     }
-        // }
-
         // Compute output in parallel
         let output: Vec<T> = (0..n_size * k_n * out_h * out_w)
             .into_par_iter()
@@ -1205,25 +1172,35 @@ where
         );
         assert!(mat_shp_pad.len() == 2 && self.shape.len() == 2);
 
-        let mut new_data = vec![T::default(); mat_shp_pad.iter().product()];
         let mat_shp_og = self.get_shape();
-        for row in 0..mat_shp_og[0] {
-            for channel in 0..conv_shape_og[0] {
-                for h_in in 0..conv_shape_og[1] {
-                    for w_in in 0..conv_shape_og[2] {
-                        let old_loc = channel * conv_shape_og[1] * conv_shape_og[2]
-                            + h_in * conv_shape_og[2]
-                            + w_in
-                            + row * mat_shp_og[1];
-                        let new_loc = channel * conv_shape_pad[1] * conv_shape_pad[2]
-                            + h_in * conv_shape_pad[2]
-                            + w_in
-                            + row * mat_shp_pad[1];
-                        new_data[new_loc] = self.data[old_loc]
-                    }
+
+        let new_data: Vec<T> = (0..mat_shp_pad[0] * mat_shp_pad[1])
+            .into_par_iter()
+            .map(|new_loc| {
+                // Decompose new_loc into (row, channel, h_in, w_in) for the padded output space
+                let row = new_loc / mat_shp_pad[1];
+                let channel =
+                    (new_loc / (conv_shape_pad[1] * conv_shape_pad[2])) % conv_shape_pad[0];
+                let h_in = (new_loc / conv_shape_pad[2]) % conv_shape_pad[1];
+                let w_in = new_loc % conv_shape_pad[2];
+
+                // Check if this position corresponds to an original data location
+                if row < mat_shp_og[0]
+                    && channel < conv_shape_og[0]
+                    && h_in < conv_shape_og[1]
+                    && w_in < conv_shape_og[2]
+                {
+                    let old_loc = channel * conv_shape_og[1] * conv_shape_og[2]
+                        + h_in * conv_shape_og[2]
+                        + w_in
+                        + row * mat_shp_og[1];
+                    self.data[old_loc].clone()
+                } else {
+                    T::default() // Default value for non-mapped positions
                 }
-            }
-        }
+            })
+            .collect();
+
         Tensor::new(mat_shp_pad.to_vec(), new_data)
     }
 }
@@ -1470,39 +1447,26 @@ mod test {
         for i in 0..3 {
             for j in 2..5 {
                 for l in 0..4 {
-                    for n in 1..(j-1){
-                        let n_w = 1<<n;
-                        let k_w = 1<<l;
-                        let n_x = 1<<j;
-                        let k_x = 1<<i;
-                        let rand_vec = random_vector(n_w*n_w*k_x*k_w);
-                        let filter_1 = Tensor::new_conv(vec![k_w,k_x,n_w,n_w], vec![k_x,n_x,n_x], rand_vec.iter().map(|&x| x as Element).collect());
-                        let filter_2 = Tensor::new(vec![k_w,k_x,n_w,n_w], rand_vec.iter().map(|&x| x as Element).collect());
-                        let big_x = Tensor::new(vec![k_x,n_x,n_x],vec![3;n_x*n_x*k_x]);//random_vector(n_x*n_x*k_x));
-                        let (out_2,_) = filter_1.fft_conv::<GoldilocksExt2>(&big_x);
+                    for n in 1..(j - 1) {
+                        let n_w = 1 << n;
+                        let k_w = 1 << l;
+                        let n_x = 1 << j;
+                        let k_x = 1 << i;
+                        let rand_vec = random_vector(n_w * n_w * k_x * k_w);
+                        let filter_1 = Tensor::new_conv(
+                            vec![k_w, k_x, n_w, n_w],
+                            vec![k_x, n_x, n_x],
+                            rand_vec.iter().map(|&x| x as Element).collect(),
+                        );
+                        let filter_2 = Tensor::new(
+                            vec![k_w, k_x, n_w, n_w],
+                            rand_vec.iter().map(|&x| x as Element).collect(),
+                        );
+                        let big_x = Tensor::new(vec![k_x, n_x, n_x], vec![3; n_x * n_x * k_x]); //random_vector(n_x*n_x*k_x));
+                        let (out_2, _) = filter_1.fft_conv::<GoldilocksExt2>(&big_x);
                         let out_1 = filter_2.cnn_naive_convolution(&big_x);
 
-                        // println!("Shapes:");
-                        // println!("\t filter1: {:?}", filter_1.dims());
-                        // println!("\t big_x: {:?}", big_x.dims());
-                        // println!("\t out_2: {:?}", out_2.dims());
-                        // println!("\t filter2: {:?}", filter_2.dims());
-                        // println!("\t out_1: {:?}", out_1.dims());
-
-                        check_tensor_consistency(out_1,out_2);
-                        /*
-
-                        let mut Filter2 = Tensor::new(vec![k_w,k_x,n_w,n_w], F);
-                        let mut X = Tensor::new(vec![k_x,n_x,n_x],vec![3;n_x*n_x*k_x]);//random_vector(n_x*n_x*k_x));
-                        let Out1 = Filter2.cnn_naive_convolution(&X.clone());
-                        let mut data: Vec<Element> = vec![0;k_x*n_x*n_x];
-                        //for k in 0..data.len(){
-                        //    data[k] = E::to_canonical_u64_vec(&X.data[k])[0] as Element;
-                        //}
-                        let mut X2 = Tensor::new(vec![k_x,n_x,n_x],data);
-                        let Out2 = Filter.fft_conv(&X2);
-                        check_tensor_consistency(Out1,Out2);     */
-
+                        check_tensor_consistency(out_1, out_2);
                     }
                 }
             }

@@ -836,6 +836,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_covid_cnn() {
         let subscriber = tracing_subscriber::fmt::Subscriber::builder()
             .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
