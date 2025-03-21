@@ -209,6 +209,7 @@ where
                         .collect(),
                 ));
                 lookups_no_challenges.push((vec![col_one, col_two], 2, TableType::Relu));
+                debug!("Lookup witness generation: generated witness for dense layer {}", step.id);
             }
 
             Layer::Requant(requant) => {
@@ -233,6 +234,7 @@ where
                 ));
 
                 lookups_no_challenges.push((column_evals, 1, TableType::Range));
+                debug!("Lookup witness generation: generated witness for requant layer {}", step.id);
             }
             Layer::Pooling(pooling) => {
                 tables.insert(TableType::Range);
@@ -255,6 +257,7 @@ where
                         .collect(),
                 ));
                 lookups_no_challenges.push((column_evals, 1, TableType::Range));
+                debug!("Lookup witness generation: generated witness for pooling layer {}", step.id);
             }
             _ => (),
         }
@@ -298,6 +301,7 @@ where
     debug!("Lookup witness generation: challenge storage...");
     let challenge_storage = initialise_from_table_set::<E, T>(&tables, transcript);
 
+    debug!("Lookup witness generation: lookup inputs...");
     let lookup_inputs = lookups_no_challenges
         .into_iter()
         .map(|(column_evals, columns_per_instance, table_type)| {
@@ -317,6 +321,7 @@ where
         })
         .collect::<Result<Vec<LogUpInput<E>>, LogUpError>>()?;
 
+    debug!("Lookup witness generation: table inputs...");
     let table_inputs = tables_no_challenges
         .into_iter()
         .map(|(column_evals, multiplicities, table_type)| {

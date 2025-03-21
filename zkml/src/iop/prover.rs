@@ -187,7 +187,7 @@ where
 
             let mut vp = VirtualPolynomial::<E>::new(f1.num_vars);
             vp.add_mle_list(
-                vec![f1.clone().into(), f2.clone().into(), f3.clone().into()],
+                vec![f1.into(), f2.into(), f3.into()],
                 E::ONE,
             );
             #[allow(deprecated)]
@@ -317,9 +317,9 @@ where
         // compute X(i,r2)
 
         let mut f_m = x
-            .clone()
-            .into_iter()
+            .iter()
             .flatten()
+            .cloned()
             .collect::<Vec<_>>()
             .into_mle();
 
@@ -330,7 +330,7 @@ where
         let f_red = w_red.into_mle();
 
         let mut vp = VirtualPolynomial::<E>::new(f_m.num_vars);
-        vp.add_mle_list(vec![f_m.clone().into(), f_red.clone().into()], E::ONE);
+        vp.add_mle_list(vec![f_m.into(), f_red.into()], E::ONE);
         #[allow(deprecated)]
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
 
@@ -414,6 +414,7 @@ where
         self.instantiate_witness_ctx(&trace)?;
         debug!("Prover : instantiate witness ctx done...");
         let trace = trace.to_field();
+        debug!("Prover : trace to field done...");
         // this is the random set of variables to fix at each step derived as the output of
         // sumcheck.
         // For the first step, so before the first sumcheck, we generate it from FS.
@@ -422,15 +423,15 @@ where
         let r_i = self
             .transcript
             .read_challenges(trace.final_output().get_data().len().ilog2() as usize);
+        debug!("Prover : read challenges done...");
         let y_i = trace
             .last_step()
             .output
-            .clone()
             .get_data()
             .to_vec()
             .into_mle()
             .evaluate(&r_i);
-
+        debug!("Prover : first claim evaluation done...");
         let mut last_claim = Claim {
             point: r_i,
             eval: y_i,
