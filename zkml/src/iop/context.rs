@@ -10,6 +10,7 @@ use itertools::Itertools;
 use mpcs::BasefoldCommitment;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::BTreeSet;
+use tracing::{debug, trace};
 use transcript::Transcript;
 
 /// Info related to the lookup protocol tables.
@@ -72,18 +73,26 @@ where
             last_output_shape,
         };
         let mut step_infos = Vec::with_capacity(model.layer_count());
+        debug!("Context : layer info generation ...");
         for (id, layer) in model.layers() {
+            trace!(
+                "Context : {}-th layer {}info generation ...",
+                id,
+                layer.describe()
+            );
             let (info, new_aux) = layer.step_info(id, ctx_aux);
             step_infos.push(info);
             ctx_aux = new_aux;
         }
+        debug!("Context : commitment generating ...");
         let commit_ctx = precommit::Context::generate_from_model(model)
             .context("can't generate context for commitment part")?;
-
+        debug!("Context : lookup generation ...");
+        let lookup_ctx = LookupContext::new(&ctx_aux.tables);
         Ok(Self {
             steps_info: step_infos.into_iter().rev().collect_vec(),
             weights: commit_ctx,
-            lookup: LookupContext::new(&ctx_aux.tables),
+            lookup: lookup_ctx,
         })
     }
 

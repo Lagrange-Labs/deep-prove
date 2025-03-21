@@ -1,7 +1,6 @@
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-use tracing::debug;
 
 use crate::{
     Element,
@@ -90,15 +89,7 @@ impl Model {
             let output = layer.op(input);
             match output {
                 LayerOutput::NormalOut(output) => {
-                    debug!("step: {}: output: {:?}", id, output);
-                    let empty_matrix: Vec<Vec<E>> = vec![vec![Default::default(); 0]; 0];
-                    let conv_data = ConvData::<E>::new(
-                        vec![Default::default(); 0],
-                        empty_matrix.clone(),
-                        empty_matrix.clone(),
-                        empty_matrix.clone(),
-                        empty_matrix.clone(),
-                    );
+                    let conv_data = ConvData::default();
                     let step = InferenceStep {
                         layer,
                         output,
@@ -108,7 +99,6 @@ impl Model {
                     trace.push_step(step);
                 }
                 LayerOutput::ConvOut((output, conv_data)) => {
-                    debug!("step: {}: output: {:?}", id, output);
                     let step = InferenceStep {
                         layer,
                         output,

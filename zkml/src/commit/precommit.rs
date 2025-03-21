@@ -21,6 +21,7 @@ use multilinear_extensions::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
+use tracing::debug;
 use transcript::Transcript;
 
 use super::Pcs;
@@ -85,14 +86,42 @@ where
         Self::generate(
             m.layers()
                 .flat_map(|(id, l)| match l {
-                    Layer::Dense(dense) => vec![
-                        Some((id, dense.matrix.evals_2d())),
-                        Some((dense::BIAS_POLY_ID + id, dense.bias.evals_flat())),
-                    ],
-                    Layer::Convolution(m) => vec![
-                        Some((id, m.filter.get_conv_weights())),
-                        Some((convolution::BIAS_POLY_ID + id, m.bias.evals_flat())),
-                    ],
+                    Layer::Dense(dense) => {
+                        let evals = dense.matrix.evals_2d();
+                        let bias_evals = dense.bias.evals_flat();
+                        debug!(
+                            "Commitment : dense layer ID {}: size {}",
+                            id,
+                            evals.len().ilog2()
+                        );
+                        debug!(
+                            "Commitment : dense layer bias ID {}: size {}",
+                            dense::BIAS_POLY_ID + id,
+                            bias_evals.len().ilog2()
+                        );
+                        vec![
+                            Some((id, evals)),
+                            Some((dense::BIAS_POLY_ID + id, bias_evals)),
+                        ]
+                    }
+                    Layer::Convolution(m) => {
+                        let filter_evals = m.filter.get_conv_weights();
+                        let bias_evals = m.bias.evals_flat();
+                        debug!(
+                            "Commitment : conv layer ID {}: size {}",
+                            id,
+                            filter_evals.len().ilog2()
+                        );
+                        debug!(
+                            "Commitment : conv layer bias ID {}: size {}",
+                            convolution::BIAS_POLY_ID + id,
+                            bias_evals.len().ilog2()
+                        );
+                        vec![
+                            Some((id, filter_evals)),
+                            Some((convolution::BIAS_POLY_ID + id, bias_evals)),
+                        ]
+                    }
                     _ => vec![None],
                 })
                 .flatten()
@@ -113,6 +142,12 @@ where
             .map(|(_, w_i)| w_i.len())
             .sum::<usize>()
             .next_power_of_two();
+        debug!(
+            "Commitment : for {} polys of sizes {:?} --> total padded {}",
+            polys.len(),
+            polys.iter().map(|(_, w_i)| w_i.len().ilog2()).collect_vec(),
+            padded_size.ilog2()
+        );
         // sort in decreasing order
         polys.sort_by(|(_, w_i), (_, y_i)| y_i.len().cmp(&w_i.len()));
         let sorted_ids = polys.iter().map(|(id, poly)| (id, poly.len()));
@@ -131,10 +166,14 @@ where
             .collect_vec();
         assert!(flattened.len().is_power_of_two());
         let num_vars = flattened.len().ilog2() as usize;
+        debug!("Commitment : setup (len {})...", flattened.len());
         let params = Pcs::setup(flattened.len()).expect("unable to setup commitment");
+        debug!("Commitment : trim...");
         let (pp, vp) = Pcs::trim(params, flattened.len()).unwrap();
         let mle = DenseMultilinearExtension::from_evaluations_ext_vec(num_vars, flattened);
+        debug!("Commitment : commit...");
         let comm = Pcs::commit(&pp, &mle).context("unable to commit")?;
+        debug!("Commitment : pure commitment...");
         let vcommitment = Pcs::get_pure_commitment(&comm);
         Ok(Self {
             pp,

@@ -165,6 +165,7 @@ pub fn fft<E: ExtensionField + Send + Sync>(v: &mut Vec<E>, flag: bool) {
     }
 }
 
+#[derive(Debug, Default)]
 pub struct ConvData<E>
 where
     E: Clone + ExtensionField,

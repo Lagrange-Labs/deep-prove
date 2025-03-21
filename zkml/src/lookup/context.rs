@@ -5,6 +5,7 @@ use std::collections::{BTreeSet, HashMap};
 use ff::Field;
 use ff_ext::ExtensionField;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use tracing::debug;
 use transcript::Transcript;
 
 use crate::{
@@ -166,6 +167,7 @@ where
     let mut lookups_no_challenges = Vec::<(Vec<Vec<E::BaseField>>, usize, TableType)>::new();
     let column_separator = 1i128 << 32;
     let mut total_steps = 0;
+    debug!("Lookup witness generation: generating poly fields...");
     trace.iter().for_each(|(step_input, step)| {
         total_steps += 1;
         match step.layer {
@@ -258,6 +260,7 @@ where
         }
     });
 
+    debug!("Lookup witness generation: generating table multiplicities...");
     // calculate the table multiplicities
     let tables_no_challenges = tables.iter().map(|table_type| {
         let (table_column, column_evals) = table_type.get_merged_table_column::<E>(column_separator);
@@ -277,6 +280,7 @@ where
         Ok((column_evals, multiplicities, *table_type))
     }).collect::<Result<Vec<(Vec<Vec<E::BaseField>>, Vec<E::BaseField>, TableType)>, LogUpError>>()?;
 
+    debug!("Lookup witness generation: commit context generation...");
     let ctx = Context::generate(polys_with_id).map_err(|e| {
         LogUpError::ParamterError(format!(
             "Could not generate Lookup witness commit context {{ inner: {:?}}}",
@@ -291,6 +295,7 @@ where
         ))
     })?;
 
+    debug!("Lookup witness generation: challenge storage...");
     let challenge_storage = initialise_from_table_set::<E, T>(&tables, transcript);
 
     let lookup_inputs = lookups_no_challenges

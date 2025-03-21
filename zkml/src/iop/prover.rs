@@ -410,7 +410,9 @@ where
         // write commitments and polynomials info to transcript
         self.ctx.write_to_transcript(self.transcript)?;
         // then create the context for the witness polys -
+        debug!("Prover : instantiate witness ctx...");
         self.instantiate_witness_ctx(&trace)?;
+        debug!("Prover : instantiate witness ctx done...");
         let trace = trace.to_field();
         // this is the random set of variables to fix at each step derived as the output of
         // sumcheck.

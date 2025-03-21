@@ -13,7 +13,7 @@ use multilinear_extensions::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
-use tracing::{debug, trace};
+use tracing::trace;
 use transcript::Transcript;
 
 use crate::{Element, tensor::Tensor};
@@ -125,7 +125,6 @@ impl Dense {
     {
         let matrix = &self.matrix;
         let (nrows, ncols) = (matrix.nrows_2d(), matrix.ncols_2d());
-        debug!("dense proving nrows: {} ncols: {}", nrows, ncols);
         assert_eq!(
             nrows,
             output.get_data().len(),
@@ -287,7 +286,6 @@ where
         let info = self;
         // Subtract the bias evaluation from the previous claim to remove the bias
         let eval_no_bias = last_claim.eval - proof.bias_eval;
-        debug!("VERIFIER: claim {:?}", last_claim);
         // TODO: currently that API can panic - should remove panic for error
         let subclaim = IOPVerifierState::<E>::verify(
             eval_no_bias,
