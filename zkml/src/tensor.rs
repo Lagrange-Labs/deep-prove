@@ -975,7 +975,12 @@ where
     T: Default + Copy + Send + Sync + PartialOrd,
     T: std::ops::Add<Output = T> + std::ops::Mul<Output = T>,
 {
-    pub fn conv2d(&self, kernels: &Tensor<T>, bias: &Tensor<T>, stride: usize) -> Tensor<T> {
+    pub fn conv2d(
+        &self,
+        kernels: &Tensor<T>,
+        bias: &Tensor<T>,
+        stride: (usize, usize),
+    ) -> Tensor<T> {
         let (n_size, c_size, h_size, w_size) = self.get4d();
         let (k_n, k_c, k_h, k_w) = kernels.get4d();
 
@@ -995,8 +1000,9 @@ where
             "Bias shape must match number of kernels!"
         );
 
-        let out_h = (h_size - k_h) / stride + 1;
-        let out_w = (w_size - k_w) / stride + 1;
+        let (stride_h, stride_w) = stride;
+        let out_h = (h_size - k_h) / stride_h + 1;
+        let out_w = (w_size - k_w) / stride_w + 1;
         let out_shape = vec![n_size, k_n, out_h, out_w];
 
         // Compute output in parallel
@@ -1017,8 +1023,8 @@ where
                 for c in 0..c_size {
                     for kh in 0..k_h {
                         for kw in 0..k_w {
-                            let h = oh * stride + kh;
-                            let w = ow * stride + kw;
+                            let h = oh * stride_h + kh;
+                            let w = ow * stride_w + kw;
                             sum = sum + self.get(n, c, h, w) * kernels.get(o, c, kh, kw);
                         }
                     }
@@ -1668,20 +1674,28 @@ mod test {
 
     #[test]
     fn test_tensor_conv2d() {
+        // torch.manual_seed(0)
+        // input = torch.randint(size=[1, 3, 3, 3], low=-64, high=63, dtype=torch.int)
+        // weights = torch.randint(size=[2, 3, 2, 2], low=-64, high=63, dtype=torch.int)
+        // bias = torch.randint(size=[2], low=-64, high=63, dtype=torch.int)
         let input = Tensor::<Element>::new(vec![1, 3, 3, 3], vec![
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 8, 7, 6, 5, 4, 3, 2, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3,
+            -22, 29, 32, -17, 0, -43, -53, 12, -50, -33, 17, 20, -16, 30, -36, 27, -36, -51, 40, 1,
+            61, 48, -62, -35, 22, 8, -8,
         ]);
-
         let weights = Tensor::<Element>::new(vec![2, 3, 2, 2], vec![
-            1, 0, -1, 2, 0, 1, -1, 1, 1, -1, 0, 2, -1, 1, 2, 0, 1, 0, 2, -1, 0, -1, 1, 1,
+            -64, 51, -17, -21, -9, 33, -60, 41, 26, -23, -9, 18, 15, 7, 46, 47, 1, -1, 13, -26, 17,
+            -42, -25, 10,
         ]);
+        let bias = Tensor::<Element>::new(vec![2], vec![46, -42]);
 
-        let bias = Tensor::<Element>::new(vec![2], vec![3, -3]);
+        let expected = Tensor::<Element>::new(vec![1, 2, 2, 2], vec![
+            5739, -3493, 2441, -3713, -3171, -1426, 2020, -1081,
+        ]);
+        let result = input.conv2d(&weights, &bias, (1, 1));
+        assert_eq!(result, expected, "Conv2D (Element) failed.");
 
-        let expected =
-            Tensor::<Element>::new(vec![1, 2, 2, 2], vec![21, 22, 26, 27, 25, 25, 26, 26]);
-
-        let result = input.conv2d(&weights, &bias, 1);
+        let expected = Tensor::<Element>::new(vec![1, 2, 2, 1], vec![5739, 2441, -3171, 2020]);
+        let result = input.conv2d(&weights, &bias, (1, 2));
         assert_eq!(result, expected, "Conv2D (Element) failed.");
     }
 
