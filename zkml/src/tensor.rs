@@ -1087,23 +1087,30 @@ where
 
         Tensor::new(mat_shp_pad.to_vec(), new_data)
     }
-    pub fn maxpool2d(&self, kernel_size: usize, stride: usize) -> Tensor<T> {
+    pub fn maxpool2d(&self, kernel_size: (usize, usize), stride: (usize, usize)) -> Tensor<T> {
         let dims = self.get_shape().len();
         assert!(dims >= 2, "Input tensor must have at least 2 dimensions.");
 
         let (h, w) = (self.shape[dims - 2], self.shape[dims - 1]);
+        let (kernel_h, kernel_w) = kernel_size;
+        let (stride_h, stride_w) = stride;
 
         // https://pytorch.org/docs/stable/generated/torch.nn.MaxPool2d.html
         // Assumes dilation = 1
         assert!(
-            h >= kernel_size,
-            "Kernel size ({}) is larger than input dimensions ({}, {})",
-            kernel_size,
-            h,
+            h >= kernel_h,
+            "Kernel height ({}) is larger than input height ({})",
+            kernel_h,
+            h
+        );
+        assert!(
+            w >= kernel_w,
+            "Kernel width ({}) is larger than input width ({})",
+            kernel_w,
             w
         );
-        let out_h = (h - kernel_size) / stride + 1;
-        let out_w = (w - kernel_size) / stride + 1;
+        let out_h = (h - kernel_h) / stride_h + 1;
+        let out_w = (w - kernel_w) / stride_w + 1;
 
         let outer_dims: usize = self.shape[..dims - 2].iter().product();
         let output: Vec<T> = (0..outer_dims * out_h * out_w)
@@ -1114,12 +1121,12 @@ where
                 let j = flat_idx % out_w;
 
                 let matrix_idx = n * (h * w);
-                let src_idx = matrix_idx + (i * stride) * w + (j * stride);
+                let src_idx = matrix_idx + (i * stride_h) * w + (j * stride_w);
                 let mut max_val = self.data[src_idx].clone();
 
-                for ki in 0..kernel_size {
-                    for kj in 0..kernel_size {
-                        let src_idx = matrix_idx + (i * stride + ki) * w + (j * stride + kj);
+                for ki in 0..kernel_h {
+                    for kj in 0..kernel_w {
+                        let src_idx = matrix_idx + (i * stride_h + ki) * w + (j * stride_w + kj);
                         let value = self.data[src_idx].clone();
                         if value > max_val {
                             max_val = value;
@@ -1146,7 +1153,7 @@ where
         let kernel_size = MAXPOOL2D_KERNEL_SIZE;
         let stride = MAXPOOL2D_KERNEL_SIZE;
 
-        let maxpool_result = self.maxpool2d(kernel_size, stride);
+        let maxpool_result = self.maxpool2d((kernel_size, kernel_size), (stride, stride));
 
         let dims: usize = self.get_shape().len();
         assert!(dims >= 2, "Input tensor must have at least 2 dimensions.");
@@ -1496,13 +1503,38 @@ mod test {
 
     #[test]
     fn test_tensor_maxpool2d() {
-        let input = Tensor::<Element>::new(vec![1, 3, 3, 4], vec![
-            99, -35, 18, 104, -26, -48, -80, 106, 10, 8, 79, -7, -128, -45, 24, -91, -7, 88, -119,
-            -37, -38, -113, -84, 86, 116, 72, -83, 100, 83, 81, 87, 58, -109, -13, -123, 102,
+        let input = Tensor::<Element>::new(vec![1, 2, 12, 10], vec![
+            -22, 29, 32, -17, 0, -43, -53, 12, -50, -33, 17, 20, -16, 30, -36, 27, -36, -51, 40, 1,
+            61, 48, -62, -35, 22, 8, -8, -64, 51, -17, -21, -9, 33, -60, 41, 26, -23, -9, 18, 15,
+            7, 46, 47, 1, -1, 13, -26, 17, -42, -25, 10, 46, -42, 40, -39, 20, 39, -35, 58, -31,
+            -62, 0, -11, 20, -57, 10, -47, 30, -11, 59, 29, -19, 58, 54, 48, 20, 3, 48, -28, 34,
+            -18, 11, -22, 42, -21, -3, -16, 48, -6, 25, 51, 36, -46, -19, -53, -16, 43, 9, 32, -37,
+            8, 17, 30, 56, 54, -34, 12, 47, 54, 15, -25, 41, -25, 62, 1, -44, -37, -52, -64, 49,
+            -34, 60, -50, 58, -29, 19, -8, 30, 60, 20, 23, 28, 15, -4, 56, 48, -33, 16, -33, -46,
+            -32, 47, -36, -35, 40, -45, 51, -52, -62, 50, 29, 24, 36, -50, -18, -46, 41, -8, 43,
+            41, 0, -17, 53, -63, -32, 24, -13, 44, -3, -28, 24, -48, 12, 33, -43, 35, -32, -29, 23,
+            -42, 43, 54, -22, 17, -5, -27, 27, -4, -8, -44, 37, 42, 39, 41, -62, -54, 0, 51, 40,
+            -27, 14, 41, -23, 43, -64, 19, -47, -51, 52, -52, 12, -48, 44, 41, -49, -54, -15, -7,
+            47, 23, -30, -8, -54, 52, 58, 9, -35, 8, 12, -42, 49, -54, -56, -22, -38, -57, 39, 21,
+            21, 48,
         ]);
-        let expected = Tensor::<Element>::new(vec![1, 3, 1, 2], vec![99, 106, 88, 24, 116, 100]);
 
-        let result = input.maxpool2d(2, 2);
+        let expected = Tensor::<Element>::new(vec![1, 2, 6, 5], vec![
+            29, 32, 27, 12, 40, 61, 33, 41, -8, 51, 46, 47, 20, 39, 58, 29, 58, 48, 48, 59, 51, 42,
+            -3, 48, 32, 41, 62, 54, 47, 54, 60, 58, 56, 30, 60, 47, 36, 40, 51, 50, 24, 53, 35, 44,
+            23, 54, 41, -5, 51, 40, 41, 44, 19, -7, 52, 49, 52, 58, 39, 48,
+        ]);
+        let result = input.maxpool2d((2, 2), (2, 2));
+        assert_eq!(result, expected, "Maxpool (Element) failed.");
+
+        let expected = Tensor::<Element>::new(vec![1, 2, 3, 2], vec![
+            32, 40, 47, 58, 51, 48, 60, 60, 53, 44, 44, 52,
+        ]);
+        let result = input.maxpool2d((2, 3), (4, 6));
+        assert_eq!(result, expected, "Maxpool (Element) failed.");
+
+        let expected = Tensor::<Element>::new(vec![1, 2, 3, 1], vec![61, 58, 62, 60, 54, 58]);
+        let result = input.maxpool2d((4, 6), (4, 6));
         assert_eq!(result, expected, "Maxpool (Element) failed.");
     }
 
