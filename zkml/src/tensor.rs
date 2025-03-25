@@ -950,10 +950,143 @@ where
 
 impl<T> Tensor<T>
 where
-    T: PartialOrd + Ord + Debug,
-    T: Copy + Clone + Send + Sync,
-    T: std::default::Default,
+    T: Copy,
 {
+    pub fn get4d(&self) -> (usize, usize, usize, usize) {
+        let n_size = self.shape.get(0).cloned().unwrap_or(1);
+        let c_size = self.shape.get(1).cloned().unwrap_or(1);
+        let h_size = self.shape.get(2).cloned().unwrap_or(1);
+        let w_size = self.shape.get(3).cloned().unwrap_or(1);
+
+        (n_size, c_size, h_size, w_size)
+    }
+    /// Retrieves an element using (N, C, H, W) indexing
+    pub fn get(&self, n: usize, c: usize, h: usize, w: usize) -> T {
+        assert!(self.shape.len() <= 4);
+
+        let (n_size, c_size, h_size, w_size) = self.get4d();
+
+        assert!(n < n_size);
+        let flat_index = n * (c_size * h_size * w_size) + c * (h_size * w_size) + h * w_size + w;
+        self.data[flat_index]
+    }
+}
+impl<T> Tensor<T>
+where
+    T: Default + Copy + Send + Sync + PartialOrd,
+    T: std::ops::Add<Output = T> + std::ops::Mul<Output = T>,
+{
+    pub fn conv2d(&self, kernels: &Tensor<T>, bias: &Tensor<T>, stride: usize) -> Tensor<T> {
+        let (n_size, c_size, h_size, w_size) = self.get4d();
+        let (k_n, k_c, k_h, k_w) = kernels.get4d();
+
+        assert!(
+            self.get_shape().len() <= 4,
+            "Supports only at most 4D input."
+        );
+        assert!(
+            kernels.get_shape().len() <= 4,
+            "Supports only at most 4D filters."
+        );
+        // Validate shapes
+        assert_eq!(c_size, k_c, "Input and kernel channels must match!");
+        assert_eq!(
+            bias.shape,
+            vec![k_n],
+            "Bias shape must match number of kernels!"
+        );
+
+        let out_h = (h_size - k_h) / stride + 1;
+        let out_w = (w_size - k_w) / stride + 1;
+        let out_shape = vec![n_size, k_n, out_h, out_w];
+
+        // Compute output in parallel
+        let output: Vec<T> = (0..n_size * k_n * out_h * out_w)
+            .into_par_iter()
+            .map(|flat_idx| {
+                // Decompose flat index into (n, o, oh, ow)
+                let n = flat_idx / (k_n * out_h * out_w);
+                let rem1 = flat_idx % (k_n * out_h * out_w);
+                let o = rem1 / (out_h * out_w);
+                let rem2 = rem1 % (out_h * out_w);
+                let oh = rem2 / out_w;
+                let ow = rem2 % out_w;
+
+                let mut sum = T::default();
+
+                // Convolution
+                for c in 0..c_size {
+                    for kh in 0..k_h {
+                        for kw in 0..k_w {
+                            let h = oh * stride + kh;
+                            let w = ow * stride + kw;
+                            sum = sum + self.get(n, c, h, w) * kernels.get(o, c, kh, kw);
+                        }
+                    }
+                }
+
+                // Add bias
+                sum + bias.data[o].clone()
+            })
+            .collect();
+
+        Tensor {
+            data: output,
+            shape: out_shape,
+            input_shape: vec![0],
+        }
+    }
+    // Pads a matrix `M` to `M'` so that matrix-vector multiplication with a flattened FFT-padded convolution output `X'`
+    /// matches the result of multiplying `M` with the original convolution output `X`.
+    ///
+    /// The real convolution output `X` has dimensions `(C, H, W)`. However, when using FFT-based convolution,
+    /// the output `X'` is padded to dimensions `(C', H', W')`, where `C'`, `H'`, and `W'` are the next power of 2
+    /// greater than or equal to `C`, `H`, and `W`, respectively.
+    /// Given a matrix `M` designed to multiply with the flattened `X`, this function pads `M` into `M'` such that
+    /// `M * X == M' * X'`, ensuring the result remains consistent despite the padding in `X'`.
+    pub fn pad_matrix_to_ignore_garbage(
+        &self,
+        conv_shape_og: &[usize],
+        conv_shape_pad: &[usize],
+        mat_shp_pad: &[usize],
+    ) -> Self {
+        assert!(
+            conv_shape_og.len() == 3 && conv_shape_pad.len() == 3,
+            "Expects conv2d shape output to be "
+        );
+        assert!(mat_shp_pad.len() == 2 && self.shape.len() == 2);
+
+        let mat_shp_og = self.get_shape();
+
+        let new_data: Vec<T> = (0..mat_shp_pad[0] * mat_shp_pad[1])
+            .into_par_iter()
+            .map(|new_loc| {
+                // Decompose new_loc into (row, channel, h_in, w_in) for the padded output space
+                let row = new_loc / mat_shp_pad[1];
+                let channel =
+                    (new_loc / (conv_shape_pad[1] * conv_shape_pad[2])) % conv_shape_pad[0];
+                let h_in = (new_loc / conv_shape_pad[2]) % conv_shape_pad[1];
+                let w_in = new_loc % conv_shape_pad[2];
+
+                // Check if this position corresponds to an original data location
+                if row < mat_shp_og[0]
+                    && channel < conv_shape_og[0]
+                    && h_in < conv_shape_og[1]
+                    && w_in < conv_shape_og[2]
+                {
+                    let old_loc = channel * conv_shape_og[1] * conv_shape_og[2]
+                        + h_in * conv_shape_og[2]
+                        + w_in
+                        + row * mat_shp_og[1];
+                    self.data[old_loc].clone()
+                } else {
+                    T::default() // Default value for non-mapped positions
+                }
+            })
+            .collect();
+
+        Tensor::new(mat_shp_pad.to_vec(), new_data)
+    }
     pub fn maxpool2d(&self, kernel_size: usize, stride: usize) -> Tensor<T> {
         let dims = self.get_shape().len();
         assert!(dims >= 2, "Input tensor must have at least 2 dimensions.");
@@ -1057,151 +1190,6 @@ where
         };
 
         (maxpool_result, padded_maxpool_tensor)
-    }
-}
-
-impl<T> Tensor<T>
-where
-    T: Copy + Default + std::ops::Mul<Output = T> + std::iter::Sum,
-    T: std::ops::Add<Output = T> + std::ops::Sub<Output = T> + std::ops::Mul<Output = T>,
-{
-    pub fn get4d(&self) -> (usize, usize, usize, usize) {
-        let n_size = self.shape.get(0).cloned().unwrap_or(1);
-        let c_size = self.shape.get(1).cloned().unwrap_or(1);
-        let h_size = self.shape.get(2).cloned().unwrap_or(1);
-        let w_size = self.shape.get(3).cloned().unwrap_or(1);
-
-        (n_size, c_size, h_size, w_size)
-    }
-
-    /// Retrieves an element using (N, C, H, W) indexing
-    pub fn get(&self, n: usize, c: usize, h: usize, w: usize) -> T {
-        assert!(self.shape.len() <= 4);
-
-        let (n_size, c_size, h_size, w_size) = self.get4d();
-
-        assert!(n < n_size);
-        let flat_index = n * (c_size * h_size * w_size) + c * (h_size * w_size) + h * w_size + w;
-        self.data[flat_index]
-    }
-}
-impl<T> Tensor<T>
-where
-    T: Copy + Clone + Send + Sync,
-    T: Copy + Default + std::ops::Mul<Output = T> + std::iter::Sum,
-    T: std::ops::Add<Output = T> + std::ops::Sub<Output = T> + std::ops::Mul<Output = T>,
-{
-    pub fn conv2d(&self, kernels: &Tensor<T>, bias: &Tensor<T>, stride: usize) -> Tensor<T> {
-        let (n_size, c_size, h_size, w_size) = self.get4d();
-        let (k_n, k_c, k_h, k_w) = kernels.get4d();
-
-        assert!(
-            self.get_shape().len() <= 4,
-            "Supports only at most 4D input."
-        );
-        assert!(
-            kernels.get_shape().len() <= 4,
-            "Supports only at most 4D filters."
-        );
-        // Validate shapes
-        assert_eq!(c_size, k_c, "Input and kernel channels must match!");
-        assert_eq!(
-            bias.shape,
-            vec![k_n],
-            "Bias shape must match number of kernels!"
-        );
-
-        let out_h = (h_size - k_h) / stride + 1;
-        let out_w = (w_size - k_w) / stride + 1;
-        let out_shape = vec![n_size, k_n, out_h, out_w];
-
-        // Compute output in parallel
-        let output: Vec<T> = (0..n_size * k_n * out_h * out_w)
-            .into_par_iter()
-            .map(|flat_idx| {
-                // Decompose flat index into (n, o, oh, ow)
-                let n = flat_idx / (k_n * out_h * out_w);
-                let rem1 = flat_idx % (k_n * out_h * out_w);
-                let o = rem1 / (out_h * out_w);
-                let rem2 = rem1 % (out_h * out_w);
-                let oh = rem2 / out_w;
-                let ow = rem2 % out_w;
-
-                let mut sum = T::default();
-
-                // Convolution
-                for c in 0..c_size {
-                    for kh in 0..k_h {
-                        for kw in 0..k_w {
-                            let h = oh * stride + kh;
-                            let w = ow * stride + kw;
-                            sum = sum + self.get(n, c, h, w) * kernels.get(o, c, kh, kw);
-                        }
-                    }
-                }
-
-                // Add bias
-                sum + bias.data[o].clone()
-            })
-            .collect();
-
-        Tensor {
-            data: output,
-            shape: out_shape,
-            input_shape: vec![0],
-        }
-    }
-
-    // Pads a matrix `M` to `M'` so that matrix-vector multiplication with a flattened FFT-padded convolution output `X'`
-    /// matches the result of multiplying `M` with the original convolution output `X`.
-    ///
-    /// The real convolution output `X` has dimensions `(C, H, W)`. However, when using FFT-based convolution,
-    /// the output `X'` is padded to dimensions `(C', H', W')`, where `C'`, `H'`, and `W'` are the next power of 2
-    /// greater than or equal to `C`, `H`, and `W`, respectively.
-    /// Given a matrix `M` designed to multiply with the flattened `X`, this function pads `M` into `M'` such that
-    /// `M * X == M' * X'`, ensuring the result remains consistent despite the padding in `X'`.
-    pub fn pad_matrix_to_ignore_garbage(
-        &self,
-        conv_shape_og: &[usize],
-        conv_shape_pad: &[usize],
-        mat_shp_pad: &[usize],
-    ) -> Self {
-        assert!(
-            conv_shape_og.len() == 3 && conv_shape_pad.len() == 3,
-            "Expects conv2d shape output to be "
-        );
-        assert!(mat_shp_pad.len() == 2 && self.shape.len() == 2);
-
-        let mat_shp_og = self.get_shape();
-
-        let new_data: Vec<T> = (0..mat_shp_pad[0] * mat_shp_pad[1])
-            .into_par_iter()
-            .map(|new_loc| {
-                // Decompose new_loc into (row, channel, h_in, w_in) for the padded output space
-                let row = new_loc / mat_shp_pad[1];
-                let channel =
-                    (new_loc / (conv_shape_pad[1] * conv_shape_pad[2])) % conv_shape_pad[0];
-                let h_in = (new_loc / conv_shape_pad[2]) % conv_shape_pad[1];
-                let w_in = new_loc % conv_shape_pad[2];
-
-                // Check if this position corresponds to an original data location
-                if row < mat_shp_og[0]
-                    && channel < conv_shape_og[0]
-                    && h_in < conv_shape_og[1]
-                    && w_in < conv_shape_og[2]
-                {
-                    let old_loc = channel * conv_shape_og[1] * conv_shape_og[2]
-                        + h_in * conv_shape_og[2]
-                        + w_in
-                        + row * mat_shp_og[1];
-                    self.data[old_loc].clone()
-                } else {
-                    T::default() // Default value for non-mapped positions
-                }
-            })
-            .collect();
-
-        Tensor::new(mat_shp_pad.to_vec(), new_data)
     }
 }
 
