@@ -436,6 +436,7 @@ impl Maxpool2D {
         input.maxpool2d(
             (self.kernel_size, self.kernel_size),
             (self.stride, self.stride),
+            (0, 0),
         )
     }
 

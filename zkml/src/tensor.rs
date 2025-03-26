@@ -1092,30 +1092,40 @@ where
 
         Tensor::new(mat_shp_pad.to_vec(), new_data)
     }
-    pub fn maxpool2d(&self, kernel_size: (usize, usize), stride: (usize, usize)) -> Tensor<T> {
+    pub fn maxpool2d(
+        &self,
+        kernel_size: (usize, usize),
+        stride: (usize, usize),
+        padding: (usize, usize),
+    ) -> Tensor<T> {
         let dims = self.get_shape().len();
         assert!(dims >= 2, "Input tensor must have at least 2 dimensions.");
 
         let (h, w) = (self.shape[dims - 2], self.shape[dims - 1]);
         let (kernel_h, kernel_w) = kernel_size;
         let (stride_h, stride_w) = stride;
+        let (pad_h, pad_w) = padding;
 
-        // https://pytorch.org/docs/stable/generated/torch.nn.MaxPool2d.html
-        // Assumes dilation = 1
+        // Effective dimensions after padding
+        let padded_h = h + 2 * pad_h;
+        let padded_w = w + 2 * pad_w;
+
         assert!(
-            h >= kernel_h,
-            "Kernel height ({}) is larger than input height ({})",
+            padded_h >= kernel_h,
+            "Kernel height ({}) is larger than padded input height ({})",
             kernel_h,
-            h
+            padded_h
         );
         assert!(
-            w >= kernel_w,
-            "Kernel width ({}) is larger than input width ({})",
+            padded_w >= kernel_w,
+            "Kernel width ({}) is larger than padded input width ({})",
             kernel_w,
-            w
+            padded_w
         );
-        let out_h = (h - kernel_h) / stride_h + 1;
-        let out_w = (w - kernel_w) / stride_w + 1;
+
+        // Output dimensions with padding
+        let out_h = (padded_h - kernel_h) / stride_h + 1;
+        let out_w = (padded_w - kernel_w) / stride_w + 1;
 
         let outer_dims: usize = self.shape[..dims - 2].iter().product();
         let output: Vec<T> = (0..outer_dims * out_h * out_w)
@@ -1125,15 +1135,28 @@ where
                 let i = (flat_idx / out_w) % out_h;
                 let j = flat_idx % out_w;
 
-                let matrix_idx = n * (h * w);
-                let src_idx = matrix_idx + (i * stride_h) * w + (j * stride_w);
-                let mut max_val = self.data[src_idx].clone();
+                let matrix_idx = n * (h * w); // Original input size, not padded
+                let mut max_val = self.data[matrix_idx].clone(); // Wrong. Needs to be -infinity
 
                 for ki in 0..kernel_h {
                     for kj in 0..kernel_w {
-                        let src_idx = matrix_idx + (i * stride_h + ki) * w + (j * stride_w + kj);
-                        let value = self.data[src_idx].clone();
-                        if value > max_val {
+                        // Adjust for padding: shift indices into original data space
+                        let h_idx = i * stride_h + ki;
+                        let w_idx = j * stride_w + kj;
+
+                        // Check if the position is within original data bounds
+                        let value = if h_idx < pad_h
+                            || h_idx >= pad_h + h
+                            || w_idx < pad_w
+                            || w_idx >= pad_w + w
+                        {
+                            T::default() // Wrong. Needs to be -infinity
+                        } else {
+                            let src_idx = matrix_idx + (h_idx - pad_h) * w + (w_idx - pad_w);
+                            self.data[src_idx].clone()
+                        };
+
+                        if ki == 0 && kj == 0 || value > max_val {
                             max_val = value;
                         }
                     }
@@ -1154,32 +1177,41 @@ where
         }
     }
     // Replaces every value of a tensor with the maxpool of its kernel
-    pub fn padded_maxpool2d(&self, kernel_size: (usize, usize)) -> (Tensor<T>, Tensor<T>) {
+    pub fn padded_maxpool2d(
+        &self,
+        kernel_size: (usize, usize),
+        padding: (usize, usize),
+    ) -> (Tensor<T>, Tensor<T>) {
         let stride = kernel_size;
         let (kernel_h, kernel_w) = kernel_size;
         let (stride_h, stride_w) = stride;
+        let (pad_h, pad_w) = padding;
 
-        let maxpool_result = self.maxpool2d(kernel_size, stride);
+        let maxpool_result = self.maxpool2d(kernel_size, stride, padding);
 
         let dims: usize = self.get_shape().len();
         assert!(dims >= 2, "Input tensor must have at least 2 dimensions.");
 
         let (h, w) = (self.shape[dims - 2], self.shape[dims - 1]);
 
+        // Calculate output dimensions with padding
+        let padded_h = h + 2 * pad_h;
+        let padded_w = w + 2 * pad_w;
+
         assert!(
-            h % kernel_h == 0,
-            "Input height must be divisible by kernel height {}",
+            padded_h % kernel_h == 0,
+            "Padded input height must be divisible by kernel height {}",
             kernel_h
         );
         assert!(
-            w % kernel_w == 0,
-            "Input width must be divisible by kernel width {}",
+            padded_w % kernel_w == 0,
+            "Padded input width must be divisible by kernel width {}",
             kernel_w
         );
 
         let outer_dims: usize = self.shape[..dims - 2].iter().product();
-        let maxpool_h = (h - kernel_h) / stride_h + 1;
-        let maxpool_w = (w - kernel_w) / stride_w + 1;
+        let maxpool_h = (padded_h - kernel_h) / stride_h + 1;
+        let maxpool_w = (padded_w - kernel_w) / stride_w + 1;
 
         let padded_maxpool_data: Vec<T> = (0..outer_dims * h * w)
             .into_par_iter()
@@ -1188,8 +1220,9 @@ where
                 let i_full = (out_idx / w) % h;
                 let j_full = out_idx % w;
 
-                let i = i_full / stride_h;
-                let j = j_full / stride_w;
+                // Adjust indices to account for padding
+                let i = (i_full + pad_h) / stride_h;
+                let j = (j_full + pad_w) / stride_w;
 
                 let maxpool_idx = n * maxpool_h * maxpool_w + i * maxpool_w + j;
                 maxpool_result.data[maxpool_idx].clone()
@@ -1532,17 +1565,17 @@ mod test {
             -3, 48, 32, 41, 62, 54, 47, 54, 60, 58, 56, 30, 60, 47, 36, 40, 51, 50, 24, 53, 35, 44,
             23, 54, 41, -5, 51, 40, 41, 44, 19, -7, 52, 49, 52, 58, 39, 48,
         ]);
-        let result = input.maxpool2d((2, 2), (2, 2));
+        let result = input.maxpool2d((2, 2), (2, 2), (0, 0));
         assert_eq!(result, expected, "Maxpool (Element) failed.");
 
         let expected = Tensor::<Element>::new(vec![1, 2, 3, 2], vec![
             32, 40, 47, 58, 51, 48, 60, 60, 53, 44, 44, 52,
         ]);
-        let result = input.maxpool2d((2, 3), (4, 6));
+        let result = input.maxpool2d((2, 3), (4, 6), (0, 0));
         assert_eq!(result, expected, "Maxpool (Element) failed.");
 
         let expected = Tensor::<Element>::new(vec![1, 2, 3, 1], vec![61, 58, 62, 60, 54, 58]);
-        let result = input.maxpool2d((4, 6), (4, 6));
+        let result = input.maxpool2d((4, 6), (4, 6), (0, 0));
         assert_eq!(result, expected, "Maxpool (Element) failed.");
     }
 
@@ -1569,7 +1602,7 @@ mod test {
             59, 59, 58, 58, 58, 58, 48, 48, 48, 48, 51, 51, 11, 11, 42, 42, 58, 58, 48, 48, 48, 48,
             51, 51, 11, 11, 42, 42,
         ]);
-        let (result, padded_result) = input.padded_maxpool2d((2, 2));
+        let (result, padded_result) = input.padded_maxpool2d((2, 2), (0, 0));
         assert_eq!(result, expected, "Maxpool (Element) failed.");
         assert_eq!(
             padded_result, padded_expected,
@@ -1586,7 +1619,7 @@ mod test {
             39, 39, 39, 59, 59, 59, 58, 58, 58, 48, 48, 48, 51, 51, 51, 42, 42, 42, 58, 58, 58, 48,
             48, 48, 51, 51, 51, 42, 42, 42,
         ]);
-        let (result, padded_result) = input.padded_maxpool2d((2, 3));
+        let (result, padded_result) = input.padded_maxpool2d((2, 3), (0, 0));
         assert_eq!(result, expected, "Maxpool (Element) failed.");
         assert_eq!(
             padded_result, padded_expected,
@@ -1601,7 +1634,7 @@ mod test {
             59, 59, 59, 59, 59, 59, 58, 58, 58, 58, 58, 58, 59, 59, 59, 59, 59, 59, 58, 58, 58, 58,
             58, 58, 59, 59, 59, 59, 59, 59,
         ]);
-        let (result, padded_result) = input.padded_maxpool2d((4, 6));
+        let (result, padded_result) = input.padded_maxpool2d((4, 6), (0, 0));
         println!("result: {:?}", result);
         println!("padded_result: {:?}", padded_result);
 
