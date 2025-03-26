@@ -1,5 +1,4 @@
 //! Module that takes care of (re)quantizing
-use derive_more::From;
 use ff_ext::ExtensionField;
 use goldilocks::SmallField;
 use itertools::Itertools;
@@ -21,10 +20,6 @@ pub static BIT_LEN: Lazy<usize> = Lazy::new(|| {
 pub static MIN: Lazy<Element> = Lazy::new(|| -(1 << (*BIT_LEN - 1)));
 pub static MAX: Lazy<Element> = Lazy::new(|| (1 << (*BIT_LEN - 1)) - 1);
 pub static ZERO: Lazy<Element> = Lazy::new(|| 0);
-pub static RANGE_BITLEN: Lazy<Element> = Lazy::new(|| (*MAX - *ZERO).ilog2() as Element);
-
-#[derive(Debug,Clone, From)]
-pub struct ScalingFactor(f32);
 
 /// Trait used to quantize original floating point number to integer
 pub trait Quantizer<Output> {
@@ -49,29 +44,26 @@ impl Quantizer<Element> for Element {
         scaled as Element
     }
 
-    fn from_f32_unsafe_clamp(e: &f32, max_abs_range: f64) -> Self {
+    fn from_f32_unsafe_clamp(e: &f32, max_abs: f64) -> Self {
         let e = *e as f64;
         assert!(
-            max_abs_range > 0.0,
+            max_abs > 0.0,
             "max_abs should be greater than zero. Domain range is between [-max_abs, max_abs]."
         );
 
-        let scale = max_abs_range / (1 << *BIT_LEN) as f64;
-        //let iscale = 1.0 / scale;
-        //let piscale = (iscale as u32).next_power_of_two() as f64;
-        //let fscale = 1.0 /piscale;
+        let scale = (2.0 * max_abs) / (*MAX - *MIN) as f64;
         let zero_point = 0;
 
         // formula is q = round(r/S) + z
         let scaled = (e / scale).round() as Element + zero_point;
         let scaled = scaled.clamp(*MIN, *MAX);
 
-        //if e < -max_abs || e > max_abs {
-        //    debug!(
-        //        "Quantization: Value {} is out of [-{}, {}]. But quantized to {}.",
-        //        e, max_abs, max_abs, scaled
-        //    );
-        //}
+        if e < -max_abs || e > max_abs {
+            debug!(
+                "Quantization: Value {} is out of [-{}, {}]. But quantized to {}.",
+                e, max_abs, max_abs, scaled
+            );
+        }
         scaled as Element
     }
 }

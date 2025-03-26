@@ -22,7 +22,6 @@ parser.add_argument("--num-dense", type=int, required=True, help="Number of dens
 parser.add_argument("--layer-width", type=int, required=True, help="Width of each layer")
 parser.add_argument("--export", type=Path, default=Path('bench'), help="Directory to export the model to (default: bench)")
 parser.add_argument("--num-samples", type=int, default=100, help="Number of test samples to export")
-parser.add_argument("--distribution", action="store_true", help="Show distribution of model weights")
 
 args = parser.parse_args()
 print(f"num_dense: {args.num_dense}, layer_width: {args.layer_width}")
@@ -58,9 +57,8 @@ class MLP(nn.Module):
             x = layer(x)
         return x
 
-# Create model
-model = MLP(num_dense=args.num_dense, layer_width=args.layer_width)
 
+model = MLP(num_dense=args.num_dense, layer_width=args.layer_width)
 # Extract input features
 X = dataset[dataset.columns[0:4]].values
 y = dataset.target
@@ -158,9 +156,9 @@ for i in range(num_samples):
     x = test_X[i]
     true_label = test_y[i].item()
     
-    # Evaluate model
-    with torch.no_grad():
-        model_output = model(x.unsqueeze(0)).squeeze(0)
+    # Evaluate model with original tensor
+    model_output = model(x.unsqueeze(0)).squeeze(0)
+    raw_output = model_output.tolist()
     
     # Get input data
     input_data.append(x.detach().numpy().reshape([-1]).tolist())
@@ -169,14 +167,10 @@ for i in range(num_samples):
     one_hot_output = [0.0, 0.0, 0.0]  # For 3 classes in Iris
     one_hot_output[true_label] = 1.0
     output_data.append(one_hot_output)
-    pytorch_output.append(model_output.tolist())
+    pytorch_output.append(raw_output)
 
 # Save multiple input/output pairs to JSON
-data = {
-    "input_data": input_data, 
-    "output_data": output_data, 
-    "pytorch_output": pytorch_output
-}
+data = {"input_data": input_data, "output_data": output_data, "pytorch_output": pytorch_output}
 json.dump(data, open(data_path, 'w'), indent=2)
 print(f"Input/Output data for {num_samples} samples exported to {data_path}")
 
@@ -194,55 +188,3 @@ for i, layer in enumerate(model.layers):
         bias_vector = layer.bias.data
         print(f"Layer {i} weight matrix dimensions: {weight_matrix.size()}")
         print(f"Layer {i} bias vector dimensions: {bias_vector.size()}")
-
-def plot_weight_distribution(model):
-    """Plot the distribution of weights across all dense layers."""
-    # Collect all weights from dense layers
-    all_weights = []
-    layer_names = []
-    
-    for i, layer in enumerate(model.layers):
-        if isinstance(layer, nn.Linear):
-            # Flatten weights and add to list
-            weights = layer.weight.data.cpu().numpy().flatten()
-            all_weights.append(weights)
-            layer_names.append(f"Layer {i}")
-    
-    # Create subplots for each layer
-    fig, axes = plt.subplots(len(all_weights), 1, figsize=(12, 4*len(all_weights)))
-    if len(all_weights) == 1:
-        axes = [axes]
-    
-    for ax, weights, name in zip(axes, all_weights, layer_names):
-        # Calculate min and max
-        w_min = np.min(weights)
-        w_max = np.max(weights)
-        
-        # Add 5% padding to the range
-        range_pad = (w_max - w_min) * 0.05
-        x_min = w_min - range_pad
-        x_max = w_max + range_pad
-        
-        # Plot histogram with dynamic range
-        ax.hist(weights, bins=50, density=False, alpha=0.7, label='Count', range=(x_min, x_max))
-        
-        ax.set_title(f'Weight Distribution - {name}\nMin: {w_min:.3f}, Max: {w_max:.3f}')
-        ax.set_xlabel('Weight Value')
-        ax.set_ylabel('Count')
-        ax.set_xlim(x_min, x_max)  # Set dynamic x-axis limits
-        ax.legend(loc='upper right', bbox_to_anchor=(1.15, 1))  # Position legend outside the plot
-        ax.grid(True)
-    
-    plt.tight_layout()
-    # Save the figure with extra space for legend
-    plt.savefig("weight_distribution.png", bbox_inches='tight', dpi=300)
-    # Show the plot interactively
-    plt.show()
-    # Close the figure to free memory
-    plt.close()
-
-# After training loop, before ONNX export
-if args.distribution:
-    print("Generating weight distribution plot...")
-    plot_weight_distribution(model)
-    print("Weight distribution plot saved as 'weight_distribution.png'")

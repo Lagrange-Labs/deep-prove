@@ -285,7 +285,7 @@ pub fn load_model<Q: Quantizer<Element>>(filepath: &str) -> Result<Model> {
 
     // Get global weight ranges first
     let (global_min, global_max) = analyze_model_weight_ranges(filepath)?;
-    let global_max_abs = global_max - global_min;
+    let global_max_abs = global_min.abs().max(global_max.abs());
     debug!(
         "Using global weight range for quantization: [{}, {}], max_abs={}",
         global_min, global_max, global_max_abs
@@ -620,7 +620,6 @@ fn fetch_weight_bias_as_tensor<Q: Quantizer<Element>>(
     let tensor_f = tensor_data
         .iter()
         .map(|x| Q::from_f32_unsafe_clamp(x, global_max_abs as f64))
-        //.map(|x| Q::from_f32_unsafe(x))
         //.map(|x| Q::from_f32_unsafe_clamp(x, local_max_abs as f64))
         .collect_vec();
 

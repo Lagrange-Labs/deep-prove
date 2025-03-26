@@ -95,9 +95,7 @@ def ensure_command_exists(command):
 def ex(cmd, verbose=False):
     print(f"\n🔄 Running command: {' '.join(cmd)}")
     start_time = time.perf_counter()
-    # Pass through all environment variables
-    env = os.environ.copy()
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    result = subprocess.run(cmd, capture_output=True, text=True)
     end_time = time.perf_counter()
     
     elapsed_time_ms = (end_time - start_time) * 1000
@@ -191,24 +189,17 @@ def create_model(num_dense, layer_width, output_dir, verbose, num_samples, model
     
     return model_path, input_path
 
-def run_zkml_benchmark(config_name, output_dir, verbose, num_samples, skip_proving=False):
+def run_zkml_benchmark(config_name, output_dir, verbose, num_samples):
     """Run ZKML benchmark and save results to CSV"""
     zkml_csv = output_dir / f"zkml_{config_name}.csv"
     
     print(f"Running ZKML benchmark for {config_name}")
     ensure_command_exists("cargo")
-    
-    # Build the command with optional skip-proving flag
-    cmd = ["cargo", "run", "--release", "--", 
-           "-i", str(output_dir / INPUT),
-           "-o", str(output_dir / MODEL),
-           "--bench", str(zkml_csv),
-           "--num-samples", str(num_samples)]
-    
-    if skip_proving:
-        cmd.append("--skip-proving")
-    
-    out = ex(cmd, verbose=verbose)
+    out = ex(["cargo", "run", "--release", "--", 
+              "-i", str(output_dir / INPUT),
+              "-o", str(output_dir / MODEL),
+              "--bench", str(zkml_csv),
+              "--num-samples", str(num_samples)], verbose=verbose)
     print("ZKML benchmark completed")
     return zkml_csv
 
@@ -381,7 +372,7 @@ def run_ezkl_benchmark(config_name, run_index, output_dir, verbose, num_samples,
 
 def run_benchmark(num_dense, layer_width, run_index, output_dir, verbose, run_ezkl, num_samples, model_type, 
                  skip_ezkl_calibration=False, ezkl_check_mode="safe", show_accuracy=False, 
-                 skip_model_creation=False, param_cnn=None, skip_proving=False):
+                 skip_model_creation=False, param_cnn=None):
     """Run a benchmark for a specific model configuration and parameter."""
     # Create directory for this configuration if it doesn't exist
     config_name = f"d{num_dense}_w{layer_width}" if model_type == "mlp" else f"cnn"
@@ -407,7 +398,7 @@ def run_benchmark(num_dense, layer_width, run_index, output_dir, verbose, run_ez
             sys.exit(1)
     
     # Step 2: Run ZKML benchmark
-    zkml_csv = run_zkml_benchmark(config_name, output_dir, verbose, num_samples, skip_proving)
+    zkml_csv = run_zkml_benchmark(config_name, output_dir, verbose, num_samples)
     
     # Step 3: Calculate PyTorch accuracy from the input_output.json
     pytorch_csv = calculate_pytorch_accuracy(config_name, run_index, output_dir)
@@ -497,13 +488,12 @@ def set_cpu_affinity(max_threads: int):
     else:
         print("⚠️ Warning: CPU affinity setting is not supported on this platform. Proceeding without restriction.")
 
-def clean_output_directory(output_dir, config_name, skip_model_creation=False):
+def clean_output_directory(output_dir, config_name):
     """
     Delete non-essential files in the output directory between configurations.
     Preserves:
     - KZG parameters file (kzg.params)
     - All CSV files (they contain benchmark results we need)
-    - Model and input files if skip_model_creation is True
     """
     # Create the set of files to preserve
     preserve_files = {"kzg.params"}
@@ -511,11 +501,6 @@ def clean_output_directory(output_dir, config_name, skip_model_creation=False):
     # Add all CSV files to the preserve list
     for file in output_dir.glob("*.csv"):
         preserve_files.add(file.name)
-    
-    # If skip_model_creation is True, preserve model and input files
-    if skip_model_creation:
-        preserve_files.add(MODEL)
-        preserve_files.add(INPUT)
     
     # Loop through all files in the directory and delete those not in preserve_files
     for file in output_dir.iterdir():
@@ -740,8 +725,6 @@ def parse_arguments():
                         help="Skip model creation and use existing model files and input data (default: False, will regenerate models)")
     parser.add_argument("--param-cnn", type=int, default=None,
                         help="Target parameter count for CNN model (only used when model-type is cnn) 62k default")
-    parser.add_argument("--skip-proving", action="store_true",
-                        help="Skip proving and verifying steps in ZKML (faster but no ZK proof)")
     return parser.parse_args()
 
 def setup_environment(args):
@@ -763,7 +746,7 @@ def run_configurations(configs, args):
         config_name = f"d{num_dense}_w{layer_width}" if args.model_type == "mlp" else f"cnn"
         
         # Clean up the output directory for this configuration
-        clean_output_directory(output_dir, config_name, args.skip_model_creation)
+        clean_output_directory(output_dir, config_name)
         
         for run_idx in range(args.repeats):
             # Pass all EZKL-related parameters and CNN parameter count
@@ -771,7 +754,7 @@ def run_configurations(configs, args):
                 num_dense, layer_width, run_idx, output_dir, 
                 args.verbose, args.run_ezkl, args.samples, args.model_type,
                 args.skip_ezkl_calibration, args.ezkl_check_mode, args.show_accuracy,
-                args.skip_model_creation, args.param_cnn, args.skip_proving
+                args.skip_model_creation, args.param_cnn
             )
             
             if zkml_csv:
