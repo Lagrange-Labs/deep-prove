@@ -980,6 +980,7 @@ where
         kernels: &Tensor<T>,
         bias: &Tensor<T>,
         stride: (usize, usize),
+        padding: (usize, usize),
     ) -> Tensor<T> {
         let (n_size, c_size, h_size, w_size) = self.get4d();
         let (k_n, k_c, k_h, k_w) = kernels.get4d();
@@ -1001,8 +1002,11 @@ where
         );
 
         let (stride_h, stride_w) = stride;
-        let out_h = (h_size - k_h) / stride_h + 1;
-        let out_w = (w_size - k_w) / stride_w + 1;
+        let (pad_h, pad_w) = padding;
+
+        // Calculate output dimensions with padding
+        let out_h = (h_size + 2 * pad_h - k_h) / stride_h + 1;
+        let out_w = (w_size + 2 * pad_w - k_w) / stride_w + 1;
         let out_shape = vec![n_size, k_n, out_h, out_w];
 
         // Compute output in parallel
@@ -1025,7 +1029,17 @@ where
                         for kw in 0..k_w {
                             let h = oh * stride_h + kh;
                             let w = ow * stride_w + kw;
-                            sum = sum + self.get(n, c, h, w) * kernels.get(o, c, kh, kw);
+
+                            // Skip if in padding area
+                            if h < pad_h || h >= pad_h + h_size || w < pad_w || w >= pad_w + w_size
+                            {
+                                continue;
+                            }
+
+                            // Adjust indices for input data
+                            let h_idx = h - pad_h;
+                            let w_idx = w - pad_w;
+                            sum = sum + self.get(n, c, h_idx, w_idx) * kernels.get(o, c, kh, kw);
                         }
                     }
                 }
@@ -1724,11 +1738,11 @@ mod test {
         let expected = Tensor::<Element>::new(vec![1, 2, 2, 2], vec![
             5739, -3493, 2441, -3713, -3171, -1426, 2020, -1081,
         ]);
-        let result = input.conv2d(&weights, &bias, (1, 1));
+        let result = input.conv2d(&weights, &bias, (1, 1), (0, 0));
         assert_eq!(result, expected, "Conv2D (Element) failed.");
 
         let expected = Tensor::<Element>::new(vec![1, 2, 2, 1], vec![5739, 2441, -3171, 2020]);
-        let result = input.conv2d(&weights, &bias, (1, 2));
+        let result = input.conv2d(&weights, &bias, (1, 2), (0, 0));
         assert_eq!(result, expected, "Conv2D (Element) failed.");
     }
 

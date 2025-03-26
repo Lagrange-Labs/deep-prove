@@ -130,7 +130,12 @@ impl Layer {
             // we use relies on the FFT algorithm. This convolution does not have a snark implementation.
             Layer::SchoolBookConvolution(ref conv_pair) => {
                 // LayerOutput::NormalOut(filter.cnn_naive_convolution(input))
-                LayerOutput::NormalOut(input.conv2d(&conv_pair.filter, &conv_pair.bias, (1, 1)))
+                LayerOutput::NormalOut(input.conv2d(
+                    &conv_pair.filter,
+                    &conv_pair.bias,
+                    (1, 1),
+                    (0, 0),
+                ))
             }
 
             Layer::Requant(info) => {
