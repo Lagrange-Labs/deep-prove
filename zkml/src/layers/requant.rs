@@ -60,9 +60,12 @@ where
 }
 impl Requant {
     pub fn op(&self, input: &crate::tensor::Tensor<Element>) -> crate::tensor::Tensor<Element> {
+        println!("BEFORE REQUANT: {:?}", &input.get_data().iter().take(100).collect_vec());
+        let res = input.get_data().iter().map(|e| self.apply(e)).collect_vec();
+        println!("AFTER REQUANT: {:?}", &res.iter().take(100).collect_vec());
         crate::tensor::Tensor::<Element>::new(
             input.get_shape(),
-            input.get_data().iter().map(|e| self.apply(e)).collect_vec(),
+            res,
         )
     }
 
@@ -103,7 +106,9 @@ impl Requant {
         let max_bit = (self.range << 1) as i128;
         let tmp = e + max_bit;
         let tmp = tmp >> self.right_shift;
-        tmp - (max_bit >> self.right_shift)
+        let res =tmp - (max_bit >> self.right_shift);
+        assert!(res >= *quantization::MIN && res <= *quantization::MAX);
+        res
     }
 
     pub fn shape(&self) -> Vec<usize> {

@@ -4,6 +4,7 @@ use crate::{
     layers::{LayerCtx, LayerProof, PolyID, requant::Requant},
     quantization,
 };
+use crate::quantization::Quantizer;
 use anyhow::{Context, ensure};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
@@ -82,7 +83,7 @@ impl Dense {
 
     pub fn requant_info(&self) -> Requant {
         let ncols = self.matrix.ncols_2d();
-        let max_output_range = self
+        let (mins,maxs) :(Vec<_>,Vec<_>)= self
             .matrix
             .get_data()
             .iter()
@@ -94,18 +95,30 @@ impl Dense {
                     .map(|w| quantization::range_from_weight(w))
                     .fold((0, 0), |(min, max), (wmin, wmax)| (min + wmin, max + wmax));
                 // add the bias range - so take the weight corresponding to the row index
-                let bias_weight = &self.bias.get_data()[i];
+                let quantized_one = Element::from_f32_unsafe(&1.0);
+                let bias_weight = &self.bias.get_data()[i] * quantized_one;
                 let total_range = (row_range.0 + bias_weight, row_range.1 + bias_weight);
                 // weight * MIN can be positive and higher then MAX*weight if weight's negative
                 // so we take the absolute value of the difference
-                (total_range.1 - total_range.0).unsigned_abs() as usize
+                (total_range.0,total_range.1)
             })
-            .max()
-            .expect("No max range found")
-            .next_power_of_two();
-        let shift = max_output_range.ilog2() as usize - *quantization::BIT_LEN;
+            .unzip();
+
+        let global_min = mins.iter().min().unwrap();
+        let global_max = maxs.iter().max().unwrap();
+        let real_max_output_range = (global_max - global_min).unsigned_abs().next_power_of_two() as u32;
+        // range - shift = bit_len <=> shift = range - bit_len
+        let real_shift = real_max_output_range.ilog2() as usize - *quantization::BIT_LEN;
+        // * 2 because we want the full span, not only the positive half
+        let full_max_output_range = (1 << (*quantization::BIT_LEN * 2 + ncols.ilog2() as usize)) * 2;
+        // 14 + log(c) - shift = 7 // 8
+        // shift = 14 + log(c) - 7 // 8
+        let full_shift = (*quantization::BIT_LEN * 2 + ncols.ilog2() as usize) - *quantization::BIT_LEN/2;
+        let max_output_range = real_max_output_range;
+        let shift = real_shift;
+        println!("real_output_range: {}, max_output_range: {}, shift: {}", real_max_output_range.ilog2(), (full_max_output_range as u32).ilog2(), shift);
         Requant {
-            range: max_output_range,
+            range: max_output_range as usize,
             right_shift: shift,
             after_range: 1 << *quantization::BIT_LEN,
         }
