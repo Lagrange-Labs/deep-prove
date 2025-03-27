@@ -15,6 +15,7 @@ use crate::{
         pooling::Pooling,
         requant::{Requant, RequantProof},
     },
+    quantization::ScalingFactor,
     tensor::{ConvData, Tensor},
 };
 use activation::ActivationCtx;
@@ -117,6 +118,29 @@ impl Layer {
             Layer::Pooling(pooling) => pooling.step_info(id, aux),
         }
     }
+
+    // If a layer requires a requantization step the current layer, this method returns the
+    // next layer, e.g. requantization layer, as well as the scaling factor of the output. This is
+    // given to the next layer as input scaling factor.
+    // For example, a RELU doesn't need a requantization step afterwards but a dense layer does.
+    pub(crate) fn subsequent_requant_layer<F: ExtensionField>(
+        &self,
+        last_input_scaling_factor: ScalingFactor,
+    ) -> Option<(Layer, ScalingFactor)> {
+        match self {
+            Layer::Dense(ref d) => {
+                let (requant, output_scaling_factor) = d.requant_info(last_input_scaling_factor);
+                Some((Layer::Requant(requant), output_scaling_factor))
+            }
+            Layer::Convolution(ref d) => {
+                let (requant, output_scaling_factor) =
+                    d.requant_info::<F>(last_input_scaling_factor);
+                Some((Layer::Requant(requant), output_scaling_factor))
+            }
+            _ => None,
+        }
+    }
+
     /// Run the operation associated with that layer with the given input
     // TODO: move to tensor library : right now it works because we assume there is only Dense
     // layer which is matmul

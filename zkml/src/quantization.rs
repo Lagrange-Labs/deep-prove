@@ -1,10 +1,10 @@
 //! Module that takes care of (re)quantizing
+use derive_more::From;
 use ff_ext::ExtensionField;
 use goldilocks::SmallField;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
-use std::env;
-use tracing::debug;
+use std::{env};
 
 use crate::{Element, tensor::Tensor};
 
@@ -16,55 +16,110 @@ pub static BIT_LEN: Lazy<usize> = Lazy::new(|| {
         .unwrap_or(8) // Default value if env var is not set or invalid
 });
 
-// These values depend on BIT_LEN and need to be computed at runtime
-pub static MIN: Lazy<Element> = Lazy::new(|| -(1 << (*BIT_LEN - 1)));
+/// symmetric quantization range
+pub static MIN: Lazy<Element> = Lazy::new(|| -(1 << (*BIT_LEN - 1)) + 1 );
 pub static MAX: Lazy<Element> = Lazy::new(|| (1 << (*BIT_LEN - 1)) - 1);
 pub static ZERO: Lazy<Element> = Lazy::new(|| 0);
 
-/// Trait used to quantize original floating point number to integer
-pub trait Quantizer<Output> {
-    fn from_f32_unsafe(e: &f32) -> Output;
-    fn from_f32_unsafe_clamp(e: &f32, max_abs: f64) -> Output;
+/// Symmetric quantization scaling
+#[derive(Debug, Clone, From, Copy)]
+pub struct ScalingFactor {
+    abs_max: f32,
 }
 
-impl Quantizer<Element> for Element {
-    fn from_f32_unsafe(e: &f32) -> Self {
-        assert!(
-            *e >= -1.0 && *e <= 1.0,
-            "Input value must be between -1.0 and 1.0"
-        );
-        // even tho we are requantizing starting from Element, we only want to requantize for QuantInteger
-        // the reason we have these two types is to handle overflow
-        // (a -b) / 2^Q
-        let scale = (1.0 - (-1.0)) / (1 << *BIT_LEN) as f64;
-        let zero_point = 0;
+trait MinMax {
+    fn zero() -> Self;
+    fn absolute_value(&self) -> Self;
+    fn cmp_min(&self, other: Self) -> Self;
+    fn cmp_max(&self, other: Self) -> Self;
+    fn to_f32(&self) -> f32;
+}
 
-        // formula is q = round(r/S) + z
-        let scaled = (*e as f64 / scale).round() as Element + zero_point;
-        scaled as Element
+impl MinMax for f32 {
+    fn absolute_value(&self) -> Self {
+        self.abs()
+    }
+    fn zero() -> Self {
+        0.0
+    }  
+    fn cmp_min(&self, other: Self) -> Self {
+        self.min(other)
+    }
+    fn cmp_max(&self, other: Self) -> Self {
+        self.max(other)
+    }
+    fn to_f32(&self) -> f32 {
+        *self
+    }
+}
+
+impl MinMax for Element {
+    fn absolute_value(&self) -> Self {
+        self.abs()
+    }
+    fn cmp_min(&self, other: Self) -> Self {
+        std::cmp::min(*self, other)
+    }
+    fn cmp_max(&self, other: Self) -> Self {
+        std::cmp::max(*self, other)
+    }
+    fn zero() -> Self {
+        0
+    }
+    fn to_f32(&self) -> f32 {
+        *self as f32
+    }
+}
+impl ScalingFactor {
+    pub fn from_tensor<T: MinMax>(t: &Tensor<T>) -> Self {
+        let max_abs = t.get_data().iter().fold(T::zero(), |a, b| a.cmp_max(b.absolute_value()));
+        Self { abs_max: max_abs.to_f32() }
     }
 
-    fn from_f32_unsafe_clamp(e: &f32, max_abs: f64) -> Self {
-        let e = *e as f64;
-        assert!(
-            max_abs > 0.0,
-            "max_abs should be greater than zero. Domain range is between [-max_abs, max_abs]."
-        );
+    pub fn from_span(min: f32, max: f32) -> Self {
+        let abs_max = min.abs().max(max.abs());
+        Self { abs_max }
+    }
 
-        let scale = (2.0 * max_abs) / (*MAX - *MIN) as f64;
+    fn scale(&self) -> f32 {
+        (self.abs_max - ( - self.abs_max)) / (*MAX - *MIN) as f32
+    }
+
+    /// Derives the right shift to apply to values to requantize them
+    /// S_i = (a_i - b_i) / 2^Q = 2^k_i / 2^Q
+    /// So S1 * S2 / S3 = 2^k1 * 2^k2 * 2^Q / [2^k3 * 2^Q * 2^Q]
+    ///                 = 2^(k1 + k2 - k3 - Q)
+    ///                 = 2^{-n} where n = k3 + Q - k1 - k2
+    /// n is the number of bits to shift right
+    pub fn shift(&self, s2: Self, s3: Self) -> usize {
+        let full = self.scale() * s2.scale() / s3.scale();
+        assert!(
+            full >= 0.0 && full <= 1.0,
+            "Full is not in the range [0, 1]. This should not happen."
+        );
+        let exp = (-full.log2()).ceil() as usize;
+        exp
+    }
+
+    /// Take a floating point number and quantize it to an BIT_LEN-bit integer
+    pub fn quantize(&self, value: &f32) -> Element {
+        assert!(
+            *value >= -1.0 && *value <= 1.0,
+            "Input value must be between -1.0 and 1.0"
+        );
         let zero_point = 0;
 
         // formula is q = round(r/S) + z
-        let scaled = (e / scale).round() as Element + zero_point;
-        let scaled = scaled.clamp(*MIN, *MAX);
+        //let scaled =((value.clamp(self.min,self.max) - self.min) / self.scale()).round() * self.scale() + self.min;
+        let scaled = (*value / self.scale()).round() as Element + zero_point;
 
-        if e < -max_abs || e > max_abs {
-            debug!(
-                "Quantization: Value {} is out of [-{}, {}]. But quantized to {}.",
-                e, max_abs, max_abs, scaled
-            );
-        }
-        scaled as Element
+        scaled.clamp(*MIN, *MAX)
+    }
+}
+
+impl Default for ScalingFactor {
+    fn default() -> Self {
+        Self::from_span(-1.0, 1.0)
     }
 }
 
@@ -218,5 +273,13 @@ mod tests {
                 val, roundtrip
             );
         }
+    }
+
+    #[test]
+    fn test_scaling_factor() {
+        let s1 = ScalingFactor::from_span(0.8, -0.2);
+        let s2 = ScalingFactor::from_span(2.0, -2.0);
+        let s3 = ScalingFactor::from_span(128.0, -45.0);
+        s1.shift(s2, s3);
     }
 }

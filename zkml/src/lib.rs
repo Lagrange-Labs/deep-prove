@@ -13,6 +13,7 @@ pub use iop::{
     prover::Prover,
     verifier::{IO, verify},
 };
+pub use quantization::ScalingFactor;
 pub mod layers;
 pub mod lookup;
 pub mod model;
@@ -20,6 +21,7 @@ mod onnx_parse;
 pub use onnx_parse::{ModelType, load_model};
 
 pub mod tensor;
+pub use tensor::Tensor;
 #[cfg(test)]
 mod testing;
 
@@ -134,7 +136,7 @@ mod test {
     use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 
     use crate::{
-        Element, default_transcript,
+        default_transcript,
         iop::{
             Context,
             prover::Prover,
@@ -168,7 +170,7 @@ mod test {
         ModelType::MLP
             .validate(&filepath.to_string_lossy())
             .unwrap();
-        let model = load_model::<Element>(&filepath.to_string_lossy()).unwrap();
+        let model = load_model(&filepath.to_string_lossy()).unwrap();
         println!("[+] Loaded onnx file");
         let ctx = Context::<E>::generate(&model, None).expect("unable to generate context");
         println!("[+] Setup parameters");
@@ -218,8 +220,10 @@ static INIT: Once = Once::new();
 
 #[cfg(test)]
 pub fn init_test_logging() {
+    use tracing_subscriber::EnvFilter;
+
     INIT.call_once(|| {
-        // Initialize your logger only once
-        env_logger::try_init().ok(); // The .ok() ignores if it's already been initialized
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        tracing_subscriber::fmt().with_env_filter(filter).init();
     });
 }

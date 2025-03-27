@@ -12,7 +12,7 @@ use csv::WriterBuilder;
 use goldilocks::GoldilocksExt2;
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt};
-use zkml::{load_model, quantization::Quantizer};
+use zkml::{ScalingFactor, load_model};
 
 use serde::{Deserialize, Serialize};
 use zkml::{
@@ -37,17 +37,25 @@ struct Args {
     /// Number of samples to process
     #[arg(short, long, default_value_t = 30)]
     num_samples: usize,
+    /// Skip proving and verifying, only run inference and check accuracy
+    #[arg(short, long, default_value_t = false)]
+    skip_proving: bool,
 }
 
 pub fn main() -> anyhow::Result<()> {
-    // tracing_subscriber::fmt::init();
     let subscriber = fmt::Subscriber::builder()
         .with_env_filter(EnvFilter::from_default_env())
         .finish();
 
     tracing::subscriber::set_global_default(subscriber).expect("Failed to set global subscriber");
     let args = Args::parse();
-    run(args).context("error running bench:")?;
+
+    if args.skip_proving {
+        run_inference_only(args).context("error running inference-only bench:")?;
+    } else {
+        run(args).context("error running bench:")?;
+    }
+
     Ok(())
 }
 
@@ -92,7 +100,7 @@ impl InputJSON {
             .map(|input| {
                 input
                     .into_iter()
-                    .map(|e| Element::from_f32_unsafe(&(e as f32)))
+                    .map(|e| ScalingFactor::default().quantize(&(e as f32)))
                     .collect()
             })
             .collect();
@@ -102,7 +110,7 @@ impl InputJSON {
             .map(|output| {
                 output
                     .into_iter()
-                    .map(|e| Element::from_f32_unsafe(&(e as f32)))
+                    .map(|e| ScalingFactor::default().quantize(&(e as f32)))
                     .collect()
             })
             .collect();
@@ -119,7 +127,7 @@ const CSV_PROOF_SIZE: &str = "proof size (KB)";
 
 fn run(args: Args) -> anyhow::Result<()> {
     info!("[+] Reading onnx model");
-    let model = load_model::<Element>(&args.onnx)?;
+    let model = load_model(&args.onnx)?;
     info!("[+] Model loaded");
     model.describe();
     info!("[+] Reading input/output from pytorch");
@@ -175,6 +183,48 @@ fn run(args: Args) -> anyhow::Result<()> {
             verify::<_, _>(ctx.clone(), proof, io, &mut verifier_transcript).expect("invalid proof")
         });
         info!("[+] Verify proof: valid");
+
+        bencher.flush(&args.bench)?;
+        info!("[+] Benchmark results appended to {}", args.bench);
+    }
+
+    Ok(())
+}
+
+fn run_inference_only(args: Args) -> anyhow::Result<()> {
+    info!("[+] Reading onnx model");
+    let model = load_model(&args.onnx)?;
+    info!("[+] Model loaded");
+    model.describe();
+    info!("[+] Reading input/output from pytorch");
+    let (inputs, given_outputs) =
+        InputJSON::from(&args.io, args.num_samples).context("loading input:")?;
+
+    for (input, given_output) in inputs.into_iter().zip(given_outputs.into_iter()) {
+        let mut bencher = CSVBencher::from_headers(vec![
+            CSV_SETUP,
+            CSV_INFERENCE,
+            CSV_PROVING,
+            CSV_VERIFYING,
+            CSV_PROOF_SIZE,
+            CSV_ACCURACY,
+        ]);
+
+        // Set default values for skipped steps
+        bencher.set(CSV_SETUP, 0);
+        bencher.set(CSV_PROVING, 0);
+        bencher.set(CSV_VERIFYING, 0);
+        bencher.set(CSV_PROOF_SIZE, "0.000");
+
+        let input_tensor = model.load_input_flat(input);
+
+        info!("[+] Running inference");
+        let trace = bencher.r(CSV_INFERENCE, || model.run::<F>(input_tensor.clone()));
+        let output = trace.final_output().clone();
+        bencher.set(
+            CSV_ACCURACY,
+            compare(&given_output, &output.get_data().to_vec()),
+        );
 
         bencher.flush(&args.bench)?;
         info!("[+] Benchmark results appended to {}", args.bench);

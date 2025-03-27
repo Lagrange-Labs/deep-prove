@@ -4,7 +4,7 @@ use crate::{
     iop::verifier::Verifier,
     layers::LayerProof,
     lookup::logup_gkr::{prover::batch_prove as logup_batch_prove, verifier::verify_logup_proof},
-    quantization,
+    quantization::self,
 };
 use anyhow::anyhow;
 use ff::Field;
@@ -34,6 +34,10 @@ pub struct Requant {
     // what is the shift that needs to be applied to requantize input number to the correct range of QuantInteger.
     pub right_shift: usize,
     // this is the range we expect the values to be in pre shift
+    // This is a magnitude: e.g. [-4;8] gives range = 12.
+    // This is to make sure to offset the values to be positive integers before doing the shift
+    // That info is used to construct a lookup table for the requantization so the size of the lookup table
+    // is directly correlated to the range of the input data.
     pub range: usize,
     /// The range we want the values to be in post requantizing
     pub after_range: usize,
@@ -60,10 +64,13 @@ where
 }
 impl Requant {
     pub fn op(&self, input: &crate::tensor::Tensor<Element>) -> crate::tensor::Tensor<Element> {
-        crate::tensor::Tensor::<Element>::new(
-            input.get_shape(),
-            input.get_data().iter().map(|e| self.apply(e)).collect_vec(),
-        )
+        println!(
+            "BEFORE REQUANT: {:?}",
+            &input.get_data().iter().take(30).collect_vec()
+        );
+        let res = input.get_data().iter().map(|e| self.apply(e)).collect_vec();
+        println!("AFTER REQUANT: shift {} -> {:?}", self.right_shift,&res.iter().take(30).collect_vec());
+        crate::tensor::Tensor::<Element>::new(input.get_shape(), res)
     }
 
     pub(crate) fn step_info<E: ExtensionField>(
@@ -100,10 +107,13 @@ impl Requant {
     /// target bit width while preserving the relative magnitudes.
     #[inline(always)]
     pub fn apply(&self, e: &Element) -> Element {
-        let max_bit = (self.range << 1) as i128;
+        let max_bit = (self.range << 1) as Element;
         let tmp = e + max_bit;
+        assert!(tmp >= 0);
         let tmp = tmp >> self.right_shift;
-        tmp - (max_bit >> self.right_shift)
+        let res = tmp - (max_bit >> self.right_shift);
+        assert!(res >= *quantization::MIN && res <= *quantization::MAX);
+        res
     }
 
     pub fn shape(&self) -> Vec<usize> {
@@ -394,4 +404,112 @@ impl RequantCtx {
         // 4. return the input claim for to be proven at subsequent step
         Ok(Claim { point, eval })
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use ark_std::rand::rngs::StdRng;
+
+    use super::*;
+    use crate::quantization::range_from_weight;
+    use crate::tensor::Tensor;
+    use crate::ScalingFactor;
+
+    #[test]
+    fn test_requant_shift_element() {
+        let n = 10;
+        let v1 = Tensor::random_seed(vec![n],Some(15420));
+        let v2= Tensor::random_seed(vec![n],Some(1567892312));
+        assert!(v1.get_data().iter().all(|e| *e >= *quantization::MIN && *e <= *quantization::MAX));
+        assert!(v2.get_data().iter().all(|e| *e >= *quantization::MIN && *e <= *quantization::MAX));
+        let res = v1.mul(&v2);
+        let s1 = ScalingFactor::from_tensor(&v1);
+        let s2 = ScalingFactor::from_tensor(&v2);
+        let s_res = ScalingFactor::from_tensor(&res);
+        println!("v1: {:?}", v1.get_data());
+        println!("v2: {:?}", v2.get_data());
+        println!("res: {:?}", res.get_data());
+        println!("s1: {:?}", s1);
+        println!("s2: {:?}", s2);
+        println!("s_res: {:?}", s_res);
+        let shift = s1.shift(s2, s_res);
+        println!("shift: {:?}", shift);
+        let res_max = res.get_data().iter().max().unwrap();
+        let res_min = res.get_data().iter().min().unwrap();
+        let requant_info = Requant {
+            right_shift:  shift,
+            range: (res_max - res_min) as usize,
+            after_range: 1 << *quantization::BIT_LEN,
+        };
+        let res_requant = requant_info.op(&res);
+        println!("res_requant: {:?}", res_requant.get_data());
+    }
+
+    use ark_std::rand::SeedableRng;
+    use ark_std::rand::Rng;
+    #[test]
+    fn test_requant_shift_model_like() {
+        let n = 10;
+        let mut rng = StdRng::seed_from_u64(15420); 
+        let input_min = -1.0;
+        let input_max = 1.0;
+        println!("1");
+        let s_input = ScalingFactor::from_span(input_min, input_max);
+        let inputf :Vec<f32> = (0..n).map(|_| { rng.gen_range(input_min..=input_max) }).collect_vec();
+        let input: Vec<Element> = inputf.iter().map(|e| s_input.quantize(&e)).collect_vec();
+        let min_f32 = -0.2;
+        let max_f32 = 0.2;
+        println!("2");
+        let s_model = ScalingFactor::from_span(min_f32, max_f32);
+        println!("3");
+        let s_input = ScalingFactor::from_span(input_min, input_max);
+        println!("4");
+        let modelf :Vec<f32> = (0..n).map(|_| { rng.gen_range(min_f32..=max_f32) }).collect_vec();
+        let model :Vec<Element> = modelf.iter().map(|e| s_model.quantize(&e)).collect_vec();
+
+        let inputf = Tensor::new(vec![n], inputf);
+        let modelf  = Tensor::new(vec![n], modelf);
+        println!("5");
+        let resf = inputf.mul(&modelf);
+        println!("6");
+        let s_resf = ScalingFactor::from_tensor(&resf);
+        println!("7");
+        let input = Tensor::new(vec![n], input);
+        let model= Tensor::new(vec![n], model);
+        assert!(input.get_data().iter().all(|e| *e >= *quantization::MIN && *e <= *quantization::MAX));
+        assert!(model.get_data().iter().all(|e| *e >= *quantization::MIN && *e <= *quantization::MAX));
+        let (mins,maxs) : (Vec<_>,Vec<_>)= model.get_data().iter().map(|e| range_from_weight(e)).unzip();
+        let res_min = mins.iter().min().unwrap();
+        let res_max = maxs.iter().max().unwrap();
+        let s_res = ScalingFactor::from_span(*res_min as f32, *res_max as f32);
+        let res = input.mul(&model);
+        println!("input: {:?}", input.get_data());
+        println!("model: {:?}", model.get_data());
+        println!("res: {:?}", res.get_data());
+        println!("s1: {:?}", s_input);
+        println!("s2: {:?}", s_model);
+        println!("s_resf: {:?}", s_resf);
+        println!("s_res: {:?}", s_res);
+        let shift = s_input.shift(s_model, s_res);
+        let shiftf= s_input.shift(s_model, s_resf);
+        println!("shift: {:?}", shift);
+        let requant = Requant {
+            right_shift:  shift,
+            // theoretical res_max and res_min at this point ! since we dont know the input when we create requant
+            range: (res_max - res_min) as usize,
+            after_range: 1 << *quantization::BIT_LEN,
+        };
+        let res_requant = requant.op(&res);
+        let requant = Requant {
+            right_shift:  shiftf,
+            // theoretical res_max and res_min at this point ! since we dont know the input when we create requant
+            range: (res_max - res_min) as usize,
+            after_range: 1 << *quantization::BIT_LEN,
+        };
+        let res_requantf = requant.op(&res);
+        println!("res_requant: {:?}", res_requant.get_data());
+        println!("res_requantf: {:?}", res_requantf.get_data());
+        //assert!(res_requant.get_data().iter().filter(|r| **r == 0 || **r == -1).collect::<Vec<_>>().len() < res_requant.get_data().len());
+    }
+
 }

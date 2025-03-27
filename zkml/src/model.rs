@@ -1,11 +1,12 @@
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use tracing::info;
 
 use crate::{
     Element,
     layers::{Layer, LayerOutput},
-    quantization::TensorFielder,
+    quantization::{ScalingFactor, TensorFielder},
     tensor::{ConvData, Tensor},
 };
 
@@ -19,33 +20,34 @@ pub struct Model {
     input_not_padded: Vec<usize>,
     padded_in_shape: Vec<usize>,
     layers: Vec<Layer>,
+    // only used during creation of the model - this is not useful when the model is created / deserialized etc
+    last_input_scaling_factor: Option<ScalingFactor>,
 }
 
 impl Model {
     pub fn new() -> Self {
+        info!(
+            "Creating model with {} BIT_LEN quantization",
+            *crate::quantization::BIT_LEN
+        );
         Self {
             input_not_padded: Vec::new(),
             padded_in_shape: Vec::new(),
             layers: Default::default(),
+            last_input_scaling_factor: None,
         }
     }
+    /// Adds a layer to the model. The model may add additional layers by itself, e.g. requantization
+    /// layers.
     pub fn add_layer<F: ExtensionField>(&mut self, l: Layer) {
-        let after_layer = match l {
-            Layer::Dense(ref dense) => {
-                // append a requantization layer after
-                // NOTE: since we requantize at each dense step currently, we assume
-                // default quantization inputs for matrix and vector
-                Some(Layer::Requant(dense.requant_info()))
-            }
-            Layer::Convolution(ref filter) => Some(Layer::Requant(filter.requant_info::<F>())),
-            // Layer::Traditional_Convolution(ref filter) => {
-            // Some(Layer::Requant(Requant::from_matrix_default(filter)))
-            // }
-            _ => None,
-        };
+        let f = self.last_input_scaling_factor.take().unwrap_or_default();
+        // do we need a requantization step after this layer or not
+        let requant = l.subsequent_requant_layer::<F>(f);
         self.layers.push(l);
-        if let Some(ll) = after_layer {
-            self.layers.push(ll);
+        if let Some((requant, output_scaling_factor)) = requant {
+            self.layers.push(requant);
+            println!("MODEL: output scaling factor added : {:?}", output_scaling_factor);
+            self.last_input_scaling_factor = Some(output_scaling_factor);
         }
     }
 
@@ -298,7 +300,7 @@ pub(crate) mod test {
         dense::Dense,
         pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
     };
-    use ark_std::rand::{Rng, thread_rng};
+    use ark_std::rand::{thread_rng, Rng, RngCore};
     use ff_ext::ExtensionField;
     use goldilocks::GoldilocksExt2;
     use itertools::Itertools;
@@ -310,6 +312,7 @@ pub(crate) mod test {
 
     use crate::{
         Element, default_transcript,
+        model::ScalingFactor,
         quantization::TensorFielder,
         tensor::Tensor,
         testing::{NextPowerOfTwo, random_bool_vector, random_vector},
@@ -324,14 +327,17 @@ pub(crate) mod test {
     const MOD_SELECTOR: usize = 2;
 
     impl Model {
-        /// Returns a random model with specified number of dense layers and a matching input.
         pub fn random(num_dense_layers: usize) -> (Self, Tensor<Element>) {
-            let mut model = Model::new();
             let mut rng = thread_rng();
+            Model::random_with_rng(num_dense_layers, &mut rng)
+        }
+        /// Returns a random model with specified number of dense layers and a matching input.
+        pub fn random_with_rng<R: RngCore> (num_dense_layers: usize,rng: &mut R) -> (Self, Tensor<Element>) {
+            let mut model = Model::new();
             let mut last_row = rng.gen_range(3..15);
             for selector in 0..num_dense_layers {
-                if selector % MOD_SELECTOR == SELECTOR_DENSE {
-                    // if true {
+                // if selector % MOD_SELECTOR == SELECTOR_DENSE {
+                if true {
                     // last row becomes new column
                     let (nrows, ncols) = (rng.gen_range(3..15), last_row);
                     last_row = nrows;
@@ -555,7 +561,7 @@ pub(crate) mod test {
         let dense2 = Dense::random(vec![7, dense1.ncols()]).pad_next_power_of_two();
         let input = Tensor::random(vec![dense1.ncols()]);
         let output1 = dense1.op(&input);
-        let requant = dense1.requant_info();
+        let (requant, _) = dense1.requant_info(ScalingFactor::default());
         let requantized_output1 = requant.op(&output1);
         let final_output = dense2.op(&requantized_output1);
 
@@ -718,7 +724,7 @@ pub(crate) mod test {
         let conv2 = Tensor::new(vec![1024], w2.clone());
 
         let mut model = Model::new();
-        model.add_layer::<F>(Layer::Dense(Dense::new(conv1, conv2)));
+        model.add_layer::<F>(Layer::Dense(Dense::new_with_scaling(conv1, conv2, ScalingFactor::default())));
         model.describe();
         let input = Tensor::new(vec![1024], random_vector_quant(1024));
         let trace: crate::model::InferenceTrace<'_, _, GoldilocksExt2> =

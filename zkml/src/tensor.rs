@@ -559,10 +559,7 @@ where
             self.shape == other.shape,
             "Shape mismatch for multiplication."
         );
-        let mut data = vec![Default::default(); self.data.len()];
-        data.par_iter_mut().enumerate().for_each(|(i, val)| {
-            *val = self.data[i] * other.data[i];
-        });
+        let data = self.data.par_iter().zip(other.data.par_iter()).map(|(a, b)| *a * *b).collect::<Vec<_>>();
 
         Tensor {
             shape: self.shape.clone(),

@@ -1,3 +1,4 @@
+use crate::quantization::ScalingFactor;
 use crate::{
     Claim, Prover,
     iop::{context::ContextAux, verifier::Verifier},
@@ -28,6 +29,7 @@ pub(crate) const BIAS_POLY_ID: PolyID = 100_000;
 pub struct Dense {
     pub matrix: Tensor<Element>,
     pub bias: Tensor<Element>,
+    pub scaling: ScalingFactor,
 }
 
 /// Information stored in the context (setup phase) for this layer.
@@ -54,10 +56,16 @@ pub struct DenseProof<E: ExtensionField> {
 }
 
 impl Dense {
-    pub fn new(matrix: Tensor<Element>, bias: Tensor<Element>) -> Self {
+    //pub fn new(matrix: Tensor<Element>, bias: Tensor<Element>) -> Self {
+    //    assert_eq!(matrix.nrows_2d(), bias.get_shape()[0]);
+    //    Self { matrix, bias , scaling: ScalingFactor::default() }
+    //}
+
+    pub fn new_with_scaling(matrix: Tensor<Element>, bias: Tensor<Element>, scaling: ScalingFactor) -> Self {
         assert_eq!(matrix.nrows_2d(), bias.get_shape()[0]);
-        Self { matrix, bias }
+        Self { matrix, bias , scaling }
     }
+
     pub fn ncols(&self) -> usize {
         self.matrix.ncols_2d()
     }
@@ -77,12 +85,13 @@ impl Dense {
     pub fn pad_next_power_of_two(self) -> Self {
         let matrix = self.matrix.pad_next_power_of_two();
         let bias = self.bias.pad_1d(matrix.nrows_2d());
-        Self::new(matrix, bias)
+        Self::new_with_scaling(matrix, bias, self.scaling)
     }
 
-    pub fn requant_info(&self) -> Requant {
+    pub fn requant_info(&self, input_scaling_factor: ScalingFactor) -> (Requant, ScalingFactor){
         let ncols = self.matrix.ncols_2d();
-        let max_output_range = self
+        let model_1 = self.scaling.quantize(&1.0);
+        let (mins,maxs) :(Vec<_>,Vec<_>)= self
             .matrix
             .get_data()
             .iter()
@@ -93,22 +102,30 @@ impl Dense {
                 let row_range = row
                     .map(|w| quantization::range_from_weight(w))
                     .fold((0, 0), |(min, max), (wmin, wmax)| (min + wmin, max + wmax));
-                // add the bias range - so take the weight corresponding to the row index
-                let bias_weight = &self.bias.get_data()[i];
+                // add the bias rescaled to the same scale as the model 
+                let bias_weight = &self.bias.get_data()[i] * model_1;
                 let total_range = (row_range.0 + bias_weight, row_range.1 + bias_weight);
-                // weight * MIN can be positive and higher then MAX*weight if weight's negative
-                // so we take the absolute value of the difference
-                (total_range.1 - total_range.0).unsigned_abs() as usize
+                //let total_range = (row_range.0 , row_range.1);
+                (total_range.0,total_range.1)
+                //(total_range.0,total_range.0+10)
             })
-            .max()
-            .expect("No max range found")
-            .next_power_of_two();
-        let shift = max_output_range.ilog2() as usize - *quantization::BIT_LEN;
-        Requant {
-            range: max_output_range,
+            .unzip();
+
+        let output_min = mins.iter().min().unwrap();
+        let output_max = maxs.iter().max().unwrap();
+        let output_range = output_max - output_min;
+        let s1 = input_scaling_factor;
+        let s2 = self.scaling;
+        assert_eq!((*output_max as f32) as Element, *output_max, "we're loosing precision because of f32");
+        assert_eq!((*output_min as f32) as Element, *output_min, "we're loosing precision because of f32");
+        let s3 = ScalingFactor::from_span(*output_min as f32, *output_max as f32);
+        let shift = s1.shift(s2, s3);
+        println!("SHIFT DENSE s1={:?}, s2={:?},s3={:?} => shift={}", s1, s2, s3, shift);
+        (Requant {
+            range: output_range as usize,
             right_shift: shift,
             after_range: 1 << *quantization::BIT_LEN,
-        }
+        },s3)
     }
     pub fn prove_step<'b, E, T>(
         &self,
@@ -360,15 +377,19 @@ mod test {
             assert_eq!(shape.len(), 2);
             let (nrows, ncols) = (shape[0], shape[1]);
             let matrix = Tensor::random(vec![nrows, ncols]);
-            let bias = Tensor::random(vec![nrows]);
-            Self::new(matrix, bias)
+            //let bias = Tensor::random(vec![nrows]);
+            let bias = Tensor::zeros(vec![nrows]);
+            let min = matrix.get_data().iter().min().unwrap();
+            let max = matrix.get_data().iter().max().unwrap();
+            let scaling = ScalingFactor::from_span(*min as f32, *max as f32);
+            println!("random dense layer scaling: {:?}", scaling);
+            Self::new_with_scaling(matrix, bias, scaling)
         }
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::quantization::Quantizer;
 
         #[test]
         fn test_dense_pad_next_power_of_two() {
@@ -381,7 +402,7 @@ mod test {
 
             let bias = Tensor::<Element>::new(vec![3], vec![10, 11, 12]);
 
-            let dense = Dense::new(matrix, bias);
+            let dense = Dense::new_with_scaling(matrix, bias, ScalingFactor::default());
 
             // Pad to next power of two
             let padded = dense.pad_next_power_of_two();
@@ -427,7 +448,7 @@ mod test {
 
             let bias = Tensor::<Element>::new(vec![4], vec![20, 21, 22, 23]);
 
-            let dense = Dense::new(matrix, bias);
+            let dense = Dense::new_with_scaling(matrix, bias, ScalingFactor::default());
 
             // Pad to next power of two
             let padded = dense.clone().pad_next_power_of_two();
@@ -463,7 +484,7 @@ mod test {
 
             let bias = Tensor::<Element>::new(vec![3], vec![20, 21, 22]);
 
-            let dense = Dense::new(matrix, bias);
+            let dense = Dense::new_with_scaling(matrix, bias,ScalingFactor::default());
 
             // Pad to next power of two
             let padded = dense.pad_next_power_of_two();
@@ -498,7 +519,7 @@ mod test {
             // Quantize the input
             let quantized_input: Vec<Element> = input_data
                 .iter()
-                .map(|x| Element::from_f32_unsafe(x))
+                .map(|x| ScalingFactor::default().quantize(x))
                 .collect();
 
             // Create a Dense layer
@@ -507,7 +528,7 @@ mod test {
 
             let bias = Tensor::<Element>::new(vec![2], vec![10, 11]);
 
-            let dense = Dense::new(matrix, bias);
+            let dense = Dense::new_with_scaling(matrix, bias, ScalingFactor::default());
 
             // Pad the dense layer
             let padded = dense.clone().pad_next_power_of_two();
