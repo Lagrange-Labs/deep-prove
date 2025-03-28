@@ -41,6 +41,14 @@ pub enum Padding {
         left: usize,
         right: usize,
     },
+    /// Like [`Padding::Zeroes`] but  with a constant value instead of zero
+    Constant {
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+        constant: u64,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -102,13 +110,31 @@ impl Padding {
         }
     }
 
+    /// Creates a new instance of [`Padding::Constant`]
+    pub fn new_constant(
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+        constant: u64,
+    ) -> Padding {
+        Padding::Constant {
+            top,
+            bottom,
+            left,
+            right,
+            constant,
+        }
+    }
+
     /// Getter for the top padding size
     pub fn top(&self) -> usize {
         match self {
             Padding::Zeroes { top, .. }
             | Padding::Reflective { top, .. }
             | Padding::Replication { top, .. }
-            | Padding::Circular { top, .. } => *top,
+            | Padding::Circular { top, .. }
+            | Padding::Constant { top, .. } => *top,
         }
     }
 
@@ -118,7 +144,8 @@ impl Padding {
             Padding::Zeroes { bottom, .. }
             | Padding::Reflective { bottom, .. }
             | Padding::Replication { bottom, .. }
-            | Padding::Circular { bottom, .. } => *bottom,
+            | Padding::Circular { bottom, .. }
+            | Padding::Constant { bottom, .. } => *bottom,
         }
     }
 
@@ -128,7 +155,8 @@ impl Padding {
             Padding::Zeroes { left, .. }
             | Padding::Reflective { left, .. }
             | Padding::Replication { left, .. }
-            | Padding::Circular { left, .. } => *left,
+            | Padding::Circular { left, .. }
+            | Padding::Constant { left, .. } => *left,
         }
     }
 
@@ -138,12 +166,13 @@ impl Padding {
             Padding::Zeroes { right, .. }
             | Padding::Reflective { right, .. }
             | Padding::Replication { right, .. }
-            | Padding::Circular { right, .. } => *right,
+            | Padding::Circular { right, .. }
+            | Padding::Constant { right, .. } => *right,
         }
     }
 
     /// Pads a [`Tensor`] with a padding scheme
-    pub fn pad_tensor<T: Default + Clone + std::fmt::Debug>(
+    pub fn pad_tensor<T: Default + Clone + From<u64>>(
         &self,
         tensor: &Tensor<T>,
     ) -> Result<Tensor<T>, PaddingError> {
@@ -206,7 +235,7 @@ impl Padding {
 impl Padding {
     /// This method takes a slice of data that is assumed to represent a matrix together with the matrix's dimensions
     /// and pads the data, returning it as vector.
-    fn pad_matrix_data<T: Default + Clone + std::fmt::Debug>(
+    fn pad_matrix_data<T: Default + Clone + From<u64>>(
         &self,
         data: &[T],
         shape: &[usize],
@@ -262,11 +291,23 @@ impl Padding {
     }
 
     /// Takes a column and pads it depending on the padding variant
-    fn pad_column<T: Default + Clone>(&self, column: &[T]) -> Result<Vec<T>, PaddingError> {
+    fn pad_column<T: Default + Clone + From<u64>>(
+        &self,
+        column: &[T],
+    ) -> Result<Vec<T>, PaddingError> {
         match self {
             Padding::Zeroes { top, bottom, .. } => Ok(std::iter::repeat_n(T::default(), *top)
                 .chain(column.iter().cloned())
                 .chain(std::iter::repeat_n(T::default(), *bottom))
+                .collect::<Vec<T>>()),
+            Padding::Constant {
+                top,
+                bottom,
+                constant,
+                ..
+            } => Ok(std::iter::repeat_n(T::from(*constant), *top)
+                .chain(column.iter().cloned())
+                .chain(std::iter::repeat_n(T::from(*constant), *bottom))
                 .collect::<Vec<T>>()),
             Padding::Reflective { top, bottom, .. } => {
                 // We need to check that the column size is at least as long as top and bottom
@@ -328,11 +369,20 @@ impl Padding {
     }
 
     /// Takes a column and pads it depending on the padding variant
-    fn pad_row<T: Default + Clone>(&self, row: &[T]) -> Result<Vec<T>, PaddingError> {
+    fn pad_row<T: Default + Clone + From<u64>>(&self, row: &[T]) -> Result<Vec<T>, PaddingError> {
         match self {
             Padding::Zeroes { left, right, .. } => Ok(std::iter::repeat_n(T::default(), *left)
                 .chain(row.iter().cloned())
                 .chain(std::iter::repeat_n(T::default(), *right))
+                .collect::<Vec<T>>()),
+            Padding::Constant {
+                left,
+                right,
+                constant,
+                ..
+            } => Ok(std::iter::repeat_n(T::from(*constant), *left)
+                .chain(row.iter().cloned())
+                .chain(std::iter::repeat_n(T::from(*constant), *right))
                 .collect::<Vec<T>>()),
             Padding::Reflective { left, right, .. } => {
                 // We need to check that the column size is at least as long as top and bottom
@@ -406,6 +456,7 @@ mod tests {
             TestCase::Reflective,
             TestCase::Replication,
             TestCase::Circular,
+            TestCase::Constant,
         ] {
             padding_test_helper(case)?;
         }
@@ -417,6 +468,7 @@ mod tests {
         Reflective,
         Replication,
         Circular,
+        Constant,
     }
 
     impl TestCase {
@@ -426,6 +478,7 @@ mod tests {
                 TestCase::Reflective => Padding::new_reflective(top, bottom, left, right),
                 TestCase::Replication => Padding::new_replication(top, bottom, left, right),
                 TestCase::Circular => Padding::new_circular(top, bottom, left, right),
+                TestCase::Constant => Padding::new_constant(top, bottom, left, right, 103),
             }
         }
 
@@ -434,6 +487,11 @@ mod tests {
                 TestCase::Zeroes => vec![
                     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 6, 0, 0, 0, 0, 1, 4, 7,
                     0, 0, 0, 0, 2, 5, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                ],
+                TestCase::Constant => vec![
+                    103, 103, 103, 103, 103, 103, 103, 103, 103, 103, 103, 103, 103, 103, 103, 103,
+                    0, 3, 6, 103, 103, 103, 103, 1, 4, 7, 103, 103, 103, 103, 2, 5, 8, 103, 103,
+                    103, 103, 103, 103, 103, 103, 103, 103, 103, 103, 103, 103, 103, 103,
                 ],
                 TestCase::Reflective => vec![
                     8, 5, 2, 5, 8, 5, 2, 7, 4, 1, 4, 7, 4, 1, 6, 3, 0, 3, 6, 3, 0, 7, 4, 1, 4, 7,
@@ -455,6 +513,10 @@ mod tests {
                 TestCase::Zeroes => vec![
                     0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 6, 0, 0, 0, 1, 4, 7, 0, 0, 0, 2, 5, 8, 0,
                 ],
+                TestCase::Constant => vec![
+                    103, 103, 103, 103, 103, 103, 103, 103, 0, 3, 6, 103, 103, 103, 1, 4, 7, 103,
+                    103, 103, 2, 5, 8, 103,
+                ],
                 TestCase::Reflective => vec![
                     7, 4, 1, 4, 7, 4, 6, 3, 0, 3, 6, 3, 7, 4, 1, 4, 7, 4, 8, 5, 2, 5, 8, 5,
                 ],
@@ -473,6 +535,7 @@ mod tests {
                 TestCase::Reflective => "Reflective".to_string(),
                 TestCase::Replication => "Replication".to_string(),
                 TestCase::Circular => "Circular".to_string(),
+                TestCase::Constant => "Constant 103".to_string(),
             }
         }
     }
