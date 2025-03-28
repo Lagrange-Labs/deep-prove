@@ -1,6 +1,7 @@
 pub mod activation;
 pub mod convolution;
 pub mod dense;
+pub mod padding;
 pub mod pooling;
 pub mod requant;
 
