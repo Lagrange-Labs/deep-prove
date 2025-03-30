@@ -6,9 +6,10 @@ use std::{
     fmt::{Display, Formatter, Result as FmtResult},
 };
 
+use crate::{commit::compute_betas_eval, tensor::Tensor};
 use ark_std::Zero;
 
-use crate::tensor::Tensor;
+use ff_ext::ExtensionField;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 /// Enum used to distinguish between the various types of padding.
@@ -229,6 +230,210 @@ impl Padding {
             .chain([new_height, new_width])
             .collect::<Vec<usize>>())
     }
+
+    /// This method returns the MLEs of the matrices we multiply by on the left and right hand side with the correct number of variables fixed
+    /// depending on the claim.
+    pub fn get_fixed_mles<E: ExtensionField>(
+        &self,
+        input_shape: &[usize],
+        point: &[E],
+    ) -> Result<[Vec<E>; 2], PaddingError> {
+        // Check that the input shape is at least two dimensional
+        let dimension = input_shape.len();
+
+        if dimension < 2 {
+            return Err(PaddingError::ParameterError(format!(
+                "Input has to be at least two dimensional, got a {} dimensional input shape",
+                dimension
+            )));
+        }
+
+        let columns = input_shape[dimension - 1];
+        let rows = input_shape[dimension - 2];
+
+        // We also check that the point is of the correct length. It should have `(top + columns + bottom).next_power_of_two().ilog2() + (left + rows + right).next_power_of_two().ilog2()` variables.
+        let left_variables = (self.top() + columns + self.bottom())
+            .next_power_of_two()
+            .ilog2() as usize;
+        let right_variables = (self.left() + rows + self.right())
+            .next_power_of_two()
+            .ilog2() as usize;
+
+        if point.len() != left_variables + right_variables {
+            return Err(PaddingError::ParameterError(format!(
+                "Cannot fix padding polynomials, provided point has {} variables, expected: {}",
+                point.len(),
+                left_variables + right_variables
+            )));
+        }
+
+        // Compute the left ang right beta poly evals
+        let left_beta_eval = compute_betas_eval(&point[..left_variables]);
+        let right_beta_eval = compute_betas_eval(&point[left_variables..]);
+
+        match *self {
+            Padding::Zeroes { top, left, .. } | Padding::Constant { top, left, .. } => {
+                let left_evals = (0..rows)
+                    .map(|i| left_beta_eval[top + i])
+                    .chain(std::iter::repeat(E::ZERO))
+                    .take(rows.next_power_of_two())
+                    .collect::<Vec<E>>();
+                let right_evals = (0..columns)
+                    .map(|i| right_beta_eval[left + i])
+                    .chain(std::iter::repeat(E::ZERO))
+                    .take(columns.next_power_of_two())
+                    .collect::<Vec<E>>();
+                Ok([left_evals, right_evals])
+            }
+            Padding::Replication {
+                top,
+                bottom,
+                left,
+                right,
+            } => {
+                let left_evals = (0..rows)
+                    .map(|i| {
+                        if i == 0 {
+                            left_beta_eval.iter().take(top + 1).sum::<E>()
+                        } else if i == rows - 1 {
+                            left_beta_eval
+                                .iter()
+                                .skip(top + rows - 1)
+                                .take(bottom + 1)
+                                .sum::<E>()
+                        } else {
+                            left_beta_eval[top + i]
+                        }
+                    })
+                    .chain(std::iter::repeat(E::ZERO))
+                    .take(rows.next_power_of_two())
+                    .collect::<Vec<E>>();
+
+                let right_evals = (0..columns)
+                    .map(|i| {
+                        if i == 0 {
+                            right_beta_eval.iter().take(left + 1).sum::<E>()
+                        } else if i == columns - 1 {
+                            right_beta_eval
+                                .iter()
+                                .skip(left + columns - 1)
+                                .take(right + 1)
+                                .sum::<E>()
+                        } else {
+                            right_beta_eval[left + i]
+                        }
+                    })
+                    .chain(std::iter::repeat(E::ZERO))
+                    .take(columns.next_power_of_two())
+                    .collect::<Vec<E>>();
+                Ok([left_evals, right_evals])
+            }
+            Padding::Reflective {
+                top,
+                bottom,
+                left,
+                right,
+            } => {
+                if rows <= top || rows <= bottom {
+                    return Err(PaddingError::ParameterError(format!(
+                        "Cannot reflective pad if top: {} or bottom: {} is geq to input rows: {}",
+                        top, bottom, rows
+                    )));
+                }
+
+                if columns <= left || columns <= right {
+                    return Err(PaddingError::ParameterError(format!(
+                        "Cannot reflective pad if left: {} or right: {} is geq to input columns: {}",
+                        left, right, columns
+                    )));
+                }
+
+                let left_evals = (0..rows)
+                    .map(|i| {
+                        let top_part = left_beta_eval[..top]
+                            .get(top - i)
+                            .copied()
+                            .unwrap_or(E::ZERO);
+                        let middle_part = left_beta_eval[top + i];
+                        let bottom_part = left_beta_eval
+                            .iter()
+                            .skip(top + rows)
+                            .take(bottom)
+                            .rev()
+                            .copied()
+                            .collect::<Vec<E>>()
+                            .get(i)
+                            .copied()
+                            .unwrap_or(E::ZERO);
+                        top_part + middle_part + bottom_part
+                    })
+                    .chain(std::iter::repeat(E::ZERO))
+                    .take(rows.next_power_of_two())
+                    .collect::<Vec<E>>();
+
+                let right_evals = (0..columns)
+                    .map(|i| {
+                        let left_part = right_beta_eval[..left]
+                            .get(left - i)
+                            .copied()
+                            .unwrap_or(E::ZERO);
+                        let middle_part = right_beta_eval[top + i];
+                        let right_part = right_beta_eval
+                            .iter()
+                            .skip(left + columns)
+                            .take(right)
+                            .rev()
+                            .copied()
+                            .collect::<Vec<E>>()
+                            .get(i)
+                            .copied()
+                            .unwrap_or(E::ZERO);
+                        left_part + middle_part + right_part
+                    })
+                    .chain(std::iter::repeat(E::ZERO))
+                    .take(columns.next_power_of_two())
+                    .collect::<Vec<E>>();
+
+                Ok([left_evals, right_evals])
+            }
+            Padding::Circular {
+                top,
+                bottom,
+                left,
+                right,
+            } => {
+                let left_evals = (0..rows)
+                    .map(|i| {
+                        let initial_skip = (top + i) % rows;
+                        left_beta_eval
+                            .iter()
+                            .take(top + rows + bottom)
+                            .skip(initial_skip)
+                            .step_by(rows)
+                            .sum::<E>()
+                    })
+                    .chain(std::iter::repeat(E::ZERO))
+                    .take(rows.next_power_of_two())
+                    .collect::<Vec<E>>();
+
+                let right_evals = (0..columns)
+                    .map(|i| {
+                        let initial_skip = (left + i) % columns;
+                        right_beta_eval
+                            .iter()
+                            .take(left + columns + right)
+                            .skip(initial_skip)
+                            .step_by(columns)
+                            .sum::<E>()
+                    })
+                    .chain(std::iter::repeat(E::ZERO))
+                    .take(columns.next_power_of_two())
+                    .collect::<Vec<E>>();
+
+                Ok([left_evals, right_evals])
+            }
+        }
+    }
 }
 
 // Internal methods for the `Padding` enum
@@ -445,7 +650,13 @@ impl Padding {
 
 #[cfg(test)]
 mod tests {
-    use crate::Element;
+    use ark_std::rand::thread_rng;
+
+    use goldilocks::GoldilocksExt2;
+
+    use multilinear_extensions::mle::MultilinearExtension;
+
+    use crate::{Element, quantization::TensorFielder};
 
     use super::*;
 
@@ -689,5 +900,93 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn test_padding_mles() -> Result<(), PaddingError> {
+        for case in [
+            TestCase::Zeroes,
+            TestCase::Reflective,
+            TestCase::Replication,
+            TestCase::Circular,
+            TestCase::Constant,
+        ] {
+            test_mle_helper::<GoldilocksExt2>(case)?;
+        }
+        Ok(())
+    }
+
+    fn test_mle_helper<E: ExtensionField>(case: TestCase) -> Result<(), PaddingError> {
+        let mut rng = thread_rng();
+        let input_shape = vec![3, 3];
+        let input_data: Vec<Element> = vec![0, 3, 6, 1, 4, 7, 2, 5, 8];
+
+        let input_tensor: Tensor<E> =
+            Tensor::<Element>::new(input_shape.clone(), input_data.clone())
+                .pad_next_power_of_two()
+                .to_fields();
+
+        let expected_output_shape = vec![7, 7];
+        let expected_output_data: Vec<Element> = case.expected_symmetric_result();
+
+        let expected_output_tensor: Tensor<Element> =
+            Tensor::<Element>::new(expected_output_shape.clone(), expected_output_data.clone())
+                .pad_next_power_of_two();
+
+        let padding = case.make_padding(2, 2, 2, 2);
+
+        let expected_output_mle = expected_output_tensor.to_mle_2d::<E>();
+
+        let point = (0..expected_output_mle.num_vars())
+            .map(|_| E::random(&mut rng))
+            .collect::<Vec<E>>();
+
+        let [left_evals, right_evals]: [Vec<E>; 2] =
+            padding.get_fixed_mles::<E>(&input_shape, &point)?;
+
+        let output_eval = expected_output_mle.evaluate(&point);
+
+        let mut calculated_eval = (0usize..16).fold(E::ZERO, |acc, i| {
+            acc + (left_evals[i % 4] * input_tensor.get_data()[i] * right_evals[i / 4])
+        });
+
+        if let TestCase::Constant = case {
+            calculated_eval += calc_constant_eval(&point, padding, 3, 3);
+        }
+
+        if calculated_eval != output_eval {
+            Err(PaddingError::ParameterError(format!(
+                "Sum of padding MLE evaluations with input: {:?} did not equal the Padded MLE evaluation: {:?} for case {}",
+                calculated_eval,
+                output_eval,
+                case.name()
+            )))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn calc_constant_eval<E: ExtensionField>(
+        point: &[E],
+        padding: Padding,
+        input_rows: usize,
+        input_columns: usize,
+    ) -> E {
+        let betas_eval = compute_betas_eval(point);
+
+        betas_eval
+            .into_iter()
+            .enumerate()
+            .fold(E::ZERO, |acc, (i, val)| {
+                let column = i / 8;
+                let row = i % 8;
+                let zero_col = column >= padding.left() && column < padding.left() + input_columns;
+                let zero_val = row >= padding.top() && row < padding.top() + input_rows;
+                if (zero_val & zero_col) || column == 7 || row == 7 {
+                    acc
+                } else {
+                    acc + E::from(103) * val
+                }
+            })
     }
 }
