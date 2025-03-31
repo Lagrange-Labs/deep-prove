@@ -6,10 +6,13 @@ use std::{
     fmt::{Display, Formatter, Result as FmtResult},
 };
 
-use crate::{commit::compute_betas_eval, tensor::Tensor};
+use crate::{Claim, Prover, commit::compute_betas_eval, tensor::Tensor};
 use ark_std::Zero;
 
 use ff_ext::ExtensionField;
+use multilinear_extensions::mle::{DenseMultilinearExtension, IntoMLE};
+use serde::{Serialize, de::DeserializeOwned};
+use transcript::Transcript;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 /// Enum used to distinguish between the various types of padding.
@@ -20,6 +23,8 @@ pub enum Padding {
         bottom: usize,
         left: usize,
         right: usize,
+        input_rows: usize,
+        input_columns: usize,
     },
     /// Pads in a reflective manner
     Reflective {
@@ -27,6 +32,8 @@ pub enum Padding {
         bottom: usize,
         left: usize,
         right: usize,
+        input_rows: usize,
+        input_columns: usize,
     },
     /// Pads by replicating input boundaries
     Replication {
@@ -34,6 +41,8 @@ pub enum Padding {
         bottom: usize,
         left: usize,
         right: usize,
+        input_rows: usize,
+        input_columns: usize,
     },
     /// Pads by circulating through the input
     Circular {
@@ -41,6 +50,8 @@ pub enum Padding {
         bottom: usize,
         left: usize,
         right: usize,
+        input_rows: usize,
+        input_columns: usize,
     },
     /// Like [`Padding::Zeroes`] but  with a constant value instead of zero
     Constant {
@@ -49,6 +60,8 @@ pub enum Padding {
         left: usize,
         right: usize,
         constant: u64,
+        input_rows: usize,
+        input_columns: usize,
     },
 }
 
@@ -72,42 +85,78 @@ impl Display for PaddingError {
 
 impl Padding {
     /// Creates a new instance of [`Padding::Zeroes`]
-    pub fn new_zeroes(top: usize, bottom: usize, left: usize, right: usize) -> Padding {
+    pub fn new_zeroes(
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+        input_rows: usize,
+        input_columns: usize,
+    ) -> Padding {
         Padding::Zeroes {
             top,
             bottom,
             left,
             right,
+            input_rows,
+            input_columns,
         }
     }
 
     /// Creates a new instance of [`Padding::Reflective`]
-    pub fn new_reflective(top: usize, bottom: usize, left: usize, right: usize) -> Padding {
+    pub fn new_reflective(
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+        input_rows: usize,
+        input_columns: usize,
+    ) -> Padding {
         Padding::Reflective {
             top,
             bottom,
             left,
             right,
+            input_rows,
+            input_columns,
         }
     }
 
     /// Creates a new instance of [`Padding::Replication`]
-    pub fn new_replication(top: usize, bottom: usize, left: usize, right: usize) -> Padding {
+    pub fn new_replication(
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+        input_rows: usize,
+        input_columns: usize,
+    ) -> Padding {
         Padding::Replication {
             top,
             bottom,
             left,
             right,
+            input_rows,
+            input_columns,
         }
     }
 
     /// Creates a new instance of [`Padding::Circular`]
-    pub fn new_circular(top: usize, bottom: usize, left: usize, right: usize) -> Padding {
+    pub fn new_circular(
+        top: usize,
+        bottom: usize,
+        left: usize,
+        right: usize,
+        input_rows: usize,
+        input_columns: usize,
+    ) -> Padding {
         Padding::Circular {
             top,
             bottom,
             left,
             right,
+            input_rows,
+            input_columns,
         }
     }
 
@@ -118,6 +167,8 @@ impl Padding {
         left: usize,
         right: usize,
         constant: u64,
+        input_rows: usize,
+        input_columns: usize,
     ) -> Padding {
         Padding::Constant {
             top,
@@ -125,6 +176,8 @@ impl Padding {
             left,
             right,
             constant,
+            input_rows,
+            input_columns,
         }
     }
 
@@ -172,6 +225,38 @@ impl Padding {
         }
     }
 
+    /// Getter for the number of rows of the input
+    pub fn input_rows(&self) -> usize {
+        match self {
+            Padding::Zeroes { input_rows, .. }
+            | Padding::Reflective { input_rows, .. }
+            | Padding::Replication { input_rows, .. }
+            | Padding::Circular { input_rows, .. }
+            | Padding::Constant { input_rows, .. } => *input_rows,
+        }
+    }
+
+    /// Getter for the number of columns of the input
+    pub fn input_columns(&self) -> usize {
+        match self {
+            Padding::Zeroes { input_columns, .. }
+            | Padding::Reflective { input_columns, .. }
+            | Padding::Replication { input_columns, .. }
+            | Padding::Circular { input_columns, .. }
+            | Padding::Constant { input_columns, .. } => *input_columns,
+        }
+    }
+
+    /// Returns the number of variables the left matrix MLE has after fixing the columns
+    pub fn left_variables(&self) -> usize {
+        self.input_rows().next_power_of_two().ilog2() as usize
+    }
+
+    /// Returns the number of variables the right matrix MLE has after fixing the rows
+    pub fn right_variables(&self) -> usize {
+        self.input_columns().next_power_of_two().ilog2() as usize
+    }
+
     /// Pads a [`Tensor`] with a padding scheme
     pub fn pad_tensor<T: Default + Clone + From<u64>>(
         &self,
@@ -185,22 +270,32 @@ impl Padding {
                 "Cannot pad a tensor that has fewer than two dimensions".to_string(),
             ));
         }
+        // Check the provided shape agrees with the expected number of columns and rows
+        if shape[num_dims - 2] != self.input_rows() {
+            return Err(PaddingError::ParameterError(format!(
+                "Input tensor shape incorrect, expected {} rows but input tensor had {} rows",
+                self.input_rows(),
+                shape[num_dims - 2]
+            )));
+        }
+
+        if shape[num_dims - 1] != self.input_columns() {
+            return Err(PaddingError::ParameterError(format!(
+                "Input tensor shape incorrect, expected {} columns but input tensor had {} columns",
+                self.input_columns(),
+                shape[num_dims - 1]
+            )));
+        }
 
         // If the shape only has two dimensions we shortcut directly to the matrix pad method
         // We work out the size of each matrix
 
-        let chunk_size = shape.iter().skip(num_dims - 2).product::<usize>();
-        // We check that the height and width isn't zero
-        if chunk_size == 0 {
-            return Err(PaddingError::ParameterError(
-                "One of height or width is zero so cannot pad".to_string(),
-            ));
-        }
+        let chunk_size = self.input_rows() * self.input_columns();
 
         let padded_data = tensor
             .get_data()
             .chunks(chunk_size)
-            .map(|chunk| self.pad_matrix_data(chunk, &[shape[num_dims - 2], shape[num_dims - 1]]))
+            .map(|chunk| self.pad_matrix_data(chunk))
             .collect::<Result<Vec<Vec<T>>, PaddingError>>()?
             .concat();
 
@@ -219,9 +314,25 @@ impl Padding {
                     .to_string(),
             ));
         }
+        // Check the provided shape agrees with the expected number of columns and rows
+        if shape[num_dims - 2] != self.input_rows() {
+            return Err(PaddingError::ParameterError(format!(
+                "Input tensor shape incorrect, expected {} rows but input tensor had {} rows",
+                self.input_rows(),
+                shape[num_dims - 2]
+            )));
+        }
 
-        let new_height = shape[num_dims - 2] + self.top() + self.bottom();
-        let new_width = shape[num_dims - 1] + self.left() + self.right();
+        if shape[num_dims - 1] != self.input_columns() {
+            return Err(PaddingError::ParameterError(format!(
+                "Input tensor shape incorrect, expected {} columns but input tensor had {} columns",
+                self.input_columns(),
+                shape[num_dims - 1]
+            )));
+        }
+
+        let new_height = self.input_columns() + self.top() + self.bottom();
+        let new_width = self.input_rows() + self.left() + self.right();
 
         Ok(shape
             .iter()
@@ -235,21 +346,10 @@ impl Padding {
     /// depending on the claim.
     pub fn get_fixed_mles<E: ExtensionField>(
         &self,
-        input_shape: &[usize],
         point: &[E],
     ) -> Result<[Vec<E>; 2], PaddingError> {
-        // Check that the input shape is at least two dimensional
-        let dimension = input_shape.len();
-
-        if dimension < 2 {
-            return Err(PaddingError::ParameterError(format!(
-                "Input has to be at least two dimensional, got a {} dimensional input shape",
-                dimension
-            )));
-        }
-
-        let columns = input_shape[dimension - 1];
-        let rows = input_shape[dimension - 2];
+        let columns = self.input_columns();
+        let rows = self.input_rows();
 
         // We also check that the point is of the correct length. It should have `(top + columns + bottom).next_power_of_two().ilog2() + (left + rows + right).next_power_of_two().ilog2()` variables.
         let left_variables = (self.top() + columns + self.bottom())
@@ -290,6 +390,7 @@ impl Padding {
                 bottom,
                 left,
                 right,
+                ..
             } => {
                 let left_evals = (0..rows)
                     .map(|i| {
@@ -333,6 +434,7 @@ impl Padding {
                 bottom,
                 left,
                 right,
+                ..
             } => {
                 if rows <= top || rows <= bottom {
                     return Err(PaddingError::ParameterError(format!(
@@ -401,6 +503,7 @@ impl Padding {
                 bottom,
                 left,
                 right,
+                ..
             } => {
                 let left_evals = (0..rows)
                     .map(|i| {
@@ -434,6 +537,31 @@ impl Padding {
             }
         }
     }
+
+    pub fn prove_step<'b, E, T>(
+        &self,
+        prover: &mut Prover<E, T>,
+        last_claim: Claim<E>,
+        input: &Tensor<E>,
+        output: &Tensor<E>,
+    ) -> Result<Claim<E>, PaddingError>
+    where
+        E: ExtensionField + Serialize + DeserializeOwned,
+        E::BaseField: Serialize + DeserializeOwned,
+        T: Transcript<E>,
+    {
+        // Store a reference to the last_claim point
+        let point = &last_claim.point;
+
+        // Get the left and right MLEs for the sumcheck.
+        let [left_evals, right_evals]: [Vec<E>; 2] = self.get_fixed_mles::<E>(point)?;
+
+        // Turn the evaluations into MLEs
+        let left_mle: DenseMultilinearExtension<E> = left_evals.into_mle();
+        let right_mle: DenseMultilinearExtension<E> = right_evals.into_mle();
+
+        todo!()
+    }
 }
 
 // Internal methods for the `Padding` enum
@@ -443,17 +571,9 @@ impl Padding {
     fn pad_matrix_data<T: Default + Clone + From<u64>>(
         &self,
         data: &[T],
-        shape: &[usize],
     ) -> Result<Vec<T>, PaddingError> {
-        // If the shape doesn't have exactly 2 elements its not a matrix so we error
-        if shape.len() != 2 {
-            return Err(PaddingError::ParameterError(format!(
-                "Provided shape did not have length 2 (it had length: {})",
-                shape.len()
-            )));
-        }
         // If the total length of data doesn't equal the dimensions provided we should error
-        let expected_size = shape.iter().product::<usize>();
+        let expected_size = self.input_rows() * self.input_columns();
         if data.len() != expected_size {
             return Err(PaddingError::ParameterError(format!(
                 "Data length: {}, did not equal expected length from shape: {}",
@@ -462,12 +582,12 @@ impl Padding {
             )));
         }
         // We pad rows first then columns, that we we avoid having to do a an extra transposition at the end
-        let padded_rows = (0..shape[1])
+        let padded_rows = (0..self.input_columns())
             .map(|i| {
                 let row = data
                     .iter()
                     .skip(i)
-                    .step_by(shape[1])
+                    .step_by(self.input_columns())
                     .cloned()
                     .collect::<Vec<T>>();
                 self.pad_row(&row)
@@ -475,7 +595,7 @@ impl Padding {
             .collect::<Result<Vec<Vec<T>>, PaddingError>>()?
             .concat();
 
-        let new_row_size = shape[0] + self.left() + self.right();
+        let new_row_size = self.input_rows() + self.left() + self.right();
 
         // Now we pad the columns
         let padded_output = (0..new_row_size)
@@ -484,7 +604,7 @@ impl Padding {
                     .iter()
                     .skip(i)
                     .step_by(new_row_size)
-                    .take(shape[1])
+                    .take(self.input_columns())
                     .cloned()
                     .collect::<Vec<T>>();
                 self.pad_column(&column)
@@ -683,13 +803,31 @@ mod tests {
     }
 
     impl TestCase {
-        fn make_padding(&self, top: usize, bottom: usize, left: usize, right: usize) -> Padding {
+        fn make_padding(
+            &self,
+            top: usize,
+            bottom: usize,
+            left: usize,
+            right: usize,
+            input_rows: usize,
+            input_columns: usize,
+        ) -> Padding {
             match self {
-                TestCase::Zeroes => Padding::new_zeroes(top, bottom, left, right),
-                TestCase::Reflective => Padding::new_reflective(top, bottom, left, right),
-                TestCase::Replication => Padding::new_replication(top, bottom, left, right),
-                TestCase::Circular => Padding::new_circular(top, bottom, left, right),
-                TestCase::Constant => Padding::new_constant(top, bottom, left, right, 103),
+                TestCase::Zeroes => {
+                    Padding::new_zeroes(top, bottom, left, right, input_rows, input_columns)
+                }
+                TestCase::Reflective => {
+                    Padding::new_reflective(top, bottom, left, right, input_rows, input_columns)
+                }
+                TestCase::Replication => {
+                    Padding::new_replication(top, bottom, left, right, input_rows, input_columns)
+                }
+                TestCase::Circular => {
+                    Padding::new_circular(top, bottom, left, right, input_rows, input_columns)
+                }
+                TestCase::Constant => {
+                    Padding::new_constant(top, bottom, left, right, 103, input_rows, input_columns)
+                }
             }
         }
 
@@ -755,7 +893,7 @@ mod tests {
         let input_shape = vec![3, 3];
         let input_data: Vec<Element> = vec![0, 3, 6, 1, 4, 7, 2, 5, 8];
 
-        let padding = case.make_padding(2, 2, 2, 2);
+        let padding = case.make_padding(2, 2, 2, 2, 3, 3);
 
         let expected_output_shape = vec![7, 7];
         let expected_output_data: Vec<Element> = case.expected_symmetric_result();
@@ -855,7 +993,7 @@ mod tests {
         let input_shape = vec![3, 3];
         let input_data: Vec<Element> = vec![0, 3, 6, 1, 4, 7, 2, 5, 8];
 
-        let padding = case.make_padding(2, 1, 1, 0);
+        let padding = case.make_padding(2, 1, 1, 0, 3, 3);
 
         let expected_output_shape = vec![6, 4];
         let expected_output_data: Vec<Element> = case.expected_asymmetric_result();
@@ -933,7 +1071,7 @@ mod tests {
             Tensor::<Element>::new(expected_output_shape.clone(), expected_output_data.clone())
                 .pad_next_power_of_two();
 
-        let padding = case.make_padding(2, 2, 2, 2);
+        let padding = case.make_padding(2, 2, 2, 2, 3, 3);
 
         let expected_output_mle = expected_output_tensor.to_mle_2d::<E>();
 
@@ -941,8 +1079,7 @@ mod tests {
             .map(|_| E::random(&mut rng))
             .collect::<Vec<E>>();
 
-        let [left_evals, right_evals]: [Vec<E>; 2] =
-            padding.get_fixed_mles::<E>(&input_shape, &point)?;
+        let [left_evals, right_evals]: [Vec<E>; 2] = padding.get_fixed_mles::<E>(&point)?;
 
         let output_eval = expected_output_mle.evaluate(&point);
 
