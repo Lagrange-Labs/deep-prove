@@ -774,6 +774,7 @@ pub(crate) mod test {
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>> =
             Prover::new(&ctx, &mut tr);
         let proof = prover.prove(trace).expect("unable to generate proof");
+        
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
         let io = IO::new(input.to_fields(), output.to_fields());

@@ -342,6 +342,7 @@ where
             self.delegate_matrix_evaluation(&mut f_middle, r1.clone(), out_point, false),
         )
     }
+    
 
     pub fn prove_batch_ifft(
         &mut self,

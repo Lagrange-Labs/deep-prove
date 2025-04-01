@@ -189,7 +189,7 @@ where
 pub struct Tensor<T> {
     pub data: Vec<T>,
     pub shape: Vec<usize>,
-    input_shape: Vec<usize>,
+    real_shape: Vec<usize>,
 }
 
 impl Tensor<Element> {
@@ -201,11 +201,13 @@ impl Tensor<Element> {
             "Shape does not match data length."
         );
         assert!(shape.len() == 4, "Shape does not match data length.");
-
+        assert!(shape[2].is_power_of_two(), "Filter dimension is not power of two");
+        let real_shape = shape.clone();
+        let n_w = (input_shape[1] - shape[2] + 1).next_power_of_two();
+        /*
         let i0 = input_shape[0];
         let s2 = shape[2];
         let rdata = &data[..];
-        let n_w = (input_shape[1] - shape[2] + 1).next_power_of_two();
         let w_fft = (0..shape[0])
             .into_par_iter()
             .flat_map(move |i| {
@@ -218,11 +220,12 @@ impl Tensor<Element> {
                     w.into_par_iter().map(|e| e.into_element())
                 })
             })
-            .collect::<Vec<_>>();
+            .collect::<Vec<_>>(); */
+        
         Self {
-            data: w_fft, // Note that field elements are back into Element
+            data, // Note that field elements are back into Element
             shape: vec![shape[0], shape[1], n_w, n_w], // nw is the padded version of the input
-            input_shape,
+            real_shape,
         }
     }
     /// Recall that weights are not plain text to the "snark". Rather it is FFT(weights).
@@ -230,6 +233,7 @@ impl Tensor<Element> {
     /// It is okay to assume the inputs to the prover is already the FFT version and the prover can commit to the FFT values.
     /// This function computes iFFT of the weights so that we can compute the scaling factors used.
     pub fn get_real_weights<F: ExtensionField>(&self) -> Vec<Vec<Vec<Element>>> {
+        /*
         let mut w_fft =
             vec![
                 vec![vec![F::ZERO; 2 * self.nw() * self.nw()]; self.kx().next_power_of_two()];
@@ -250,21 +254,98 @@ impl Tensor<Element> {
                 fft(&mut w_fft[i][j], true);
             }
         }
+        */
         let mut real_weights =
             vec![vec![vec![0 as Element; self.nw() * self.nw()]; self.kx()]; self.kw()];
+        
+        let mut ctr = 0;
         for i in 0..self.kw() {
             for j in 0..self.kx() {
-                for k in 0..(self.nw() * self.nw()) {
-                    real_weights[i][j][k] = w_fft[i][j][k].into_element();
+                for k in 0..(self.real_nw() * self.real_nw()) {
+                    real_weights[i][j][k] = self.data[ctr];
+                    ctr+=1;
                 }
             }
         }
         real_weights
     }
+
     /// Convolution algorithm using FFTs.
     /// When invoking this algorithm the prover generates all witness/intermediate evaluations
     /// needed to generate a convolution proof
     pub fn fft_conv<F: ExtensionField>(
+        &self,
+        x: &Tensor<Element>,
+    ) -> (Tensor<Element>, ConvData<F>) {
+        // input to field elements
+        let n_x = x.shape[1].next_power_of_two();
+        let real_input = x.data.par_iter().map(|e| e.to_field()).collect::<Vec<_>>();
+        /*let w: Vec<F> = self
+            .data
+            .par_iter()
+            .map(|e| e.to_field())
+            .collect::<Vec<_>>();
+        */
+        
+        let new_n = 2 * n_x * n_x;
+        
+        let (x_vec, input): (Vec<Vec<F>>, Vec<Vec<F>>) = real_input
+            .par_iter()
+            .chunks(n_x * n_x)
+            .map(|chunk| {
+                let xx_input = chunk.into_iter().cloned().rev().collect::<Vec<_>>();
+                let mut xx_fft = xx_input
+                    .iter()
+                    .cloned()
+                    .chain(std::iter::repeat(F::ZERO))
+                    .take(new_n)
+                    .collect::<Vec<_>>();
+                fft(&mut xx_fft, false);
+                (xx_fft, xx_input)
+            })
+            .unzip();
+        //let dim1 = x_vec.len();
+        //let dim2 = x_vec[0].len();
+        
+        let mut out = vec![vec![F::ZERO;2*self.nw()*self.nw()];self.kw()];
+
+        for i in 0..self.kw(){
+            for j in 0..self.kx(){
+                let range = (i * self.kx() * self.real_nw()*self.real_nw() + j * self.real_nw()*self.real_nw())..(i * self.kx() * self.real_nw()*self.real_nw() + (j + 1) * self.real_nw()*self.real_nw());
+                let mut w_fft_temp = index_w(&self.data[range],self.real_nw(),self.nw(),2*self.nw()*self.nw()).collect::<Vec<F>>();
+                fft(&mut w_fft_temp,false);
+                for k in 0..out[i].len(){
+                    out[i][k] += x_vec[j][k]*w_fft_temp[k];
+                }
+            }
+        }
+        let prod = out.clone();
+        for i in 0..out.len(){
+            fft(&mut out[i], true);   
+        }
+        
+        // TODO: remove the requirement to keep the output value intact
+        let output = out.clone();
+        let out_element = out
+            .into_par_iter()
+            .map(|e| {
+                index_u(e.as_slice(), n_x)
+                    .map(|e| e.into_element())
+                    .collect::<Vec<_>>()
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+
+        return (
+            Tensor::new(vec![self.shape[0], n_x, n_x], out_element),
+            ConvData::new(real_input, input, x_vec, prod, output),
+        );
+    }
+
+    /// Convolution algorithm using FFTs.
+    /// When invoking this algorithm the prover generates all witness/intermediate evaluations
+    /// needed to generate a convolution proof
+    pub fn fft_conv_old<F: ExtensionField>(
         &self,
         x: &Tensor<Element>,
     ) -> (Tensor<Element>, ConvData<F>) {
@@ -330,13 +411,16 @@ impl Tensor<Element> {
         );
     }
     pub fn kx(&self) -> usize {
-        self.input_shape[0]
+        self.shape[1]
     }
     pub fn kw(&self) -> usize {
         self.shape[0]
     }
     pub fn nw(&self) -> usize {
         self.shape[2]
+    }
+    pub fn real_nw(&self) -> usize{
+        self.real_shape[2]
     }
     // Returns the size of an individual filter
     pub fn filter_size(&self) -> usize {
@@ -386,7 +470,7 @@ impl<T> Tensor<T> {
         Self {
             data,
             shape,
-            input_shape: vec![0],
+            real_shape: vec![0],
         }
     }
     /// Is vector
@@ -445,7 +529,7 @@ impl<T> Tensor<T> {
     /// TODO: Remove it
     pub fn get_input_shape(&self) -> Vec<usize> {
         assert!(self.shape.len() > 0, "Empty tensor");
-        self.input_shape.clone()
+        self.real_shape.clone()
     }
     ///
     pub fn get_data(&self) -> &[T] {
@@ -464,7 +548,7 @@ where
         Self {
             data: new_data,
             shape: new_shape,
-            input_shape: vec![0],
+            real_shape: vec![0],
         }
     }
     pub fn matix_from_coeffs(data: Vec<Vec<T>>) -> anyhow::Result<Self> {
@@ -480,7 +564,7 @@ where
         Ok(Self {
             data,
             shape,
-            input_shape: vec![0],
+            real_shape: vec![0],
         })
     }
     /// Returns the boolean iterator indicating the given row in the right endianness to be
@@ -522,7 +606,7 @@ where
             // data: vec![T::zero(); size],
             data: vec![Default::default(); size],
             shape,
-            input_shape: vec![0],
+            real_shape: vec![0],
         }
     }
     /// Element-wise addition
@@ -535,7 +619,7 @@ where
 
         Tensor {
             shape: self.shape.clone(),
-            input_shape: vec![0],
+            real_shape: vec![0],
             data,
         }
     }
@@ -549,7 +633,7 @@ where
 
         Tensor {
             shape: self.shape.clone(),
-            input_shape: vec![0],
+            real_shape: vec![0],
             data,
         }
     }
@@ -566,7 +650,7 @@ where
 
         Tensor {
             shape: self.shape.clone(),
-            input_shape: vec![0],
+            real_shape: vec![0],
             data,
         }
     }
@@ -574,7 +658,7 @@ where
     pub fn scalar_mul(&self, scalar: &T) -> Tensor<T> {
         Tensor {
             shape: self.shape.clone(),
-            input_shape: vec![0],
+            real_shape: vec![0],
             data: self.data.par_iter().map(|x| *x * *scalar).collect(),
         }
     }
@@ -1005,7 +1089,7 @@ where
         Tensor {
             data: output,
             shape: new_shape,
-            input_shape: vec![0],
+            real_shape: vec![0],
         }
     }
     // Replaces every value of a tensor with the maxpool of its kernel
@@ -1053,7 +1137,7 @@ where
         let padded_maxpool_tensor = Tensor {
             data: padded_maxpool_data,
             shape: self.get_shape(),
-            input_shape: vec![0],
+            real_shape: vec![0],
         };
 
         (maxpool_result, padded_maxpool_tensor)
@@ -1148,7 +1232,7 @@ where
         Tensor {
             data: output,
             shape: out_shape,
-            input_shape: vec![0],
+            real_shape: vec![0],
         }
     }
 
@@ -1280,7 +1364,7 @@ mod test {
             Self {
                 data,
                 shape,
-                input_shape: vec![0],
+                real_shape: vec![0],
             }
         }
 
@@ -1293,7 +1377,7 @@ mod test {
             Self {
                 data,
                 shape,
-                input_shape: vec![0],
+                real_shape: vec![0],
             }
         }
     }
