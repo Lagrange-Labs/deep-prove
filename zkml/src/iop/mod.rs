@@ -5,6 +5,7 @@ use ff_ext::ExtensionField;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 pub mod context;
 pub mod prover;
+pub mod split_sumcheck;
 pub mod verifier;
 
 pub use context::Context;
