@@ -179,6 +179,9 @@ where
                 (LayerProof::<E>::Convolution(proof), LayerCtx::<E>::Convolution(info)) => {
                     info.verify_convolution(&mut self, output_claim, &proof)?
                 }
+                (LayerProof::<E>::Padding(proof), LayerCtx::Padding(padding)) => {
+                    padding.verify_padding(&mut self, output_claim, proof)?
+                }
                 _ => bail!(
                     "Step proof: {} and step info: {} did not match",
                     proof_and_step.0.variant_name(),

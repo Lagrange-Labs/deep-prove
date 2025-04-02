@@ -658,7 +658,6 @@ impl Padding {
         prover: &mut Prover<E, T>,
         last_claim: Claim<E>,
         input: &Tensor<E>,
-        _output: &Tensor<E>,
     ) -> Result<Claim<E>, PaddingError>
     where
         E: ExtensionField + Serialize + DeserializeOwned,
@@ -1508,12 +1507,7 @@ mod tests {
 
         let last_claim = Claim { point, eval };
 
-        let output_claim = padding.prove_step(
-            &mut prover,
-            last_claim.clone(),
-            &input_tensor,
-            &expected_output_tensor,
-        )?;
+        let output_claim = padding.prove_step(&mut prover, last_claim.clone(), &input_tensor)?;
 
         // Now run the verifier logic
         let mut verifier_transcript = default_transcript::<E>();
