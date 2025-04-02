@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::{
-    Claim, Prover,
+    Claim, Element, Prover,
     commit::{compute_betas_eval, precommit::PolyID},
     iop::{
         context::ContextAux,
@@ -366,7 +366,13 @@ impl Padding {
         }
     }
 
-    /// Pads a [`Tensor`] with a padding scheme
+    /// Like [`Self::pad_tensor`] but pads the output [`Tensor`] to the next power of two
+    pub fn op(&self, tensor: &Tensor<Element>) -> Result<Tensor<Element>, PaddingError> {
+        self.pad_tensor(tensor)
+            .and_then(|t| Ok(t.pad_next_power_of_two()))
+    }
+
+    /// Pads a [`Tensor`] with a padding scheme.
     pub fn pad_tensor<T: Default + Clone + From<u64>>(
         &self,
         tensor: &Tensor<T>,
@@ -380,17 +386,17 @@ impl Padding {
             ));
         }
         // Check the provided shape agrees with the expected number of columns and rows
-        if shape[num_dims - 2] != self.input_rows() {
+        if shape[num_dims - 2] < self.input_rows() {
             return Err(PaddingError::ParameterError(format!(
-                "Input tensor shape incorrect, expected {} rows but input tensor had {} rows",
+                "Input tensor shape incorrect, expected minimum {} rows but input tensor had {} rows",
                 self.input_rows(),
                 shape[num_dims - 2]
             )));
         }
 
-        if shape[num_dims - 1] != self.input_columns() {
+        if shape[num_dims - 1] < self.input_columns() {
             return Err(PaddingError::ParameterError(format!(
-                "Input tensor shape incorrect, expected {} columns but input tensor had {} columns",
+                "Input tensor shape incorrect, expected minimum {} columns but input tensor had {} columns",
                 self.input_columns(),
                 shape[num_dims - 1]
             )));
@@ -399,12 +405,12 @@ impl Padding {
         // If the shape only has two dimensions we shortcut directly to the matrix pad method
         // We work out the size of each matrix
 
-        let chunk_size = self.input_rows() * self.input_columns();
+        let chunk_size = shape[num_dims - 2] * shape[num_dims - 1];
 
         let padded_data = tensor
             .get_data()
             .chunks(chunk_size)
-            .map(|chunk| self.pad_matrix_data(chunk))
+            .map(|chunk| self.pad_matrix_data(chunk, shape[num_dims - 1]))
             .collect::<Result<Vec<Vec<T>>, PaddingError>>()?
             .concat();
 
@@ -424,17 +430,17 @@ impl Padding {
             ));
         }
         // Check the provided shape agrees with the expected number of columns and rows
-        if shape[num_dims - 2] != self.input_rows() {
+        if shape[num_dims - 2] < self.input_rows() {
             return Err(PaddingError::ParameterError(format!(
-                "Input tensor shape incorrect, expected {} rows but input tensor had {} rows",
+                "Input tensor shape incorrect, expected minimum {} rows but input tensor had {} rows",
                 self.input_rows(),
                 shape[num_dims - 2]
             )));
         }
 
-        if shape[num_dims - 1] != self.input_columns() {
+        if shape[num_dims - 1] < self.input_columns() {
             return Err(PaddingError::ParameterError(format!(
-                "Input tensor shape incorrect, expected {} columns but input tensor had {} columns",
+                "Input tensor shape incorrect, expected minimum {} columns but input tensor had {} columns",
                 self.input_columns(),
                 shape[num_dims - 1]
             )));
@@ -769,10 +775,16 @@ impl Padding {
         // We need to append the correct number of elements from the last claim point to the sumcheck point
         // this is because we fixed highvariables during proving so that the sumcheck input was the MLE of a matrix
         // rather than a higher dimensional tensor.
-        let sc_point_len = sumcheck_point.len();
+        let left_variables = (self.top() + self.input_columns() + self.bottom())
+            .next_power_of_two()
+            .ilog2() as usize;
+        let right_variables = (self.left() + self.input_rows() + self.right())
+            .next_power_of_two()
+            .ilog2() as usize;
+
         let point = sumcheck_point
             .into_iter()
-            .chain(point.iter().skip(sc_point_len).copied())
+            .chain(point.iter().skip(left_variables + right_variables).copied())
             .collect::<Vec<E>>();
 
         Ok(Claim {
@@ -801,12 +813,13 @@ impl Padding {
     fn pad_matrix_data<T: Default + Clone + From<u64>>(
         &self,
         data: &[T],
+        data_columns: usize,
     ) -> Result<Vec<T>, PaddingError> {
         // If the total length of data doesn't equal the dimensions provided we should error
         let expected_size = self.input_rows() * self.input_columns();
-        if data.len() != expected_size {
+        if data.len() < expected_size {
             return Err(PaddingError::ParameterError(format!(
-                "Data length: {}, did not equal expected length from shape: {}",
+                "Data length: {}, is smaller than minimum length from shape: {}",
                 data.len(),
                 expected_size
             )));
@@ -817,7 +830,8 @@ impl Padding {
                 let row = data
                     .iter()
                     .skip(i)
-                    .step_by(self.input_columns())
+                    .step_by(data_columns)
+                    .take(self.input_rows())
                     .cloned()
                     .collect::<Vec<T>>();
                 self.pad_row(&row)
@@ -1229,6 +1243,47 @@ mod tests {
             }
         }
 
+        // Now we test on an input tensor that has been padded so it is ready to be expressed as an MLE
+        let input_tensor =
+            Tensor::<Element>::new(input_shape.clone(), input_data.clone()).pad_next_power_of_two();
+
+        let output_tensor = padding.pad_tensor(&input_tensor).unwrap();
+
+        for (i, (output, expected)) in output_tensor
+            .get_data()
+            .iter()
+            .zip(expected_output_data.iter())
+            .enumerate()
+        {
+            if *output != *expected {
+                return Err(PaddingError::ParameterError(format!(
+                    "Calculated output {} does not match expected output {} at index {} in case {} symmetric matrix padding",
+                    output,
+                    expected,
+                    i,
+                    case.name()
+                )));
+            }
+        }
+
+        let output_shape = output_tensor.get_shape();
+
+        for (i, (out, expect)) in output_shape
+            .iter()
+            .zip(expected_output_shape.iter())
+            .enumerate()
+        {
+            if *out != *expect {
+                return Err(PaddingError::ParameterError(format!(
+                    "Calculated output shape {} does not match expected output shpae {} at index {} in case {} symmetric matrix padding",
+                    out,
+                    expect,
+                    i,
+                    case.name()
+                )));
+            }
+        }
+
         // Now we test it on multiple channels
         let num_channels = 4;
 
@@ -1481,6 +1536,21 @@ mod tests {
             return Err(PaddingError::ProvingError(format!(
                 "Prover output claim {:?} and verifier output claim {:?} were not equal for case {}",
                 output_claim.eval,
+                verifier_out_claim.eval,
+                case.name()
+            )));
+        }
+
+        let input_poly_eval = input_tensor
+            .get_data()
+            .to_vec()
+            .into_mle()
+            .evaluate(&verifier_out_claim.point);
+
+        if input_poly_eval != verifier_out_claim.eval {
+            return Err(PaddingError::ProvingError(format!(
+                "Input tensor poly evaluation {:?} and verifier output claim {:?} were not equal for case {}",
+                input_poly_eval,
                 verifier_out_claim.eval,
                 case.name()
             )));

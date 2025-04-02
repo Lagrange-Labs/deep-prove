@@ -146,7 +146,7 @@ impl Layer {
             }
             Layer::Pooling(info) => LayerOutput::NormalOut(info.op(input)),
             // TODO: Update model to allow results here
-            Layer::Padding(padding) => LayerOutput::NormalOut(padding.pad_tensor(input).unwrap()),
+            Layer::Padding(padding) => LayerOutput::NormalOut(padding.op(input).unwrap()),
         }
     }
 
