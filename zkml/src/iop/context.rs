@@ -134,7 +134,7 @@ where
                     info.ifft_aux.write_to_transcript(t);
                     info.hadamard.write_to_transcript(t);
                 }
-                LayerCtx::SchoolBookConvolution(_info) => {}
+                _ => {}
             }
         }
         self.weights.write_to_transcript(t)?;

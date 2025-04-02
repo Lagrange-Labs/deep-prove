@@ -22,6 +22,7 @@ use activation::ActivationCtx;
 use convolution::{ConvCtx, ConvProof, SchoolBookConvCtx};
 use dense::{DenseCtx, DenseProof};
 use ff_ext::ExtensionField;
+use padding::{Padding, PaddingProof};
 use pooling::{PoolingCtx, PoolingProof};
 use requant::RequantCtx;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -38,6 +39,7 @@ pub enum Layer {
     // then we assume the inputs requant info are default()
     Requant(Requant),
     Pooling(Pooling),
+    Padding(Padding),
 }
 
 /// Describes a steps wrt the polynomial to be proven/looked at. Verifier needs to know
@@ -58,6 +60,7 @@ where
     Requant(RequantCtx),
     Pooling(PoolingCtx),
     Table(TableCtx<E>),
+    Padding(Padding),
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -70,6 +73,7 @@ where
     Activation(ActivationProof<E>),
     Requant(RequantProof<E>),
     Pooling(PoolingProof<E>),
+    Padding(PaddingProof<E>),
 }
 pub enum LayerOutput<F>
 where
@@ -93,6 +97,7 @@ where
             Self::Requant(_) => "Requant".to_string(),
             Self::Pooling(_) => "Pooling".to_string(),
             Self::Table(..) => "Table".to_string(),
+            Self::Padding(p) => format!("{}", p),
         }
     }
 
@@ -116,6 +121,7 @@ impl Layer {
             Layer::Activation(activation) => activation.step_info(id, aux),
             Layer::Requant(requant) => requant.step_info(id, aux),
             Layer::Pooling(pooling) => pooling.step_info(id, aux),
+            Layer::Padding(padding) => padding.step_info(id, aux),
         }
     }
     /// Run the operation associated with that layer with the given input
@@ -139,6 +145,8 @@ impl Layer {
                 LayerOutput::NormalOut(info.op(input))
             }
             Layer::Pooling(info) => LayerOutput::NormalOut(info.op(input)),
+            // TODO: Update model to allow results here
+            Layer::Padding(padding) => LayerOutput::NormalOut(padding.pad_tensor(input).unwrap()),
         }
     }
 
@@ -152,6 +160,12 @@ impl Layer {
             Layer::Activation(Activation::Relu(_)) => Relu::shape(),
             Layer::Requant(info) => info.shape(),
             Layer::Pooling(Pooling::Maxpool2D(info)) => vec![info.kernel_size, info.kernel_size],
+            Layer::Padding(padding) => vec![
+                padding.top(),
+                padding.bottom(),
+                padding.left(),
+                padding.right(),
+            ],
         }
     }
 
@@ -189,6 +203,7 @@ impl Layer {
                 "MaxPool2D{{ kernel size: {}, stride: {} }}",
                 info.kernel_size, info.stride
             ),
+            Layer::Padding(padding) => format!("{}", padding),
         }
     }
 }
@@ -204,6 +219,7 @@ where
             Self::Activation(_) => "Activation".to_string(),
             Self::Requant(_) => "Requant".to_string(),
             Self::Pooling(_) => "Pooling".to_string(),
+            Self::Padding(..) => "Padding".to_string(),
         }
     }
 
@@ -211,6 +227,7 @@ where
         match self {
             LayerProof::Dense(..) => None,
             LayerProof::Convolution(..) => None,
+            LayerProof::Padding(..) => None,
             LayerProof::Activation(ActivationProof { lookup, .. })
             | LayerProof::Requant(RequantProof { lookup, .. })
             | LayerProof::Pooling(PoolingProof { lookup, .. }) => Some(lookup.fractional_outputs()),

@@ -6,15 +6,32 @@ use std::{
     fmt::{Display, Formatter, Result as FmtResult},
 };
 
-use crate::{Claim, Prover, commit::compute_betas_eval, tensor::Tensor};
+use crate::{
+    Claim, Prover,
+    commit::{compute_betas_eval, precommit::PolyID},
+    iop::{
+        context::ContextAux,
+        split_sumcheck::{IOPSplitProverState, SplitSumcheckError},
+        verifier::Verifier,
+    },
+    layers::LayerProof,
+    tensor::Tensor,
+};
 use ark_std::Zero;
 
 use ff_ext::ExtensionField;
-use multilinear_extensions::mle::{DenseMultilinearExtension, IntoMLE};
-use serde::{Serialize, de::DeserializeOwned};
+use gkr::util::batch_inversion;
+use multilinear_extensions::{
+    mle::{IntoMLE, MultilinearExtension},
+    virtual_poly::VPAuxInfo,
+};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use sumcheck::structs::{IOPProof, IOPVerifierState};
 use transcript::Transcript;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+use super::LayerCtx;
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 /// Enum used to distinguish between the various types of padding.
 pub enum Padding {
     /// Pads with zeroes
@@ -65,10 +82,77 @@ pub enum Padding {
     },
 }
 
+impl Display for Padding {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        match self {
+            Padding::Zeroes {
+                top,
+                bottom,
+                left,
+                right,
+                ..
+            } => write!(f, "Zero Padding ({},{},{},{})", top, bottom, left, right),
+            Padding::Reflective {
+                top,
+                bottom,
+                left,
+                right,
+                ..
+            } => write!(
+                f,
+                "Reflective Padding ({},{},{},{})",
+                top, bottom, left, right
+            ),
+            Padding::Replication {
+                top,
+                bottom,
+                left,
+                right,
+                ..
+            } => write!(
+                f,
+                "Replication Padding ({},{},{},{})",
+                top, bottom, left, right
+            ),
+            Padding::Circular {
+                top,
+                bottom,
+                left,
+                right,
+                ..
+            } => write!(
+                f,
+                "Circular Padding ({},{},{},{})",
+                top, bottom, left, right
+            ),
+            Padding::Constant {
+                top,
+                bottom,
+                left,
+                right,
+                constant,
+                ..
+            } => write!(
+                f,
+                "Constant ({}) Padding, ({},{},{},{})",
+                constant, top, bottom, left, right
+            ),
+        }
+    }
+}
+
+#[derive(Default, Clone, Serialize, Deserialize)]
+/// Struct containing the proof of correct padding, used along with [`Padding`] in verification.
+pub struct PaddingProof<E: ExtensionField> {
+    /// The split-sumcheck proof for the padding
+    pub(crate) sumcheck_proof: IOPProof<E>,
+}
+
 #[derive(Debug, Clone)]
 /// Enum for any errors that occur during padding
 pub enum PaddingError {
     ParameterError(String),
+    ProvingError(String),
 }
 
 impl Error for PaddingError {}
@@ -78,6 +162,22 @@ impl Display for PaddingError {
         match self {
             PaddingError::ParameterError(s) => {
                 write!(f, "Parameters were incorrect for padding: {}", s)
+            }
+            PaddingError::ProvingError(s) => {
+                write!(f, "Error occured during padding proving: {}", s)
+            }
+        }
+    }
+}
+
+impl From<SplitSumcheckError> for PaddingError {
+    fn from(e: SplitSumcheckError) -> Self {
+        match e {
+            SplitSumcheckError::ParameterError(s) => {
+                PaddingError::ProvingError(format!("Split sumcheck parameter error: {}", s))
+            }
+            SplitSumcheckError::ProvingError(s) => {
+                PaddingError::ProvingError(format!("Split sumcheck proving error: {}", s))
             }
         }
     }
@@ -255,6 +355,15 @@ impl Padding {
     /// Returns the number of variables the right matrix MLE has after fixing the rows
     pub fn right_variables(&self) -> usize {
         self.input_columns().next_power_of_two().ilog2() as usize
+    }
+
+    /// Returns the constant value for the padding
+    pub fn constant(&self) -> Option<u64> {
+        if let Padding::Constant { constant, .. } = self {
+            Some(*constant)
+        } else {
+            None
+        }
     }
 
     /// Pads a [`Tensor`] with a padding scheme
@@ -543,7 +652,7 @@ impl Padding {
         prover: &mut Prover<E, T>,
         last_claim: Claim<E>,
         input: &Tensor<E>,
-        output: &Tensor<E>,
+        _output: &Tensor<E>,
     ) -> Result<Claim<E>, PaddingError>
     where
         E: ExtensionField + Serialize + DeserializeOwned,
@@ -554,13 +663,134 @@ impl Padding {
         let point = &last_claim.point;
 
         // Get the left and right MLEs for the sumcheck.
-        let [left_evals, right_evals]: [Vec<E>; 2] = self.get_fixed_mles::<E>(point)?;
+        let [left, right]: [Vec<E>; 2] = self.get_fixed_mles::<E>(point)?;
 
-        // Turn the evaluations into MLEs
-        let left_mle: DenseMultilinearExtension<E> = left_evals.into_mle();
-        let right_mle: DenseMultilinearExtension<E> = right_evals.into_mle();
+        // We need to know how many of the input tensors high variables to fix in place
+        let input_shape = input.get_shape();
+        let middle = if input_shape.len() < 2 {
+            return Err(PaddingError::ParameterError(format!(
+                "Proving input had dimension {}, need at least 2 dimensions for padding",
+                input_shape.len()
+            )));
+        } else if input_shape.len() > 2 {
+            let two_dimensional_vars = input_shape
+                .iter()
+                .skip(input_shape.len() - 2)
+                .product::<usize>()
+                .ilog2() as usize;
 
-        todo!()
+            input
+                .get_data()
+                .to_vec()
+                .into_mle()
+                .fix_high_variables(&point[two_dimensional_vars..])
+                .get_ext_field_vec()
+                .to_vec()
+        } else {
+            input.get_data().to_vec()
+        };
+
+        let (proof, state) =
+            IOPSplitProverState::<E>::prove_split_sumcheck(left, middle, right, prover.transcript)?;
+        // Clone the point so we can use it in the out claim
+        let point = proof.point.clone();
+
+        // Push the padding proof to the proof list
+        prover.push_proof(LayerProof::<E>::Padding(PaddingProof::<E>::new(proof)));
+
+        Ok(Claim {
+            point,
+            eval: state.middle[0],
+        })
+    }
+
+    pub(crate) fn step_info<E: ExtensionField>(
+        &self,
+        _id: PolyID,
+        mut ctx_aux: ContextAux,
+    ) -> (LayerCtx<E>, ContextAux)
+    where
+        E: ExtensionField + DeserializeOwned,
+        E::BaseField: Serialize + DeserializeOwned,
+    {
+        let layer_context = LayerCtx::<E>::Padding(*self);
+        let shape = self.padded_shape(&ctx_aux.last_output_shape).unwrap();
+        ctx_aux.last_output_shape = shape
+            .into_iter()
+            .map(|s| s.next_power_of_two())
+            .collect::<Vec<usize>>();
+        (layer_context, ctx_aux)
+    }
+
+    pub(crate) fn verify_padding<E: ExtensionField, T: Transcript<E>>(
+        &self,
+        verifier: &mut Verifier<E, T>,
+        last_claim: Claim<E>,
+        proof: &PaddingProof<E>,
+    ) -> Result<Claim<E>, PaddingError> {
+        let Claim::<E> { point, eval } = &last_claim;
+
+        // If we are in the constant padding case we need to subtract the evaluation of the padding
+        let claimed_sum = if let Some(constant_eval) = self.calc_constant_eval(point) {
+            *eval - constant_eval
+        } else {
+            *eval
+        };
+
+        // Make the VPAuxInfo
+        let vars = (self.input_columns().next_power_of_two()
+            * self.input_rows().next_power_of_two())
+        .ilog2() as usize;
+        let aux_info = VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![vars, vars]]);
+
+        let subclaim = IOPVerifierState::<E>::verify(
+            claimed_sum,
+            proof.sumcheck_proof(),
+            &aux_info,
+            verifier.transcript,
+        );
+
+        // We reverse the subclaim point as the first challenge generated is the highest variable
+        let sumcheck_point = subclaim
+            .point
+            .iter()
+            .map(|c| c.elements)
+            .rev()
+            .collect::<Vec<E>>();
+
+        let mut matrix_evals = self.compute_matrix_evals(point, &sumcheck_point)?;
+
+        batch_inversion(&mut matrix_evals);
+
+        let out_eval = matrix_evals
+            .into_iter()
+            .fold(subclaim.expected_evaluation, |acc, v| acc * v);
+
+        // We need to append the correct number of elements from the last claim point to the sumcheck point
+        // this is because we fixed highvariables during proving so that the sumcheck input was the MLE of a matrix
+        // rather than a higher dimensional tensor.
+        let sc_point_len = sumcheck_point.len();
+        let point = sumcheck_point
+            .into_iter()
+            .chain(point.iter().skip(sc_point_len).copied())
+            .collect::<Vec<E>>();
+
+        Ok(Claim {
+            point,
+            eval: out_eval,
+        })
+    }
+}
+
+impl<E: ExtensionField> PaddingProof<E> {
+    /// Create a new [`PaddingProof`]
+    pub fn new(sumcheck_proof: IOPProof<E>) -> PaddingProof<E> {
+        PaddingProof { sumcheck_proof }
+    }
+
+    /// Getter for the sumcheck proof
+    pub(crate) fn sumcheck_proof(&self) -> &IOPProof<E> {
+        &self.sumcheck_proof
     }
 }
 
@@ -766,6 +996,68 @@ impl Padding {
             }
         }
     }
+
+    /// Function used by the [`Verifier`] to compute the evaluations of the padding matrices
+    fn compute_matrix_evals<E: ExtensionField>(
+        &self,
+        last_point: &[E],
+        sumcheck_point: &[E],
+    ) -> Result<Vec<E>, PaddingError> {
+        let right_variables = self.input_columns().next_power_of_two().ilog2() as usize;
+        let left_variables = self.input_rows().next_power_of_two().ilog2() as usize;
+
+        if sumcheck_point.len() != left_variables + right_variables {
+            return Err(PaddingError::ParameterError(format!(
+                "Cannot compute padding matrix evals, provided point has {} variables, expected: {}",
+                sumcheck_point.len(),
+                left_variables + right_variables
+            )));
+        }
+
+        let [left, right]: [Vec<E>; 2] = self.get_fixed_mles::<E>(last_point)?;
+
+        let left_eval = left.into_mle().evaluate(&sumcheck_point[..left_variables]);
+
+        let right_eval = right.into_mle().evaluate(&sumcheck_point[left_variables..]);
+
+        Ok(vec![left_eval, right_eval])
+    }
+
+    /// Function used by the [`Verifier`] to compute the extra data needed in the [`Padding::Constant`] case.
+    fn calc_constant_eval<E: ExtensionField>(&self, point: &[E]) -> Option<E> {
+        let constu64 = if let Some(constant) = self.constant() {
+            constant
+        } else {
+            return None;
+        };
+
+        let betas_eval = compute_betas_eval(point);
+        let const_val = E::from(constu64);
+
+        let last_non_zero_column = self.top() + self.input_columns() + self.bottom() - 1;
+        let last_non_zero_row = self.left() + self.input_rows() + self.right() - 1;
+
+        let padded_row = (last_non_zero_row + 1).next_power_of_two();
+        let padded_column = (last_non_zero_column + 1).next_power_of_two();
+
+        let eval = betas_eval
+            .into_iter()
+            .enumerate()
+            .fold(E::ZERO, |acc, (i, val)| {
+                let column = i / padded_column;
+                let row = i % padded_row;
+                let zero_col = column >= self.left() && column < self.left() + self.input_columns();
+                let zero_val = row >= self.top() && row < self.top() + self.input_rows();
+                if (zero_val & zero_col) || column > last_non_zero_column || row > last_non_zero_row
+                {
+                    acc
+                } else {
+                    acc + val
+                }
+            });
+
+        Some(eval * const_val)
+    }
 }
 
 #[cfg(test)]
@@ -776,7 +1068,7 @@ mod tests {
 
     use multilinear_extensions::mle::MultilinearExtension;
 
-    use crate::{Element, quantization::TensorFielder};
+    use crate::{Context, Element, default_transcript, quantization::TensorFielder};
 
     use super::*;
 
@@ -1083,13 +1375,15 @@ mod tests {
 
         let output_eval = expected_output_mle.evaluate(&point);
 
-        let mut calculated_eval = (0usize..16).fold(E::ZERO, |acc, i| {
+        let calculated_eval = (0usize..16).fold(E::ZERO, |acc, i| {
             acc + (left_evals[i % 4] * input_tensor.get_data()[i] * right_evals[i / 4])
         });
 
-        if let TestCase::Constant = case {
-            calculated_eval += calc_constant_eval(&point, padding, 3, 3);
-        }
+        let calculated_eval = if let Some(const_eval) = padding.calc_constant_eval(&point) {
+            calculated_eval + const_eval
+        } else {
+            calculated_eval
+        };
 
         if calculated_eval != output_eval {
             Err(PaddingError::ParameterError(format!(
@@ -1103,27 +1397,95 @@ mod tests {
         }
     }
 
-    fn calc_constant_eval<E: ExtensionField>(
-        point: &[E],
-        padding: Padding,
-        input_rows: usize,
-        input_columns: usize,
-    ) -> E {
-        let betas_eval = compute_betas_eval(point);
+    #[test]
+    fn test_proving() -> Result<(), PaddingError> {
+        for case in [
+            TestCase::Zeroes,
+            TestCase::Reflective,
+            TestCase::Replication,
+            TestCase::Circular,
+            TestCase::Constant,
+        ] {
+            test_proving_helper::<GoldilocksExt2>(case)?;
+        }
+        Ok(())
+    }
 
-        betas_eval
-            .into_iter()
-            .enumerate()
-            .fold(E::ZERO, |acc, (i, val)| {
-                let column = i / 8;
-                let row = i % 8;
-                let zero_col = column >= padding.left() && column < padding.left() + input_columns;
-                let zero_val = row >= padding.top() && row < padding.top() + input_rows;
-                if (zero_val & zero_col) || column == 7 || row == 7 {
-                    acc
-                } else {
-                    acc + E::from(103) * val
-                }
-            })
+    fn test_proving_helper<E>(case: TestCase) -> Result<(), PaddingError>
+    where
+        E: ExtensionField + Serialize + DeserializeOwned,
+        E::BaseField: Serialize + DeserializeOwned,
+    {
+        let mut rng = thread_rng();
+        let input_shape = vec![3, 3];
+        let input_data: Vec<Element> = vec![0, 3, 6, 1, 4, 7, 2, 5, 8];
+
+        let input_tensor: Tensor<E> =
+            Tensor::<Element>::new(input_shape.clone(), input_data.clone())
+                .pad_next_power_of_two()
+                .to_fields();
+
+        let expected_output_shape = vec![7, 7];
+        let expected_output_data: Vec<Element> = case.expected_symmetric_result();
+
+        let expected_output_tensor: Tensor<E> =
+            Tensor::<Element>::new(expected_output_shape.clone(), expected_output_data.clone())
+                .pad_next_power_of_two()
+                .to_fields();
+
+        let padding = case.make_padding(2, 2, 2, 2, 3, 3);
+
+        // Create a `Context` struct
+        let ctx = Context::<E> {
+            steps_info: vec![LayerCtx::<E>::Padding(padding)],
+            weights: crate::commit::precommit::Context::<E>::default(),
+            lookup: crate::lookup::context::LookupContext::default(),
+        };
+
+        let mut prover_transcript = default_transcript::<E>();
+        let mut prover = Prover::new(&ctx, &mut prover_transcript);
+
+        let output_mle = expected_output_tensor.get_data().to_vec().into_mle();
+        let point = (0..output_mle.num_vars())
+            .map(|_| E::random(&mut rng))
+            .collect::<Vec<E>>();
+        let eval = output_mle.evaluate(&point);
+
+        let last_claim = Claim { point, eval };
+
+        let output_claim = padding.prove_step(
+            &mut prover,
+            last_claim.clone(),
+            &input_tensor,
+            &expected_output_tensor,
+        )?;
+
+        // Now run the verifier logic
+        let mut verifier_transcript = default_transcript::<E>();
+
+        let mut verifier = Verifier::new(&mut verifier_transcript);
+
+        let padding_proof = if let LayerProof::Padding(p) = &prover.proofs[0] {
+            p
+        } else {
+            return Err(PaddingError::ProvingError(format!(
+                "Proving padding for case {} somehow eneded up with a non-padding proof",
+                case.name()
+            )));
+        };
+
+        let verifier_out_claim =
+            padding.verify_padding(&mut verifier, last_claim, padding_proof)?;
+
+        if verifier_out_claim.eval != output_claim.eval {
+            return Err(PaddingError::ProvingError(format!(
+                "Prover output claim {:?} and verifier output claim {:?} were not equal for case {}",
+                output_claim.eval,
+                verifier_out_claim.eval,
+                case.name()
+            )));
+        }
+
+        Ok(())
     }
 }

@@ -213,34 +213,40 @@ impl<E: ExtensionField> IOPSplitProverState<E> {
         let field_two = E::from(2);
 
         // Make the S_{i}(x, j) polynomials for this round
-        let round_evals: AdditiveArray<E, 3> = (0..right_half_size)
-            .into_par_iter()
-            .fold(AdditiveArray::<E, 3>::default, |acc, x1| {
-                let low_index = x1 << self.left_vars;
-                let high_index = (right_half_size + x1) << self.left_vars;
+        let (right_low, right_high) = self.right.split_at(right_half_size);
+        let round_evals: AdditiveArray<E, 3> = right_low
+            .par_iter()
+            .zip(right_high.par_iter())
+            .enumerate()
+            .fold(
+                AdditiveArray::<E, 3>::default,
+                |acc, (x1, (r_low, r_high))| {
+                    let low_index = x1 << self.left_vars;
+                    let high_index = (right_half_size + x1) << self.left_vars;
 
-                // We have to sum over all the low variables `x2`
-                let AdditiveArray([zero_eval, one_eval, two_eval]) = self
-                    .left
-                    .iter()
-                    .enumerate()
-                    .fold(AdditiveArray::<E, 3>::default(), |acc, (x2, &left_eval)| {
-                        let zero_eval = left_eval * self.middle[low_index + x2];
-                        let one_eval = left_eval * self.middle[high_index + x2];
-                        let two_eval = field_two * one_eval - zero_eval;
-                        acc + AdditiveArray([zero_eval, one_eval, two_eval])
-                    });
+                    // We have to sum over all the low variables `x2`
+                    let AdditiveArray([zero_eval, one_eval, two_eval]) = self
+                        .left
+                        .iter()
+                        .enumerate()
+                        .fold(AdditiveArray::<E, 3>::default(), |acc, (x2, &left_eval)| {
+                            let zero_eval = left_eval * self.middle[low_index + x2];
+                            let one_eval = left_eval * self.middle[high_index + x2];
+                            let two_eval = field_two * one_eval - zero_eval;
+                            acc + AdditiveArray([zero_eval, one_eval, two_eval])
+                        });
 
-                let right_zero_eval = self.right[x1];
-                let right_one_eval = self.right[right_half_size + x1];
-                let right_two_eval = field_two * right_one_eval - right_zero_eval;
+                    let right_zero_eval = *r_low;
+                    let right_one_eval = *r_high;
+                    let right_two_eval = field_two * right_one_eval - right_zero_eval;
 
-                acc + AdditiveArray([
-                    zero_eval * right_zero_eval,
-                    one_eval * right_one_eval,
-                    two_eval * right_two_eval,
-                ])
-            })
+                    acc + AdditiveArray([
+                        zero_eval * right_zero_eval,
+                        one_eval * right_one_eval,
+                        two_eval * right_two_eval,
+                    ])
+                },
+            )
             .reduce(AdditiveArray::<E, 3>::default, |a, b| a + b);
 
         Ok(IOPProverMessage::<E>::new(round_evals.0.to_vec()))
@@ -296,23 +302,31 @@ impl<E: ExtensionField> IOPSplitProverState<E> {
         let field_two = E::from(2);
 
         // Make the S_{i}(x, j) polynomials for this round
-        let AdditiveArray([zero_eval, one_eval, two_eval]) = (0..left_half_size)
-            .into_par_iter()
-            .fold(AdditiveArray::<E, 3>::default, |acc, x1| {
-                let left_zero_eval = self.left[x1];
-                let left_one_eval = self.left[x1 + left_half_size];
-                let left_two_eval = field_two * left_one_eval - left_zero_eval;
+        let (left_low, left_high) = self.left.split_at(left_half_size);
+        let (middle_low, middle_high) = self.middle.split_at(left_half_size);
+        let AdditiveArray([zero_eval, one_eval, two_eval]) = left_low
+            .par_iter()
+            .zip(left_high.par_iter())
+            .zip(middle_low.par_iter())
+            .zip(middle_high.par_iter())
+            .fold(
+                AdditiveArray::<E, 3>::default,
+                |acc, (((left_low, left_high), mid_low), mid_high)| {
+                    let left_zero_eval = *left_low;
+                    let left_one_eval = *left_high;
+                    let left_two_eval = field_two * left_one_eval - left_zero_eval;
 
-                let middle_zero_eval = self.middle[x1];
-                let middle_one_eval = self.middle[x1 + left_half_size];
-                let middle_two_eval = field_two * middle_one_eval - middle_zero_eval;
+                    let middle_zero_eval = *mid_low;
+                    let middle_one_eval = *mid_high;
+                    let middle_two_eval = field_two * middle_one_eval - middle_zero_eval;
 
-                acc + AdditiveArray([
-                    middle_zero_eval * left_zero_eval,
-                    middle_one_eval * left_one_eval,
-                    middle_two_eval * left_two_eval,
-                ])
-            })
+                    acc + AdditiveArray([
+                        middle_zero_eval * left_zero_eval,
+                        middle_one_eval * left_one_eval,
+                        middle_two_eval * left_two_eval,
+                    ])
+                },
+            )
             .reduce(AdditiveArray::<E, 3>::default, |a, b| a + b);
 
         let right_value = self.right[0];

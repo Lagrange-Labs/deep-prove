@@ -32,7 +32,7 @@ where
 {
     ctx: &'a Context<E>,
     // proofs for each layer being filled
-    proofs: Vec<LayerProof<E>>,
+    pub(crate) proofs: Vec<LayerProof<E>>,
     table_proofs: Vec<TableProof<E>>,
     pub(crate) transcript: &'a mut T,
     pub(crate) commit_prover: precommit::CommitProver<E>,
