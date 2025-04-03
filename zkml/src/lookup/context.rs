@@ -34,7 +34,7 @@ impl TableType {
         match self {
             TableType::Relu => {
                 let (comb, field): (Vec<Element>, Vec<(E::BaseField, E::BaseField)>) =
-                    (*quantization::MIN..=*quantization::MAX)
+                (*quantization::MIN-1..=*quantization::MAX)
                         .map(|i| {
                             let out = Relu::apply(i);
                             let i_field: E = i.to_field();

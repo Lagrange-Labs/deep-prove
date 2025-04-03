@@ -1,10 +1,7 @@
+use core::f32;
+
 use crate::{
-    Claim, Prover,
-    commit::{compute_betas_eval, identity_eval},
-    iop::{context::ContextAux, verifier::Verifier},
-    layers::{LayerProof, PolyID, requant::Requant},
-    quantization,
-    tensor::{ConvData, get_root_of_unity},
+    commit::{compute_betas_eval, identity_eval}, iop::{context::ContextAux, verifier::Verifier}, layers::{LayerProof, PolyID}, quantization::{self, max_range_from_weight, ScalingFactor}, tensor::{get_root_of_unity, ConvData, Number}, Claim, Prover
 };
 use anyhow::Context;
 use ff_ext::ExtensionField;
@@ -12,9 +9,11 @@ use multilinear_extensions::{
     mle::{IntoMLE, MultilinearExtension},
     virtual_poly::{VPAuxInfo, VirtualPolynomial},
 };
+use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
 use tracing::instrument;
+use tract_onnx::tract_core::ops::matmul::quant;
 use transcript::Transcript;
 
 use crate::{Element, tensor::Tensor};
@@ -24,9 +23,12 @@ use super::LayerCtx;
 pub(crate) const BIAS_POLY_ID: PolyID = 200_000;
 /// Convolution layer description (weights)
 #[derive(Clone, Debug)]
-pub struct Convolution {
-    pub filter: Tensor<Element>,
-    pub bias: Tensor<Element>,
+pub struct Convolution<T> {
+    /// NOTE: in the case of f32, the weights are native
+    /// In the case of Element (i128), the weights are already fft'd
+    pub filter: Tensor<T>,
+    /// Same for bias.
+    pub bias: Tensor<T>,
 }
 
 /// Info about the convolution layer derived during the setup phase
@@ -69,12 +71,8 @@ pub struct ConvProof<E: ExtensionField> {
     bias_claim: E,
 }
 
-impl Convolution {
-    pub fn new(filter: Tensor<Element>, bias: Tensor<Element>) -> Self {
-        assert_eq!(filter.kw(), bias.get_shape()[0]);
-        Self { filter, bias }
-    }
-    pub fn add_bias(&self, conv_out: &Tensor<Element>) -> Tensor<Element> {
+impl<T: Number> Convolution<T> {
+    pub fn add_bias(&self, conv_out: &Tensor<T>) -> Tensor<T> {
         let mut arr = conv_out.data.clone();
         assert_eq!(conv_out.data.len(), conv_out.kw() * conv_out.filter_size());
         for i in 0..conv_out.kw() {
@@ -85,9 +83,15 @@ impl Convolution {
         Tensor::new(conv_out.get_shape(), arr)
     }
 
-    pub fn op<E: ExtensionField>(&self, input: &Tensor<Element>) -> (Tensor<Element>, ConvData<E>) {
-        let (output, proving_data) = self.filter.fft_conv(input);
-        (self.add_bias(&output), proving_data)
+    /// Retrieves an element using (N, C, H, W) indexing
+    pub fn get(&self, n: usize, c: usize, h: usize, w: usize) -> T {
+        assert!(self.filter.get_shape().len() <= 4);
+
+        let (n_size, c_size, h_size, w_size) = self.filter.get4d();
+
+        assert!(n < n_size);
+        let flat_index = n * (c_size * h_size * w_size) + c * (h_size * w_size) + h * w_size + w;
+        self.filter.get_data()[flat_index]
     }
 
     pub fn get_shape(&self) -> Vec<usize> {
@@ -116,59 +120,132 @@ impl Convolution {
     pub fn filter_size(&self) -> usize {
         self.filter.filter_size()
     }
-    pub fn requant_info<E: ExtensionField>(&self) -> Requant {
-        let weights = self.filter.get_real_weights::<E>();
-        let min_quant = *quantization::MIN as Element;
-        let max_quant = *quantization::MAX as Element;
 
-        let mut max_output: Element = 0;
-        let mut min_output: Element = 0;
-        let max_bias = self.bias.get_data().iter().max().unwrap();
-        let min_bias = self.bias.get_data().iter().min().unwrap();
+   }
+impl Convolution<f32> {
+    /// used to create a convoluation layer with from the raw float weights and bias.
+    /// The wieghts are NOT fft'd as they are when the it is being quantized.
+    pub fn new_raw(filter: Tensor<f32>, bias: Tensor<f32>) -> Self {
+        Self {
+            filter,
+            bias,
+        }
+    }
 
-        // Keep the original iteration order: first over kernel height (i), then kernel width (j), then output channels (k)
-        for i in 0..self.kw() {
-            for j in 0..self.kx() {
-                let mut min_temp: Element = *min_bias;
-                let mut max_temp: Element = *max_bias;
+    /// Quantizes the filter and the bias. Note the weights are not yet FFT'd, that happens with new_conv at the padding step
+    /// since the FFT is also making the filter shape == input shape.
+    /// TODO: refactor new_conv to be in convolution.rs and more efficient than cloning
+    pub fn quantize(self, s: &ScalingFactor) -> Convolution<Element> {
+        let quantized_filter = self.filter.quantize(s);
+        let bias = self.bias.quantize(&s);
+        Convolution::<Element> {
+            filter: quantized_filter,
+            bias,
+        }
+    }
 
-                // Loop over output channels (k) and apply weights and bias
-                for k in 0..(self.nw() * self.nw()) {
-                    let weight = weights[i][j][k];
-                    // PANICKING HERE
-                    // let bias = self.bias.data[k]; // Bias for the current output channel
-                    let bias = *max_bias;
+    pub fn op<E: ExtensionField>(&self, input: &Tensor<f32>) -> Tensor<f32> {
+        input.conv2d(&self.filter, &self.bias, 1)
+    }
 
-                    if weight != 0 {
-                        let (min_contrib, max_contrib) = if weight < 0 {
-                            (max_quant * weight, min_quant * weight)
-                        } else {
-                            (min_quant * weight, max_quant * weight)
-                        };
+    pub fn max_abs_weight(&self) -> f32 {
+        self.filter.max_abs_output().max(self.bias.max_abs_output())
+    }
 
-                        min_temp += min_contrib;
-                        max_temp += max_contrib;
+    pub fn float_op(&self, input: &Tensor<f32>) -> Tensor<f32> {
+        input.conv2d(&self.filter, &self.bias, 1)
+    }
+}
+
+impl Convolution<Element> {
+    pub fn new(filter: Tensor<Element>, bias: Tensor<Element>) -> Self {
+        Self {
+            filter,
+            bias,
+        }
+    }
+
+    pub fn op<E: ExtensionField>(&self, input: &Tensor<Element>) -> (Tensor<Element>, ConvData<E>) {
+        let (output, proving_data) = self.filter.fft_conv(input);
+        (self.add_bias(&output), proving_data)
+    }
+
+    /// Returns the min and max output range of the convolution layer for a given input range.
+    /// NOTE: it assumes the weights in float are NOT fft'd
+    pub fn output_range(&self, min_input: Element, max_input: Element) -> (Element, Element) {
+        let (k_n, k_c, k_h, k_w) = self.filter.get4d();
+        let (global_min,global_max) = (Element::MAX,Element::MIN);
+        // iterate over output channels and take the min/max of all of it
+        return (0..k_n).into_iter().map(|output| {
+            let (mut filter_min,mut filter_max) = (0,0);
+            // iterate over input channels and sum up
+            for input in 0..k_c {
+                for h in 0..k_h {
+                    for w in 0..k_w {
+                        let (ind_min,ind_max) = quantization::max_range_from_weight(&self.filter.get(output,input,h,w), &min_input, &max_input);
+                        filter_min += ind_min;
+                        filter_max += ind_max;
                     }
-
-                    // Add the bias for this output channel `k`
-                    min_temp += bias;
-                    max_temp += bias;
                 }
-
-                // After processing all output channels for this (i, j) location, update the global min and max
-                max_output = max_output.max(max_temp);
-                min_output = min_output.min(min_temp);
             }
-        }
-        let max_range = 2 * (max_output - min_output).unsigned_abs().next_power_of_two();
-        assert!(max_range.ilog2() as usize > *quantization::BIT_LEN);
-        let shift = (2 * max_range).ilog2() as usize - *quantization::BIT_LEN;
-        Requant {
-            // range: (max_val - min_val) as usize,
-            range: max_range as usize,
-            right_shift: shift,
-            after_range: 1 << *quantization::BIT_LEN,
-        }
+            (filter_min,filter_max)
+        }).fold((global_min,global_max),|(global_min,global_max),(local_min,local_max)| {
+            (global_min.cmp_min(&local_min),global_max.cmp_max(&local_max))
+        });
+
+        let x_min = min_input;
+        let x_max = max_input;
+        // min_input = 1,k_c,k_h * k_w
+        // max_input =
+        return {
+            let input_shape = vec![1, k_c, k_h, k_w];
+            let input_n = input_shape.iter().product();
+            let min_input_tensor = Tensor::new(
+                input_shape.clone(),
+                std::iter::repeat(x_min).take(input_n).collect(),
+            );
+            let min_outputt = min_input_tensor.conv2d(&self.filter, &self.bias, 1);
+            let max_input_tensor = Tensor::new(
+                input_shape.clone(),
+                std::iter::repeat(x_max).take(input_n).collect(),
+            );
+            let max_outputt = max_input_tensor.conv2d(&self.filter, &self.bias, 1);
+            println!("CONV: min_min_outputt {:?}, min_max_outputt {:?}", min_outputt.min_value(), min_outputt.max_value());
+            println!("CONV: max_min_outputt {:?}, max_max_outputt {:?}", max_outputt.min_value(), max_outputt.max_value());
+            // take the smallest and highest value from both runs
+            let min_output = min_outputt.min_value().cmp_min(&max_outputt.min_value());
+            let max_output = min_outputt.max_value().cmp_max(&max_outputt.max_value());
+            (min_output, max_output)
+        };
+
+        // let mut max_max = f32::NEG_INFINITY;
+        // assert!(
+        //     k_n == self.bias.get_shape()[0],
+        //     "bias get shape {} vs k_n{}",
+        //     self.bias.get_shape()[0],
+        //     k_n
+        // );
+        // for feature in 0..k_n {
+        //     let mut output_max_abs = f32::NEG_INFINITY;
+        //     for channel in 0..k_c {
+        //         let mut weight_neg = 0.0;
+        //         let mut weight_pos = 0.0;
+        //         (0..k_h * k_w).map(|ij| {
+        //             let weight = self.filter.get(feature, channel, ij / k_w, ij % k_w);
+        //             if weight < 0.0 {
+        //                 weight_neg += weight;
+        //             } else {
+        //                 weight_pos += weight;
+        //             }
+        //         });
+        //         let output_min = weight_neg * x_min;
+        //         let output_max = weight_pos * x_max;
+        //         output_max_abs = output_max_abs.max(output_min.abs().max(output_max.abs()));
+        //     }
+        //     output_max_abs += self.bias.get_data()[feature];
+        //     max_max = max_max.max(output_max_abs);
+        // }
+        // max_max
     }
 
     pub(crate) fn step_info<E: ExtensionField>(
@@ -725,47 +802,5 @@ mod test {
         // TODO: change that process by a deterministic ID depending on the position and additional info
         // not necessarily seuential
         assert!(BIAS_POLY_ID >= dense::BIAS_POLY_ID + 100_000);
-    }
-
-    #[test]
-    pub fn test_quantization() {
-        let n_w = 1 << 2;
-        let k_w = 1 << 0;
-        let n_x = 1 << 3;
-        let k_x = 1 << 0;
-
-        let mut in_dimensions: Vec<Vec<usize>> =
-            vec![vec![k_x, n_x, n_x], vec![16, 29, 29], vec![4, 26, 26]];
-
-        for i in 0..in_dimensions.len() {
-            for j in 0..in_dimensions[0].len() {
-                in_dimensions[i][j] = (in_dimensions[i][j]).next_power_of_two();
-            }
-        }
-        let w1 = random_vector_quant(k_w * k_x * n_w * n_w);
-
-        let conv = Convolution::new(
-            Tensor::new_conv(
-                vec![k_w, k_x, n_w, n_w],
-                in_dimensions[0].clone(),
-                w1.clone(),
-            ),
-            Tensor::new(vec![k_w], random_vector_quant(k_w)),
-        );
-        let info = conv.requant_info::<GoldilocksExt2>();
-        println!("range : {}", info.range);
-        for _ in 0..100 {
-            let (out, _proving_data) = conv.op::<GoldilocksExt2>(&Tensor::new(
-                vec![k_x, n_x, n_x],
-                random_vector_quant(k_x * n_x * n_x),
-            ));
-            for j in 0..out.data.len() {
-                if out.data[j] < 0 {
-                    assert!((-out.data[j] as usize) < info.range);
-                } else {
-                    assert!((out.data[j] as usize) < info.range);
-                }
-            }
-        }
     }
 }

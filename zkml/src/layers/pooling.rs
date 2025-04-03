@@ -11,7 +11,7 @@ use crate::{
         },
     },
     quantization::{Fieldizer, IntoElement},
-    tensor::Tensor,
+    tensor::{Number, Tensor},
 };
 use anyhow::{Context, ensure};
 use ff_ext::ExtensionField;
@@ -66,7 +66,7 @@ where
 }
 
 impl Pooling {
-    pub fn op(&self, input: &Tensor<Element>) -> Tensor<Element> {
+    pub fn op<T: Number>(&self, input: &Tensor<T>) -> Tensor<T> {
         match self {
             Pooling::Maxpool2D(maxpool2d) => maxpool2d.op(input),
         }
@@ -422,7 +422,7 @@ impl Default for Maxpool2D {
 }
 
 impl Maxpool2D {
-    pub fn op(&self, input: &Tensor<Element>) -> Tensor<Element> {
+    pub fn op<T: Number>(&self, input: &Tensor<T>) -> Tensor<T> {
         assert!(
             self.kernel_size == MAXPOOL2D_KERNEL_SIZE,
             "Maxpool2D works only for kernel size {}",
@@ -445,7 +445,7 @@ impl Maxpool2D {
     ) -> Vec<Vec<E::BaseField>> {
         let padded_input = input.pad_next_power_of_two();
 
-        let padded_output = self.op(&input).pad_next_power_of_two();
+        let padded_output = self.op(input).pad_next_power_of_two();
         let padded_input_shape = padded_input.get_shape();
 
         let new_fixed = (0..padded_input_shape[2] << 1)

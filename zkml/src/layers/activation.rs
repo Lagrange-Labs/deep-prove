@@ -10,6 +10,7 @@ use crate::{
             verifier::verify_logup_proof,
         },
     },
+    tensor::Number,
 };
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
@@ -50,7 +51,7 @@ where
 }
 
 impl Activation {
-    pub fn op(&self, input: &Tensor<Element>) -> Tensor<Element> {
+    pub fn op<T: Number>(&self, input: &Tensor<T>) -> Tensor<T> {
         match self {
             Activation::Relu(relu) => relu.op(input),
         }
@@ -189,7 +190,7 @@ impl Relu {
             .unzip()
     }
 
-    pub fn op(&self, input: &Tensor<Element>) -> Tensor<Element> {
+    pub fn op<T: Number>(&self, input: &Tensor<T>) -> Tensor<T> {
         Tensor::new(
             input.get_shape(),
             input
@@ -201,8 +202,8 @@ impl Relu {
     }
 
     #[inline(always)]
-    pub fn apply(e: Element) -> Element {
-        if e.is_negative() { 0 } else { e }
+    pub fn apply<T: Number>(e: T) -> T {
+        if e.is_negative() { T::default() } else { e }
     }
 }
 
@@ -256,7 +257,7 @@ mod test {
         );
         assert_eq!(input_mle.num_vars(), output_mle.num_vars());
         assert_eq!(input_mle.num_vars(), Relu::num_vars());
-        let inputs = Tensor::random(vec![10]);
+        let inputs = Tensor::<Element>::random(vec![10]);
         let outputs = relu.op(&inputs);
         assert_eq!(inputs.get_shape(), outputs.get_shape());
         for (input, output) in inputs.get_data().iter().zip(outputs.get_data().iter()) {

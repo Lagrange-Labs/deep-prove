@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    Claim, VectorTranscript,
+    Claim, Element, VectorTranscript,
     commit::{aggregated_rlc, compute_beta_eval_poly, compute_betas_eval},
     layers::{Layer, convolution, dense},
     model::Model,
@@ -82,7 +82,7 @@ where
     E: Serialize + DeserializeOwned,
 {
     /// NOTE: it assumes the model's layers are already padded to power of two
-    pub fn generate_from_model(m: &Model) -> anyhow::Result<Self> {
+    pub fn generate_from_model(m: &Model<Element>) -> anyhow::Result<Self> {
         Self::generate(
             m.layers()
                 .flat_map(|(id, l)| match l {
