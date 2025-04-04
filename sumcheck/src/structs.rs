@@ -13,6 +13,10 @@ pub struct IOPProof<E: ExtensionField> {
     pub proofs: Vec<IOPProverMessage<E>>,
 }
 impl<E: ExtensionField> IOPProof<E> {
+    pub fn new(point: Vec<E>, proofs: Vec<IOPProverMessage<E>>) -> IOPProof<E> {
+        IOPProof { point, proofs }
+    }
+
     pub fn extract_sum(&self) -> E {
         self.proofs[0].evaluations[0] + self.proofs[0].evaluations[1]
     }
@@ -23,6 +27,17 @@ impl<E: ExtensionField> IOPProof<E> {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IOPProverMessage<E: ExtensionField> {
     pub(crate) evaluations: Vec<E>,
+}
+
+impl<E: ExtensionField> IOPProverMessage<E> {
+    pub fn new(evaluations: Vec<E>) -> IOPProverMessage<E> {
+        IOPProverMessage { evaluations }
+    }
+
+    /// Getter for the evaluations
+    pub fn evaluations(&self) -> &[E] {
+        &self.evaluations
+    }
 }
 
 /// Prover State of a PolyIOP.

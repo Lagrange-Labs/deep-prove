@@ -128,7 +128,7 @@ impl TableType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LookupContext {
     tables: Vec<TableType>,
 }

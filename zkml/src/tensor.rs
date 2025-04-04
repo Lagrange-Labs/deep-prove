@@ -313,9 +313,9 @@ impl Tensor<Element> {
             })
             .unzip();
         // TODO: remove the requirement to keep the output value intact
-        let output = out.clone();
+
         let out_element = out
-            .into_par_iter()
+            .par_iter()
             .map(|e| {
                 index_u(e.as_slice(), n_x)
                     .map(|e| e.into_element())
@@ -326,7 +326,7 @@ impl Tensor<Element> {
 
         return (
             Tensor::new(vec![self.shape[0], n_x, n_x], out_element),
-            ConvData::new(real_input, input, x_vec, prod, output),
+            ConvData::new(real_input, input, x_vec, prod, out),
         );
     }
     pub fn kx(&self) -> usize {

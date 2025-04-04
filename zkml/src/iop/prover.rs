@@ -32,7 +32,7 @@ where
 {
     ctx: &'a Context<E>,
     // proofs for each layer being filled
-    proofs: Vec<LayerProof<E>>,
+    pub(crate) proofs: Vec<LayerProof<E>>,
     table_proofs: Vec<TableProof<E>>,
     pub(crate) transcript: &'a mut T,
     pub(crate) commit_prover: precommit::CommitProver<E>,
@@ -107,6 +107,9 @@ where
             (Layer::Pooling(pooling), LayerCtx::Pooling(info)) => {
                 pooling.prove_pooling(self, last_claim, input, &step.output, info)
             }
+            (Layer::Padding(padding), LayerCtx::Padding(..)) => padding
+                .prove_step(self, last_claim, input)
+                .map_err(|e| e.into()),
             _ => bail!(
                 "inconsistent proof step {} and info step {} from ctx",
                 step.layer.describe(),
