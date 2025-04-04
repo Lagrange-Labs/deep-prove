@@ -12,4 +12,5 @@ proptest-regressions/
 *.json
 zkml/bench
 zkml/data
+skml/data/*
 zkml/cifar_net.pth
