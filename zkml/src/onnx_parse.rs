@@ -778,6 +778,10 @@ mod tests {
 
     use crate::{Context, IO, Prover, quantization::TensorFielder, verify};
     use goldilocks::GoldilocksExt2;
+    use tract_onnx::{
+        tract_core::ops::{cnn::MaxPool, einsum::EinSum},
+        tract_hir::ops::{konst::Const, math::Max, source::Source},
+    };
     use transcript::BasicTranscript;
 
     type F = GoldilocksExt2;
@@ -911,5 +915,85 @@ mod tests {
             BasicTranscript::new(b"m2vec");
         let io = IO::new(input.to_fields(), output.to_fields());
         verify::<_, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
+    }
+
+    #[test]
+    fn test_tract() {
+        let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
+        let model = tract_onnx::onnx()
+            .model_for_path(filepath)
+            .map_err(|e| Error::msg(format!("Failed to load model: {:?}", e)))
+            .unwrap();
+        for symbol in model.symbols.all_symbols().iter() {
+            println!("symbol: {:?}", symbol);
+        }
+        let opt = model.into_typed().unwrap();
+
+        let eval_order = opt.eval_order().unwrap();
+        eval_order.into_iter().for_each(|id| {
+            let node = opt.node(id);
+            let outputs = &node.outputs;
+            for (i, output) in outputs.iter().enumerate() {
+                println!(
+                    "Cluttered Node: {},  Output {} shape: {:?}",
+                    node,
+                    i,
+                    output.fact.shape.dims()
+                );
+            }
+            // for node_input in &node.inputs {
+            //     let label = opt.outlet_label(*node_input);
+            //     println!("Node input label: {:?}", label);
+            // }
+        });
+
+        let opt = opt.into_decluttered().unwrap();
+
+        let eval_order = opt.eval_order().unwrap();
+
+        eval_order.into_iter().for_each(|id| {
+            let node = opt.node(id);
+            let outputs = &node.outputs;
+
+            for (i, output) in outputs.iter().enumerate() {
+                println!(
+                    "Node: {},  Output {} shape: {:?}",
+                    node,
+                    i,
+                    output.fact.shape.dims()
+                );
+            }
+            // for node_input in &node.inputs {
+            //     let label = opt.outlet_label(*node_input);
+            //     println!("Node input label: {:?}", label);
+            // }
+        });
+
+        let mut values = SymbolValues::default();
+        let symbol = opt.sym("batch_size");
+        values.set(&symbol, 1);
+
+        let opt = opt.concretize_dims(&values).unwrap();
+
+        // let eval_order = opt.eval_order().unwrap();
+
+        // eval_order.into_iter().for_each(|id| {
+        //     let node = opt.node(id);
+        //     let outputs = &node.outputs;
+        //     for (i, output) in outputs.iter().enumerate() {
+        //         println!(
+        //             "Node: {},  Output {} shape: {:?}",
+        //             node,
+        //             i,
+        //             output.fact.shape.dims()
+        //         );
+        //     }
+        // });
+
+        let plan = SimplePlan::new(opt).unwrap();
+
+        for node_id in plan.order_without_consts() {
+            println!("planned node: {}", plan.model().node(*node_id));
+        }
     }
 }

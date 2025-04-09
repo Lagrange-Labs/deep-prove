@@ -21,6 +21,22 @@ pub static MIN: Lazy<Element> = Lazy::new(|| -(1 << (*BIT_LEN - 1)));
 pub static MAX: Lazy<Element> = Lazy::new(|| (1 << (*BIT_LEN - 1)) - 1);
 pub static ZERO: Lazy<Element> = Lazy::new(|| 0);
 
+#[derive(Debug, Clone, Copy)]
+/// Struct containing all the params required to quantise a tensor of floats
+pub struct QuantisationParams {
+    pub max: f32,
+    pub min: f32,
+    pub scale: f32,
+    pub zero_point: f32,
+}
+
+impl QuantisationParams {
+    /// Quantises a float value
+    pub fn quantise(&self, float: f32) -> Element {
+        ((float / self.scale).round() + self.zero_point) as Element
+    }
+}
+
 /// Trait used to quantize original floating point number to integer
 pub trait Quantizer<Output> {
     fn from_f32_unsafe(e: &f32) -> Output;

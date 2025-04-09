@@ -17,6 +17,7 @@ pub mod layers;
 pub mod lookup;
 pub mod model;
 mod onnx_parse;
+pub mod provable_ops;
 pub use onnx_parse::{ModelType, load_model};
 
 pub mod tensor;

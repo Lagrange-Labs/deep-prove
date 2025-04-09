@@ -23,6 +23,11 @@ use crate::{
     to_bit_sequence_le,
 };
 
+pub use deep_tensor::DeepTensor;
+pub mod deep_tensor;
+pub use error::DeepTensorError;
+mod error;
+
 /// Function testing the consistency between the actual convolution implementation and
 /// the FFT one. Used for debugging purposes.
 /// real_tensor is std conv2d (kw, nx-nw+1, nx-nw+1)

@@ -9,6 +9,22 @@ use crate::{
     tensor::{ConvData, Tensor},
 };
 
+pub mod error;
+pub mod inference;
+
+/// Type alias for a tuple of [`usize`] used to represent an edge in a graph
+pub type Edge = (usize, usize);
+
+#[derive(Debug, Clone)]
+/// For the outputs of a graph node this struct contains all the information about where
+/// each output is used later in the graph.
+pub struct OutputData {
+    /// A list of edges that connect this output to other nodes
+    edges: Vec<Edge>,
+    /// The shape of this output
+    shape: Vec<usize>,
+}
+
 // The index of the step, starting from the input layer. (proving is done in the opposite flow)
 pub type StepIdx = usize;
 
