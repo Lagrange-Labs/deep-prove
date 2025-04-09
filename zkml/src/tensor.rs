@@ -27,6 +27,7 @@ pub use deep_tensor::DeepTensor;
 pub mod deep_tensor;
 pub use error::DeepTensorError;
 mod error;
+mod utilities;
 
 /// Function testing the consistency between the actual convolution implementation and
 /// the FFT one. Used for debugging purposes.
