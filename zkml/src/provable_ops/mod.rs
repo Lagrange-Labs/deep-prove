@@ -1,6 +1,7 @@
 //! Module contains definition of the [`ProvableOp`] trait, which all operations we can handle
 //! should implement.
 
+use crate::Element;
 use std::{fmt::Debug, marker::PhantomData};
 
 use crate::{model::inference::step::InferenceStep, tensor::DeepTensor};
@@ -20,7 +21,7 @@ mod error;
 /// Note: most implementors of [`InferenceOp`] are not expected to store any tensors.
 /// If an operation has a constant input, like a convolution with weights and bias,
 /// these will be found in their own `Constant` structs.
-pub trait InferenceOp: Debug + DynClone {
+pub trait InferenceOp<T> : Debug {
     /// Returns the name of the operation, this can always be used to identify the
     /// operation even after type erasure.
     fn name(&self) -> String;
@@ -30,9 +31,9 @@ pub trait InferenceOp: Debug + DynClone {
     /// i.e. floating point or quantised.
     fn evaluate(
         &self,
-        inputs: &[DeepTensor],
-        const_inputs: &[DeepTensor],
-    ) -> Result<Vec<DeepTensor>, ProvableOpError>;
+        inputs: &[DeepTensor<T>],
+        const_inputs: &[DeepTensor<T>],
+    ) -> Result<Vec<DeepTensor<T>>, ProvableOpError>;
 
     /// Returns the expected input shapes (in input order)
     fn input_shapes(&self) -> Vec<Vec<usize>>;
@@ -41,9 +42,8 @@ pub trait InferenceOp: Debug + DynClone {
     fn output_shapes(&self) -> Vec<Vec<usize>>;
 }
 
-clone_trait_object!(InferenceOp);
 
-pub trait ProvableOp<PCS, E>: InferenceOp
+pub trait ProvableOp<PCS, E>: InferenceOp<Element>
 where
     PCS: PolynomialCommitmentScheme<E>,
     E: ExtensionField,
@@ -51,7 +51,7 @@ where
     /// Produces a proof of correct execution for this operation.
     fn prove(
         &self,
-        step_data: &InferenceStep,
+        step_data: &InferenceStep<Element>,
         prover: &mut Prover<PCS, E>,
     ) -> Result<(), ProvableOpError>;
 

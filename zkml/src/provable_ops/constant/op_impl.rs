@@ -5,17 +5,18 @@ use super::{
     Constant,
 };
 use crate::tensor::DeepTensor;
+use crate::tensor::deep_tensor::Number;
 
-impl InferenceOp for Constant {
+impl<T: Number> InferenceOp<T> for Constant<T> {
     fn name(&self) -> String {
         "Constant".to_string()
     }
 
     fn evaluate(
         &self,
-        inputs: &[DeepTensor],
-        const_inputs: &[DeepTensor],
-    ) -> Result<Vec<DeepTensor>, ProvableOpError> {
+        inputs: &[DeepTensor<T>],
+        const_inputs: &[DeepTensor<T>],
+    ) -> Result<Vec<DeepTensor<T>>, ProvableOpError> {
         // We check that no input is provided
         if !inputs.is_empty() || !const_inputs.is_empty() {
             return Err(ProvableOpError::ParameterError(

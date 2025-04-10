@@ -5,10 +5,10 @@
 use super::node::InferenceNode;
 use crate::{model::Edge, quantization::QuantisationParams};
 
-#[derive(Debug, Clone)]
-pub struct InferenceModel {
+#[derive(Debug)]
+pub struct InferenceModel<T> {
     /// The list of all nodes in the graph
-    nodes: Vec<InferenceNode>,
+    nodes: Vec<InferenceNode<T>>,
     /// This contains the input nodes to this graph i.e. where we should start
     /// traversal.
     inputs: Vec<usize>,

@@ -1,85 +1,108 @@
-use std::any::TypeId;
+use std::{any::TypeId, cmp::Ordering};
 
+use ark_std::rand::Rng;
 use tract_onnx::prelude::{DatumType, Tensor};
 
 use crate::{Element, quantization::QuantisationParams};
 
 use super::{
     error::DeepTensorError,
-    utilities::{cast_vec, get_all_coords},
+    utilities::{get_all_coords},
 };
 
-macro_rules! tensor_value_constructor {
-     ($(($t:ty, $var:ident)), *)  => {
-        #[derive(Debug, Clone, PartialEq)]
-        pub enum TensorValue {
-           $( $var (Vec<$t> )),*
+
+pub trait Number:
+    Copy
+    + Clone
+    + Send
+    + Sync
+    + Default
+    + std::iter::Sum
+    + std::ops::Add<Output = Self>
+    + std::ops::Sub<Output = Self>
+    + std::ops::AddAssign<Self>
+    + std::ops::Mul<Output = Self>
+    + std::fmt::Debug
+{
+    const MIN: Self;
+    const MAX: Self;
+    fn random<R: Rng>(rng: &mut R) -> Self;
+    /// reason abs is necessary is because f32 doesn't implement Ord trait, so to have uniform code for f32 and Element,
+    /// we implement abs here.
+    fn absolute_value(&self) -> Self;
+    fn cmp_max(&self, other: &Self) -> Self {
+        match self.compare(other) {
+            Ordering::Greater => *self,
+            Ordering::Equal => *self,
+            Ordering::Less => *other,
         }
-    };
+    }
+    fn cmp_min(&self, other: &Self) -> Self {
+        match self.compare(other) {
+            Ordering::Greater => *other,
+            Ordering::Equal => *self,
+            Ordering::Less => *self,
+        }
+    }
+    fn compare(&self, other: &Self) -> Ordering;
+    fn is_negative(&self) -> bool;
 }
 
-tensor_value_constructor!((f32, F32), (f64, F64), (i128, Element));
-
-impl TensorValue {
-    /// Method to create a new [`TensorValue`], which is a [`Vec`] of a supported data
-    /// type. Currently supported types are:
-    /// - [`f64`]
-    /// - [`f32`]
-    /// - [`i128`]
-    fn new<T: Clone + 'static>(data: &[T]) -> Result<TensorValue, DeepTensorError> {
-        let t_type = TypeId::of::<T>();
-
-        match t_type {
-            type_id if type_id == TypeId::of::<f32>() => {
-                Ok(TensorValue::F32(cast_vec(data.to_vec())))
-            }
-            type_id if type_id == TypeId::of::<f64>() => {
-                Ok(TensorValue::F64(cast_vec(data.to_vec())))
-            }
-            type_id if type_id == TypeId::of::<i128>() => {
-                Ok(TensorValue::Element(cast_vec(data.to_vec())))
-            }
-            _ => Err(DeepTensorError::ParameterError(
-                "Cannot construct DeepValue of unsupported Type".to_string(),
-            )),
+impl Number for Element {
+    const MIN: Element = Element::MIN;
+    const MAX: Element = Element::MAX;
+    fn random<R: Rng>(rng: &mut R) -> Self {
+        0
+    }
+    fn absolute_value(&self) -> Self {
+        self.abs()
+    }
+    fn compare(&self, other: &Self) -> Ordering {
+        self.cmp(&other)
+    }
+    fn is_negative(&self) -> bool {
+        *self < 0
+    }
+}
+impl Number for f32 {
+    const MIN: f32 = f32::MIN;
+    const MAX: f32 = f32::MAX;
+    fn random<R: Rng>(rng: &mut R) -> Self {
+        1.0
+    }
+    fn absolute_value(&self) -> Self {
+        self.abs()
+    }
+    fn compare(&self, other: &Self) -> Ordering {
+        if self < other {
+            Ordering::Less
+        } else if self == other {
+            Ordering::Equal
+        } else {
+            Ordering::Greater
         }
     }
 
-    /// Method used to determine if two [`TensorValue`] contain the same type
-    fn same_type(&self, other: &TensorValue) -> bool {
-        match (self, other) {
-            (TensorValue::Element(..), TensorValue::Element(..))
-            | (TensorValue::F32(..), TensorValue::F32(..))
-            | (TensorValue::F64(..), TensorValue::F64(..)) => true,
-            _ => false,
-        }
-    }
-
-    /// Gets the length of the inner data
-    pub fn len(&self) -> usize {
-        match self {
-            TensorValue::Element(v) => v.len(),
-            TensorValue::F32(v) => v.len(),
-            TensorValue::F64(v) => v.len(),
-        }
+    fn is_negative(&self) -> bool {
+        *self < 0.0
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 /// Struct used to provide a type agnostic tensor for dynamic dispatch methods.
-pub struct DeepTensor {
+pub struct DeepTensor<T>{
     /// The dimensions of the tensor
     shape: Vec<usize>,
     /// The actual data
-    data: TensorValue,
+    data: Vec<T>,
 }
 
-impl DeepTensor {
+impl<T: Number> DeepTensor<T> {
     /// Initialise a new [`DeepTensor`], this function works out what the type of `data` is and creates the correct variant
-    pub fn new<T: Clone + 'static>(
+    pub fn new(
         shape: &[usize],
         data: &[T],
-    ) -> Result<DeepTensor, DeepTensorError> {
+    ) -> Result<DeepTensor<T>, DeepTensorError> {
         let total_size = shape.iter().product::<usize>();
         if data.len() != total_size {
             return Err(DeepTensorError::ParameterError(format!(
@@ -89,10 +112,9 @@ impl DeepTensor {
             )));
         }
 
-        let data = TensorValue::new::<T>(data)?;
         Ok(DeepTensor {
             shape: shape.to_vec(),
-            data,
+            data: data.to_vec(),
         })
     }
 
@@ -106,42 +128,8 @@ impl DeepTensor {
         self.shape.len()
     }
 
-    /// Quantises the [`DeepTensor`] given some [`QuantisationParams`]
-    pub fn quantise(&self, params: &QuantisationParams) -> DeepTensor {
-        match &self.data {
-            TensorValue::Element(_) => self.clone(),
-            TensorValue::F32(v) => {
-                let new_data = TensorValue::Element(
-                    v.iter()
-                        .map(|float_val| params.quantise(*float_val))
-                        .collect::<Vec<Element>>(),
-                );
-                DeepTensor {
-                    shape: self.shape().to_vec(),
-                    data: new_data,
-                }
-            }
-            TensorValue::F64(v) => {
-                let new_data = TensorValue::Element(
-                    v.iter()
-                        .map(|float_val| params.quantise(*float_val as f32))
-                        .collect::<Vec<Element>>(),
-                );
-                DeepTensor {
-                    shape: self.shape().to_vec(),
-                    data: new_data,
-                }
-            }
-        }
-    }
-
-    /// Used to determine whether two [`DeepTensor`] share an underlying type
-    pub fn same_type(&self, other: &DeepTensor) -> bool {
-        self.data.same_type(&other.data)
-    }
-
     /// Getter for the inner data
-    pub fn data(&self) -> &TensorValue {
+    pub fn data(&self) -> &Vec<T> {
         &self.data
     }
 
@@ -187,7 +175,7 @@ impl DeepTensor {
     }
 
     /// Moves tensor axis. The first `usize` is the axis to move and the second `usize` is the position to move to.
-    pub fn move_axis(&self, from: usize, to: usize) -> Result<DeepTensor, DeepTensorError> {
+    pub fn move_axis(&self, from: usize, to: usize) -> Result<Self, DeepTensorError> {
         // Check that both from and to are valid
         let old_shape = self.shape();
 
@@ -237,7 +225,7 @@ impl DeepTensor {
     }
 
     /// Swaps two axes in the tensor.
-    pub fn swap_axes(&self, a: usize, b: usize) -> Result<DeepTensor, DeepTensorError> {
+    pub fn swap_axes(&self, a: usize, b: usize) -> Result<Self, DeepTensorError> {
         // Check that both a and b are valid
         let old_shape = self.shape();
 
@@ -291,7 +279,7 @@ impl DeepTensor {
         &self,
         new_shape: &[usize],
         coord_func: F,
-    ) -> Result<DeepTensor, DeepTensorError>
+    ) -> Result<Self, DeepTensorError>
     where
         F: Fn(&[usize], &[usize]) -> Result<usize, DeepTensorError>,
     {
@@ -299,45 +287,31 @@ impl DeepTensor {
 
         let all_indices = get_all_coords(self.shape());
         // Match on the data type to produce the new tensor
-        match self.data() {
-            TensorValue::Element(d_slice) => {
-                let mut out_data = vec![0i128; size];
+                let mut out_data = vec![T::default(); size];
                 all_indices.iter().try_for_each(|coords| {
                     let old_index = self.get_index(coords)?;
                     let new_index = coord_func(coords, new_shape)?;
-                    out_data[new_index] = d_slice[old_index];
+                    out_data[new_index] = self.data[old_index];
                     Ok(())
                 })?;
                 DeepTensor::new(new_shape, &out_data)
-            }
-            TensorValue::F32(d_slice) => {
-                let mut out_data = vec![0.0f32; size];
-                all_indices.iter().try_for_each(|coords| {
-                    let old_index = self.get_index(coords)?;
-                    let new_index = coord_func(coords, new_shape)?;
-                    out_data[new_index] = d_slice[old_index];
-                    Ok(())
-                })?;
-                DeepTensor::new(new_shape, &out_data)
-            }
-            TensorValue::F64(d_slice) => {
-                let mut out_data = vec![0.0f64; size];
-                all_indices.iter().try_for_each(|coords| {
-                    let old_index = self.get_index(coords)?;
-                    let new_index = coord_func(coords, new_shape)?;
-                    out_data[new_index] = d_slice[old_index];
-                    Ok(())
-                })?;
-                DeepTensor::new(new_shape, &out_data)
-            }
+    }
+}
+
+impl DeepTensor<f32> {
+/// Quantises the [`DeepTensor`] given some [`QuantisationParams`]
+    pub fn quantise(&self, params: &QuantisationParams) -> DeepTensor<Element> {
+        DeepTensor::<Element> {
+            shape: self.shape.clone(),
+            data: self.data.iter().map(|float_val| params.quantise(*float_val)).collect::<Vec<Element>>(),
         }
     }
 }
 
 macro_rules! tract_converter {
     ($tract:ty, $deep:ty, $tensor:expr) => {
-        TensorValue::new::<$deep>(
-            &Tensor::as_slice::<$tract>($tensor)
+        {
+            Tensor::as_slice::<$tract>($tensor)
                 .map_err(|e| {
                     DeepTensorError::ConversionError(format!(
                         "Could not convert tract data type: {:?} to TensorValue::{}, inner: {:?}",
@@ -348,45 +322,21 @@ macro_rules! tract_converter {
                 })?
                 .into_iter()
                 .map(|&val| val as $deep)
-                .collect::<Vec<$deep>>(),
-        )
+                .collect::<Vec<$deep>>()
+            }
     };
 }
 
-impl TryFrom<&Tensor> for DeepTensor {
+impl TryFrom<&Tensor> for DeepTensor<f32> {
     type Error = DeepTensorError;
-    fn try_from(tract_tensor: &Tensor) -> Result<DeepTensor, DeepTensorError> {
+    fn try_from(tract_tensor: &Tensor) -> Result<DeepTensor<f32>, DeepTensorError> {
         let data = match tract_tensor.datum_type() {
-            DatumType::U8 => {
-                tract_converter!(u8, Element, tract_tensor)
-            }
-            DatumType::U16 => {
-                tract_converter!(u16, Element, tract_tensor)
-            }
-            DatumType::U32 => {
-                tract_converter!(u32, Element, tract_tensor)
-            }
-            DatumType::U64 => {
-                tract_converter!(u64, Element, tract_tensor)
-            }
-            DatumType::I8 => {
-                tract_converter!(i8, Element, tract_tensor)
-            }
-            DatumType::I16 => {
-                tract_converter!(i16, Element, tract_tensor)
-            }
-            DatumType::I32 => {
-                tract_converter!(i32, Element, tract_tensor)
-            }
-            DatumType::I64 => {
-                tract_converter!(i64, Element, tract_tensor)
-            }
             DatumType::F32 => {
-                tract_converter!(f32, f32, tract_tensor)
+                Ok(tract_converter!(f32, f32, tract_tensor))
             }
-            DatumType::F64 => {
-                tract_converter!(f64, f64, tract_tensor)
-            }
+            //DatumType::F64 => {
+            //    Ok(tract_converter!(f64, f64, tract_tensor))
+            //}
             dt => Err(DeepTensorError::ConversionError(format!(
                 "Do not currently support conversion from: {:?}",
                 dt
