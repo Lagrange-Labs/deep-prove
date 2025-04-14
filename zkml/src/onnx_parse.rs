@@ -1,8 +1,5 @@
 use crate::{
-    Element,
-    layers::{convolution::Convolution, dense::Dense},
-    padding::pad_model,
-    quantization::{AbsoluteMax, ModelMetadata, ScalingStrategy},
+    layers::{convolution::Convolution, dense::Dense, reshape::Reshape}, padding::pad_model, quantization::{AbsoluteMax, ModelMetadata, ScalingStrategy}, Element
 };
 use anyhow::{Context, Error, Result, bail, ensure};
 use itertools::Itertools;
@@ -472,6 +469,7 @@ pub fn load_float_model(filepath: &str) -> Result<Model<f32>> {
                 input_shape_og = vec![input_shape_og.iter().product()];
                 // assert!(input_shape_padded.iter().all(|d| d.is_power_of_two()));
                 // input_shape_padded = vec![input_shape_padded.iter().product()];
+                layers.push(Layer::Reshape(Reshape))
             }
             _ => bail!("Unsupported operation"),
         };
