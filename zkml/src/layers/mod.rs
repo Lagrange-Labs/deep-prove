@@ -1,6 +1,7 @@
 pub mod activation;
 pub mod convolution;
 pub mod dense;
+pub mod matrix_mul;
 pub mod pooling;
 pub mod requant;
 
@@ -21,12 +22,14 @@ use activation::ActivationCtx;
 use convolution::{ConvCtx, ConvProof, SchoolBookConvCtx};
 use dense::{DenseCtx, DenseProof};
 use ff_ext::ExtensionField;
+use matrix_mul::{MatMul, MatMulCtx, MatMulProof};
 use pooling::{PoolingCtx, PoolingProof};
 use requant::RequantCtx;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 #[derive(Clone, Debug)]
 pub enum Layer {
     Dense(Dense),
+    MatMul(MatMul),
     // TODO: replace this with a Tensor based implementation
     Convolution(Convolution),
     // Traditional convolution is used for debug purposes. That is because the actual convolution
@@ -51,6 +54,7 @@ where
     E::BaseField: Serialize + DeserializeOwned,
 {
     Dense(DenseCtx<E>),
+    MatMul(MatMulCtx<E>),
     Convolution(ConvCtx<E>),
     SchoolBookConvolution(SchoolBookConvCtx),
     Activation(ActivationCtx),
@@ -65,6 +69,7 @@ where
     E::BaseField: Serialize + DeserializeOwned,
 {
     Dense(DenseProof<E>),
+    MatMul(MatMulProof<E>),
     Convolution(ConvProof<E>),
     Activation(ActivationProof<E>),
     Requant(RequantProof<E>),
@@ -86,6 +91,7 @@ where
     pub fn variant_name(&self) -> String {
         match self {
             Self::Dense(_) => "Dense".to_string(),
+            Self::MatMul(_) => "Matrix Multiplication".to_string(),
             Self::SchoolBookConvolution(_) => "Traditional Convolution".to_string(),
             Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
@@ -110,6 +116,7 @@ impl Layer {
     {
         match self {
             Layer::Dense(dense) => dense.step_info(id, aux),
+            Layer::MatMul(mat) => mat.step_info(id, aux),
             Layer::Convolution(conv) => conv.step_info(id, aux),
             Layer::SchoolBookConvolution(_conv) => SchoolBookConvCtx.step_info(id, aux),
             Layer::Activation(activation) => activation.step_info(id, aux),
@@ -123,6 +130,7 @@ impl Layer {
     pub fn op<F: ExtensionField>(&self, input: &Tensor<Element>) -> LayerOutput<F> {
         match &self {
             Layer::Dense(ref dense) => LayerOutput::NormalOut(dense.op(input)),
+            Layer::MatMul(mat) => LayerOutput::NormalOut(mat.op(input)),
             Layer::Activation(activation) => LayerOutput::NormalOut(activation.op(input)),
 
             Layer::Convolution(ref filter) => LayerOutput::ConvOut(filter.op(input)),
@@ -144,7 +152,7 @@ impl Layer {
     pub fn shape(&self) -> Vec<usize> {
         match &self {
             Layer::Dense(ref dense) => vec![dense.matrix.nrows_2d(), dense.matrix.ncols_2d()],
-
+            Layer::MatMul(ref mat) => vec![mat.matrix.nrows_2d(), mat.matrix.ncols_2d()],
             Layer::Convolution(ref filter) => filter.get_shape(),
             Layer::SchoolBookConvolution(ref filter) => filter.get_shape(),
 
@@ -161,6 +169,14 @@ impl Layer {
                     "Dense: ({},{})",
                     dense.matrix.nrows_2d(),
                     dense.matrix.ncols_2d(),
+                    // matrix.fmt_integer()
+                )
+            }
+            Layer::MatMul(ref mat) => {
+                format!(
+                    "Matrix multiplication: ({},{})",
+                    mat.matrix.nrows_2d(),
+                    mat.matrix.ncols_2d(),
                     // matrix.fmt_integer()
                 )
             }
@@ -199,6 +215,7 @@ where
     pub fn variant_name(&self) -> String {
         match self {
             Self::Dense(_) => "Dense".to_string(),
+            Self::MatMul(_) => "Matmul".to_string(),
             Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
             Self::Requant(_) => "Requant".to_string(),
@@ -209,6 +226,7 @@ where
     pub fn get_lookup_data(&self) -> Option<(Vec<E>, Vec<E>)> {
         match self {
             LayerProof::Dense(..) => None,
+            LayerProof::MatMul(..) => None,
             LayerProof::Convolution(..) => None,
             LayerProof::Activation(ActivationProof { lookup, .. })
             | LayerProof::Requant(RequantProof { lookup, .. })

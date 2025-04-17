@@ -2974,6 +2974,7 @@ dependencies = [
  "itertools 0.13.0",
  "mpcs",
  "multilinear_extensions",
+ "ndarray",
  "num-traits",
  "once_cell",
  "poseidon",

@@ -158,7 +158,7 @@ impl<E: ExtensionField> LogUpInput<E> {
         columns_per_instance: usize,
     ) -> Result<LogUpInput<E>, LogUpError> {
         if column_evals.is_empty() {
-            return Err(LogUpError::ParamterError(
+            return Err(LogUpError::ParameterError(
                 "No column evals were provided for Lookup input".to_string(),
             ));
         }
@@ -175,7 +175,7 @@ impl<E: ExtensionField> LogUpInput<E> {
 
         column_evals.iter().skip(1).try_for_each(|evals| {
             if evals.len() != first_evals_len {
-                Err(LogUpError::ParamterError(
+                Err(LogUpError::ParameterError(
                     "All sets of evaluations should be the same length".to_string(),
                 ))
             } else {
@@ -198,7 +198,7 @@ impl<E: ExtensionField> LogUpInput<E> {
         column_separation_challenge: E,
     ) -> Result<LogUpInput<E>, LogUpError> {
         if column_evals.is_empty() {
-            return Err(LogUpError::ParamterError(
+            return Err(LogUpError::ParameterError(
                 "No column evals were provided for Lookup input".to_string(),
             ));
         }
@@ -215,7 +215,7 @@ impl<E: ExtensionField> LogUpInput<E> {
 
         column_evals.iter().skip(1).try_for_each(|evals| {
             if evals.len() != first_evals_len {
-                Err(LogUpError::ParamterError(
+                Err(LogUpError::ParameterError(
                     "All sets of evaluations should be the same length".to_string(),
                 ))
             } else {

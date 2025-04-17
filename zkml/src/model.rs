@@ -37,6 +37,7 @@ impl Model {
                 // default quantization inputs for matrix and vector
                 Some(Layer::Requant(dense.requant_info()))
             }
+            Layer::MatMul(ref mat) => Some(Layer::Requant(mat.requant_info())),
             Layer::Convolution(ref filter) => Some(Layer::Requant(filter.requant_info::<F>())),
             // Layer::Traditional_Convolution(ref filter) => {
             // Some(Layer::Requant(Requant::from_matrix_default(filter)))
@@ -120,19 +121,17 @@ impl Model {
         self.input_not_padded.clone()
     }
     pub fn input_shape(&self) -> Vec<usize> {
-        if let Layer::Dense(mat) = &self.layers[0] {
-            vec![mat.matrix.nrows_2d()]
-        } else if matches!(
-            &self.layers[0],
-            Layer::Convolution(_) | Layer::SchoolBookConvolution(_)
-        ) {
-            assert!(
-                self.padded_in_shape.len() > 0,
-                "Set the input shape using `set_input_shape`"
-            );
-            self.padded_in_shape.clone()
-        } else {
-            panic!("layer is not starting with a dense or conv layer?")
+        match &self.layers[0] {
+            Layer::Dense(mat) => vec![mat.matrix.nrows_2d()],
+            Layer::MatMul(mat) => mat.input_shape(),
+            Layer::Convolution(_) | Layer::SchoolBookConvolution(_) => {
+                assert!(
+                    self.padded_in_shape.len() > 0,
+                    "Set the input shape using `set_input_shape`"
+                );
+                self.padded_in_shape.clone()
+            }
+            _ => panic!("layer is not starting with a dense or conv layer?"),
         }
     }
 
@@ -296,6 +295,7 @@ pub(crate) mod test {
         activation::{Activation, Relu},
         convolution::Convolution,
         dense::Dense,
+        matrix_mul::MatMul,
         pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
     };
     use ark_std::rand::{Rng, thread_rng};
@@ -662,7 +662,7 @@ pub(crate) mod test {
             .collect_vec();
         let matrices_mle = dense_layers
             .iter()
-            .map(|d| d.matrix.to_mle_2d::<F>())
+            .map(|d| d.matrix.to_2d_mle::<F>())
             .collect_vec();
         let point1 = random_bool_vector(dense_layers[0].matrix.nrows_2d().ilog2() as usize);
         println!("point1: {:?}", point1);
@@ -733,6 +733,33 @@ pub(crate) mod test {
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
         let io = IO::new(input.to_fields(), output.to_fields());
+        verify::<_, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
+    }
+
+    #[test]
+    fn test_single_matmul_prover() {
+        // layer matrix shape
+        let m_shape = vec![1000, 2000];
+        let m = random_vector_quant(m_shape[0] * m_shape[1]);
+        let tensor_m = Tensor::new(m_shape, m);
+        let input_shape = vec![768, tensor_m.nrows_2d()];
+        let mut model = Model::new();
+        let matmul_layer = MatMul::new(tensor_m, input_shape.clone()).unwrap();
+        let padded_layer = matmul_layer.pad_next_power_of_two().unwrap();
+        model.add_layer::<F>(Layer::MatMul(padded_layer));
+        model.describe();
+
+        let input = random_vector_quant(input_shape[0] * input_shape[1]);
+        let input_tensor = Tensor::new(input_shape, input).pad_next_power_of_two_2d();
+
+        let trace = model.run::<F>(input_tensor.clone());
+        let mut tr = BasicTranscript::<F>::new(b"matmul");
+        let ctx = Context::<F>::generate(&model, None).expect("Unable to generate context");
+        let output = trace.final_output().clone();
+        let prover = Prover::new(&ctx, &mut tr);
+        let proof = prover.prove(trace).expect("unable to generate proof");
+        let mut verifier_transcript = BasicTranscript::<F>::new(b"matmul");
+        let io = IO::new(input_tensor.to_fields(), output.to_fields());
         verify::<_, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
     }
 

@@ -40,3 +40,6 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 tract-onnx = "0.21.9"
 transcript = { version = "0.1.0", path = "../transcript" }
+
+[dev-dependencies]
+ndarray = "0.16.1"

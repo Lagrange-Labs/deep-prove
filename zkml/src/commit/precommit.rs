@@ -104,6 +104,15 @@ where
                             Some((dense::BIAS_POLY_ID + id, bias_evals)),
                         ]
                     }
+                    Layer::MatMul(m) => {
+                        let evals = m.matrix.evals_2d();
+                        debug!(
+                            "Commitment : mat mul layer ID {}: size {}",
+                            id,
+                            evals.len().ilog2()
+                        );
+                        vec![Some((id, evals))]
+                    }
                     Layer::Convolution(m) => {
                         let filter_evals = m.filter.get_conv_weights();
                         let bias_evals = m.bias.evals_flat();
@@ -481,7 +490,7 @@ mod test {
         let claims = (0..n_poly)
             .map(|i| {
                 let point = matrices[i].1.random_eval_point();
-                let eval = matrices[i].1.to_mle_2d().evaluate(&point);
+                let eval = matrices[i].1.to_2d_mle().evaluate(&point);
                 (matrices[i].0, point, eval)
             })
             .collect_vec();

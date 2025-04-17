@@ -95,6 +95,10 @@ where
             (Layer::Dense(dense), LayerCtx::Dense(info)) => {
                 dense.prove_step(self, last_claim, input, &step.output, info)
             }
+            (Layer::MatMul(mat), LayerCtx::MatMul(info)) => {
+                mat.prove_step(self, last_claim, input, &step.output, info)
+            }
+
             (Layer::Convolution(filter), LayerCtx::Convolution(info)) => {
                 filter.prove_convolution_step(self, last_claim, &step.output, &step.conv_data, info)
             }

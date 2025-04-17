@@ -104,7 +104,7 @@ where
             eval: computed_sum,
         };
 
-        // NOTE: if we only had m2v then we need to do the following check manually to make sure the output is correct.
+        // NOTE: if we only had a linear operation then we need to do the following check manually to make sure the output is correct.
         // For other cases, for example if we have RELU at last, then we _always_ accumulate output claims into the
         // _witness_prover_ part,  so that claim will be verified nonetheless.
         // TODO: optimization to avoid proving the accumulation if last layer is RELU since verifier can do it himself.
@@ -113,6 +113,15 @@ where
                 // checks that the last g(0) + g(1) is really equal to the output that the verifier's
                 // expecting (random evaluation of the output)
                 let claimed_sum = dproof.sumcheck.extract_sum();
+                ensure!(
+                    computed_sum == claimed_sum,
+                    "output vector evaluation is incorrect"
+                );
+            }
+            LayerProof::MatMul(proof) => {
+                // checks that the last g(0) + g(1) is really equal to the output that the verifier's
+                // expecting (random evaluation of the output)
+                let claimed_sum = proof.sumcheck.extract_sum();
                 ensure!(
                     computed_sum == claimed_sum,
                     "output vector evaluation is incorrect"
@@ -143,6 +152,9 @@ where
                 }
                 (LayerProof::<E>::Dense(proof), LayerCtx::Dense(info)) => {
                     info.verify_dense(&mut self, output_claim, &proof)?
+                }
+                (LayerProof::<E>::MatMul(proof), LayerCtx::MatMul(info)) => {
+                    info.verify_matmul(&mut self, output_claim, &proof)?
                 }
                 (LayerProof::<E>::Requant(proof), LayerCtx::Requant(info)) => {
                     let (constant_challenge, column_separation_challenge) = challenge_storage
