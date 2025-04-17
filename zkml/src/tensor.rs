@@ -950,120 +950,7 @@ where
 
 impl<T> Tensor<T>
 where
-    T: PartialOrd + Ord + Debug,
-    T: Copy + Clone + Send + Sync,
-    T: std::default::Default,
-{
-    pub fn maxpool2d(&self, kernel_size: usize, stride: usize) -> Tensor<T> {
-        let dims = self.get_shape().len();
-        assert!(dims >= 2, "Input tensor must have at least 2 dimensions.");
-
-        let (h, w) = (self.shape[dims - 2], self.shape[dims - 1]);
-
-        // https://pytorch.org/docs/stable/generated/torch.nn.MaxPool2d.html
-        // Assumes dilation = 1
-        assert!(
-            h >= kernel_size,
-            "Kernel size ({}) is larger than input dimensions ({}, {})",
-            kernel_size,
-            h,
-            w
-        );
-        let out_h = (h - kernel_size) / stride + 1;
-        let out_w = (w - kernel_size) / stride + 1;
-
-        let outer_dims: usize = self.shape[..dims - 2].iter().product();
-        let output: Vec<T> = (0..outer_dims * out_h * out_w)
-            .into_par_iter()
-            .map(|flat_idx| {
-                let n = flat_idx / (out_h * out_w);
-                let i = (flat_idx / out_w) % out_h;
-                let j = flat_idx % out_w;
-
-                let matrix_idx = n * (h * w);
-                let src_idx = matrix_idx + (i * stride) * w + (j * stride);
-                let mut max_val = self.data[src_idx].clone();
-
-                for ki in 0..kernel_size {
-                    for kj in 0..kernel_size {
-                        let src_idx = matrix_idx + (i * stride + ki) * w + (j * stride + kj);
-                        let value = self.data[src_idx].clone();
-                        if value > max_val {
-                            max_val = value;
-                        }
-                    }
-                }
-
-                max_val
-            })
-            .collect();
-
-        let mut new_shape = self.shape.clone();
-        new_shape[dims - 2] = out_h;
-        new_shape[dims - 1] = out_w;
-
-        Tensor {
-            data: output,
-            shape: new_shape,
-            input_shape: vec![0],
-        }
-    }
-    // Replaces every value of a tensor with the maxpool of its kernel
-    pub fn padded_maxpool2d(&self) -> (Tensor<T>, Tensor<T>) {
-        let kernel_size = MAXPOOL2D_KERNEL_SIZE;
-        let stride = MAXPOOL2D_KERNEL_SIZE;
-
-        let maxpool_result = self.maxpool2d(kernel_size, stride);
-
-        let dims: usize = self.get_shape().len();
-        assert!(dims >= 2, "Input tensor must have at least 2 dimensions.");
-
-        let (h, w) = (self.shape[dims - 2], self.shape[dims - 1]);
-
-        assert!(
-            h % MAXPOOL2D_KERNEL_SIZE == 0,
-            "Currently works only with kernel size {}",
-            MAXPOOL2D_KERNEL_SIZE
-        );
-        assert!(
-            w % MAXPOOL2D_KERNEL_SIZE == 0,
-            "Currently works only with stride size {}",
-            MAXPOOL2D_KERNEL_SIZE
-        );
-
-        let outer_dims: usize = self.shape[..dims - 2].iter().product();
-        let maxpool_h = (h - kernel_size) / stride + 1;
-        let maxpool_w = (w - kernel_size) / stride + 1;
-
-        let padded_maxpool_data: Vec<T> = (0..outer_dims * h * w)
-            .into_par_iter()
-            .map(|out_idx| {
-                let n = out_idx / (h * w);
-                let i_full = (out_idx / w) % h;
-                let j_full = out_idx % w;
-
-                let i = i_full / stride;
-                let j = j_full / stride;
-
-                let maxpool_idx = n * maxpool_h * maxpool_w + i * maxpool_w + j;
-                maxpool_result.data[maxpool_idx].clone()
-            })
-            .collect();
-
-        let padded_maxpool_tensor = Tensor {
-            data: padded_maxpool_data,
-            shape: self.get_shape(),
-            input_shape: vec![0],
-        };
-
-        (maxpool_result, padded_maxpool_tensor)
-    }
-}
-
-impl<T> Tensor<T>
-where
-    T: Copy + Default + std::ops::Mul<Output = T> + std::iter::Sum,
-    T: std::ops::Add<Output = T> + std::ops::Sub<Output = T> + std::ops::Mul<Output = T>,
+    T: Copy,
 {
     pub fn get4d(&self) -> (usize, usize, usize, usize) {
         let n_size = self.shape.get(0).cloned().unwrap_or(1);
@@ -1087,11 +974,16 @@ where
 }
 impl<T> Tensor<T>
 where
-    T: Copy + Clone + Send + Sync,
-    T: Copy + Default + std::ops::Mul<Output = T> + std::iter::Sum,
-    T: std::ops::Add<Output = T> + std::ops::Sub<Output = T> + std::ops::Mul<Output = T>,
+    T: Default + Copy + Send + Sync + PartialOrd,
+    T: std::ops::Add<Output = T> + std::ops::Mul<Output = T>,
 {
-    pub fn conv2d(&self, kernels: &Tensor<T>, bias: &Tensor<T>, stride: usize) -> Tensor<T> {
+    pub fn conv2d(
+        &self,
+        kernels: &Tensor<T>,
+        bias: &Tensor<T>,
+        stride: (usize, usize),
+        padding: (usize, usize),
+    ) -> Tensor<T> {
         let (n_size, c_size, h_size, w_size) = self.get4d();
         let (k_n, k_c, k_h, k_w) = kernels.get4d();
 
@@ -1111,8 +1003,12 @@ where
             "Bias shape must match number of kernels!"
         );
 
-        let out_h = (h_size - k_h) / stride + 1;
-        let out_w = (w_size - k_w) / stride + 1;
+        let (stride_h, stride_w) = stride;
+        let (pad_h, pad_w) = padding;
+
+        // Calculate output dimensions with padding
+        let out_h = (h_size + 2 * pad_h - k_h) / stride_h + 1;
+        let out_w = (w_size + 2 * pad_w - k_w) / stride_w + 1;
         let out_shape = vec![n_size, k_n, out_h, out_w];
 
         // Compute output in parallel
@@ -1133,9 +1029,19 @@ where
                 for c in 0..c_size {
                     for kh in 0..k_h {
                         for kw in 0..k_w {
-                            let h = oh * stride + kh;
-                            let w = ow * stride + kw;
-                            sum = sum + self.get(n, c, h, w) * kernels.get(o, c, kh, kw);
+                            let h = oh * stride_h + kh;
+                            let w = ow * stride_w + kw;
+
+                            // Skip if in padding area
+                            if h < pad_h || h >= pad_h + h_size || w < pad_w || w >= pad_w + w_size
+                            {
+                                continue;
+                            }
+
+                            // Adjust indices for input data
+                            let h_idx = h - pad_h;
+                            let w_idx = w - pad_w;
+                            sum = sum + self.get(n, c, h_idx, w_idx) * kernels.get(o, c, kh, kw);
                         }
                     }
                 }
@@ -1151,7 +1057,6 @@ where
             input_shape: vec![0],
         }
     }
-
     // Pads a matrix `M` to `M'` so that matrix-vector multiplication with a flattened FFT-padded convolution output `X'`
     /// matches the result of multiplying `M` with the original convolution output `X`.
     ///
@@ -1202,6 +1107,151 @@ where
             .collect();
 
         Tensor::new(mat_shp_pad.to_vec(), new_data)
+    }
+    pub fn maxpool2d(
+        &self,
+        kernel_size: (usize, usize),
+        stride: (usize, usize),
+        padding: (usize, usize),
+    ) -> Tensor<T> {
+        let dims = self.get_shape().len();
+        assert!(dims >= 2, "Input tensor must have at least 2 dimensions.");
+
+        let (h, w) = (self.shape[dims - 2], self.shape[dims - 1]);
+        let (kernel_h, kernel_w) = kernel_size;
+        let (stride_h, stride_w) = stride;
+        let (pad_h, pad_w) = padding;
+
+        // Effective dimensions after padding
+        let padded_h = h + 2 * pad_h;
+        let padded_w = w + 2 * pad_w;
+
+        assert!(
+            padded_h >= kernel_h,
+            "Kernel height ({}) is larger than padded input height ({})",
+            kernel_h,
+            padded_h
+        );
+        assert!(
+            padded_w >= kernel_w,
+            "Kernel width ({}) is larger than padded input width ({})",
+            kernel_w,
+            padded_w
+        );
+
+        // Output dimensions with padding
+        let out_h = (padded_h - kernel_h) / stride_h + 1;
+        let out_w = (padded_w - kernel_w) / stride_w + 1;
+
+        let outer_dims: usize = self.shape[..dims - 2].iter().product();
+        let output: Vec<T> = (0..outer_dims * out_h * out_w)
+            .into_par_iter()
+            .map(|flat_idx| {
+                let n = flat_idx / (out_h * out_w);
+                let i = (flat_idx / out_w) % out_h;
+                let j = flat_idx % out_w;
+
+                let matrix_idx = n * (h * w); // Original input size, not padded
+                let mut max_val = self.data[matrix_idx].clone(); // Wrong. Needs to be -infinity
+
+                for ki in 0..kernel_h {
+                    for kj in 0..kernel_w {
+                        // Adjust for padding: shift indices into original data space
+                        let h_idx = i * stride_h + ki;
+                        let w_idx = j * stride_w + kj;
+
+                        // Check if the position is within original data bounds
+                        let value = if h_idx < pad_h
+                            || h_idx >= pad_h + h
+                            || w_idx < pad_w
+                            || w_idx >= pad_w + w
+                        {
+                            T::default() // Wrong. Needs to be -infinity
+                        } else {
+                            let src_idx = matrix_idx + (h_idx - pad_h) * w + (w_idx - pad_w);
+                            self.data[src_idx].clone()
+                        };
+
+                        if ki == 0 && kj == 0 || value > max_val {
+                            max_val = value;
+                        }
+                    }
+                }
+
+                max_val
+            })
+            .collect();
+
+        let mut new_shape = self.shape.clone();
+        new_shape[dims - 2] = out_h;
+        new_shape[dims - 1] = out_w;
+
+        Tensor {
+            data: output,
+            shape: new_shape,
+            input_shape: vec![0],
+        }
+    }
+    // Replaces every value of a tensor with the maxpool of its kernel
+    pub fn padded_maxpool2d(
+        &self,
+        kernel_size: (usize, usize),
+        padding: (usize, usize),
+    ) -> (Tensor<T>, Tensor<T>) {
+        let stride = kernel_size;
+        let (kernel_h, kernel_w) = kernel_size;
+        let (stride_h, stride_w) = stride;
+        let (pad_h, pad_w) = padding;
+
+        let maxpool_result = self.maxpool2d(kernel_size, stride, padding);
+
+        let dims: usize = self.get_shape().len();
+        assert!(dims >= 2, "Input tensor must have at least 2 dimensions.");
+
+        let (h, w) = (self.shape[dims - 2], self.shape[dims - 1]);
+
+        // Calculate output dimensions with padding
+        let padded_h = h + 2 * pad_h;
+        let padded_w = w + 2 * pad_w;
+
+        assert!(
+            padded_h % kernel_h == 0,
+            "Padded input height must be divisible by kernel height {}",
+            kernel_h
+        );
+        assert!(
+            padded_w % kernel_w == 0,
+            "Padded input width must be divisible by kernel width {}",
+            kernel_w
+        );
+
+        let outer_dims: usize = self.shape[..dims - 2].iter().product();
+        let maxpool_h = (padded_h - kernel_h) / stride_h + 1;
+        let maxpool_w = (padded_w - kernel_w) / stride_w + 1;
+
+        let padded_maxpool_data: Vec<T> = (0..outer_dims * h * w)
+            .into_par_iter()
+            .map(|out_idx| {
+                let n = out_idx / (h * w);
+                let i_full = (out_idx / w) % h;
+                let j_full = out_idx % w;
+
+                // Adjust indices to account for padding
+                let i = (i_full + pad_h) / stride_h;
+                let j = (j_full + pad_w) / stride_w;
+
+                let maxpool_idx = n * maxpool_h * maxpool_w + i * maxpool_w + j;
+                maxpool_result.data[maxpool_idx].clone()
+            })
+            .collect();
+
+        let padded_maxpool_tensor = Tensor {
+            data: padded_maxpool_data,
+            shape: self.get_shape(),
+            input_shape: vec![0],
+        };
+
+        (maxpool_result, padded_maxpool_tensor)
     }
 }
 
@@ -1508,34 +1558,102 @@ mod test {
 
     #[test]
     fn test_tensor_maxpool2d() {
-        let input = Tensor::<Element>::new(vec![1, 3, 3, 4], vec![
-            99, -35, 18, 104, -26, -48, -80, 106, 10, 8, 79, -7, -128, -45, 24, -91, -7, 88, -119,
-            -37, -38, -113, -84, 86, 116, 72, -83, 100, 83, 81, 87, 58, -109, -13, -123, 102,
+        // torch.manual_seed(0)
+        // input = torch.randint(size=(1, 2, 12, 10), low=-64, high=63, dtype=torch.int)
+        let input = Tensor::<Element>::new(vec![1, 2, 12, 10], vec![
+            -22, 29, 32, -17, 0, -43, -53, 12, -50, -33, 17, 20, -16, 30, -36, 27, -36, -51, 40, 1,
+            61, 48, -62, -35, 22, 8, -8, -64, 51, -17, -21, -9, 33, -60, 41, 26, -23, -9, 18, 15,
+            7, 46, 47, 1, -1, 13, -26, 17, -42, -25, 10, 46, -42, 40, -39, 20, 39, -35, 58, -31,
+            -62, 0, -11, 20, -57, 10, -47, 30, -11, 59, 29, -19, 58, 54, 48, 20, 3, 48, -28, 34,
+            -18, 11, -22, 42, -21, -3, -16, 48, -6, 25, 51, 36, -46, -19, -53, -16, 43, 9, 32, -37,
+            8, 17, 30, 56, 54, -34, 12, 47, 54, 15, -25, 41, -25, 62, 1, -44, -37, -52, -64, 49,
+            -34, 60, -50, 58, -29, 19, -8, 30, 60, 20, 23, 28, 15, -4, 56, 48, -33, 16, -33, -46,
+            -32, 47, -36, -35, 40, -45, 51, -52, -62, 50, 29, 24, 36, -50, -18, -46, 41, -8, 43,
+            41, 0, -17, 53, -63, -32, 24, -13, 44, -3, -28, 24, -48, 12, 33, -43, 35, -32, -29, 23,
+            -42, 43, 54, -22, 17, -5, -27, 27, -4, -8, -44, 37, 42, 39, 41, -62, -54, 0, 51, 40,
+            -27, 14, 41, -23, 43, -64, 19, -47, -51, 52, -52, 12, -48, 44, 41, -49, -54, -15, -7,
+            47, 23, -30, -8, -54, 52, 58, 9, -35, 8, 12, -42, 49, -54, -56, -22, -38, -57, 39, 21,
+            21, 48,
         ]);
-        let expected = Tensor::<Element>::new(vec![1, 3, 1, 2], vec![99, 106, 88, 24, 116, 100]);
 
-        let result = input.maxpool2d(2, 2);
+        let expected = Tensor::<Element>::new(vec![1, 2, 6, 5], vec![
+            29, 32, 27, 12, 40, 61, 33, 41, -8, 51, 46, 47, 20, 39, 58, 29, 58, 48, 48, 59, 51, 42,
+            -3, 48, 32, 41, 62, 54, 47, 54, 60, 58, 56, 30, 60, 47, 36, 40, 51, 50, 24, 53, 35, 44,
+            23, 54, 41, -5, 51, 40, 41, 44, 19, -7, 52, 49, 52, 58, 39, 48,
+        ]);
+        let result = input.maxpool2d((2, 2), (2, 2), (0, 0));
+        assert_eq!(result, expected, "Maxpool (Element) failed.");
+
+        let expected = Tensor::<Element>::new(vec![1, 2, 3, 2], vec![
+            32, 40, 47, 58, 51, 48, 60, 60, 53, 44, 44, 52,
+        ]);
+        let result = input.maxpool2d((2, 3), (4, 6), (0, 0));
+        assert_eq!(result, expected, "Maxpool (Element) failed.");
+
+        let expected = Tensor::<Element>::new(vec![1, 2, 3, 1], vec![61, 58, 62, 60, 54, 58]);
+        let result = input.maxpool2d((4, 6), (4, 6), (0, 0));
         assert_eq!(result, expected, "Maxpool (Element) failed.");
     }
 
     #[test]
     fn test_tensor_pad_maxpool2d() {
-        let input = Tensor::<Element>::new(vec![1, 3, 4, 4], vec![
-            93, 56, -3, -1, 104, -68, -71, -96, 5, -16, 3, -8, 74, -34, -16, -31, -42, -59, -64,
-            70, -77, 19, -17, -114, 79, 55, 4, -26, -7, -17, -94, 21, 59, -116, -113, 47, 8, 112,
-            65, -99, 35, 3, -126, -52, 28, 69, 105, 33,
-        ]);
-        let expected = Tensor::<Element>::new(vec![1, 3, 2, 2], vec![
-            104, -1, 74, 3, 19, 70, 79, 21, 112, 65, 69, 105,
-        ]);
-
-        let padded_expected = Tensor::<Element>::new(vec![1, 3, 4, 4], vec![
-            104, 104, -1, -1, 104, 104, -1, -1, 74, 74, 3, 3, 74, 74, 3, 3, 19, 19, 70, 70, 19, 19,
-            70, 70, 79, 79, 21, 21, 79, 79, 21, 21, 112, 112, 65, 65, 112, 112, 65, 65, 69, 69,
-            105, 105, 69, 69, 105, 105,
+        // torch.manual_seed(0)
+        // input = torch.randint(size=(1, 1, 8, 12), low=-64, high=63, dtype=torch.int)
+        let input = Tensor::<Element>::new(vec![1, 1, 8, 12], vec![
+            -22, 29, 32, -17, 0, -43, -53, 12, -50, -33, 17, 20, -16, 30, -36, 27, -36, -51, 40, 1,
+            61, 48, -62, -35, 22, 8, -8, -64, 51, -17, -21, -9, 33, -60, 41, 26, -23, -9, 18, 15,
+            7, 46, 47, 1, -1, 13, -26, 17, -42, -25, 10, 46, -42, 40, -39, 20, 39, -35, 58, -31,
+            -62, 0, -11, 20, -57, 10, -47, 30, -11, 59, 29, -19, 58, 54, 48, 20, 3, 48, -28, 34,
+            -18, 11, -22, 42, -21, -3, -16, 48, -6, 25, 51, 36, -46, -19, -53, -16,
         ]);
 
-        let (result, padded_result) = input.padded_maxpool2d();
+        let expected = Tensor::<Element>::new(vec![1, 1, 4, 6], vec![
+            30, 32, 0, 40, 61, 20, 22, 18, 51, 47, 33, 41, 0, 46, 40, 30, 59, 58, 58, 48, 48, 51,
+            11, 42,
+        ]);
+        let padded_expected = Tensor::<Element>::new(vec![1, 1, 8, 12], vec![
+            30, 30, 32, 32, 0, 0, 40, 40, 61, 61, 20, 20, 30, 30, 32, 32, 0, 0, 40, 40, 61, 61, 20,
+            20, 22, 22, 18, 18, 51, 51, 47, 47, 33, 33, 41, 41, 22, 22, 18, 18, 51, 51, 47, 47, 33,
+            33, 41, 41, 0, 0, 46, 46, 40, 40, 30, 30, 59, 59, 58, 58, 0, 0, 46, 46, 40, 40, 30, 30,
+            59, 59, 58, 58, 58, 58, 48, 48, 48, 48, 51, 51, 11, 11, 42, 42, 58, 58, 48, 48, 48, 48,
+            51, 51, 11, 11, 42, 42,
+        ]);
+        let (result, padded_result) = input.padded_maxpool2d((2, 2), (0, 0));
+        assert_eq!(result, expected, "Maxpool (Element) failed.");
+        assert_eq!(
+            padded_result, padded_expected,
+            "Padded Maxpool (Element) failed."
+        );
+
+        let expected = Tensor::<Element>::new(vec![1, 1, 4, 4], vec![
+            32, 27, 61, 48, 22, 51, 47, 41, 10, 46, 39, 59, 58, 48, 51, 42,
+        ]);
+        let padded_expected = Tensor::<Element>::new(vec![1, 1, 8, 12], vec![
+            32, 32, 32, 27, 27, 27, 61, 61, 61, 48, 48, 48, 32, 32, 32, 27, 27, 27, 61, 61, 61, 48,
+            48, 48, 22, 22, 22, 51, 51, 51, 47, 47, 47, 41, 41, 41, 22, 22, 22, 51, 51, 51, 47, 47,
+            47, 41, 41, 41, 10, 10, 10, 46, 46, 46, 39, 39, 39, 59, 59, 59, 10, 10, 10, 46, 46, 46,
+            39, 39, 39, 59, 59, 59, 58, 58, 58, 48, 48, 48, 51, 51, 51, 42, 42, 42, 58, 58, 58, 48,
+            48, 48, 51, 51, 51, 42, 42, 42,
+        ]);
+        let (result, padded_result) = input.padded_maxpool2d((2, 3), (0, 0));
+        assert_eq!(result, expected, "Maxpool (Element) failed.");
+        assert_eq!(
+            padded_result, padded_expected,
+            "Padded Maxpool (Element) failed."
+        );
+
+        let expected = Tensor::<Element>::new(vec![1, 1, 2, 2], vec![51, 61, 58, 59]);
+        let padded_expected = Tensor::<Element>::new(vec![1, 1, 8, 12], vec![
+            51, 51, 51, 51, 51, 51, 61, 61, 61, 61, 61, 61, 51, 51, 51, 51, 51, 51, 61, 61, 61, 61,
+            61, 61, 51, 51, 51, 51, 51, 51, 61, 61, 61, 61, 61, 61, 51, 51, 51, 51, 51, 51, 61, 61,
+            61, 61, 61, 61, 58, 58, 58, 58, 58, 58, 59, 59, 59, 59, 59, 59, 58, 58, 58, 58, 58, 58,
+            59, 59, 59, 59, 59, 59, 58, 58, 58, 58, 58, 58, 59, 59, 59, 59, 59, 59, 58, 58, 58, 58,
+            58, 58, 59, 59, 59, 59, 59, 59,
+        ]);
+        let (result, padded_result) = input.padded_maxpool2d((4, 6), (0, 0));
+        println!("result: {:?}", result);
+        println!("padded_result: {:?}", padded_result);
+
         assert_eq!(result, expected, "Maxpool (Element) failed.");
         assert_eq!(
             padded_result, padded_expected,
@@ -1605,20 +1723,28 @@ mod test {
 
     #[test]
     fn test_tensor_conv2d() {
+        // torch.manual_seed(0)
+        // input = torch.randint(size=[1, 3, 3, 3], low=-64, high=63, dtype=torch.int)
+        // weights = torch.randint(size=[2, 3, 2, 2], low=-64, high=63, dtype=torch.int)
+        // bias = torch.randint(size=[2], low=-64, high=63, dtype=torch.int)
         let input = Tensor::<Element>::new(vec![1, 3, 3, 3], vec![
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 8, 7, 6, 5, 4, 3, 2, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3,
+            -22, 29, 32, -17, 0, -43, -53, 12, -50, -33, 17, 20, -16, 30, -36, 27, -36, -51, 40, 1,
+            61, 48, -62, -35, 22, 8, -8,
         ]);
-
         let weights = Tensor::<Element>::new(vec![2, 3, 2, 2], vec![
-            1, 0, -1, 2, 0, 1, -1, 1, 1, -1, 0, 2, -1, 1, 2, 0, 1, 0, 2, -1, 0, -1, 1, 1,
+            -64, 51, -17, -21, -9, 33, -60, 41, 26, -23, -9, 18, 15, 7, 46, 47, 1, -1, 13, -26, 17,
+            -42, -25, 10,
         ]);
+        let bias = Tensor::<Element>::new(vec![2], vec![46, -42]);
 
-        let bias = Tensor::<Element>::new(vec![2], vec![3, -3]);
+        let expected = Tensor::<Element>::new(vec![1, 2, 2, 2], vec![
+            5739, -3493, 2441, -3713, -3171, -1426, 2020, -1081,
+        ]);
+        let result = input.conv2d(&weights, &bias, (1, 1), (0, 0));
+        assert_eq!(result, expected, "Conv2D (Element) failed.");
 
-        let expected =
-            Tensor::<Element>::new(vec![1, 2, 2, 2], vec![21, 22, 26, 27, 25, 25, 26, 26]);
-
-        let result = input.conv2d(&weights, &bias, 1);
+        let expected = Tensor::<Element>::new(vec![1, 2, 2, 1], vec![5739, 2441, -3171, 2020]);
+        let result = input.conv2d(&weights, &bias, (1, 2), (0, 0));
         assert_eq!(result, expected, "Conv2D (Element) failed.");
     }
 

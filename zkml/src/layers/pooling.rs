@@ -433,7 +433,11 @@ impl Maxpool2D {
             "Maxpool2D works only for stride size {}",
             MAXPOOL2D_KERNEL_SIZE
         );
-        input.maxpool2d(self.kernel_size, self.stride)
+        input.maxpool2d(
+            (self.kernel_size, self.kernel_size),
+            (self.stride, self.stride),
+            (0, 0),
+        )
     }
 
     /// Computes MLE evaluations related to proving Maxpool function.
