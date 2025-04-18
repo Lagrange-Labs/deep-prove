@@ -358,7 +358,7 @@ pub(crate) mod test {
             }
             let input_dims = model.input_shape();
             // ncols since matrix2vector is summing over the columns
-            let input = Tensor::random(vec![input_dims[1]]);
+            let input = Tensor::random(input_dims);
             (model, input)
         }
 
