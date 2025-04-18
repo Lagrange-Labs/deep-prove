@@ -154,7 +154,9 @@ where
                     info.verify_dense(&mut self, output_claim, &proof)?
                 }
                 (LayerProof::<E>::MatMul(proof), LayerCtx::MatMul(info)) => {
-                    info.verify_matmul(&mut self, output_claim, &proof)?
+                    // ToDo: for now we discard the sub-sequent claims since we don't support multiple claims
+                    // being produced by a verification step
+                    info.verify_matmul(&mut self, output_claim, &proof)?[0].clone()
                 }
                 (LayerProof::<E>::Requant(proof), LayerCtx::Requant(info)) => {
                     let (constant_challenge, column_separation_challenge) = challenge_storage

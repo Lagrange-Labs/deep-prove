@@ -415,6 +415,15 @@ impl<T> Tensor<T> {
             input_shape: vec![0],
         }
     }
+    /// Create a new tensor with default values
+    pub fn new_from_shape(shape: Vec<usize>) -> Self
+    where
+        T: Clone + Default,
+    {
+        let num_elements = shape.iter().product::<usize>();
+        Self::new(shape, vec![T::default(); num_elements])
+    }
+
     /// Is vector
     pub fn is_vector(&self) -> bool {
         self.get_shape().len() == 1

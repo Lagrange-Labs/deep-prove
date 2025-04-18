@@ -96,7 +96,11 @@ where
                 dense.prove_step(self, last_claim, input, &step.output, info)
             }
             (Layer::MatMul(mat), LayerCtx::MatMul(info)) => {
-                mat.prove_step(self, last_claim, input, &step.output, info)
+                Ok(
+                    // ToDo: for now we discard the sub-sequent claims since we don't support multiple claims
+                    // being produced by a proving step
+                    mat.prove_step(self, last_claim, vec![input], &step.output, info)?[0].clone(),
+                )
             }
 
             (Layer::Convolution(filter), LayerCtx::Convolution(info)) => {

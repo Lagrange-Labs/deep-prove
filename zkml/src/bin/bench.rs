@@ -149,7 +149,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         let input_tensor = model.load_input_flat(input);
 
         info!("[+] Running inference");
-        let trace = bencher.r(CSV_INFERENCE, || model.run(input_tensor.clone()));
+        let trace = bencher.r(CSV_INFERENCE, || model.run(input_tensor.clone()))?;
         let output = trace.final_output().clone();
         bencher.set(
             CSV_ACCURACY,

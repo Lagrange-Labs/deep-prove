@@ -105,13 +105,16 @@ where
                         ]
                     }
                     Layer::MatMul(m) => {
-                        let evals = m.matrix.evals_2d();
-                        debug!(
-                            "Commitment : mat mul layer ID {}: size {}",
-                            id,
-                            evals.len().ilog2()
-                        );
-                        vec![Some((id, evals))]
+                        if let Some(evals) = m.eval_constant_matrix() {
+                            debug!(
+                                "Commitment : mat mul layer ID {}: size {}",
+                                id,
+                                evals.len().ilog2()
+                            );
+                            vec![Some((id, evals))]
+                        } else {
+                            vec![None]
+                        }
                     }
                     Layer::Convolution(m) => {
                         let filter_evals = m.filter.get_conv_weights();

@@ -127,10 +127,10 @@ impl Layer {
     /// Run the operation associated with that layer with the given input
     // TODO: move to tensor library : right now it works because we assume there is only Dense
     // layer which is matmul
-    pub fn op<F: ExtensionField>(&self, input: &Tensor<Element>) -> LayerOutput<F> {
-        match &self {
+    pub fn op<F: ExtensionField>(&self, input: &Tensor<Element>) -> anyhow::Result<LayerOutput<F>> {
+        Ok(match &self {
             Layer::Dense(ref dense) => LayerOutput::NormalOut(dense.op(input)),
-            Layer::MatMul(mat) => LayerOutput::NormalOut(mat.op(input)),
+            Layer::MatMul(mat) => LayerOutput::NormalOut(mat.op(vec![input])?),
             Layer::Activation(activation) => LayerOutput::NormalOut(activation.op(input)),
 
             Layer::Convolution(ref filter) => LayerOutput::ConvOut(filter.op(input)),
@@ -146,20 +146,7 @@ impl Layer {
                 LayerOutput::NormalOut(info.op(input))
             }
             Layer::Pooling(info) => LayerOutput::NormalOut(info.op(input)),
-        }
-    }
-
-    pub fn shape(&self) -> Vec<usize> {
-        match &self {
-            Layer::Dense(ref dense) => vec![dense.matrix.nrows_2d(), dense.matrix.ncols_2d()],
-            Layer::MatMul(ref mat) => vec![mat.matrix.nrows_2d(), mat.matrix.ncols_2d()],
-            Layer::Convolution(ref filter) => filter.get_shape(),
-            Layer::SchoolBookConvolution(ref filter) => filter.get_shape(),
-
-            Layer::Activation(Activation::Relu(_)) => Relu::shape(),
-            Layer::Requant(info) => info.shape(),
-            Layer::Pooling(Pooling::Maxpool2D(info)) => vec![info.kernel_size, info.kernel_size],
-        }
+        })
     }
 
     pub fn describe(&self) -> String {
@@ -172,14 +159,7 @@ impl Layer {
                     // matrix.fmt_integer()
                 )
             }
-            Layer::MatMul(ref mat) => {
-                format!(
-                    "Matrix multiplication: ({},{})",
-                    mat.matrix.nrows_2d(),
-                    mat.matrix.ncols_2d(),
-                    // matrix.fmt_integer()
-                )
-            }
+            Layer::MatMul(ref mat) => mat.describe(),
             Layer::Convolution(ref filter) => {
                 format!(
                     "Conv: ({},{},{},{})",
