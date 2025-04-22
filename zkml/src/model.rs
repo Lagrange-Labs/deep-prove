@@ -123,7 +123,7 @@ impl Model {
     }
     pub fn input_shape(&self) -> Vec<usize> {
         match &self.layers[0] {
-            Layer::Dense(mat) => vec![mat.matrix.nrows_2d()],
+            Layer::Dense(mat) => vec![mat.matrix.ncols_2d()],
             Layer::MatMul(mat) =>
             // ToDo: we discard other shapes since we currently support only one input shape
             {
