@@ -104,32 +104,6 @@ where
             eval: computed_sum,
         };
 
-        // NOTE: if we only had a linear operation then we need to do the following check manually to make sure the output is correct.
-        // For other cases, for example if we have RELU at last, then we _always_ accumulate output claims into the
-        // _witness_prover_ part,  so that claim will be verified nonetheless.
-        // TODO: optimization to avoid proving the accumulation if last layer is RELU since verifier can do it himself.
-        match proof.steps.first().expect("At least one proof") {
-            LayerProof::Dense(dproof) => {
-                // checks that the last g(0) + g(1) is really equal to the output that the verifier's
-                // expecting (random evaluation of the output)
-                let claimed_sum = dproof.sumcheck.extract_sum();
-                ensure!(
-                    computed_sum == claimed_sum,
-                    "output vector evaluation is incorrect"
-                );
-            }
-            LayerProof::MatMul(proof) => {
-                // checks that the last g(0) + g(1) is really equal to the output that the verifier's
-                // expecting (random evaluation of the output)
-                let claimed_sum = proof.sumcheck.extract_sum();
-                ensure!(
-                    computed_sum == claimed_sum,
-                    "output vector evaluation is incorrect"
-                );
-            }
-            _ => {}
-        }
-
         // 4. Verify each proof sequentially, Always make sure the proof corresponds to the expected type of proof in the context.
         // We have two `HashSet`s, one for the type of table used and one for the lookup challenges used
         for proof_and_step in proof.steps.iter().zip(ctx.steps_info.iter()) {

@@ -121,6 +121,13 @@ impl MatMul {
             left_matrix.ncols(),
             right_matrix.nrows(),
         );
+        // check that we don't have 2 weight matrix being multiplied
+        match (&left_matrix, &right_matrix) {
+            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) =>
+                Err(anyhow!("Pointless to have a layer with 2 constant matrices, just use the product as a parameter in 
+                another layer"))?,
+            _ => (), // all other configurations are allowed
+        }
         Ok(Self {
             left_matrix,
             right_matrix,
@@ -129,7 +136,9 @@ impl MatMul {
 
     pub fn input_shape(&self) -> Vec<Vec<usize>> {
         match (&self.left_matrix, &self.right_matrix) {
-            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => unreachable!(),
+            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => {
+                panic!("Found layer with 2 constant matrices, use the product directly")
+            }
             (OperandMatrix::Weigth(_), OperandMatrix::Input(shape)) => {
                 vec![shape.clone()]
             }
@@ -152,7 +161,10 @@ impl MatMul {
     // If there is no constant matrix in the layer, `None` is returned
     pub(crate) fn eval_constant_matrix<E: ExtensionField>(&self) -> Option<Vec<E>> {
         match (&self.left_matrix, &self.right_matrix) {
-            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => unreachable!(),
+            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => panic!(
+                "Found layer with 2 constant matrices, which is useless as the 
+                product can be directly used instead"
+            ),
             (OperandMatrix::Weigth(tensor), OperandMatrix::Input(_)) => Some(tensor.evals_2d()),
             (OperandMatrix::Input(_), OperandMatrix::Weigth(tensor)) => Some(tensor.evals_2d()),
             (OperandMatrix::Input(_), OperandMatrix::Input(_)) => None,
@@ -161,7 +173,10 @@ impl MatMul {
 
     pub fn op(&self, inputs: Vec<&Tensor<Element>>) -> Result<Tensor<Element>> {
         Ok(match (&self.left_matrix, &self.right_matrix) {
-            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => unreachable!(),
+            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => panic!(
+                "Found layer with 2 constant matrices, which is useless as the 
+                product can be directly used instead"
+            ),
             (OperandMatrix::Weigth(tensor), OperandMatrix::Input(shape)) => {
                 let right_matrix = inputs
                     .first()
@@ -216,7 +231,10 @@ impl MatMul {
 
     pub fn requant_info(&self) -> Requant {
         let matrix = match (&self.left_matrix, &self.right_matrix) {
-            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => unreachable!(),
+            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => panic!(
+                "Found layer with 2 constant matrices, which is useless as the 
+                product can be directly used instead"
+            ),
             (OperandMatrix::Weigth(tensor), OperandMatrix::Input(_)) => Some(tensor),
             (OperandMatrix::Input(_), OperandMatrix::Weigth(tensor)) => Some(tensor),
             (OperandMatrix::Input(_), OperandMatrix::Input(_)) => None,
