@@ -178,7 +178,7 @@ mod test {
         let input = Tensor::random(vec![shape[0] - 1]);
         let input = model.prepare_input(input);
 
-        let trace = model.run(input.clone());
+        let trace = model.run(input.clone()).unwrap();
         let output = trace.final_output().clone();
         println!("[+] Run inference. Result: {:?}", output);
 

@@ -95,7 +95,7 @@ mod test {
         init_test_logging();
         let (model, input) = Model::random(4);
         model.describe();
-        let trace = model.run(input.clone());
+        let trace = model.run(input.clone()).unwrap();
         let output = trace.final_output();
         let ctx = Context::<F>::generate(&model, None).expect("unable to generate context");
         let io = IO::new(input.to_fields(), output.clone().to_fields());
@@ -111,7 +111,7 @@ mod test {
         init_test_logging();
         let (model, input) = Model::random_pooling(4);
         model.describe();
-        let trace = model.run(input.clone());
+        let trace = model.run(input.clone()).unwrap();
         let output = trace.final_output();
         let ctx = Context::<F>::generate(&model, Some(input.get_shape()))
             .expect("unable to generate context");

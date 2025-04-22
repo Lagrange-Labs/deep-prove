@@ -83,6 +83,7 @@ impl<F: ExtensionField> Fieldizer<F> for Element {
         }
     }
 }
+
 pub(crate) trait IntoElement {
     fn into_element(&self) -> Element;
 }

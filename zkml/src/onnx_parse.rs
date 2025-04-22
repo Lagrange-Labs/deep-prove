@@ -800,7 +800,7 @@ mod tests {
         let model = load_model::<Element>(&filepath).unwrap();
         let input = crate::tensor::Tensor::random(vec![model.input_shape()[0]]);
         let input = model.prepare_input(input);
-        let trace = model.run::<F>(input.clone());
+        let trace = model.run::<F>(input.clone()).unwrap();
         println!("Result: {:?}", trace.final_output());
     }
 
@@ -856,7 +856,7 @@ mod tests {
         info!("random input tensor CREATED : {:?}", input.get_shape());
         let input = model.prepare_input(input);
         info!("RUNNING MODEL...");
-        let trace = model.run::<F>(input.clone());
+        let trace = model.run::<F>(input.clone()).unwrap();
         info!("RUNNING MODEL DONE...");
         // println!("Result: {:?}", trace.final_output());
 
@@ -896,7 +896,7 @@ mod tests {
         let model = result.unwrap();
         let input = crate::tensor::Tensor::random(model.input_shape());
         let input = model.prepare_input(input);
-        let trace = model.run::<F>(input.clone());
+        let trace = model.run::<F>(input.clone()).unwrap();
         // println!("Result: {:?}", trace.final_output());
 
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
