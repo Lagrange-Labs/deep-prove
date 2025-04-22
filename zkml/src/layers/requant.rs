@@ -12,8 +12,8 @@ use ark_std::Zero;
 use ff::Field;
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
-use goldilocks::SmallField;
-use itertools::{Itertools, izip};
+
+use itertools::Itertools;
 use multilinear_extensions::{
     mle::{IntoMLE, MultilinearExtension},
     virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial, eq_eval},
@@ -1015,104 +1015,6 @@ impl RequantCtx {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use crate::default_transcript;
-
-    use super::*;
-    use ark_std::rand::{Rng, thread_rng};
-    use goldilocks::{Goldilocks, GoldilocksExt2 as F};
-    use multilinear_extensions::mle::DenseMultilinearExtension;
-
-    #[test]
-    fn test_less_than() {
-        let mut rng = thread_rng();
-
-        for _ in 0..1 {
-            let rand_entries = (0..16).map(|_| rng.gen_range(0..8u8)).collect::<Vec<u8>>();
-
-            let less_than_five = rand_entries
-                .iter()
-                .map(|v| {
-                    if *v < 5 {
-                        Goldilocks::ONE
-                    } else {
-                        Goldilocks::ZERO
-                    }
-                })
-                .collect::<Vec<Goldilocks>>()
-                .into_mle();
-
-            let bit_vecs = (0..3)
-                .map(|i| {
-                    rand_entries
-                        .iter()
-                        .map(|v| {
-                            let bit = (*v >> i) & 1;
-                            Goldilocks::from(bit as u64)
-                        })
-                        .collect::<Vec<Goldilocks>>()
-                        .into_mle()
-                })
-                .collect::<Vec<DenseMultilinearExtension<F>>>();
-
-            let rand_point = (0..4).map(|_| F::random(&mut rng)).collect::<Vec<F>>();
-
-            let less_than_eval = less_than_five.evaluate(&rand_point);
-
-            let bit_mle_evals = bit_vecs
-                .iter()
-                .map(|mle| mle.evaluate(&rand_point))
-                .collect::<Vec<F>>();
-
-            let first_term =
-                (F::ONE - bit_mle_evals[0]) * (F::ONE - bit_mle_evals[1]) * bit_mle_evals[2];
-
-            let last_term = F::ONE - bit_mle_evals[2];
-
-            println!("less than eval: {:?}", less_than_eval);
-            println!("split eval: {:?}", first_term + last_term);
-
-            for (&x0, &x1, &x2, &lt) in izip!(
-                bit_vecs[0].get_base_field_vec(),
-                bit_vecs[1].get_base_field_vec(),
-                bit_vecs[2].get_base_field_vec(),
-                less_than_five.get_base_field_vec()
-            ) {
-                let lt0 = (Goldilocks::ONE - x0) * (Goldilocks::ONE - x1) * x2;
-                let lt2 = Goldilocks::ONE - x2;
-
-                let less_than = lt0 + lt2;
-                println!(
-                    "calc less than: {:?}, actual less than: {:?}, u64 versions {} {}",
-                    less_than,
-                    lt,
-                    less_than.to_canonical_u64(),
-                    lt.to_canonical_u64()
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_sumcheck() {
-        let mut one_then_zeroes = vec![F::ONE];
-        one_then_zeroes.resize(8, F::ZERO);
-
-        let mut zero_then_ones = vec![F::ZERO];
-        zero_then_ones.resize(8, F::ONE);
-
-        let mut vp = VirtualPolynomial::<F>::new(3);
-
-        vp.add_mle_list(vec![one_then_zeroes.into_mle().into()], F::ONE);
-        vp.add_mle_list(vec![zero_then_ones.into_mle().into()], F::ONE);
-
-        let mut transcript = default_transcript::<F>();
-
-        let (proof, state) = IOPProverState::<F>::prove_parallel(vp, &mut transcript);
-        let final_evals = state.get_mle_final_evaluations();
-    }
-}
 //#[cfg(test)]
 // mod tests {
 //    use ark_std::rand::rngs::StdRng;

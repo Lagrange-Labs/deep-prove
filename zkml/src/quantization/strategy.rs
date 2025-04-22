@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use crate::{
     Element, Tensor,
-    layers::{Layer, requant::Requant},
+    layers::Layer,
     model::Model,
     quantization,
 };
@@ -132,12 +132,12 @@ impl ScalingStrategy for InferenceObserver {
                         // println!("InferenceObserver: DENSE {} layer model max weight abs {:?}", id, dense.max_abs_weight());
                         // println!("InferenceObserver: DENSE {} layer output range [{:?}, {:?}]", id, min,max);
                         // println!("InferenceObserver: DENSE {} layer scales: input {:?}, model {:?}, bias {:?}, output {:?} -> scale {:?}", id, last_input_scaling.scale(), model_scaling.scale(), bias_scaling.scale(), output_scaling.scale(), scale);
-                        let shift = last_input_scaling.shift(&model_scaling, &output_scaling);
+                        
                         // let quantized_dense = dense.quantize(&model_scaling, Some(&_bias_scaling));
                         let quantized_dense = dense.quantize(&model_scaling, None);
                         let (quantized_min, _quantized_max) =
                             quantized_dense.output_range(*quantization::MIN, *quantization::MAX);
-                        let requant = Requant::new(quantized_min.abs() as usize, shift);
+                        
                         // let scale = last_input_scaling.m(&model_scaling, &output_scaling);
                         // requant.set_test_multiplier(scale);
                         let intermediate_bit_size = ceil_log2(quantized_min.abs() as usize);
@@ -169,7 +169,7 @@ impl ScalingStrategy for InferenceObserver {
                         // println!("InferenceObserver: CONV {} layer scales: input {:?}, model {:?}, bias {:?}, output {:?} -> scale {:?}", id, last_input_scaling.scale(), model_scaling.scale(), bias_scaling.scale(), output_scaling.scale(), scale);
                         // let quantized_conv = conv.quantize(&model_scaling, Some(&_bias_scaling));
                         let quantized_conv = conv.quantize(&model_scaling, None);
-                        let shift = last_input_scaling.shift(&model_scaling, &output_scaling);
+                        
                         let (quantized_min, _quantized_max) =
                             quantized_conv.output_range(*quantization::MIN, *quantization::MAX);
                         //println!(
@@ -179,7 +179,7 @@ impl ScalingStrategy for InferenceObserver {
                         let intermediate_bit_size = ceil_log2(quantized_min.abs() as usize);
                         let full_requant = FullRequant::from_scaling_factors(last_input_scaling, model_scaling, output_scaling, intermediate_bit_size);
                         md.set_layers_scaling(step_idx, output_scaling);
-                        let requant = Requant::new(quantized_min.abs() as usize, shift);
+                        
                         {
                             // TEST
                             let all_data = tracker.data_for(id);
@@ -339,9 +339,9 @@ impl ScalingStrategy for AbsoluteMax {
                         let output_scaling = ScalingFactor::default();
                         last_input_scaling_factor = output_scaling;
                         md.set_layers_scaling(id, output_scaling);
-                        let shift = last_input_scaling_factor.shift(&model_scaling, &output_scaling);
+                        
                         println!("Scaling: AbsoluteMax: DENSE max_weight {:?}, max_output: {:?} - adding requant", max_weight, 1.0);
-                        let requant = Requant::new( quant_min_output.abs() as usize, shift);
+                        
                         let intermediate_bit_size = ceil_log2(quant_min_output.abs() as usize);
                         let full_requant = FullRequant::from_scaling_factors(last_input_scaling_factor, model_scaling, output_scaling, intermediate_bit_size);
                         // vec![Layer::Dense(quantized_dense), Layer::Requant(requant)]
@@ -369,10 +369,10 @@ impl ScalingStrategy for AbsoluteMax {
                         // TODO: remove this is broken
                         let output_scaling = ScalingFactor::default();
                         md.set_layers_scaling(id, output_scaling);
-                        let shift = last_input_scaling_factor.shift(&model_scaling, &output_scaling);
+                        
                         last_input_scaling_factor = output_scaling;
                         println!("Scaling: AbsoluteMax: CONV max_weight {:?}, max_output: {:?} - adding requant", max_weight, 1.0);
-                        let requant = Requant::new(quant_min_output.abs() as usize, shift);
+                        
                         let intermediate_bit_size = ceil_log2(quant_min_output.abs() as usize);
                         let full_requant = FullRequant::from_scaling_factors(last_input_scaling_factor, model_scaling, output_scaling, intermediate_bit_size);
                         // vec![Layer::Convolution(quantized_conv), Layer::Requant(requant)]
