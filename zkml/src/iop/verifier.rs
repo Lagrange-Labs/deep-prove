@@ -143,6 +143,9 @@ where
                         column_separation_challenge,
                     )?
                 }
+                (LayerProof::<E>::FullRequant(proof), LayerCtx::FullRequant(full_requant)) => {
+                    full_requant.verify_full_requant(&mut self, output_claim, proof)?
+                }
                 (LayerProof::Pooling(proof), LayerCtx::Pooling(info)) => {
                     let (constant_challenge, column_separation_challenge) = challenge_storage
                         .get_challenges_by_name(&TableType::Range.name())

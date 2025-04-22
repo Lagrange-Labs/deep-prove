@@ -192,7 +192,7 @@ impl Convolution<Element> {
     pub fn output_range(&self, _min_input: Element, _max_input: Element) -> (Element, Element) {
         // 2^{BIT_LEN + log2(k_h * k_w * k_c)}
         let (_k_n, k_c, k_h, k_w) = self.filter.get4d();
-        let exp = 2 * *quantization::BIT_LEN + ceil_log2(k_h * k_w * k_c + 1) as usize;
+        let exp = 2 * (*quantization::BIT_LEN - 1) + ceil_log2(k_h * k_w * k_c + 1) as usize;
         let min = -(2u64.pow(exp as u32) as Element);
         let max = 2u64.pow(exp as u32) as Element;
         return (min, max);

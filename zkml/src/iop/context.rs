@@ -139,6 +139,7 @@ where
                     info.hadamard.write_to_transcript(t);
                 }
                 LayerCtx::SchoolBookConvolution(_info) => {}
+                LayerCtx::FullRequant(..) => {}
             }
         }
         self.weights.write_to_transcript(t)?;

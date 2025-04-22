@@ -11,7 +11,7 @@ use anyhow::Result;
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use pooling::{PoolingCtx, PoolingProof};
-use requant::RequantCtx;
+use requant::{FullRequant, RequantCtx};
 use reshape::Reshape;
 use statrs::statistics::{Data, Distribution};
 
@@ -24,7 +24,7 @@ use crate::{
         convolution::Convolution,
         dense::Dense,
         pooling::Pooling,
-        requant::{Requant, RequantProof},
+        requant::{FullRequantProof, Requant, RequantProof},
     },
     quantization::ScalingFactor,
     tensor::{ConvData, Number, Tensor},
@@ -48,6 +48,7 @@ pub enum Layer<T> {
     // this is the output quant info. Since we always do a requant layer after each dense,
     // then we assume the inputs requant info are default()
     Requant(Requant),
+    FullRequant(FullRequant),
     Pooling(Pooling),
     // TODO: so far it's only flattening the input tensor, e.g. new_shape = vec![shape.iter().product()]
     Reshape(Reshape),
@@ -69,6 +70,7 @@ where
     SchoolBookConvolution(SchoolBookConvCtx),
     Activation(ActivationCtx),
     Requant(RequantCtx),
+    FullRequant(FullRequant),
     Pooling(PoolingCtx),
     Table(TableCtx<E>),
 }
@@ -82,6 +84,7 @@ where
     Convolution(ConvProof<E>),
     Activation(ActivationProof<E>),
     Requant(RequantProof<E>),
+    FullRequant(FullRequantProof<E>),
     Pooling(PoolingProof<E>),
 }
 #[derive(Clone, Debug)]
@@ -105,6 +108,7 @@ where
             Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
             Self::Requant(_) => "Requant".to_string(),
+            Self::FullRequant(..) => "FullRequant".to_string(),
             Self::Pooling(_) => "Pooling".to_string(),
             Self::Table(..) => "Table".to_string(),
         }
@@ -130,8 +134,10 @@ impl<T: Number> Layer<T> {
 
             Layer::Activation(Activation::Relu(_)) => Relu::shape(),
             Layer::Requant(info) => info.shape(),
+
             Layer::Pooling(Pooling::Maxpool2D(info)) => vec![info.kernel_size, info.kernel_size],
             Layer::Reshape(ref _reshape) => vec![1],
+            Layer::FullRequant(..) => vec![1],
         }
     }
 
@@ -170,6 +176,9 @@ impl<T: Number> Layer<T> {
                     (info.range << 1).ilog2() as usize,
                 )
             }
+            Layer::FullRequant(info) => {
+                format!("Full Requant: multiplier: {}", info.multiplier)
+            }
             Layer::Pooling(Pooling::Maxpool2D(info)) => format!(
                 "MaxPool2D{{ kernel size: {}, stride: {} }}",
                 info.kernel_size, info.stride
@@ -205,6 +214,7 @@ impl Layer<f32> {
             }
             Layer::Activation(activation) => Layer::Activation(activation),
             Layer::Requant(requant) => Layer::Requant(requant),
+            Layer::FullRequant(full_requant) => Layer::FullRequant(full_requant),
             Layer::Pooling(pooling) => Layer::Pooling(pooling),
             Layer::Reshape(reshape) => reshape.quantize(s, bias_s),
         }
@@ -224,7 +234,7 @@ impl Layer<f32> {
                 input.conv2d(&conv_pair.filter, &conv_pair.bias, 1)
             }
             Layer::Reshape(ref reshape) => reshape.op(input),
-            Layer::Requant(_) => {
+            Layer::Requant(_) | Layer::FullRequant(..) => {
                 panic!(
                     "InferenceObserver: requantization layer found while observing inference on float !?"
                 );
@@ -245,6 +255,7 @@ impl Layer<Element> {
             Layer::SchoolBookConvolution(_conv) => SchoolBookConvCtx.step_info(id, aux),
             Layer::Activation(activation) => activation.step_info(id, aux),
             Layer::Requant(requant) => requant.step_info(id, aux),
+            Layer::FullRequant(full_requant) => full_requant.step_info(id, aux),
             Layer::Pooling(pooling) => pooling.step_info(id, aux),
             _ => panic!(
                 "Layer::step_info: layer {} can not be proven",
@@ -274,6 +285,7 @@ impl Layer<Element> {
             }
 
             Layer::Requant(info) => info.op(input).map(|r| LayerOutput::NormalOut(r)),
+            Layer::FullRequant(info) => info.op(input).map(|r| LayerOutput::NormalOut(r)),
             Layer::Pooling(info) => Ok(LayerOutput::NormalOut(info.op(input))),
             Layer::Reshape(reshape) => Ok(LayerOutput::NormalOut(reshape.op(input))),
         }?;
@@ -329,6 +341,7 @@ where
             Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
             Self::Requant(_) => "Requant".to_string(),
+            Self::FullRequant(..) => "FullRequant".to_string(),
             Self::Pooling(_) => "Pooling".to_string(),
         }
     }
@@ -337,6 +350,7 @@ where
         match self {
             LayerProof::Dense(..) => None,
             LayerProof::Convolution(..) => None,
+            LayerProof::FullRequant(..) => None,
             LayerProof::Activation(ActivationProof { lookup, .. })
             | LayerProof::Requant(RequantProof { lookup, .. })
             | LayerProof::Pooling(PoolingProof { lookup, .. }) => Some(lookup.fractional_outputs()),

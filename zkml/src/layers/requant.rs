@@ -1,20 +1,28 @@
 use crate::{
-    Claim, Prover,
-    commit::same_poly,
+    Claim, Prover, ScalingFactor,
+    commit::{compute_betas_eval, same_poly},
     iop::verifier::Verifier,
     layers::LayerProof,
     lookup::logup_gkr::{prover::batch_prove as logup_batch_prove, verifier::verify_logup_proof},
-    quantization,
+    quantization::{self, IntoElement},
+    tensor::Tensor,
 };
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, ensure};
+use ark_std::Zero;
 use ff::Field;
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
-use itertools::Itertools;
-use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
+use goldilocks::SmallField;
+use itertools::{Itertools, izip};
+use multilinear_extensions::{
+    mle::{IntoMLE, MultilinearExtension},
+    virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial, eq_eval},
+};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use statrs::statistics::{Data, Distribution};
 use std::ops::{Add, Mul, Sub};
+use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
 use tracing::{debug, warn};
 use transcript::Transcript;
 
@@ -31,6 +39,527 @@ use super::LayerCtx;
 enum RequantResult {
     Ok(Element),
     OutOfRange(Element),
+}
+/// Information about a requantization step:
+/// * what is the range of the input data
+/// * what should be the shift to get back data in range within QuantInteger range
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Copy, PartialOrd)]
+pub struct FullRequant {
+    // what is the shift that needs to be applied to requantize input number to the correct range of QuantInteger.
+    pub right_shift: usize,
+    pub fixed_point_multiplier: Element,
+    /// TEST ONLY: this can be given to simulate a perfect requantization during inference. Note that it CAN NOT
+    /// be proven currently.
+    pub multiplier: f32,
+    /// This field represents how many bits the max absoloute value can be
+    intermediate_bit_size: usize,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct FullRequantProof<E: ExtensionField>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+{
+    /// the actual sumcheck proof proving the requant
+    pub(crate) first_sumcheck: IOPProof<E>,
+    /// the actual sumcheck proof proving the requant
+    pub(crate) second_sumcheck: IOPProof<E>,
+    /// The claimed bit vectors of the less than check
+    pub(crate) less_than_vals: Vec<E>,
+    /// The output bit mle evals
+    pub(crate) output_bit_mle_evals: Vec<E>,
+    /// The evals of the bit vecs
+    pub(crate) bit_mle_evals: Vec<E>,
+}
+
+impl FullRequant {
+    pub fn from_scaling_factors(
+        input_scale: ScalingFactor,
+        weights_scale: ScalingFactor,
+        output_scale: ScalingFactor,
+        intermediate_bit_size: usize,
+    ) -> FullRequant {
+        let m = input_scale.m(&weights_scale, &output_scale);
+        let log_m = m.log2();
+        // This is the right shift
+        let int_part = log_m.trunc().abs() as usize;
+        // This is used to calculate the fixed point multiplier
+        let float_part = log_m.fract();
+
+        let epsilon = 2.0f32.powf(float_part);
+
+        let fixed_point_multiplier = (epsilon * (1u64 << 25) as f32).round() as Element;
+
+        FullRequant {
+            right_shift: int_part,
+            fixed_point_multiplier,
+            multiplier: m,
+            intermediate_bit_size,
+        }
+    }
+
+    fn shift(&self) -> usize {
+        self.right_shift + 25
+    }
+
+    fn apply(&self, elem: &Element) -> Element {
+        let rounding = 1i128 << (self.shift() - 1);
+        let unclamped = (rounding + elem * self.fixed_point_multiplier) >> self.shift();
+        let sign = if unclamped.is_positive() || unclamped.is_zero() {
+            1i128
+        } else {
+            -1i128
+        };
+
+        let clamped = if unclamped.abs() >= *quantization::MAX {
+            *quantization::MAX * sign
+        } else {
+            unclamped
+        };
+
+        clamped
+    }
+
+    pub fn op(
+        &self,
+        input: &crate::tensor::Tensor<Element>,
+    ) -> Result<crate::tensor::Tensor<Element>> {
+        let res = input
+            .get_data()
+            .iter()
+            .map(|e| self.apply(e))
+            .collect::<Vec<Element>>();
+
+        Ok(crate::tensor::Tensor::<Element>::new(
+            input.get_shape(),
+            res,
+        ))
+    }
+
+    pub(crate) fn prove_step<E: ExtensionField, T: Transcript<E>>(
+        &self,
+        prover: &mut Prover<E, T>,
+        last_claim: &Claim<E>,
+        input: &Tensor<E>,
+    ) -> anyhow::Result<Claim<E>>
+    where
+        E: ExtensionField + Serialize + DeserializeOwned,
+        E::BaseField: Serialize + DeserializeOwned,
+    {
+        // First we make the sign MLE and multiply by the fixed point multiplier
+        // This value is used to round correctly
+        let rounding_constant = 1i128 << (self.shift() - 1);
+        let max_bits = self.intermediate_bit_size + 25;
+        let bits_after_shift = max_bits - self.shift();
+
+        let less_than_const = 1i128 << bits_after_shift;
+
+        let (scaled_vals, top_parts): (Vec<Element>, Vec<Element>) = input
+            .get_data()
+            .iter()
+            .map(|field_elem| {
+                let element: Element = field_elem.into_element();
+
+                // We scale the value and add the fixed constant that corrects for rounding
+                let scaled_val = rounding_constant + element * self.fixed_point_multiplier;
+                let tmp = scaled_val >> self.shift();
+                let top_part = if tmp.is_positive() || tmp.is_zero() {
+                    less_than_const + (*quantization::MAX - tmp)
+                } else {
+                    less_than_const + (*quantization::MAX + tmp)
+                };
+
+                (scaled_val, top_part)
+            })
+            .unzip();
+
+        // If the value represented by bits after shift is greater than quantization::MAX or smaller than quantization::MIN we need to clamp.
+        // To do this we need to build a `clamp_selector` which is `0` when we should clamp and `1` otherwise
+        //
+        // We calculate this by first working out 2^bits_after_shift +(quantization::MAX + (2 * bit_vecs[last] - 1) * recomb(bit_vecs[bits_after_shift..]))
+        // Which will be a value with top bit equal to `1` if no clamping is required and `0` if clampin is required
+        //
+        // We then bit decompose this value and constrain that all the decomposed mles are boolean valued via batched zero-check
+
+        // Now we decompose scaled_vals into bits
+        let bit_mles = (0..self.intermediate_bit_size + 25)
+            .into_par_iter()
+            .map(|j| {
+                let mle: ArcMultilinearExtension<E> = scaled_vals
+                    .iter()
+                    .map(|val| {
+                        let bit: E = ((val >> j) & 1).to_field();
+                        bit.as_bases()[0]
+                    })
+                    .collect::<Vec<E::BaseField>>()
+                    .into_mle()
+                    .into();
+                mle
+            })
+            .collect::<Vec<ArcMultilinearExtension<E>>>();
+
+        let first_sumcheck_decomp = (0..bits_after_shift + 1)
+            .into_par_iter()
+            .map(|j| {
+                let mle: ArcMultilinearExtension<E> = top_parts
+                    .iter()
+                    .map(|val| {
+                        let bit: E = ((val >> j) & 1).to_field();
+                        bit.as_bases()[0]
+                    })
+                    .collect::<Vec<E::BaseField>>()
+                    .into_mle()
+                    .into();
+                mle
+            })
+            .collect::<Vec<ArcMultilinearExtension<E>>>();
+        // Now we assemble the (rather large) virtual polynomial
+        let mut vp = VirtualPolynomial::<E>::new(bit_mles[0].num_vars());
+
+        // Squeeze a challenge for batching purposes
+        let alpha_chal = prover
+            .transcript
+            .get_and_append_challenge(b"requant_batch_challenge")
+            .elements;
+
+        let mut batch_chal = alpha_chal;
+
+        // These terms are used to prove that every element of each `bit_mle` is either 0 or 1
+        first_sumcheck_decomp.iter().for_each(|bm| {
+            vp.add_mle_list(vec![bm.clone()], batch_chal);
+            vp.add_mle_list(vec![bm.clone(), bm.clone()], -batch_chal);
+            batch_chal *= alpha_chal;
+        });
+
+        // For the output we want to use the polys from `self.shift()..self.shift() + BIT_SIZE - 1`
+        let output_calc_mles = &bit_mles[self.shift()..];
+        // This mle tells us whether to clamp or not (if it has value 1 we should clamp, else we shouldn't)
+        let clamping_mle = first_sumcheck_decomp.last().unwrap();
+
+        // The output claim should be equal to `eq_poly * (clamping_mle * (SUM 2^{i} * output_calc_mles[i]) + *quantization::MAX * (1 - clamping_mle) * (1 - 2 * msb_mle))`
+        output_calc_mles
+            .iter()
+            .enumerate()
+            .take(output_calc_mles.len() - 1)
+            .for_each(|(i, output_term)| {
+                let pow_two = E::from(1u64 << i);
+                vp.add_mle_list(vec![output_term.clone(), clamping_mle.clone()], pow_two);
+            });
+
+        let msb_mle = &output_calc_mles[output_calc_mles.len() - 1];
+        let pow_two = E::from(1u64 << (output_calc_mles.len() - 1));
+        vp.add_mle_list(vec![msb_mle.clone(), clamping_mle.clone()], -pow_two);
+
+        let clamping_coeff: E = (*quantization::MAX).to_field();
+        let const_mle: ArcMultilinearExtension<E> =
+            vec![clamping_coeff; 1 << bit_mles[0].num_vars()]
+                .into_mle()
+                .into();
+        vp.add_mle_list(vec![const_mle], E::ONE);
+        vp.add_mle_list(
+            vec![clamping_mle.clone(), msb_mle.clone()],
+            clamping_coeff * E::from(2u64),
+        );
+        vp.add_mle_list(vec![clamping_mle.clone()], -clamping_coeff);
+        vp.add_mle_list(vec![msb_mle.clone()], -clamping_coeff * E::from(2u64));
+
+        let eq_poly: ArcMultilinearExtension<E> =
+            compute_betas_eval(&last_claim.point).into_mle().into();
+
+        vp.mul_by_mle(eq_poly, E::BaseField::ONE);
+
+        #[allow(deprecated)]
+        let (proof, state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
+
+        let all_mle_evals = state.get_mle_final_evaluations();
+        let first_sumcheck_decomp_evals = all_mle_evals[..first_sumcheck_decomp.len()].to_vec();
+        let output_bit_mle_evals = all_mle_evals
+            [first_sumcheck_decomp.len()..first_sumcheck_decomp.len() + bits_after_shift]
+            .to_vec();
+
+        let first_sumcheck_point = &proof.point;
+        let second_eq_poly: ArcMultilinearExtension<E> =
+            compute_betas_eval(first_sumcheck_point).into_mle().into();
+
+        // Now we assemble the (rather large) virtual polynomial
+        let mut vp = VirtualPolynomial::<E>::new(bit_mles[0].num_vars());
+
+        // Squeeze a challenge for batching purposes
+        let alpha_chal = prover
+            .transcript
+            .get_and_append_challenge(b"requant_batch_challenge")
+            .elements;
+
+        let mut batch_chal = alpha_chal;
+
+        // These terms are used to prove that every element of each `bit_mle` is either 0 or 1
+        bit_mles.iter().for_each(|bm| {
+            vp.add_mle_list(vec![bm.clone()], batch_chal);
+            vp.add_mle_list(vec![bm.clone(), bm.clone()], -batch_chal);
+            batch_chal *= alpha_chal;
+        });
+
+        // For the output we want to use the polys from `self.shift()..self.shift() + BIT_SIZE - 1`
+        let output_calc_mles = &bit_mles[self.shift()..];
+
+        // This is to relate evals from previous sumcheck to this one
+        output_calc_mles.iter().for_each(|bm| {
+            vp.add_mle_list(vec![bm.clone()], batch_chal);
+            batch_chal *= alpha_chal;
+        });
+
+        let msb_mle = bit_mles.last().unwrap();
+
+        // We calculate this by first working out 2^bits_after_shift +(quantization::MAX + (2 * bit_vecs[last] - 1) * recomb(bit_vecs[bits_after_shift..]))
+        let field_two = E::from(2u64);
+        output_calc_mles
+            .iter()
+            .enumerate()
+            .take(output_calc_mles.len() - 1)
+            .for_each(|(i, mle)| {
+                let pow_two = E::from(1u64 << i);
+                vp.add_mle_list(vec![mle.clone(), msb_mle.clone()], pow_two * field_two);
+                vp.add_mle_list(vec![mle.clone()], -pow_two);
+            });
+
+        let pow_two = E::from(1u64 << (output_calc_mles.len() - 1));
+        vp.add_mle_list(vec![msb_mle.clone(), msb_mle.clone()], -pow_two * field_two);
+        vp.add_mle_list(vec![msb_mle.clone()], pow_two);
+
+        let ltc_field: E = less_than_const.to_field();
+        let quant_max_field: E = (*quantization::MAX).to_field();
+
+        let const_poly: ArcMultilinearExtension<E> =
+            vec![ltc_field + quant_max_field; 1 << bit_mles[0].num_vars()]
+                .into_mle()
+                .into();
+        vp.add_mle_list(vec![const_poly], E::ONE);
+
+        vp.mul_by_mle(second_eq_poly, E::BaseField::ONE);
+
+        #[allow(deprecated)]
+        let (proof_two, state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
+
+        let all_mle_evals = state.get_mle_final_evaluations();
+        let bit_mle_evals = all_mle_evals[..bit_mles.len()].to_vec();
+
+        let rounding_const_field: E = rounding_constant.to_field();
+
+        let (non_sign_part, last_pow_two) = bit_mle_evals
+            .iter()
+            .take(bit_mle_evals.len() - 1)
+            .fold((E::ZERO, E::ONE), |(acc, pow_two_acc), &eval| {
+                (acc + eval * pow_two_acc, pow_two_acc * field_two)
+            });
+        let with_sign = non_sign_part
+            - last_pow_two * bit_mle_evals[bit_mle_evals.len() - 1]
+            - rounding_const_field;
+
+        let fpm: E = self.fixed_point_multiplier.to_field();
+        let fpm_inverse = fpm.invert().unwrap();
+
+        let claim_eval = fpm_inverse * with_sign;
+
+        let input_mle_eval = input
+            .get_data()
+            .to_vec()
+            .into_mle()
+            .evaluate(&proof_two.point);
+
+        let input_claim = Claim {
+            point: proof_two.point.clone(),
+            eval: claim_eval,
+        };
+
+        prover.push_proof(LayerProof::FullRequant(FullRequantProof {
+            first_sumcheck: proof,
+            second_sumcheck: proof_two,
+            less_than_vals: first_sumcheck_decomp_evals,
+            output_bit_mle_evals,
+            bit_mle_evals,
+        }));
+
+        Ok(input_claim)
+    }
+
+    pub(crate) fn verify_full_requant<E: ExtensionField, T: Transcript<E>>(
+        &self,
+        verifier: &mut Verifier<E, T>,
+        last_claim: Claim<E>,
+        proof: &FullRequantProof<E>,
+    ) -> anyhow::Result<Claim<E>>
+    where
+        E::BaseField: Serialize + DeserializeOwned,
+        E: Serialize + DeserializeOwned,
+    {
+        // Squeeze the batching challenge from the transcript
+        let alpha_chal = verifier
+            .transcript
+            .get_and_append_challenge(b"requant_batch_challenge")
+            .elements;
+
+        let num_vars = last_claim.point.len();
+
+        let aux_info =
+            VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![num_vars, num_vars, num_vars]]);
+
+        let first_subclaim = IOPVerifierState::<E>::verify(
+            last_claim.eval,
+            &proof.first_sumcheck,
+            &aux_info,
+            verifier.transcript,
+        );
+
+        // These terms are used to prove that every element of each `bit_mle` is either 0 or 1
+        let (first_booleanity, _) = proof
+            .less_than_vals
+            .iter()
+            .fold((E::ZERO, alpha_chal), |(acc, chal_acc), &bm| {
+                (acc + chal_acc * (bm - bm * bm), chal_acc * alpha_chal)
+            });
+
+        // The output claim should be equal to `eq_poly * ((1 - clamping_mle) * (SUM 2^{i} * output_calc_mles[i]) + *quantization::MAX * clamping_mle)`
+        let clamping_eval = *proof.less_than_vals.last().unwrap();
+        let field_two = E::from(2u64);
+        let (no_sign, final_pow_two) = proof
+            .output_bit_mle_evals
+            .iter()
+            .take(proof.output_bit_mle_evals.len() - 1)
+            .fold((E::ZERO, E::ONE), |(acc, pow_two_acc), &output_term| {
+                (
+                    acc + pow_two_acc * (output_term * clamping_eval),
+                    pow_two_acc * field_two,
+                )
+            });
+
+        let msb_mle = proof.output_bit_mle_evals[proof.output_bit_mle_evals.len() - 1];
+
+        let with_sign = no_sign - final_pow_two * (msb_mle * clamping_eval);
+
+        let clamping_coeff: E = (*quantization::MAX).to_field();
+
+        let clamping_term =
+            clamping_coeff * (E::ONE - clamping_eval) * (E::ONE - field_two * msb_mle);
+
+        let eq_poly_eval: E = eq_eval(&last_claim.point, &first_subclaim.point_flat());
+
+        let full_claim_calc = (clamping_term + with_sign + first_booleanity) * eq_poly_eval;
+
+        ensure!(
+            full_claim_calc == first_subclaim.expected_evaluation,
+            "First subclaim evaluation wasn't what was expected, calculated: {:?}, expected: {:?}",
+            full_claim_calc,
+            first_subclaim.expected_evaluation
+        );
+
+        // Now we calculate the initial evaluation for the second sumcheck
+        let (initial_eval_first_term, _) = proof
+            .less_than_vals
+            .iter()
+            .fold((E::ZERO, E::ONE), |(acc, pow_two_acc), &eval| {
+                (acc + pow_two_acc * eval, pow_two_acc * field_two)
+            });
+        // Squeeze the batching challenge from the transcript
+        let alpha_chal = verifier
+            .transcript
+            .get_and_append_challenge(b"requant_batch_challenge")
+            .elements;
+
+        let (second_booleanity_check, challenge) = proof
+            .bit_mle_evals
+            .iter()
+            .fold((E::ZERO, alpha_chal), |(acc, chal_acc), &eval| {
+                (acc + chal_acc * (eval - eval * eval), chal_acc * alpha_chal)
+            });
+
+        let (initial_eval, output_eval_part, _) = proof
+            .output_bit_mle_evals
+            .iter()
+            .zip(proof.bit_mle_evals[self.shift()..].iter())
+            .fold(
+                (initial_eval_first_term, E::ZERO, challenge),
+                |(acc, mid_acc, chal_acc), (&eval, &out_eval)| {
+                    (
+                        acc + chal_acc * eval,
+                        mid_acc + chal_acc * out_eval,
+                        chal_acc * alpha_chal,
+                    )
+                },
+            );
+
+        let second_subclaim = IOPVerifierState::<E>::verify(
+            initial_eval,
+            &proof.second_sumcheck,
+            &aux_info,
+            verifier.transcript,
+        );
+
+        let msb_eval = *proof.bit_mle_evals.last().unwrap();
+
+        // We calculate this by first working out 2^bits_after_shift +(quantization::MAX + (2 * bit_vecs[last] - 1) * recomb(bit_vecs[bits_after_shift..]))
+        let (no_sign_accum, pow_two_last) = proof.bit_mle_evals[self.shift()..]
+            .iter()
+            .take(proof.output_bit_mle_evals.len() - 1)
+            .fold((E::ZERO, E::ONE), |(acc, pow_two_acc), &eval| {
+                (acc + pow_two_acc * eval, pow_two_acc * field_two)
+            });
+        let full_no_const =
+            (no_sign_accum - (msb_eval * pow_two_last)) * (field_two * msb_eval - E::ONE);
+
+        let max_bits = self.intermediate_bit_size + 25;
+        let bits_after_shift = max_bits - self.shift();
+
+        let less_than_const = 1i128 << bits_after_shift;
+
+        let ltc_field: E = less_than_const.to_field();
+        let quant_max_field: E = (*quantization::MAX).to_field();
+
+        let const_term = quant_max_field + ltc_field;
+
+        let second_eq_eval = eq_eval(&proof.first_sumcheck.point, &proof.second_sumcheck.point);
+        let full_second_eval =
+            (const_term + full_no_const + output_eval_part + second_booleanity_check)
+                * second_eq_eval;
+
+        ensure!(
+            full_second_eval == second_subclaim.expected_evaluation,
+            "Second subclaim evaluation wasn't what was expected, calculated: {:?}, expected: {:?}",
+            full_second_eval,
+            second_subclaim.expected_evaluation
+        );
+
+        let (sum_no_sign, final_pow_two) = proof
+            .bit_mle_evals
+            .iter()
+            .take(proof.bit_mle_evals.len() - 1)
+            .fold((E::ZERO, E::ONE), |(acc, pow_two_acc), &eval| {
+                (acc + pow_two_acc * eval, pow_two_acc * field_two)
+            });
+        let full_sum = sum_no_sign - final_pow_two * msb_eval;
+        let rounding_const_field: E = (1i128 << (self.shift() - 1)).to_field();
+        let fpm_field: E = self.fixed_point_multiplier.to_field();
+        let fpm_inverse = fpm_field.invert().unwrap();
+
+        let next_claim_eval = (rounding_const_field + full_sum) * fpm_inverse;
+
+        let next_claim = Claim::<E> {
+            point: proof.second_sumcheck.point.clone(),
+            eval: next_claim_eval,
+        };
+        Ok(next_claim)
+    }
+
+    pub(crate) fn step_info<E: ExtensionField>(
+        &self,
+        _id: PolyID,
+        aux: ContextAux,
+    ) -> (LayerCtx<E>, ContextAux)
+    where
+        E: ExtensionField + DeserializeOwned,
+        E::BaseField: Serialize + DeserializeOwned,
+    {
+        (LayerCtx::<E>::FullRequant(*self), aux)
+    }
 }
 
 /// Information about a requantization step:
@@ -81,6 +610,7 @@ impl Requant {
             multiplier: None,
         }
     }
+
     pub fn set_test_multiplier(&mut self, multiplier: f32) {
         self.multiplier = Some(multiplier);
     }
@@ -491,6 +1021,104 @@ impl RequantCtx {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use crate::default_transcript;
+
+    use super::*;
+    use ark_std::rand::{Rng, thread_rng};
+    use goldilocks::{Goldilocks, GoldilocksExt2 as F};
+    use multilinear_extensions::mle::DenseMultilinearExtension;
+
+    #[test]
+    fn test_less_than() {
+        let mut rng = thread_rng();
+
+        for _ in 0..1 {
+            let rand_entries = (0..16).map(|_| rng.gen_range(0..8u8)).collect::<Vec<u8>>();
+
+            let less_than_five = rand_entries
+                .iter()
+                .map(|v| {
+                    if *v < 5 {
+                        Goldilocks::ONE
+                    } else {
+                        Goldilocks::ZERO
+                    }
+                })
+                .collect::<Vec<Goldilocks>>()
+                .into_mle();
+
+            let bit_vecs = (0..3)
+                .map(|i| {
+                    rand_entries
+                        .iter()
+                        .map(|v| {
+                            let bit = (*v >> i) & 1;
+                            Goldilocks::from(bit as u64)
+                        })
+                        .collect::<Vec<Goldilocks>>()
+                        .into_mle()
+                })
+                .collect::<Vec<DenseMultilinearExtension<F>>>();
+
+            let rand_point = (0..4).map(|_| F::random(&mut rng)).collect::<Vec<F>>();
+
+            let less_than_eval = less_than_five.evaluate(&rand_point);
+
+            let bit_mle_evals = bit_vecs
+                .iter()
+                .map(|mle| mle.evaluate(&rand_point))
+                .collect::<Vec<F>>();
+
+            let first_term =
+                (F::ONE - bit_mle_evals[0]) * (F::ONE - bit_mle_evals[1]) * bit_mle_evals[2];
+
+            let last_term = F::ONE - bit_mle_evals[2];
+
+            println!("less than eval: {:?}", less_than_eval);
+            println!("split eval: {:?}", first_term + last_term);
+
+            for (&x0, &x1, &x2, &lt) in izip!(
+                bit_vecs[0].get_base_field_vec(),
+                bit_vecs[1].get_base_field_vec(),
+                bit_vecs[2].get_base_field_vec(),
+                less_than_five.get_base_field_vec()
+            ) {
+                let lt0 = (Goldilocks::ONE - x0) * (Goldilocks::ONE - x1) * x2;
+                let lt2 = Goldilocks::ONE - x2;
+
+                let less_than = lt0 + lt2;
+                println!(
+                    "calc less than: {:?}, actual less than: {:?}, u64 versions {} {}",
+                    less_than,
+                    lt,
+                    less_than.to_canonical_u64(),
+                    lt.to_canonical_u64()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_sumcheck() {
+        let mut one_then_zeroes = vec![F::ONE];
+        one_then_zeroes.resize(8, F::ZERO);
+
+        let mut zero_then_ones = vec![F::ZERO];
+        zero_then_ones.resize(8, F::ONE);
+
+        let mut vp = VirtualPolynomial::<F>::new(3);
+
+        vp.add_mle_list(vec![one_then_zeroes.into_mle().into()], F::ONE);
+        vp.add_mle_list(vec![zero_then_ones.into_mle().into()], F::ONE);
+
+        let mut transcript = default_transcript::<F>();
+
+        let (proof, state) = IOPProverState::<F>::prove_parallel(vp, &mut transcript);
+        let final_evals = state.get_mle_final_evaluations();
+    }
+}
 //#[cfg(test)]
 // mod tests {
 //    use ark_std::rand::rngs::StdRng;
