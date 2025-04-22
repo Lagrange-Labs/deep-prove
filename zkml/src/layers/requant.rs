@@ -360,12 +360,6 @@ impl FullRequant {
 
         let claim_eval = fpm_inverse * with_sign;
 
-        let input_mle_eval = input
-            .get_data()
-            .to_vec()
-            .into_mle()
-            .evaluate(&proof_two.point);
-
         let input_claim = Claim {
             point: proof_two.point.clone(),
             eval: claim_eval,
@@ -540,7 +534,7 @@ impl FullRequant {
         let fpm_field: E = self.fixed_point_multiplier.to_field();
         let fpm_inverse = fpm_field.invert().unwrap();
 
-        let next_claim_eval = (rounding_const_field + full_sum) * fpm_inverse;
+        let next_claim_eval = (full_sum - rounding_const_field) * fpm_inverse;
 
         let next_claim = Claim::<E> {
             point: proof.second_sumcheck.point.clone(),
