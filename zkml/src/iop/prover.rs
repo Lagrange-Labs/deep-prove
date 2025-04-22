@@ -105,14 +105,11 @@ where
             (Layer::Activation(activation), LayerCtx::Activation(act_ctx)) => {
                 activation.prove_step(self, &last_claim, &step.output.get_data(), act_ctx)
             }
-            (Layer::Requant(requant), LayerCtx::Requant(ctx)) => {
-                requant.prove_step(self, &last_claim, &step.output.get_data(), ctx)
+            (Layer::Requant(requant), LayerCtx::Requant(..)) => {
+                requant.prove_step(self, &last_claim, input)
             }
             (Layer::Pooling(pooling), LayerCtx::Pooling(info)) => {
                 pooling.prove_pooling(self, last_claim, input, &step.output, info)
-            }
-            (Layer::FullRequant(full_requant), LayerCtx::FullRequant(..)) => {
-                full_requant.prove_step(self, &last_claim, input)
             }
             _ => bail!(
                 "inconsistent proof step {} and info step {} from ctx",

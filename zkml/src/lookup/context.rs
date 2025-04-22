@@ -210,29 +210,6 @@ where
                 lookups_no_challenges.push((vec![col_one, col_two], 2, TableType::Relu));
             }
 
-            Layer::Requant(requant) => {
-                tables.insert(TableType::Range);
-                let table_lookup_map = table_lookups
-                    .entry(TableType::Range)
-                    .or_insert_with(|| HashMap::default());
-
-                let (merged_lookups, column_evals) =
-                    requant.gen_lookup_witness::<E>(step_input.get_data());
-                merged_lookups
-                    .into_iter()
-                    .for_each(|val| *table_lookup_map.entry(val).or_insert(0u64) += 1);
-
-                polys_with_id.push((
-                    step.id,
-                    step.output
-                        .get_data()
-                        .iter()
-                        .map(Fieldizer::<E>::to_field)
-                        .collect(),
-                ));
-
-                lookups_no_challenges.push((column_evals, 1, TableType::Range));
-            }
             Layer::Pooling(pooling) => {
                 tables.insert(TableType::Range);
                 let table_lookup_map = table_lookups

@@ -107,10 +107,6 @@ where
                     t.append_field_element(&E::BaseField::from(info.matrix_poly_id as u64));
                     info.matrix_poly_aux.write_to_transcript(t);
                 }
-                LayerCtx::Requant(info) => {
-                    t.append_field_element(&E::BaseField::from(info.poly_id as u64));
-                    t.append_field_element(&E::BaseField::from(info.num_vars as u64));
-                }
                 LayerCtx::Activation(info) => {
                     t.append_field_element(&E::BaseField::from(info.poly_id as u64));
                     t.append_field_element(&E::BaseField::from(info.num_vars as u64));
@@ -139,7 +135,7 @@ where
                     info.hadamard.write_to_transcript(t);
                 }
                 LayerCtx::SchoolBookConvolution(_info) => {}
-                LayerCtx::FullRequant(..) => {}
+                LayerCtx::Requant(..) => {}
             }
         }
         self.weights.write_to_transcript(t)?;

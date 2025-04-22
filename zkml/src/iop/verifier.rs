@@ -128,23 +128,7 @@ where
                     info.verify_dense(&mut self, output_claim, &proof)?
                 }
                 (LayerProof::<E>::Requant(proof), LayerCtx::Requant(info)) => {
-                    let (constant_challenge, column_separation_challenge) = challenge_storage
-                        .get_challenges_by_name(&TableType::Range.name())
-                        .ok_or(anyhow!(
-                            "Couldn't get challenges at Step: {}, LookupType was: {}",
-                            proof_and_step.1.variant_name(),
-                            TableType::Range.name()
-                        ))?;
-                    info.verify_requant(
-                        &mut self,
-                        output_claim,
-                        &proof,
-                        constant_challenge,
-                        column_separation_challenge,
-                    )?
-                }
-                (LayerProof::<E>::FullRequant(proof), LayerCtx::FullRequant(full_requant)) => {
-                    full_requant.verify_full_requant(&mut self, output_claim, proof)?
+                    info.verify_full_requant(&mut self, output_claim, proof)?
                 }
                 (LayerProof::Pooling(proof), LayerCtx::Pooling(info)) => {
                     let (constant_challenge, column_separation_challenge) = challenge_storage
