@@ -442,7 +442,7 @@ pub(crate) mod test {
         }
     }
 
-    fn random_vector_quant(n: usize) -> Vec<Element> {
+    pub(crate) fn random_vector_quant(n: usize) -> Vec<Element> {
         // vec![thread_rng().gen_range(-128..128); n]
         random_vector(n)
     }
