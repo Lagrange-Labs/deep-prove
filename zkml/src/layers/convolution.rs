@@ -196,37 +196,6 @@ impl Convolution<Element> {
         let min = -(2u64.pow(exp as u32) as Element);
         let max = 2u64.pow(exp as u32) as Element;
         return (min, max);
-        // let (global_min, global_max) = (Element::MAX, Element::MIN);
-        //// iterate over output channels and take the min/max of all of it
-        // return (0.._k_n)
-        //    .into_iter()
-        //    .map(|output| {
-        //        let (mut filter_min, mut filter_max) = (0, 0);
-        //        // iterate over input channels and sum up
-        //        for input in 0..k_c {
-        //            for h in 0..k_h {
-        //                for w in 0..k_w {
-        //                    let (ind_min, ind_max) = quantization::max_range_from_weight(
-        //                        &self.filter.get(output, input, h, w),
-        //                        &_min_input,
-        //                        &_max_input,
-        //                    );
-        //                    filter_min += ind_min;
-        //                    filter_max += ind_max;
-        //                }
-        //            }
-        //        }
-        //        (filter_min, filter_max)
-        //    })
-        //    .fold(
-        //        (global_min, global_max),
-        //        |(global_min, global_max), (local_min, local_max)| {
-        //            (
-        //                global_min.cmp_min(&local_min),
-        //                global_max.cmp_max(&local_max),
-        //            )
-        //        },
-        //    );
     }
 
     pub(crate) fn step_info<E: ExtensionField>(
@@ -378,7 +347,6 @@ impl Convolution<Element> {
                 &info.ifft_aux.clone(),
                 &mut temp_t,
             );
-            println!("iFFT Sumcheck Correct");
             1 == 1
         });
 

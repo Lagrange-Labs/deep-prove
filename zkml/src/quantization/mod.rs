@@ -40,6 +40,7 @@ pub const MAX_FLOAT: f32 = 1.0;
 pub struct ScalingFactor {
     min: f32,
     max: f32,
+    scale: f32,
     quantized_domain: (Element, Element),
 }
 
@@ -59,18 +60,27 @@ impl ScalingFactor {
     }
 
     pub fn from_span(min: f32, max: f32, quantized_domain: Option<(Element, Element)>) -> Self {
+        let quantized_domain = quantized_domain.unwrap_or((*MIN, *MAX));
+        let scale = (max - min) / (quantized_domain.1 - quantized_domain.0) as f32;
         Self {
-            min: min,
-            max: max,
-            quantized_domain: quantized_domain.unwrap_or((*MIN, *MAX)),
+            min,
+            max,
+            scale,
+            quantized_domain,
         }
     }
     // Initialize a scaling factor in such a way that `self.scale()` is equal to the `scale` value
     // provided as input.
     pub(crate) fn from_scale(scale: f32, quantized_domain: Option<(Element, Element)>) -> Self {
-        let (min_quantized, max_quantized) = quantized_domain.clone().unwrap_or((*MIN, *MAX));
+        let (min_quantized, max_quantized) = quantized_domain.unwrap_or((*MIN, *MAX));
         let max = scale / 2.0 * (max_quantized - min_quantized) as f32;
-        Self::from_absolute_max(max, quantized_domain)
+        let min = -(max.abs());
+        Self {
+            max,
+            min,
+            scale,
+            quantized_domain: (min_quantized, max_quantized),
+        }
     }
 
     pub fn min(&self) -> f32 {
@@ -82,7 +92,7 @@ impl ScalingFactor {
     }
 
     pub fn scale(&self) -> f32 {
-        (self.max - self.min) / (self.quantized_domain.1 - self.quantized_domain.0) as f32
+        self.scale
     }
     /// M = S1 * S2 / S3
     pub fn m(&self, s2: &Self, s3: &Self) -> f32 {
@@ -124,9 +134,11 @@ impl ScalingFactor {
 
 impl Default for ScalingFactor {
     fn default() -> Self {
+        let default_scale = 2.0f32 / (*MAX - *MIN) as f32;
         Self {
             min: -1.0,
             max: 1.0,
+            scale: default_scale,
             quantized_domain: (*MIN, *MAX),
         }
     }
