@@ -1,3 +1,6 @@
+//! Module containing code for requantising in a provable manner after a layer involving an affine operation of some kind.
+//! We have to use fixed point multiplication to prove this requantisation effectively.
+
 use crate::{
     Claim, Prover, ScalingFactor,
     commit::compute_betas_eval,
@@ -28,39 +31,48 @@ use crate::{
 
 use super::LayerCtx;
 
-/// Information about a requantization step:
-/// * what is the range of the input data
-/// * what should be the shift to get back data in range within QuantInteger range
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Copy, PartialOrd)]
+/// This struct contains the infomation used in requantisation (i.e. rescaling and clamping)
+/// The fields are:
+/// - `multiplier`: This is the actual [`f32`] value calculated as `S1 * S2 / S3` and in traditional quantisation is what we would multiply by and then round to requantise
+/// - `right_shift`: This is `multiplier.log2().trunc().abs()`
+/// - `fixed_point_multiplier`: This is `2.0.powf(multiplier.log2().fract()) * (1 << 25)`, 25 is chosen as the [`f32`] mantissa is only 24 bits long so this should retain all bits
+/// - `intermediate_bit_size`: This is the maximum number of bits a value can have before its requantised.
 pub struct Requant {
-    // what is the shift that needs to be applied to requantize input number to the correct range of QuantInteger.
+    /// After multiplying by `self.fixed_point_multiplier` the value need to be shifted by this plus 25.
     pub right_shift: usize,
+    /// The normalised scaling factor represented as a fixed point multiplier (it should have 24 fractional bits)
     pub fixed_point_multiplier: Element,
-    /// TEST ONLY: this can be given to simulate a perfect requantization during inference. Note that it CAN NOT
-    /// be proven currently.
+    /// THe actual multiplier, this is mainly used to compare accuracy, it has no purpose in actual proving
     pub multiplier: f32,
     /// This field represents how many bits the max absoloute value can be
     intermediate_bit_size: usize,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+/// The infomation needed to verify that rescaling and clamping was performed correctly after a
+/// step involving linear algebra (i.e. a fully connected or convolutional layer)
 pub struct RequantProof<E: ExtensionField>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
-    /// the actual sumcheck proof proving the requant
+    /// The first sumcheck proof that takes the output claim and
+    /// constructs a claim about whether clamping occured or not.
     pub(crate) first_sumcheck: IOPProof<E>,
-    /// the actual sumcheck proof proving the requant
+    /// The second sumcheck proof that links the clamping claim to a claim about the input tensor.
     pub(crate) second_sumcheck: IOPProof<E>,
-    /// The claimed bit vectors of the less than check
+    /// The claimed bit vectors of the clamping claim, this is from the first sumcheck
     pub(crate) less_than_vals: Vec<E>,
-    /// The output bit mle evals
+    /// The output bit mle evals, this is from the first sumcheck
     pub(crate) output_bit_mle_evals: Vec<E>,
-    /// The evals of the bit vecs
+    /// The evals of the bit vecs, this is from the second sumcheck
     pub(crate) bit_mle_evals: Vec<E>,
 }
 
 impl Requant {
+    /// Method used to instantiate a new [`Requant`] from the scaling factors of all tensors involved in a layer.
+    /// The `intermediate_bit_size` is layer dependant and so should be passed as input. It can be calculated based on how many times you need to multiply and add
+    /// to get each value in the output tensor.
     pub fn from_scaling_factors(
         input_scale: ScalingFactor,
         weights_scale: ScalingFactor,
@@ -86,10 +98,12 @@ impl Requant {
         }
     }
 
+    /// This returns the shift (including the part that depends on `S1 * S2/ S3`)
     fn shift(&self) -> usize {
         self.right_shift + 25
     }
 
+    /// Internal method that applies this op to an [`Element`]
     fn apply(&self, elem: &Element) -> Element {
         let rounding = 1i128 << (self.shift() - 1);
         let unclamped = (rounding + elem * self.fixed_point_multiplier) >> self.shift();
@@ -108,22 +122,21 @@ impl Requant {
         clamped
     }
 
-    pub fn op(
-        &self,
-        input: &crate::tensor::Tensor<Element>,
-    ) -> Result<crate::tensor::Tensor<Element>> {
+    /// API for performing this op on a quantised tensor.
+    pub fn op(&self, input: &Tensor<Element>) -> Result<Tensor<Element>> {
         let res = input
             .get_data()
             .iter()
             .map(|e| self.apply(e))
             .collect::<Vec<Element>>();
 
-        Ok(crate::tensor::Tensor::<Element>::new(
-            input.get_shape(),
-            res,
-        ))
+        Ok(Tensor::<Element>::new(input.get_shape(), res))
     }
 
+    /// Logic for proving correct requantisation between an input and output [`Tensor`].
+    /// This functions in a GKR like manner over two sumchecks, the first links the claim about the ouput to the bit decomposition
+    /// of the values in the input and clamps values if necessary. The second sumcheck verifies that clamping only occured when a value
+    /// would overflow the quantised integer bit size.
     pub(crate) fn prove_step<E: ExtensionField, T: Transcript<E>>(
         &self,
         prover: &mut Prover<E, T>,
@@ -134,14 +147,16 @@ impl Requant {
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
-        // First we make the sign MLE and multiply by the fixed point multiplier
         // This value is used to round correctly
         let rounding_constant = 1i128 << (self.shift() - 1);
+        // This is the maximum size in bits of any of the values in the input after being multiplied by the fixed point multiplier
         let max_bits = self.intermediate_bit_size + 25;
+        // This is the number of bits that will remain after shifting
         let bits_after_shift = max_bits - self.shift();
-
+        // We use this to check if a value needs to be clamped
         let less_than_const = 1i128 << bits_after_shift;
 
+        // Split the input into the pre-shifted part (scaled_vals) and the part used in the clamping check (top_parts)
         let (scaled_vals, top_parts): (Vec<Element>, Vec<Element>) = input
             .get_data()
             .iter()
@@ -169,7 +184,7 @@ impl Requant {
         //
         // We then bit decompose this value and constrain that all the decomposed mles are boolean valued via batched zero-check
 
-        // Now we decompose scaled_vals into bits
+        // Now we decompose scaled_vals and top_parts into bits
         let bit_mles = (0..self.intermediate_bit_size + 25)
             .into_par_iter()
             .map(|j| {
@@ -201,7 +216,7 @@ impl Requant {
                 mle
             })
             .collect::<Vec<ArcMultilinearExtension<E>>>();
-        // Now we assemble the (rather large) virtual polynomial
+        // Now we assemble the first (rather large) virtual polynomial
         let mut vp = VirtualPolynomial::<E>::new(bit_mles[0].num_vars());
 
         // Squeeze a challenge for batching purposes
@@ -212,19 +227,20 @@ impl Requant {
 
         let mut batch_chal = alpha_chal;
 
-        // These terms are used to prove that every element of each `bit_mle` is either 0 or 1
+        // These terms are used to prove that we did bit decompose top_parts
         first_sumcheck_decomp.iter().for_each(|bm| {
             vp.add_mle_list(vec![bm.clone()], batch_chal);
             vp.add_mle_list(vec![bm.clone(), bm.clone()], -batch_chal);
             batch_chal *= alpha_chal;
         });
 
-        // For the output we want to use the polys from `self.shift()..self.shift() + BIT_SIZE - 1`
+        // For the output we want to use the polys from `self.shift()` onwards
         let output_calc_mles = &bit_mles[self.shift()..];
-        // This mle tells us whether to clamp or not (if it has value 1 we should clamp, else we shouldn't)
+        // This mle tells us whether to clamp or not (if it has value 0 we should clamp, else we shouldn't)
         let clamping_mle = first_sumcheck_decomp.last().unwrap();
 
-        // The output claim should be equal to `eq_poly * (clamping_mle * (SUM 2^{i} * output_calc_mles[i]) + *quantization::MAX * (1 - clamping_mle) * (1 - 2 * msb_mle))`
+        // The output claim should be equal to `eq_poly * (clamping_mle * (SUM 2^{i} * output_calc_mles[i] - 2^{top_bit} * msb_mle) + *quantization::MAX * (1 - clamping_mle) * (1 - 2 * msb_mle))`
+        // This term has degree 3.
         output_calc_mles
             .iter()
             .enumerate()
@@ -256,9 +272,11 @@ impl Requant {
 
         vp.mul_by_mle(eq_poly, E::BaseField::ONE);
 
+        // Run the first sumcheck proof
         #[allow(deprecated)]
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
 
+        // Extract claims that the verifier will need to calculate the initial input of the next sumcheck GKR style.
         let all_mle_evals = state.get_mle_final_evaluations();
         let first_sumcheck_decomp_evals = all_mle_evals[..first_sumcheck_decomp.len()].to_vec();
         let output_bit_mle_evals = all_mle_evals
@@ -269,7 +287,7 @@ impl Requant {
         let second_eq_poly: ArcMultilinearExtension<E> =
             compute_betas_eval(first_sumcheck_point).into_mle().into();
 
-        // Now we assemble the (rather large) virtual polynomial
+        // Now we assemble the second (rather large) virtual polynomial
         let mut vp = VirtualPolynomial::<E>::new(bit_mles[0].num_vars());
 
         // Squeeze a challenge for batching purposes
@@ -296,9 +314,10 @@ impl Requant {
             batch_chal *= alpha_chal;
         });
 
+        // The unwrap here is safe because by construction `bit_mles` will always contain values.
         let msb_mle = bit_mles.last().unwrap();
 
-        // We calculate this by first working out 2^bits_after_shift +(quantization::MAX + (2 * bit_vecs[last] - 1) * recomb(bit_vecs[bits_after_shift..]))
+        // We calculate this by first working out 2^bits_after_shift + (*quantization::MAX + (2 *msb_mle - 1) * (SUM 2^{i} * output_clac_mles[i] - 2^{top_bit} * msb_mle)
         let field_two = E::from(2u64);
         output_calc_mles
             .iter()
@@ -325,12 +344,15 @@ impl Requant {
 
         vp.mul_by_mle(second_eq_poly, E::BaseField::ONE);
 
+        // Run the second sumcheck proof
         #[allow(deprecated)]
         let (proof_two, state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
 
+        // Extract the evaluations of all the bit mles
         let all_mle_evals = state.get_mle_final_evaluations();
         let bit_mle_evals = all_mle_evals[..bit_mles.len()].to_vec();
 
+        // Construct a claim about the input tensor by combining the claims about `bit_mles` appropriately
         let rounding_const_field: E = rounding_constant.to_field();
 
         let (non_sign_part, last_pow_two) = bit_mle_evals
@@ -344,15 +366,13 @@ impl Requant {
             - rounding_const_field;
 
         let fpm: E = self.fixed_point_multiplier.to_field();
+        // The unwrap here is safe as we should panic if the scaling factor is zero
         let fpm_inverse = fpm.invert().unwrap();
 
-        let claim_eval = fpm_inverse * with_sign;
+        let eval = fpm_inverse * with_sign;
+        let point = proof_two.point.clone();
 
-        let input_claim = Claim {
-            point: proof_two.point.clone(),
-            eval: claim_eval,
-        };
-
+        // Push the proof to the proof list
         prover.push_proof(LayerProof::Requant(RequantProof {
             first_sumcheck: proof,
             second_sumcheck: proof_two,
@@ -361,9 +381,11 @@ impl Requant {
             bit_mle_evals,
         }));
 
-        Ok(input_claim)
+        // Return the `Claim` about the Input tensor
+        Ok(Claim { point, eval })
     }
 
+    /// Performs logic to verify the [`RequantProof`] creadted by calling the [`Requant::prove_step`] method.
     pub(crate) fn verify_full_requant<E: ExtensionField, T: Transcript<E>>(
         &self,
         verifier: &mut Verifier<E, T>,
@@ -382,9 +404,11 @@ impl Requant {
 
         let num_vars = last_claim.point.len();
 
+        // All polynomials have the same number of vars and we expect a degree three VirtualPolynomial so we construct the VPAuxInfo here directly.
         let aux_info =
             VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![num_vars, num_vars, num_vars]]);
 
+        // Generate the first sumcheck subclaim, the initial eval of this sumcheck should always be `last_claim.eval`
         let first_subclaim = IOPVerifierState::<E>::verify(
             last_claim.eval,
             &proof.first_sumcheck,
@@ -392,7 +416,7 @@ impl Requant {
             verifier.transcript,
         );
 
-        // These terms are used to prove that every element of each `bit_mle` is either 0 or 1
+        // These terms are used to prove that every element of each `less_than_vals` is either 0 or 1
         let (first_booleanity, _) = proof
             .less_than_vals
             .iter()
@@ -400,7 +424,7 @@ impl Requant {
                 (acc + chal_acc * (bm - bm * bm), chal_acc * alpha_chal)
             });
 
-        // The output claim should be equal to `eq_poly * ((1 - clamping_mle) * (SUM 2^{i} * output_calc_mles[i]) + *quantization::MAX * clamping_mle)`
+        // The output claim should be equal to `eq_poly * (clamping_mle * (SUM 2^{i} * output_calc_mles[i] - 2^{top_bit} * msb_eval) + *quantization::MAX * (1 - clamping_mle) * (1 - 2 * msb_eval))`
         let clamping_eval = *proof.less_than_vals.last().unwrap();
         let field_two = E::from(2u64);
         let (no_sign, final_pow_two) = proof
@@ -414,17 +438,18 @@ impl Requant {
                 )
             });
 
-        let msb_mle = proof.output_bit_mle_evals[proof.output_bit_mle_evals.len() - 1];
+        let msb_eval = proof.output_bit_mle_evals[proof.output_bit_mle_evals.len() - 1];
 
-        let with_sign = no_sign - final_pow_two * (msb_mle * clamping_eval);
+        let with_sign = no_sign - final_pow_two * (msb_eval * clamping_eval);
 
         let clamping_coeff: E = (*quantization::MAX).to_field();
 
         let clamping_term =
-            clamping_coeff * (E::ONE - clamping_eval) * (E::ONE - field_two * msb_mle);
+            clamping_coeff * (E::ONE - clamping_eval) * (E::ONE - field_two * msb_eval);
 
         let eq_poly_eval: E = eq_eval(&last_claim.point, &first_subclaim.point_flat());
 
+        // Sum all the individual terms and multiply by the eq_poly eval
         let full_claim_calc = (clamping_term + with_sign + first_booleanity) * eq_poly_eval;
 
         ensure!(
@@ -447,13 +472,14 @@ impl Requant {
             .get_and_append_challenge(b"requant_batch_challenge")
             .elements;
 
+        // We can save some work here by calculating part of the second sumcheck subclaim expected evaluation while exponentiating the challenge
         let (second_booleanity_check, challenge) = proof
             .bit_mle_evals
             .iter()
             .fold((E::ZERO, alpha_chal), |(acc, chal_acc), &eval| {
                 (acc + chal_acc * (eval - eval * eval), chal_acc * alpha_chal)
             });
-
+        // As above we save some work by doing two things at once
         let (initial_eval, output_eval_part, _) = proof
             .output_bit_mle_evals
             .iter()
@@ -468,7 +494,7 @@ impl Requant {
                     )
                 },
             );
-
+        // Generate the second sumcheck subclaim
         let second_subclaim = IOPVerifierState::<E>::verify(
             initial_eval,
             &proof.second_sumcheck,
@@ -478,7 +504,7 @@ impl Requant {
 
         let msb_eval = *proof.bit_mle_evals.last().unwrap();
 
-        // We calculate this by first working out 2^bits_after_shift +(quantization::MAX + (2 * bit_vecs[last] - 1) * recomb(bit_vecs[bits_after_shift..]))
+        // We calculate this by first working out 2^bits_after_shift + (*quantization::MAX + (2 *msb_mle - 1) * (SUM 2^{i} * output_clac_mles[i] - 2^{top_bit} * msb_mle)
         let (no_sign_accum, pow_two_last) = proof.bit_mle_evals[self.shift()..]
             .iter()
             .take(proof.output_bit_mle_evals.len() - 1)
@@ -499,6 +525,8 @@ impl Requant {
         let const_term = quant_max_field + ltc_field;
 
         let second_eq_eval = eq_eval(&proof.first_sumcheck.point, &proof.second_sumcheck.point);
+
+        // Sum all the terms and multiply by the second eq_poly eval
         let full_second_eval =
             (const_term + full_no_const + output_eval_part + second_booleanity_check)
                 * second_eq_eval;
@@ -510,6 +538,7 @@ impl Requant {
             second_subclaim.expected_evaluation
         );
 
+        // Use the individual claims about the `bit_mles`, which we just showed came from the previous sumcechk, to construct the claim about the input tensor.
         let (sum_no_sign, final_pow_two) = proof
             .bit_mle_evals
             .iter()
@@ -528,6 +557,8 @@ impl Requant {
             point: proof.second_sumcheck.point.clone(),
             eval: next_claim_eval,
         };
+
+        // Return the claim about the input tensor.
         Ok(next_claim)
     }
 
