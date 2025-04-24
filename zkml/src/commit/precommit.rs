@@ -253,7 +253,7 @@ where
         self.claims.push(claim);
         Ok(())
     }
-
+    #[timed::timed_instrument(level = "info")]
     pub fn prove<T: Transcript<E>>(
         self,
         ctx: &Context<E>,

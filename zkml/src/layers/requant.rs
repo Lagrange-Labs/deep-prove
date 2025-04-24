@@ -3,7 +3,6 @@
 
 use crate::{
     Claim, Prover, ScalingFactor,
-    commit::compute_betas_eval,
     iop::verifier::Verifier,
     layers::LayerProof,
     quantization::{self, IntoElement},
@@ -11,12 +10,12 @@ use crate::{
 };
 use anyhow::{Result, ensure};
 use ark_std::Zero;
-use ff::Field;
+
 use ff_ext::ExtensionField;
 
 use multilinear_extensions::{
     mle::IntoMLE,
-    virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial, eq_eval},
+    virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial, build_eq_x_r, eq_eval},
 };
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -217,24 +216,34 @@ impl Requant {
                 mle
             })
             .collect::<Vec<ArcMultilinearExtension<E>>>();
-        // Now we assemble the first (rather large) virtual polynomial
-        let mut vp = VirtualPolynomial::<E>::new(bit_mles[0].num_vars());
 
+        // Now we assemble the first (rather large) virtual polynomial
+        let eq_poly: ArcMultilinearExtension<E> = build_eq_x_r(&last_claim.point);
         // Squeeze a challenge for batching purposes
         let alpha_chal = prover
             .transcript
             .get_and_append_challenge(b"requant_batch_challenge")
             .elements;
 
-        let mut batch_chal = alpha_chal;
+        let clamping_coeff: E = (*quantization::MAX).to_field();
 
         // These terms are used to prove that we did bit decompose top_parts
-        first_sumcheck_decomp.iter().for_each(|bm| {
-            vp.add_mle_list(vec![bm.clone()], batch_chal);
-            vp.add_mle_list(vec![bm.clone(), bm.clone()], -batch_chal);
-            batch_chal *= alpha_chal;
-        });
-
+        let (first_vp, _) = first_sumcheck_decomp.iter().enumerate().fold(
+            (
+                VirtualPolynomial::<E>::new(bit_mles[0].num_vars()),
+                alpha_chal,
+            ),
+            |(mut acc, chal_acc), (i, bm)| {
+                let first_coeff = if i < first_sumcheck_decomp.len() - 1 {
+                    chal_acc
+                } else {
+                    chal_acc - clamping_coeff
+                };
+                acc.add_mle_list(vec![eq_poly.clone(), bm.clone()], first_coeff);
+                acc.add_mle_list(vec![eq_poly.clone(), bm.clone(), bm.clone()], -chal_acc);
+                (acc, chal_acc * alpha_chal)
+            },
+        );
         // For the output we want to use the polys from `self.shift()` onwards
         let output_calc_mles = &bit_mles[self.shift()..];
         // This mle tells us whether to clamp or not (if it has value 0 we should clamp, else we shouldn't)
@@ -242,36 +251,29 @@ impl Requant {
 
         // The output claim should be equal to `eq_poly * (clamping_mle * (SUM 2^{i} * output_calc_mles[i] - 2^{top_bit} * msb_mle) + *quantization::MAX * (1 - clamping_mle) * (1 - 2 * msb_mle))`
         // This term has degree 3.
-        output_calc_mles
+        let (mut vp, final_pow_two) = output_calc_mles
             .iter()
-            .enumerate()
             .take(output_calc_mles.len() - 1)
-            .for_each(|(i, output_term)| {
-                let pow_two = E::from(1u64 << i);
-                vp.add_mle_list(vec![output_term.clone(), clamping_mle.clone()], pow_two);
+            .fold((first_vp, 1u64), |(mut acc, pow_two_acc), mle| {
+                acc.add_mle_list(
+                    vec![eq_poly.clone(), mle.clone(), clamping_mle.clone()],
+                    E::from(pow_two_acc),
+                );
+                (acc, pow_two_acc + pow_two_acc)
             });
 
         let msb_mle = &output_calc_mles[output_calc_mles.len() - 1];
-        let pow_two = E::from(1u64 << (output_calc_mles.len() - 1));
-        vp.add_mle_list(vec![msb_mle.clone(), clamping_mle.clone()], -pow_two);
 
-        let clamping_coeff: E = (*quantization::MAX).to_field();
-        let const_mle: ArcMultilinearExtension<E> =
-            vec![clamping_coeff; 1 << bit_mles[0].num_vars()]
-                .into_mle()
-                .into();
-        vp.add_mle_list(vec![const_mle], E::ONE);
+        vp.add_mle_list(vec![eq_poly.clone()], clamping_coeff);
         vp.add_mle_list(
-            vec![clamping_mle.clone(), msb_mle.clone()],
-            clamping_coeff * E::from(2u64),
+            vec![eq_poly.clone(), clamping_mle.clone(), msb_mle.clone()],
+            clamping_coeff * E::from(2u64) - E::from(final_pow_two),
         );
-        vp.add_mle_list(vec![clamping_mle.clone()], -clamping_coeff);
-        vp.add_mle_list(vec![msb_mle.clone()], -clamping_coeff * E::from(2u64));
 
-        let eq_poly: ArcMultilinearExtension<E> =
-            compute_betas_eval(&last_claim.point).into_mle().into();
-
-        vp.mul_by_mle(eq_poly, E::BaseField::ONE);
+        vp.add_mle_list(
+            vec![eq_poly.clone(), msb_mle.clone()],
+            -clamping_coeff * E::from(2u64),
+        );
 
         // Run the first sumcheck proof
         #[allow(deprecated)]
@@ -279,17 +281,16 @@ impl Requant {
 
         // Extract claims that the verifier will need to calculate the initial input of the next sumcheck GKR style.
         let all_mle_evals = state.get_mle_final_evaluations();
-        let first_sumcheck_decomp_evals = all_mle_evals[..first_sumcheck_decomp.len()].to_vec();
+        let first_sumcheck_decomp_evals =
+            all_mle_evals[1..1 + first_sumcheck_decomp.len()].to_vec();
         let output_bit_mle_evals = all_mle_evals
-            [first_sumcheck_decomp.len()..first_sumcheck_decomp.len() + bits_after_shift]
+            [1 + first_sumcheck_decomp.len()..1 + first_sumcheck_decomp.len() + bits_after_shift]
             .to_vec();
 
         let first_sumcheck_point = &proof.point;
-        let second_eq_poly: ArcMultilinearExtension<E> =
-            compute_betas_eval(first_sumcheck_point).into_mle().into();
 
+        let second_eq_poly: ArcMultilinearExtension<E> = build_eq_x_r(first_sumcheck_point);
         // Now we assemble the second (rather large) virtual polynomial
-        let mut vp = VirtualPolynomial::<E>::new(bit_mles[0].num_vars());
 
         // Squeeze a challenge for batching purposes
         let alpha_chal = prover
@@ -297,53 +298,63 @@ impl Requant {
             .get_and_append_challenge(b"requant_batch_challenge")
             .elements;
 
-        let mut batch_chal = alpha_chal;
-
         // These terms are used to prove that every element of each `bit_mle` is either 0 or 1
-        bit_mles.iter().for_each(|bm| {
-            vp.add_mle_list(vec![bm.clone()], batch_chal);
-            vp.add_mle_list(vec![bm.clone(), bm.clone()], -batch_chal);
-            batch_chal *= alpha_chal;
-        });
+        let (first_vp, batch_chal) = bit_mles.iter().fold(
+            (
+                VirtualPolynomial::<E>::new(bit_mles[0].num_vars()),
+                alpha_chal,
+            ),
+            |(mut acc, chal_acc), bm| {
+                acc.add_mle_list(vec![second_eq_poly.clone(), bm.clone()], chal_acc);
+                acc.add_mle_list(
+                    vec![second_eq_poly.clone(), bm.clone(), bm.clone()],
+                    -chal_acc,
+                );
+                (acc, chal_acc * alpha_chal)
+            },
+        );
 
         // For the output we want to use the polys from `self.shift()..self.shift() + BIT_SIZE - 1`
         let output_calc_mles = &bit_mles[self.shift()..];
 
-        // This is to relate evals from previous sumcheck to this one
-        output_calc_mles.iter().for_each(|bm| {
-            vp.add_mle_list(vec![bm.clone()], batch_chal);
-            batch_chal *= alpha_chal;
-        });
-
         // The unwrap here is safe because by construction `bit_mles` will always contain values.
         let msb_mle = bit_mles.last().unwrap();
 
-        // We calculate this by first working out 2^bits_after_shift + (*quantization::MAX + (2 *msb_mle - 1) * (SUM 2^{i} * output_clac_mles[i] - 2^{top_bit} * msb_mle)
-        let field_two = E::from(2u64);
-        output_calc_mles
+        // This is to relate evals from previous sumcheck to this one
+        let (mut vp, final_batch_chal, final_pow_two) = output_calc_mles
             .iter()
-            .enumerate()
             .take(output_calc_mles.len() - 1)
-            .for_each(|(i, mle)| {
-                let pow_two = E::from(1u64 << i);
-                vp.add_mle_list(vec![mle.clone(), msb_mle.clone()], pow_two * field_two);
-                vp.add_mle_list(vec![mle.clone()], -pow_two);
-            });
+            .fold(
+                (first_vp, batch_chal, E::ONE),
+                |(mut acc, chal_acc, pow_two_acc), bm| {
+                    acc.add_mle_list(
+                        vec![second_eq_poly.clone(), bm.clone()],
+                        chal_acc - pow_two_acc,
+                    );
+                    acc.add_mle_list(
+                        vec![second_eq_poly.clone(), bm.clone(), msb_mle.clone()],
+                        pow_two_acc + pow_two_acc,
+                    );
 
-        let pow_two = E::from(1u64 << (output_calc_mles.len() - 1));
-        vp.add_mle_list(vec![msb_mle.clone(), msb_mle.clone()], -pow_two * field_two);
-        vp.add_mle_list(vec![msb_mle.clone()], pow_two);
+                    (acc, chal_acc * alpha_chal, pow_two_acc + pow_two_acc)
+                },
+            );
+
+        // We calculate this by first working out 2^bits_after_shift + (*quantization::MAX + (2 *msb_mle - 1) * (SUM 2^{i} * output_clac_mles[i] - 2^{top_bit} * msb_mle)
+
+        vp.add_mle_list(
+            vec![second_eq_poly.clone(), msb_mle.clone(), msb_mle.clone()],
+            -(final_pow_two + final_pow_two),
+        );
+        vp.add_mle_list(
+            vec![second_eq_poly.clone(), msb_mle.clone()],
+            final_batch_chal + final_pow_two,
+        );
 
         let ltc_field: E = less_than_const.to_field();
         let quant_max_field: E = (*quantization::MAX).to_field();
 
-        let const_poly: ArcMultilinearExtension<E> =
-            vec![ltc_field + quant_max_field; 1 << bit_mles[0].num_vars()]
-                .into_mle()
-                .into();
-        vp.add_mle_list(vec![const_poly], E::ONE);
-
-        vp.mul_by_mle(second_eq_poly, E::BaseField::ONE);
+        vp.add_mle_list(vec![second_eq_poly.clone()], ltc_field + quant_max_field);
 
         // Run the second sumcheck proof
         #[allow(deprecated)]
@@ -351,7 +362,7 @@ impl Requant {
 
         // Extract the evaluations of all the bit mles
         let all_mle_evals = state.get_mle_final_evaluations();
-        let bit_mle_evals = all_mle_evals[..bit_mles.len()].to_vec();
+        let bit_mle_evals = all_mle_evals[1..1 + bit_mles.len()].to_vec();
 
         // Construct a claim about the input tensor by combining the claims about `bit_mles` appropriately
         let rounding_const_field: E = rounding_constant.to_field();
@@ -360,7 +371,7 @@ impl Requant {
             .iter()
             .take(bit_mle_evals.len() - 1)
             .fold((E::ZERO, E::ONE), |(acc, pow_two_acc), &eval| {
-                (acc + eval * pow_two_acc, pow_two_acc * field_two)
+                (acc + eval * pow_two_acc, pow_two_acc + pow_two_acc)
             });
         let with_sign = non_sign_part
             - last_pow_two * bit_mle_evals[bit_mle_evals.len() - 1]
