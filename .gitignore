@@ -15,3 +15,4 @@ zkml/data
 zkml/cifar_net.pth
 .venv
 zkml/bench.csv
+zkml/function_timing.csv

@@ -137,6 +137,7 @@ impl Requant {
     /// This functions in a GKR like manner over two sumchecks, the first links the claim about the ouput to the bit decomposition
     /// of the values in the input and clamps values if necessary. The second sumcheck verifies that clamping only occured when a value
     /// would overflow the quantised integer bit size.
+    #[timed::timed_instrument(level = "info")]
     pub(crate) fn prove_step<E: ExtensionField, T: Transcript<E>>(
         &self,
         prover: &mut Prover<E, T>,

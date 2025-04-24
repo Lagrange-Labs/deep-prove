@@ -5,6 +5,7 @@ use std::{
     path::Path,
     time,
 };
+use timed_core::{Output, set_output};
 use zkml::{
     model::Model,
     quantization::{AbsoluteMax, InferenceObserver, ModelMetadata, ScalingStrategy},
@@ -71,6 +72,7 @@ pub fn main() -> anyhow::Result<()> {
         .finish();
 
     tracing::subscriber::set_global_default(subscriber).expect("Failed to set global subscriber");
+    set_output(Output::CSV("function_timing.csv".to_string()));
     let args = Args::parse();
     run(args).context("error running bench:")?;
 

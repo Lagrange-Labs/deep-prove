@@ -121,16 +121,14 @@ where
         claim
     }
 
-    #[timed::timed_instrument(level = "debug")]
+    #[timed::timed_instrument(level = "info")]
     fn prove_tables(&mut self) -> anyhow::Result<()> {
         let mut poly_id = TABLE_POLY_ID_OFFSET;
 
         self.table_witness
             .iter()
             .zip(self.ctx.lookup.iter())
-            .try_for_each(|(table_witness, table_type)| {
-                println!("PROVING table of type: {}", table_type.name());
-
+            .try_for_each(|(table_witness, _)| {
                 // Make the proof for the table
                 let table_proof = logup_batch_prove(&table_witness, self.transcript)?;
 
