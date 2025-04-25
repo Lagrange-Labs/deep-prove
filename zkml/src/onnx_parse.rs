@@ -197,7 +197,7 @@ fn check_cnn_input(input_shape: &[usize]) -> Result<bool> {
 
 /// Assumes stride=1, padding=0, and dilation=1
 /// https://pytorch.org/docs/stable/generated/torch.nn.Conv2d.html
-fn conv2d_shape(input_shape: &[usize], filter_shape: &[usize]) -> Vec<usize> {
+pub(crate) fn conv2d_shape(input_shape: &[usize], filter_shape: &[usize]) -> Vec<usize> {
     let result = check_filter(filter_shape);
     assert!(result.is_ok(), "conv2d: Failed {:?}", result.unwrap_err());
 

@@ -131,6 +131,32 @@ where
     }
 }
 
+/// Helper to pretty print the ExtensionField vectors
+pub trait VecElementizer {
+    fn into_elements(self) -> Vec<Element>;
+}
+impl<E: IntoElement> VecElementizer for Vec<E> {
+    fn into_elements(self) -> Vec<Element> {
+        self.into_iter().map(|i| i.into_element()).collect_vec()
+    }
+}
+/// Helper to pretty print the ExtensionField tensors
+pub(crate) trait TensorElementizer {
+    fn into_element(self) -> Tensor<Element>;
+}
+
+impl<E: IntoElement> TensorElementizer for Tensor<E> {
+    fn into_element(self) -> Tensor<Element> {
+        Tensor::new(
+            self.get_shape(),
+            self.get_data()
+                .into_iter()
+                .map(|i| i.into_element())
+                .collect_vec(),
+        )
+    }
+}
+
 pub fn range_from_weight(weight: &Element) -> (Element, Element) {
     let min = if weight.is_negative() {
         weight * *MAX as Element

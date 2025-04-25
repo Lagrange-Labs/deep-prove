@@ -15,6 +15,7 @@ use crate::{
         verifier::Verifier,
     },
     layers::LayerProof,
+    quantization::VecElementizer,
     tensor::Tensor,
 };
 use ark_std::Zero;
@@ -498,6 +499,9 @@ impl Padding {
                     .chain(std::iter::repeat(E::ZERO))
                     .take(columns.next_power_of_two())
                     .collect::<Vec<E>>();
+
+                println!("Left evals: {:?}", left_evals);
+                println!("Right evals: {:?}", right_evals);
                 Ok([left_evals, right_evals])
             }
             Padding::Replication {
@@ -1081,7 +1085,10 @@ mod tests {
 
     use multilinear_extensions::mle::MultilinearExtension;
 
-    use crate::{Context, Element, default_transcript, quantization::TensorFielder};
+    use crate::{
+        Context, Element, default_transcript,
+        quantization::{TensorElementizer, TensorFielder},
+    };
 
     use super::*;
 

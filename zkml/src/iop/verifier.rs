@@ -182,6 +182,9 @@ where
                 (LayerProof::<E>::Padding(proof), LayerCtx::Padding(padding)) => {
                     padding.verify_padding(&mut self, output_claim, proof)?
                 }
+                (LayerProof::<E>::Stride(proof), LayerCtx::Stride(stride)) => {
+                    stride.verify_stride(&mut self, output_claim, proof)?
+                }
                 _ => bail!(
                     "Step proof: {} and step info: {} did not match",
                     proof_and_step.0.variant_name(),

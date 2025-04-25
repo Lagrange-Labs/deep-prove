@@ -4,6 +4,7 @@ pub mod dense;
 pub mod padding;
 pub mod pooling;
 pub mod requant;
+pub mod stride;
 
 use crate::{
     Element,
@@ -26,6 +27,7 @@ use padding::{Padding, PaddingProof};
 use pooling::{PoolingCtx, PoolingProof};
 use requant::RequantCtx;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use stride::{Stride, StrideProof};
 #[derive(Clone, Debug)]
 pub enum Layer {
     Dense(Dense),
@@ -40,6 +42,7 @@ pub enum Layer {
     Requant(Requant),
     Pooling(Pooling),
     Padding(Padding),
+    Stride(Stride),
 }
 
 /// Describes a steps wrt the polynomial to be proven/looked at. Verifier needs to know
@@ -61,6 +64,7 @@ where
     Pooling(PoolingCtx),
     Table(TableCtx<E>),
     Padding(Padding),
+    Stride(Stride),
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -74,6 +78,7 @@ where
     Requant(RequantProof<E>),
     Pooling(PoolingProof<E>),
     Padding(PaddingProof<E>),
+    Stride(StrideProof<E>),
 }
 pub enum LayerOutput<F>
 where
@@ -98,6 +103,7 @@ where
             Self::Pooling(_) => "Pooling".to_string(),
             Self::Table(..) => "Table".to_string(),
             Self::Padding(p) => format!("{}", p),
+            Self::Stride(p) => format!("{}", p),
         }
     }
 
@@ -122,6 +128,7 @@ impl Layer {
             Layer::Requant(requant) => requant.step_info(id, aux),
             Layer::Pooling(pooling) => pooling.step_info(id, aux),
             Layer::Padding(padding) => padding.step_info(id, aux),
+            Layer::Stride(stride) => stride.step_info(id, aux),
         }
     }
     /// Run the operation associated with that layer with the given input
@@ -152,6 +159,7 @@ impl Layer {
             Layer::Pooling(info) => LayerOutput::NormalOut(info.op(input)),
             // TODO: Update model to allow results here
             Layer::Padding(padding) => LayerOutput::NormalOut(padding.op(input).unwrap()),
+            Layer::Stride(stride) => LayerOutput::NormalOut(stride.op(input).unwrap()),
         }
     }
 
@@ -171,6 +179,7 @@ impl Layer {
                 padding.left(),
                 padding.right(),
             ],
+            Layer::Stride(stride) => vec![stride.height(), stride.width()],
         }
     }
 
@@ -209,6 +218,7 @@ impl Layer {
                 info.kernel_size, info.stride
             ),
             Layer::Padding(padding) => format!("{}", padding),
+            Layer::Stride(stride) => format!("{}", stride),
         }
     }
 }
@@ -225,6 +235,7 @@ where
             Self::Requant(_) => "Requant".to_string(),
             Self::Pooling(_) => "Pooling".to_string(),
             Self::Padding(..) => "Padding".to_string(),
+            Self::Stride(..) => "Stride".to_string(),
         }
     }
 
@@ -233,6 +244,7 @@ where
             LayerProof::Dense(..) => None,
             LayerProof::Convolution(..) => None,
             LayerProof::Padding(..) => None,
+            LayerProof::Stride(..) => None,
             LayerProof::Activation(ActivationProof { lookup, .. })
             | LayerProof::Requant(RequantProof { lookup, .. })
             | LayerProof::Pooling(PoolingProof { lookup, .. }) => Some(lookup.fractional_outputs()),

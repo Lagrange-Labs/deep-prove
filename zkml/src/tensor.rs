@@ -946,6 +946,24 @@ where
 
         *self = Tensor::new(new_shape, new_data);
     }
+
+    pub fn reshape(&mut self, new_shape: &[usize]) {
+        let current_size: usize = self.shape.iter().product();
+
+        let new_size: usize = new_shape.iter().product();
+
+        // Check if the sizes match
+        assert!(
+            current_size == new_size,
+            "Product of new shape does not match product of current shape"
+        );
+        assert!(
+            current_size == self.data.len(),
+            "Data length does not match the product of the current shape"
+        );
+
+        *self = Tensor::new(new_shape.to_vec(), self.data.clone());
+    }
 }
 
 impl<T> Tensor<T>
@@ -1777,5 +1795,23 @@ mod test {
             pad_result.get_data()[..orows],
             "Unable to get rid of garbage values from conv fft."
         );
+    }
+
+    #[test]
+    fn test_reshape_valid() {
+        let tensor = Tensor::new(vec![2, 3], vec![1, 2, 3, 4, 5, 6]);
+        let mut reshaped = tensor.clone();
+
+        reshaped.reshape(&[3, 2]);
+        assert_eq!(reshaped.shape, vec![3, 2]);
+        assert_eq!(reshaped.data, vec![1, 2, 3, 4, 5, 6]);
+
+        reshaped.reshape(&[6]);
+        assert_eq!(reshaped.shape, vec![6]);
+        assert_eq!(reshaped.data, vec![1, 2, 3, 4, 5, 6]);
+
+        reshaped.reshape(&[1, 6]);
+        assert_eq!(reshaped.shape, vec![1, 6]);
+        assert_eq!(reshaped.data, vec![1, 2, 3, 4, 5, 6]);
     }
 }
