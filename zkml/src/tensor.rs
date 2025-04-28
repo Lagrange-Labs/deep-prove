@@ -1271,6 +1271,56 @@ where
 
         (maxpool_result, padded_maxpool_tensor)
     }
+
+    pub fn subsample(&self, r: usize, c: usize) -> Tensor<T> {
+        assert!(r > 0 && c > 0, "r and c must be positive integers");
+        assert!(
+            self.shape.len() >= 2,
+            "Tensor should have at least 2 dimensions"
+        );
+
+        let mut new_shape = self.shape.clone();
+        let ndims = self.shape.len();
+        new_shape[ndims - 2] = (self.shape[ndims - 2] + r - 1) / r;
+        new_shape[ndims - 1] = (self.shape[ndims - 1] + c - 1) / c;
+
+        let old_rows = self.shape[ndims - 2];
+        let old_cols = self.shape[ndims - 1];
+        let new_rows = new_shape[ndims - 2];
+        let new_cols = new_shape[ndims - 1];
+
+        let matrix_size = old_rows * old_cols;
+
+        let outer_dims = &self.shape[..ndims - 2];
+        let num_matrices = if outer_dims.is_empty() {
+            1
+        } else {
+            outer_dims.iter().product()
+        };
+
+        let mut new_data = Vec::new();
+        for matrix_idx in 0..num_matrices {
+            let matrix_start = matrix_idx * matrix_size;
+
+            for i in 0..new_rows {
+                let row = i * r;
+
+                if row < old_rows {
+                    for j in 0..new_cols {
+                        let col = j * c;
+                        if col < old_cols {
+                            let idx = matrix_start + row * old_cols + col;
+                            if idx < self.data.len() {
+                                new_data.push(self.data[idx].clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Tensor::new(new_shape, new_data)
+    }
 }
 
 impl<T> fmt::Display for Tensor<T>
@@ -1813,5 +1863,18 @@ mod test {
         reshaped.reshape(&[1, 6]);
         assert_eq!(reshaped.shape, vec![1, 6]);
         assert_eq!(reshaped.data, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn test_subsample_tensor() {
+        let tensor = Tensor::new(vec![4, 3], vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        let result = tensor.subsample(2, 2);
+        assert_eq!(result.shape, vec![2, 2]);
+        assert_eq!(result.data, vec![1, 3, 7, 9]);
+
+        let tensor = Tensor::new(vec![2, 3, 2], vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        let result = tensor.subsample(2, 1);
+        assert_eq!(result.shape, vec![2, 2, 2]);
+        assert_eq!(result.data, vec![1, 2, 5, 6, 7, 8, 11, 12]);
     }
 }
