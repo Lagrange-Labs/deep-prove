@@ -587,122 +587,72 @@ impl Requant {
     }
 }
 
-//#[cfg(test)]
-// mod tests {
-//    use ark_std::rand::rngs::StdRng;
-//
-//    use super::*;
-//    use crate::quantization::range_from_weight;
-//    use crate::tensor::Tensor;
-//    use crate::ScalingFactor;
-//
-//    #[test]
-//    fn test_requant_shift_element() {
-//        let n = 10;
-//        let v1 = Tensor::random_seed(vec![n],Some(15420));
-//        let v2= Tensor::random_seed(vec![n],Some(1567892312));
-//        assert!(v1.get_data().iter().all(|e| *e >= *quantization::MIN && *e <= *quantization::MAX));
-//        assert!(v2.get_data().iter().all(|e| *e >= *quantization::MIN && *e <= *quantization::MAX));
-//        let res = v1.mul(&v2);
-//        let s1 = ScalingFactor::from_tensor(&v1);
-//        let s2 = ScalingFactor::from_tensor(&v2);
-//        let s_res = ScalingFactor::from_tensor(&res);
-//        println!("v1: {:?}", v1.get_data());
-//        println!("v2: {:?}", v2.get_data());
-//        println!("res: {:?}", res.get_data());
-//        println!("s1: {:?}", s1);
-//        println!("s2: {:?}", s2);
-//        println!("s_res: {:?}", s_res);
-//        let shift = s1.shift(s2, s_res);
-//        println!("shift: {:?}", shift);
-//        let res_max = res.get_data().iter().max().unwrap();
-//        let res_min = res.get_data().iter().min().unwrap();
-//        let requant_info = Requant {
-//            right_shift:  shift,
-//            range: (res_max - res_min) as usize,
-//            after_range: 1 << *quantization::BIT_LEN,
-//        };
-//        let res_requant = requant_info.op(&res);
-//        println!("res_requant: {:?}", res_requant.get_data());
-//    }
-//
-//    use ark_std::rand::SeedableRng;
-//    use ark_std::rand::Rng;
-//    #[test]
-//    fn test_requant_shift_model_like() {
-//        let n = 10;
-//        let mut rng = StdRng::seed_from_u64(15420);
-//        let input_min = -1.0;
-//        let input_max = 1.0;
-//        println!("1");
-//        let s_input = ScalingFactor::from_span(input_min, input_max);
-//        let inputf :Vec<f32> = (0..n).map(|_| { rng.gen_range(input_min..=input_max) }).collect_vec();
-//        let input: Vec<Element> = inputf.iter().map(|e| s_input.quantize(&e)).collect_vec();
-//        let min_f32 = -0.2;
-//        let max_f32 = 0.2;
-//        println!("2");
-//        let s_model = ScalingFactor::from_span(min_f32, max_f32);
-//        println!("3");
-//        let s_input = ScalingFactor::from_span(input_min, input_max);
-//        println!("4");
-//        let modelf :Vec<f32> = (0..n).map(|_| { rng.gen_range(min_f32..=max_f32) }).collect_vec();
-//        let model :Vec<Element> = modelf.iter().map(|e| s_model.quantize(&e)).collect_vec();
-//
-//        let inputf = Tensor::new(vec![n], inputf);
-//        let modelf  = Tensor::new(vec![n], modelf);
-//        println!("5");
-//        let resf = inputf.mul(&modelf);
-//        println!("6");
-//        let s_resf = ScalingFactor::from_tensor(&resf);
-//        let s_resft = ScalingFactor::new(resf.get_data().iter().map(|e| e.abs()).fold(0.0f32,|a,b| a.max(b)));
-//        println!("7");
-//        let input = Tensor::new(vec![n], input);
-//        let model= Tensor::new(vec![n], model);
-//        assert!(input.get_data().iter().all(|e| *e >= *quantization::MIN && *e <= *quantization::MAX));
-//        assert!(model.get_data().iter().all(|e| *e >= *quantization::MIN && *e <= *quantization::MAX));
-//        let (mins,maxs) : (Vec<_>,Vec<_>)= model.get_data().iter().map(|e| range_from_weight(e)).unzip();
-//        let res_min = mins.iter().min().unwrap();
-//        let res_max = maxs.iter().max().unwrap();
-//        let s_res = ScalingFactor::from_span(*res_min as f32, *res_max as f32);
-//        let res = input.mul(&model);
-//        println!("input: {:?}", input.get_data());
-//        println!("model: {:?}", model.get_data());
-//        println!("res: {:?}", res.get_data());
-//        println!("s1: {:?}", s_input);
-//        println!("s2: {:?}", s_model);
-//        println!("s_resf: {:?}", s_resf);
-//        println!("s_res: {:?}", s_res);
-//        let shift = s_input.shift(s_model, s_res);
-//        let shiftf= s_input.shift(s_model, s_resf);
-//        let shiftft = s_input.shift(s_model, s_resft);
-//        println!("shift: {:?}", shift);
-//        println!("shiftf: {:?}", shiftf);
-//        println!("shiftft: {:?}", shiftft);
-//        let requant = Requant {
-//            right_shift:  shift,
-//            // theoretical res_max and res_min at this point ! since we dont know the input when we create requant
-//            range: (res_max - res_min) as usize,
-//            after_range: 1 << *quantization::BIT_LEN,
-//        };
-//        let res_requant = requant.op(&res);
-//        let requant = Requant {
-//            right_shift:  shiftf,
-//            // theoretical res_max and res_min at this point ! since we dont know the input when we create requant
-//            range: (res_max - res_min) as usize,
-//            after_range: 1 << *quantization::BIT_LEN,
-//        };
-//        let res_requantf = requant.op(&res);
-//        let requant = Requant {
-//            right_shift:  shiftft,
-//            // theoretical res_max and res_min at this point ! since we dont know the input when we create requant
-//            range: (res_max - res_min) as usize,
-//            after_range: 1 << *quantization::BIT_LEN,
-//        };
-//        let res_requantft= requant.op(&res);
-//        println!("res_requant: {:?}", res_requant.get_data());
-//        println!("res_requantf: {:?}", res_requantf.get_data());
-//        println!("res_requantft: {:?}", res_requantft.get_data());
-//        //assert!(res_requant.get_data().iter().filter(|r| **r == 0 || **r == -1).collect::<Vec<_>>().len() < res_requant.get_data().len());
-//    }
-//
-//}
+#[cfg(test)]
+mod tests {
+    use ark_std::rand::{Rng, thread_rng};
+
+    use super::*;
+
+    #[test]
+    fn test_requant_op() -> anyhow::Result<()> {
+        for vec_size in 5usize..11 {
+            test_op_helper(vec_size)?;
+        }
+        Ok(())
+    }
+
+    fn test_op_helper(vec_size: usize) -> anyhow::Result<()> {
+        let mut rng = thread_rng();
+        // Create a random float input, a random float matrix and compute the output
+        let float_vector = Tensor::<f32>::random(vec![vec_size]);
+
+        let matrix_rows = rng.gen_range(vec_size..2 * vec_size);
+        let float_matrix = Tensor::<f32>::random(vec![matrix_rows, vec_size]);
+
+        let float_output = float_matrix.matvec(&float_vector);
+
+        // Now comput the scaling factors for the tensors
+        let input_max = float_vector.max_abs_output();
+        let matrix_max = float_matrix.max_abs_output();
+        let output_max = float_output.max_abs_output();
+
+        let input_scaling = ScalingFactor::from_absolute_max(input_max, None);
+        let matrix_scaling = ScalingFactor::from_absolute_max(matrix_max, None);
+        let output_scaling = ScalingFactor::from_absolute_max(output_max, None);
+
+        // Create the requantisation info
+        let intermediate_bit_size =
+            2 * (*quantization::BIT_LEN - 1) + vec_size.ilog2() as usize + 1;
+        let requant = Requant::from_scaling_factors(
+            input_scaling,
+            matrix_scaling,
+            output_scaling,
+            intermediate_bit_size,
+        );
+
+        // Quantise the vectors
+        let quantised_input = float_vector.quantize(&input_scaling);
+        let quantised_matrix = float_matrix.quantize(&matrix_scaling);
+        let quantised_output = float_output.quantize(&output_scaling);
+
+        // Now run the matrix multiplication quantised, then requant and compare results
+        let quant_mat_mul = quantised_matrix.matvec(&quantised_input);
+        let calculated_output = requant.op(&quant_mat_mul)?;
+
+        for (calculated, expected) in calculated_output
+            .get_data()
+            .iter()
+            .zip(quantised_output.get_data().iter())
+        {
+            // There may be a slight rounding error due to using fixed point multiplication
+            // So we check that the absoloute value of the difference is less than or equal to 1.
+            assert!(
+                calculated.abs_diff(*expected) <= 1,
+                "Absoloute difference was larger than 1, calculated: {}, expected: {}",
+                calculated,
+                expected
+            );
+        }
+        Ok(())
+    }
+}

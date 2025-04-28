@@ -16,11 +16,8 @@ Then for a real value $`x\in T`$, we link it to the quantised value $` x_{q}\in 
 
 $$ x = S(x_{q} - z). $$
 
-This can be seen in practice with the following example code:
-```rust
-{{#include ./../src/tensor.rs}}
-# use crate::tensor::Tensor;
-let float_tensor = Tensor::<f32>::random(vec![8, 8]); 
-let x = 5;
-println!("This is x: {}", x);
-```
+## Static Quantisation and Clamping
+
+To quantise a model for proving we must use *static quantisation*, this is a technique where some sample data is run through the model, the inputs and outputs of each layer are stored, and then some statistical analysis occurs to choose the values $`\alpha`$ and $`\beta`$ for each layer. This means that some values can be quantised outside the range $`[\alpha_{q}, \beta_{q}]`$. This can lead to issues when we attempt to use [Lookup Arguments](./lookups.md) to prove non-linear function execution. 
+
+To resolve this we make use of clamping, where if a value $`y`$ would be quantised to a value $`y_{q}\not\in [\alpha_{q}, \beta_{q}]`$ it is simply mapped to $`\alpha_{q} `$ if $`y_{q} < \alpha_{q}`$ or $`\beta_{q}`$ if $`\beta_{q} < y_{q}`$.
