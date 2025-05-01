@@ -1,7 +1,10 @@
+use std::path::PathBuf;
+
 use crate::quantization;
 use ark_std::rand::{self, Rng, SeedableRng, rngs::StdRng, thread_rng};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
+use tract_onnx::prelude::*;
 
 use crate::Element;
 
@@ -36,4 +39,23 @@ pub fn random_vector_seed(n: usize, seed: Option<u64>) -> Vec<Element> {
     (0..n)
         .map(|_| rng.gen_range(*quantization::MIN..=*quantization::MAX))
         .collect_vec()
+}
+
+pub fn load_test_onnx_model(operator_name: &str) -> anyhow::Result<TypedModel> {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let file = format!(
+        "zkml/assets/test_scripts/{}/{}.onnx",
+        operator_name, operator_name
+    );
+    let filepath = PathBuf::from(manifest_dir)
+        .parent()
+        .unwrap()
+        .to_path_buf()
+        .join(file);
+
+    let model = tract_onnx::onnx()
+        .model_for_path(filepath)
+        .map_err(|e| anyhow::Error::msg(format!("Failed to load model: {:?}", e)))?;
+
+    model.into_typed()?.into_optimized()
 }
