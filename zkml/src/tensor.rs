@@ -20,7 +20,8 @@ use rayon::{
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::{Ordering, PartialEq},
-    fmt::{self, Debug},
+    error::Error,
+    fmt::{self, Debug, Display, Formatter, Result as FmtResult},
 };
 
 use crate::{
@@ -300,7 +301,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Tensor<T> {
     pub data: Vec<T>,
     pub shape: Vec<usize>,
@@ -623,6 +624,52 @@ impl<T> Tensor<T> {
     ///
     pub fn get_data(&self) -> &[T] {
         &self.data
+    }
+    /// Gets a mutable reference to the inner data
+    pub fn get_data_mut(&mut self) -> &mut [T] {
+        &mut self.data
+    }
+
+    /// Gets a reference to a specific element of the tensor data specified by a coordinate
+    pub fn get_from_coord(&self, coord: &[usize]) -> Result<&T, TensorError> {
+        if self.shape.len() != coord.len() {
+            return Err(TensorError::ParameterError(format!(
+                "Provided coordinate was not of the correct length, expected: {}, got: {}",
+                self.shape.len(),
+                coord.len()
+            )));
+        }
+
+        let (index, _) = coord.iter().zip(self.shape.iter()).try_fold((0usize, 1usize), |(index_acc, dim_acc), (&c, &d)| {
+            if c >= d {
+                Err(TensorError::ParameterError(format!("Coordinate had value: {} which is greater than or equal to the size of the dimension: {} ", c, d)))
+            } else {
+            Ok((index_acc + c * dim_acc, dim_acc * d))
+            }
+        })?;
+
+        Ok(&self.data[index])
+    }
+
+    /// Gets a mutable reference to a specific element of the tensor data specified by a coordinate
+    pub fn get_from_coord_mut(&mut self, coord: &[usize]) -> Result<&mut T, TensorError> {
+        if self.shape.len() != coord.len() {
+            return Err(TensorError::ParameterError(format!(
+                "Provided coordinate was not of the correct length, expected: {}, got: {}",
+                self.shape.len(),
+                coord.len()
+            )));
+        }
+
+        let (index, _) = coord.iter().zip(self.shape.iter()).try_fold((0usize, 1usize), |(index_acc, dim_acc), (&c, &d)| {
+            if c >= d {
+                Err(TensorError::ParameterError(format!("Coordinate had value: {} which is greater than or equal to the size of the dimension: {} ", c, d)))
+            } else {
+            Ok((index_acc + c * dim_acc, dim_acc * d))
+            }
+        })?;
+
+        Ok(&mut self.data[index])
     }
 
     pub fn get_data_into(self) -> Vec<T> {
@@ -1468,18 +1515,6 @@ where
     }
 }
 
-impl PartialEq for Tensor<Element> {
-    fn eq(&self, other: &Self) -> bool {
-        self.shape == other.shape && self.data == other.data
-    }
-}
-
-impl PartialEq for Tensor<GoldilocksExt2> {
-    fn eq(&self, other: &Self) -> bool {
-        self.shape == other.shape && self.data == other.data
-    }
-}
-
 impl<T: Number> Tensor<T> {
     pub fn max_value(&self) -> T {
         self.data.iter().fold(T::MIN, |max, x| max.cmp_max(x))
@@ -1506,6 +1541,24 @@ impl<T: Number> Tensor<T> {
         }
     }
 }
+
+#[derive(Debug, Clone)]
+/// Enum relating to tensor errors
+pub enum TensorError {
+    ParameterError(String),
+}
+
+impl Display for TensorError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        match self {
+            TensorError::ParameterError(s) => {
+                write!(f, "Parameters for Tensor operation were incorrect: {}", s)
+            }
+        }
+    }
+}
+
+impl Error for TensorError {}
 
 #[cfg(test)]
 mod test {
