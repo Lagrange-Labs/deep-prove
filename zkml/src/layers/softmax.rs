@@ -89,7 +89,7 @@ impl Softmax<f32> {
             )));
         }
         // Retrieve the maximum value in the tensor
-
+        let max = input.max_value();
         // Now we have to group the tensor elements by the specified dimension, this is handled by the `SoftmaxFoldMap` struct
         let fold_map = input
             .get_data()
@@ -98,7 +98,7 @@ impl Softmax<f32> {
             .try_fold(
                 || SoftmaxFoldMap::new(&input_shape, self.dim),
                 |mut acc, (i, value)| {
-                    acc.update(*value, i)?;
+                    acc.update(*value - max, i)?;
                     Result::<SoftmaxFoldMap, SoftmaxError>::Ok(acc)
                 },
             )
