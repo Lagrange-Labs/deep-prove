@@ -1560,6 +1560,32 @@ impl Display for TensorError {
 
 impl Error for TensorError {}
 
+/// Internal function to cast a tensor from type `A` to type `B` where
+/// `A` and `B` are actually the same type.
+pub(crate) fn cast_tensor<A, B>(tensor: Tensor<A>) -> Tensor<B> {
+    let Tensor {
+        data: mut vec,
+        shape,
+        og_shape,
+    } = tensor;
+    let length = vec.len();
+    let capacity = vec.capacity();
+    let ptr = vec.as_mut_ptr();
+    // Prevent `vec` from dropping its contents
+    std::mem::forget(vec);
+
+    // Convert the pointer to the new type
+    let new_ptr = ptr as *mut B;
+
+    // Create a new vector with the same length and capacity, but different type
+    let new_data = unsafe { Vec::from_raw_parts(new_ptr, length, capacity) };
+
+    Tensor {
+        data: new_data,
+        shape,
+        og_shape,
+    }
+}
 #[cfg(test)]
 mod test {
 

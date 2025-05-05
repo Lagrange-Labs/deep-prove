@@ -1,6 +1,7 @@
 //! Module containing the code for the Softmax function that maps a real vector space to the space of probability distributions.
 
 use std::{
+    any::TypeId,
     error::Error,
     fmt::{Display, Formatter, Result as FmtResult},
     marker::PhantomData,
@@ -10,8 +11,8 @@ use std::{
 use rayon::prelude::*;
 
 use crate::{
-    ScalingFactor,
-    tensor::{Number, Tensor, TensorError},
+    Element, ScalingFactor,
+    tensor::{Number, Tensor, TensorError, cast_tensor},
 };
 
 #[derive(Copy, Clone, Debug)]
@@ -47,13 +48,25 @@ impl<T: Number> Softmax<T> {
         }
     }
     /// Quantises the operation, if `quant_params` are already set this method does nothing.
-    pub fn quantise(
+    pub fn quantise<Q: Number>(
         self,
         input_quant_params: ScalingFactor,
         output_quant_params: ScalingFactor,
-    ) -> Softmax<T> {
+    ) -> Softmax<Q> {
         if self.is_quantised() {
-            self
+            let Softmax {
+                scaling_factor,
+                dim,
+                quant_params,
+                _phantom,
+            } = self;
+
+            Softmax {
+                scaling_factor,
+                dim,
+                quant_params,
+                _phantom: PhantomData::<Q>,
+            }
         } else {
             let Softmax {
                 scaling_factor,
@@ -66,19 +79,51 @@ impl<T: Number> Softmax<T> {
                 scaling_factor,
                 dim,
                 quant_params: Some((input_quant_params, output_quant_params)),
-                _phantom,
+                _phantom: PhantomData::<Q>,
             }
         }
     }
+    /// Applies [`Softmax`] to the input [`Tensor`]
+    pub fn op(&self, input: &Tensor<T>) -> Result<Tensor<T>, SoftmaxError>
+    where
+        T: 'static,
+    {
+        // First we have work out what type the input tensor was, if its anything other than f32 or Element we throw an error
+        if TypeId::of::<T>() == TypeId::of::<f32>() {
+            let float_tensor = cast_tensor::<_, f32>(input.clone());
+            let (output_f32, _) = self.eval_softmax(&float_tensor)?;
+            let output = cast_tensor::<f32, T>(output_f32);
+            Ok(output)
+        } else if TypeId::of::<Element>() == TypeId::of::<T>() {
+            let quant_tensor = cast_tensor::<_, Element>(input.clone());
+            let (quant_in, quant_out) = self.quant_params.ok_or(SoftmaxError::ParameterError(
+                "Cannot apply Softmax to quantised input if quant params have not been set"
+                    .to_string(),
+            ))?;
+            let float_tensor = quant_tensor.dequantize(&quant_in);
+            let (float_output, _) = self.eval_softmax(&float_tensor)?;
+            let quant_output = float_output.quantize(&quant_out);
+            Ok(cast_tensor::<Element, T>(quant_output))
+        } else {
+            Err(SoftmaxError::TypeError(
+                "Cannot apply Softmax to tensor with inner data type that is not f32 or Element"
+                    .to_string(),
+            ))
+        }
+    }
+
     /// Internal method used to determine if the operation has already been quantised.
     fn is_quantised(&self) -> bool {
         self.quant_params.is_some()
     }
 }
 
-impl Softmax<f32> {
-    /// Method that permforms the Softmax operation on a [`Tensor`]
-    pub fn op(&self, input: &Tensor<f32>) -> Result<Tensor<f32>, SoftmaxError> {
+impl<T: Number> Softmax<T> {
+    /// Internal method to perform [`Softmax`] on a [`Tensor`] of [`f32`] values.
+    fn eval_softmax(
+        &self,
+        input: &Tensor<f32>,
+    ) -> Result<(Tensor<f32>, Tensor<f32>), SoftmaxError> {
         // Check that the tensor has enough dimensions
         let input_shape = input.get_shape();
         if self.dim >= input_shape.len() {
@@ -107,9 +152,7 @@ impl Softmax<f32> {
                 |a, b| a.merge(b),
             )?;
 
-        let (tensor, _) = fold_map.finalise()?;
-
-        Ok(tensor)
+        fold_map.finalise()
     }
 }
 
@@ -293,13 +336,13 @@ impl SoftmaxFoldMap {
 
 #[cfg(test)]
 mod tests {
+    use crate::testing::load_test_onnx_model;
     use anyhow::anyhow;
+    use goldilocks::GoldilocksExt2 as F;
     use tract_onnx::{
         prelude::{DatumType, IntoArcTensor, tvec},
         tract_core::{tract_data::prelude::Tensor as TractTensor, value::TValue},
     };
-
-    use crate::testing::load_test_onnx_model;
 
     use super::*;
 
@@ -344,7 +387,7 @@ mod tests {
             // Now create our `Softmax` struct and run the operation with that
             let softmax = Softmax::<f32>::new(1.0f32, 1);
 
-            let our_output = softmax.op(&tensor)?;
+            let (our_output, _) = softmax.eval_softmax(&tensor)?;
 
             let shape_check = our_output.get_shape() == expected_output_tensors[0].get_shape();
 
@@ -359,6 +402,131 @@ mod tests {
                 .iter()
                 .zip(expected_output_tensors[0].get_data().iter())
                 .fold(true, |acc, (&calc, &expect)| {
+                    let abs_diff = (calc - expect).abs();
+                    let small = abs_diff < f32::EPSILON;
+                    acc && small
+                });
+
+            if !data_checker {
+                return Err(anyhow!(
+                    "The calculated tensor data and expected tensor data differed by a large amount"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_type_error() -> anyhow::Result<()> {
+        let softmax = Softmax::<F>::new(1.0f32, 1);
+        let shape: Vec<usize> = vec![2, 3, 4];
+
+        let tensor = Tensor::<F>::random(&shape);
+
+        let res = softmax.op(&tensor);
+
+        if let Err(e) = res {
+            println!("Got error: {}", e);
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "Did not get an error when trying to run Softmax on a field tensor"
+            ))
+        }
+    }
+
+    #[test]
+    fn test_quantised_softmax() -> anyhow::Result<()> {
+        let shape = vec![2, 3, 4];
+        let softmax = Softmax::<f32>::new(1.0f32, 1);
+        for _ in 0..20 {
+            // Make a random float input and calculate its output.
+            let input_tensor = Tensor::<f32>::random(&shape);
+            let output_tensor = softmax.op(&input_tensor)?;
+
+            let sums = output_tensor.get_data().iter().enumerate().fold(
+                vec![0.0f32; 8],
+                |mut acc, (i, val)| {
+                    let mut coord = index_to_coord(i, &shape);
+                    coord.remove(1);
+                    let slot = coord[0] * 4 + coord[1];
+                    acc[slot] += *val;
+                    acc
+                },
+            );
+
+            for dim_sum in sums.into_iter() {
+                println!("Sum was: {}", dim_sum);
+            }
+
+            // Work out the quantisation params and create the quantised softmax operator
+            let input_max = input_tensor.max_abs_output();
+            let output_max = output_tensor.max_abs_output();
+
+            let quant_in = ScalingFactor::from_absolute_max(input_max, None);
+            let quant_out = ScalingFactor::from_absolute_max(output_max, None);
+
+            let quant_softmax = softmax.clone().quantise::<Element>(quant_in, quant_out);
+
+            // Now to test that we get an accurate result we run the quantised operation on a quantised tensor and also
+            // run the floating point operation on a tensor that has been quantised and then dequantised. After dequantising
+            // the quantised output it should agree with the floating point output.
+            let quant_input_tensor = input_tensor.quantize(&quant_in);
+            let dequant_input_tensor = quant_input_tensor.dequantize(&quant_in);
+
+            let quant_output = quant_softmax.op(&quant_input_tensor)?;
+            // Check that the quant output sums to quantised 1 along the correct dimension
+            let sums = quant_output.get_data().iter().enumerate().fold(
+                vec![0i128; 8],
+                |mut acc, (i, val)| {
+                    let mut coord = index_to_coord(i, &shape);
+                    coord.remove(1);
+                    let slot = coord[0] * 4 + coord[1];
+                    acc[slot] += *val;
+                    acc
+                },
+            );
+
+            let quant_one = quant_out.quant_max();
+            let one = quant_out.quantize(&1.0f32);
+            println!("one: {}", one);
+            println!("Quantised 1 = {}", quant_one);
+            for dim_sum in sums.into_iter() {
+                println!("Sum was: {}", dim_sum);
+            }
+            let dequant_output = quant_output.dequantize(&quant_out);
+            // Check that the quant output sums to quantised 1 along the correct dimension
+            let sums = dequant_output.get_data().iter().enumerate().fold(
+                vec![0.0f32; 8],
+                |mut acc, (i, val)| {
+                    let mut coord = index_to_coord(i, &shape);
+                    coord.remove(1);
+                    let slot = coord[0] * 4 + coord[1];
+                    acc[slot] += *val;
+                    acc
+                },
+            );
+
+            for dim_sum in sums.into_iter() {
+                println!("Sum was: {}", dim_sum);
+            }
+
+            let expected_dequant_output = softmax.op(&dequant_input_tensor)?;
+
+            let shape_check = dequant_output.get_shape() == expected_dequant_output.get_shape();
+
+            if !shape_check {
+                return Err(anyhow!(
+                    "The calculated tensor and expected tensor have different shapes"
+                ));
+            }
+
+            let data_checker = dequant_output
+                .get_data()
+                .iter()
+                .zip(expected_dequant_output.get_data().iter())
+                .fold(true, |acc, (&calc, &expect)| {
+                    // println!("calc: {}, expect: {}", calc, expect);
                     let abs_diff = (calc - expect).abs();
                     let small = abs_diff < f32::EPSILON;
                     acc && small
