@@ -386,4 +386,8 @@ impl<E: ExtensionField> LogUpVerifierClaim<E> {
     pub fn denominators(&self) -> &[E] {
         &self.denominators
     }
+
+    pub fn point(&self) -> &[E] {
+        &self.claims[0].point
+    }
 }

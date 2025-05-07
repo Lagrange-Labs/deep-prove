@@ -206,14 +206,13 @@ where
             .into_iter()
             .for_each(|val| *table_lookup_map.entry(val).or_insert(0u64) += 1);
 
-        gen.polys_with_id.push((
-            id as PolyID,
-            step_data.outputs.outputs()[0]
-                .get_data()
-                .iter()
-                .map(Fieldizer::<E>::to_field)
-                .collect(),
-        ));
+        // Add the witnesses to be committed
+        column_evals.iter().enumerate().for_each(|(i, poly)| {
+            gen.polys_with_id.push((
+                id * 100 + i,
+                poly.iter().map(|v| E::from(*v)).collect::<Vec<E>>(),
+            ));
+        });
 
         gen.lookups_no_challenges
             .insert(id, (column_evals, 1, TableType::Range));
@@ -594,18 +593,35 @@ impl Requant {
             point: point.clone(),
             eval: first_claim.eval - E::from((*quantization::RANGE / 2) as u64),
         };
-        // println!("correct claim eval: {:?}", corrected_claim.eval);
-        // println!(
-        //    "output eval: {:?}",
-        //    output.to_vec().into_mle().evaluate(&corrected_claim.point)
-        //);
+
         // Add the claim used in the activation function
         same_poly_prover.add_claim(corrected_claim)?;
         let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, prover.transcript)?;
 
+        // Now we add the constant factor back here so that it is a claim for the committed lookup poly
+        let Claim {
+            point: acc_point,
+            eval: acc_eval,
+        } = claim_acc_proof.extract_claim();
+        let first_poly_claim = Claim::<E>::new(
+            acc_point,
+            acc_eval + E::from((*quantization::RANGE / 2) as u64),
+        );
+
         prover
             .witness_prover
-            .add_claim(requant_info.poly_id, claim_acc_proof.extract_claim())?;
+            .add_claim(requant_info.poly_id * 100, first_poly_claim)?;
+
+        logup_proof
+            .output_claims()
+            .iter()
+            .enumerate()
+            .skip(1)
+            .try_for_each(|(i, claim)| {
+                prover
+                    .witness_prover
+                    .add_claim(requant_info.poly_id * 100 + i, claim.clone())
+            })?;
 
         prover.push_proof(
             id,
@@ -663,11 +679,29 @@ impl RequantCtx {
         );
         sp_verifier.add_claim(corrected_claim)?;
 
-        let new_output_claim = sp_verifier.verify(&proof.io_accumulation, verifier.transcript)?;
+        let Claim {
+            point: acc_point,
+            eval: acc_eval,
+        } = sp_verifier.verify(&proof.io_accumulation, verifier.transcript)?;
+        let first_poly_claim = Claim::<E>::new(
+            acc_point,
+            acc_eval + E::from((*quantization::RANGE / 2) as u64),
+        );
         // 3. Accumulate the new claim into the witness commitment protocol
         verifier
             .witness_verifier
-            .add_claim(self.poly_id, new_output_claim)?;
+            .add_claim(self.poly_id * 100, first_poly_claim)?;
+
+        verifier_claims
+            .claims()
+            .iter()
+            .enumerate()
+            .skip(1)
+            .try_for_each(|(i, claim)| {
+                verifier
+                    .witness_verifier
+                    .add_claim(self.poly_id * 100 + i, claim.clone())
+            })?;
 
         // Here we recombine all of the none dummy polynomials to get the actual claim that should be passed to the next layer
         let eval_claims = verifier_claims
