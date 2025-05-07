@@ -13,6 +13,7 @@ proptest-regressions/
 zkml/bench
 zkml/data
 zkml/cifar_net.pth
+zkml/bench.csv
 .venv
 
 # Devenv

@@ -201,14 +201,16 @@ where
             .into_iter()
             .for_each(|lookup| *table_lookup_map.entry(lookup).or_insert(0u64) += 1);
 
-        gen.polys_with_id.push((
-            id as PolyID,
-            step_data.outputs.outputs()[0]
-                .get_data()
-                .iter()
-                .map(Fieldizer::<E>::to_field)
-                .collect(),
-        ));
+        // Add the witness polynomials that we need to commit to
+        [&col_one, &col_two]
+            .iter()
+            .enumerate()
+            .for_each(|(i, poly)| {
+                gen.polys_with_id.push((
+                    id * 100 + i,
+                    poly.iter().map(|v| E::from(*v)).collect::<Vec<E>>(),
+                ));
+            });
         gen.lookups_no_challenges
             .insert(id, (vec![col_one, col_two], 2, TableType::Relu));
 
@@ -301,10 +303,13 @@ impl Activation {
 
         same_poly_prover.add_claim(output_claim)?;
         let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, prover.transcript)?;
-        // order is (output,mult)
+        // order is (input, output)
         prover
             .witness_prover
-            .add_claim(step.poly_id, claim_acc_proof.extract_claim())?;
+            .add_claim(step.poly_id * 100, input_claim.clone())?;
+        prover
+            .witness_prover
+            .add_claim(step.poly_id * 100 + 1, claim_acc_proof.extract_claim())?;
 
         // Add the proof in
         prover.push_proof(

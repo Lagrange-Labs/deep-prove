@@ -1,7 +1,6 @@
-
 use crate::{
     Claim, Element, Prover,
-    commit::{compute_betas_eval, identity_eval, precommit::PolyID, same_poly},
+    commit::{compute_betas_eval, precommit::PolyID},
     iop::{context::ShapeStep, verifier::Verifier},
     layers::{ContextAux, LayerProof},
     lookup::{
@@ -20,8 +19,9 @@ use anyhow::{Context, Result, anyhow, ensure};
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
 use itertools::{Itertools, izip};
+use mpcs::sum_check::eq_xy_eval;
 use multilinear_extensions::{
-    mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension, IntoMLE, MultilinearExtension},
+    mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension, IntoMLE},
     virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial},
 };
 use serde::de::DeserializeOwned;
@@ -61,10 +61,6 @@ where
     pub(crate) sumcheck: IOPProof<E>,
     /// The lookup proof showing that the diff is always in the correct range
     pub(crate) lookup: LogUpProof<E>,
-    /// proof for the accumulation of the claim from the zerocheck + claim from lookup for the same poly for both input and output
-    pub(crate) io_accumulation: same_poly::Proof<E>,
-    /// The claims that are accumulated for the output of this step
-    pub(crate) output_claims: Vec<Claim<E>>,
     /// The output evaluations of the diff polys produced by the zerocheck
     pub(crate) zerocheck_evals: Vec<E>,
     /// This tells the verifier how far apart the variables get fixed on the input MLE
@@ -212,10 +208,7 @@ where
         );
 
         gen.tables.insert(TableType::Range);
-        let table_lookup_map = gen
-            .lookups
-            .entry(TableType::Range)
-            .or_default();
+        let table_lookup_map = gen.lookups.entry(TableType::Range).or_default();
 
         let (merged_lookups, column_evals) = self.lookup_witness::<E>(&step_data.inputs[0]);
 
@@ -223,8 +216,16 @@ where
             .into_iter()
             .for_each(|val| *table_lookup_map.entry(val).or_insert(0u64) += 1);
 
+        // Add the witnesses to be committed
+        column_evals.iter().enumerate().for_each(|(i, poly)| {
+            gen.polys_with_id.push((
+                id * 100 + i,
+                poly.iter().map(|v| E::from(*v)).collect::<Vec<E>>(),
+            ));
+        });
+
         gen.polys_with_id.push((
-            id as PolyID,
+            id * 100 + column_evals.len(),
             step_data.outputs.outputs()[0]
                 .get_data()
                 .iter()
@@ -381,6 +382,13 @@ impl Pooling {
         let beta_poly: ArcDenseMultilinearExtension<E> =
             DenseMultilinearExtension::<E>::from_evaluations_ext_vec(info.num_vars, beta_eval)
                 .into();
+        let last_claim_beta_eval = compute_betas_eval(&last_claim.point);
+        let last_claim_beta: ArcDenseMultilinearExtension<E> =
+            DenseMultilinearExtension::<E>::from_evaluations_ext_vec(
+                info.num_vars,
+                last_claim_beta_eval,
+            )
+            .into();
         let mut challenge_combiner = batch_challenge;
         let lookup_parts = diff_polys
             .iter()
@@ -393,40 +401,43 @@ impl Pooling {
 
         diff_polys.push(beta_poly);
         vp.add_mle_list(diff_polys, E::ONE);
+
         lookup_parts
             .into_iter()
             .for_each(|(prod, coeff)| vp.add_mle_list(prod, coeff));
 
+        // We also batch in the smae poly proof for the output with the Zerocheck
+        let output_mle: ArcMultilinearExtension<E> = output.get_data().to_vec().into_mle().into();
+
+        vp.add_mle_list(
+            vec![output_mle.clone(), last_claim_beta],
+            challenge_combiner,
+        );
         #[allow(deprecated)]
         let (proof, sumcheck_state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
 
-        // We need to prove that the output of this step is the input to following activation function
-        let output_mle = output.get_data().to_vec().into_mle();
-        let mut same_poly_prover = same_poly::Prover::<E>::new(output_mle.clone());
-
+        // Extract all claims about committed witness polys
         let zerocheck_point = &proof.point;
-        let output_zerocheck_eval = output_mle.evaluate(zerocheck_point);
+        let sumcheck_evals = sumcheck_state.get_mle_final_evaluations();
+        let kernel_size = info.poolinfo.kernel_size * info.poolinfo.kernel_size;
 
-        // Accumulate claims about the output polynomial in each of the protocols we ran together with the final claim from the previous proof.
-        let mut output_claims = Vec::<Claim<E>>::new();
-        let same_poly_ctx = same_poly::Context::<E>::new(last_claim.point.len());
-        same_poly_prover.add_claim(last_claim.clone())?;
-
-        let zerocheck_claim = Claim {
-            point: zerocheck_point.clone(),
-            eval: output_zerocheck_eval,
-        };
-        same_poly_prover.add_claim(zerocheck_claim.clone())?;
-        output_claims.push(zerocheck_claim);
-
-        // This is the proof for the output poly
-        let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, prover.transcript)?;
-
-        let output_claim = claim_acc_proof.extract_claim();
+        sumcheck_evals[..kernel_size]
+            .iter()
+            .enumerate()
+            .try_for_each(|(i, &eval)| {
+                let claim = Claim::<E>::new(zerocheck_point.clone(), eval);
+                prover
+                    .witness_prover
+                    .add_claim(info.poly_id * 100 + i, claim)
+            })?;
+        let output_eval = sumcheck_evals[kernel_size + 1];
 
         prover
             .witness_prover
-            .add_claim(info.poly_id, output_claim)
+            .add_claim(
+                info.poly_id * 100 + kernel_size,
+                Claim::<E>::new(zerocheck_point.clone(), output_eval),
+            )
             .context("unable to add claim")?;
         // Now we must do the samething accumulating evals for the input poly as we fix variables on the input poly.
         // The point length is 2 longer because for now we only support MaxPool2D.
@@ -454,11 +465,12 @@ impl Pooling {
 
         let zc_in_claim = izip!(
             multiplicands.iter(),
-            sumcheck_state.get_mle_final_evaluations().iter(),
+            sumcheck_state
+                .get_mle_final_evaluations()
+                .iter()
+                .take(kernel_size),
         )
-        .fold(E::ZERO, |zc_acc, (m, zc)| {
-            zc_acc + *m * (output_zerocheck_eval - *zc)
-        });
+        .fold(E::ZERO, |zc_acc, (m, zc)| zc_acc + *m * (output_eval - *zc));
 
         let point_1 = [
             &[r1],
@@ -475,15 +487,17 @@ impl Pooling {
 
         // We don't need the last eval of the the sumcheck state as it is the beta poly
 
-        let zerocheck_evals = sumcheck_state.get_mle_final_evaluations()[..4].to_vec();
+        let zerocheck_evals = [
+            &sumcheck_state.get_mle_final_evaluations()[..kernel_size],
+            &[output_eval],
+        ]
+        .concat();
         // Push the step proof to the list
         prover.push_proof(
             id,
             LayerProof::Pooling(PoolingProof {
                 sumcheck: proof,
                 lookup: logup_proof,
-                io_accumulation: claim_acc_proof,
-                output_claims,
                 zerocheck_evals,
                 variable_gap: padded_input_row_length_log - 1,
             }),
@@ -523,13 +537,14 @@ impl PoolingCtx {
             .transcript
             .get_and_append_challenge(b"batch_pooling")
             .elements;
-        let initial_value = verifier_claims
+        let (initial_value_no_last_claim, final_batching_challenge) = verifier_claims
             .claims()
             .iter()
             .fold((E::ZERO, batching_challenge), |(acc, comb), claim| {
                 (acc + claim.eval * comb, comb * batching_challenge)
-            })
-            .0;
+            });
+        let initial_value =
+            initial_value_no_last_claim + final_batching_challenge * last_claim.eval;
         let subclaim = IOPVerifierState::<E>::verify(
             initial_value,
             &proof.sumcheck,
@@ -537,25 +552,48 @@ impl PoolingCtx {
             verifier.transcript,
         );
 
-        // Run the same poly verifier for the output claims
-        let sp_ctx = same_poly::Context::<E>::new(self.num_vars);
-        let mut sp_verifier = same_poly::Verifier::<E>::new(&sp_ctx);
+        // Verify the sumcheck output claim and add commitment claims to the commit verifier
+        let zerocheck_point = subclaim.point_flat();
+        let beta_eval = eq_xy_eval(&verifier_claims.point(), &zerocheck_point);
 
-        sp_verifier.add_claim(last_claim.clone())?;
+        let last_claim_beta_eval = eq_xy_eval(&last_claim.point, &zerocheck_point);
 
-        let output_claims = &proof.output_claims;
-        output_claims
+        let kernel_size = proof.zerocheck_evals.len() - 1;
+
+        let (prod_claim, sum_claim, batch_chal) =
+            proof.zerocheck_evals.iter().take(kernel_size).fold(
+                (beta_eval, E::ZERO, batching_challenge),
+                |(prod_acc, sum_acc, challenge_comb), &eval| {
+                    (
+                        prod_acc * eval,
+                        sum_acc + challenge_comb * eval,
+                        challenge_comb * batching_challenge,
+                    )
+                },
+            );
+
+        let output_eval = proof.zerocheck_evals[kernel_size];
+
+        let expected_eval =
+            prod_claim + sum_claim * beta_eval + output_eval * last_claim_beta_eval * batch_chal;
+
+        ensure!(
+            expected_eval == subclaim.expected_evaluation,
+            "Expected pooling zerocheck claim did not equal the verifier claim, expected: {:?}, got: {:?}",
+            expected_eval,
+            subclaim.expected_evaluation
+        );
+
+        proof
+            .zerocheck_evals
             .iter()
-            .try_for_each(|claim| sp_verifier.add_claim(claim.clone()))?;
-
-        let output_proof = &proof.io_accumulation;
-
-        let commit_claim = sp_verifier.verify(output_proof, verifier.transcript)?;
-
-        // Add the result of the same poly verifier to the commitment verifier.
-        verifier
-            .witness_verifier
-            .add_claim(self.poly_id, commit_claim)?;
+            .enumerate()
+            .try_for_each(|(i, &eval)| {
+                verifier.witness_verifier.add_claim(
+                    self.poly_id * 100 + i,
+                    Claim::<E>::new(zerocheck_point.clone(), eval),
+                )
+            })?;
 
         // Challenegs used to batch input poly claims together and link them with zerocheck and lookup verification output
         let [r1, r2] = [verifier
@@ -571,49 +609,27 @@ impl PoolingCtx {
             r1 * one_minus_r2,
             r1 * r2,
         ];
-        let zc_point = subclaim
-            .point
-            .iter()
-            .map(|chal| chal.elements)
-            .collect::<Vec<E>>();
+
         let zerocheck_point = [
             &[r1],
-            &zc_point[..proof.variable_gap],
+            &zerocheck_point[..proof.variable_gap],
             &[r2],
-            &zc_point[proof.variable_gap..],
+            &zerocheck_point[proof.variable_gap..],
         ]
         .concat();
 
-        let zerocheck_input_eval = izip!(proof.zerocheck_evals.iter(), eval_multiplicands.iter())
-            .fold(E::ZERO, |zerocheck_acc, (&ze, &me)| {
-                zerocheck_acc + (output_claims[0].eval - ze) * me
-            });
+        let zerocheck_input_eval = izip!(
+            proof.zerocheck_evals.iter().take(kernel_size),
+            eval_multiplicands.iter()
+        )
+        .fold(E::ZERO, |zerocheck_acc, (&ze, &me)| {
+            zerocheck_acc + (output_eval - ze) * me
+        });
 
         let out_claim = Claim {
             point: zerocheck_point,
             eval: zerocheck_input_eval,
         };
-
-        // Now we check consistency between the lookup/sumcheck proof claims and the claims passed to the same poly verifiers.
-        let beta_eval = identity_eval(&output_claims[0].point, &verifier_claims.claims()[0].point);
-
-        let computed_zerocheck_claim = proof
-            .zerocheck_evals
-            .iter()
-            .chain(std::iter::once(&beta_eval))
-            .product::<E>()
-            + proof
-                .zerocheck_evals
-                .iter()
-                .fold((E::ZERO, batching_challenge), |(acc, comb), v| {
-                    (acc + *v * beta_eval * comb, comb * batching_challenge)
-                })
-                .0;
-
-        ensure!(
-            computed_zerocheck_claim == subclaim.expected_evaluation,
-            "Computed zerocheck claim did not line up with output of sumcheck verification"
-        );
 
         Ok(out_claim)
     }
@@ -969,10 +985,12 @@ mod tests {
                 .map(|chal| chal.elements)
                 .collect::<Vec<F>>();
 
-            let fixed_points = [[F::ZERO, F::ZERO], [F::ZERO, F::ONE], [F::ONE, F::ZERO], [
-                F::ONE,
-                F::ONE,
-            ]]
+            let fixed_points = [
+                [F::ZERO, F::ZERO],
+                [F::ZERO, F::ONE],
+                [F::ONE, F::ZERO],
+                [F::ONE, F::ONE],
+            ]
             .map(|pair| {
                 [
                     &[pair[0]],
