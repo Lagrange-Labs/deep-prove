@@ -419,7 +419,6 @@ pub(crate) mod test {
         virtual_poly::VirtualPolynomial,
     };
     use sumcheck::structs::{IOPProverState, IOPVerifierState};
-    use tract_onnx::tract_core::ops::matmul::quant;
 
     use crate::{Element, default_transcript, quantization::TensorFielder, tensor::Tensor};
 

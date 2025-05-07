@@ -102,10 +102,13 @@ impl Activation {
 
         same_poly_prover.add_claim(output_claim)?;
         let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, prover.transcript)?;
-        // order is (output,mult)
+        // order is (input, output)
         prover
             .witness_prover
-            .add_claim(step.poly_id, claim_acc_proof.extract_claim())?;
+            .add_claim(step.poly_id * 100, input_claim.clone())?;
+        prover
+            .witness_prover
+            .add_claim(step.poly_id * 100 + 1, claim_acc_proof.extract_claim())?;
 
         // Add the proof in
         prover.push_proof(LayerProof::Activation(ActivationProof {
