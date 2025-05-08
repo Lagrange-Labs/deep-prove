@@ -233,7 +233,7 @@ where
                 .collect(),
         ));
         gen.lookups_no_challenges
-            .insert(id, (column_evals, 1, TableType::Range));
+            .insert(id, vec![(column_evals, 1, TableType::Range)]);
 
         Ok(())
     }
@@ -353,7 +353,12 @@ impl Pooling {
     {
         assert_eq!(input.get_shape().len(), 3, "Maxpool needs 3D inputs.");
         // Create the range check proof for the diff
-        let prover_info = prover.lookup_witness(id)?;
+        let prover_info = prover.lookup_witness(id).and_then(|inner| {
+            inner
+                .first()
+                .cloned()
+                .ok_or(anyhow!("lookup witness vec was empty"))
+        })?;
 
         let logup_proof = logup_batch_prove(&prover_info, prover.transcript)?;
 

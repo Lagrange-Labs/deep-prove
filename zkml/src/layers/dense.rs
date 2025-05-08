@@ -14,6 +14,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use ff_ext::ExtensionField;
+use gkr::util::ceil_log2;
 use itertools::Itertools;
 use multilinear_extensions::{
     mle::{IntoMLE, MultilinearExtension},
@@ -266,11 +267,15 @@ impl Dense<f32> {
                 Some((min_quantized, max_quantized)),
             )
         };
-        let shift = input_scaling.shift(&model_scaling, &output_scaling);
+
         let quantized_dense = self.quantize(&model_scaling, &bias_scaling);
-        let (quantized_min, _quantized_max) =
-            quantized_dense.output_range(*quantization::MIN, *quantization::MAX);
-        let requant = Requant::new(quantized_min.unsigned_abs() as usize, shift);
+        let intermediate_bit_size = quantized_dense.output_bitsize();
+        let requant = Requant::from_scaling_factors(
+            *input_scaling,
+            model_scaling,
+            output_scaling,
+            intermediate_bit_size,
+        );
 
         Ok(QuantizeOutput {
             quanzited_op: quantized_dense,
@@ -427,6 +432,15 @@ impl Dense<Element> {
         let max = 2u64.pow(power) as Element;
         (min, max)
     }
+
+    /// Returns the maximum size in bits of the output
+    pub fn output_bitsize(&self) -> usize {
+        // formula is 2^{2 * BIT_LEN + log(c) + 1} where c is the number of columns and +1 because of the bias
+        let ncols = self.matrix.ncols_2d();
+        // - 1 because numbers are signed so only half of the range is used when doing multiplication
+        2 * (*quantization::BIT_LEN - 1) + ceil_log2(ncols) + 1
+    }
+
     #[timed::timed_instrument(name = "Prover::prove_dense")]
     pub fn prove_step<'b, E, T>(
         &self,
@@ -755,11 +769,12 @@ mod test {
     #[test]
     fn test_dense_pad_mixed_dimensions() {
         // Create a Dense layer with one power-of-two dimension and one non-power-of-two
-        let matrix =
-            Tensor::<Element>::matix_from_coeffs(vec![vec![1, 2, 3, 4], vec![5, 6, 7, 8], vec![
-                9, 10, 11, 12,
-            ]])
-            .unwrap();
+        let matrix = Tensor::<Element>::matix_from_coeffs(vec![
+            vec![1, 2, 3, 4],
+            vec![5, 6, 7, 8],
+            vec![9, 10, 11, 12],
+        ])
+        .unwrap();
 
         let bias = Tensor::<Element>::new(vec![3], vec![20, 21, 22]);
 

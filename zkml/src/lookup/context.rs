@@ -4,6 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use ff::Field;
 use ff_ext::ExtensionField;
+use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::{debug, warn};
 use transcript::Transcript;
@@ -25,9 +26,14 @@ use super::logup_gkr::error::LogUpError;
 pub const TABLE_POLY_ID_OFFSET: usize = 666;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+/// Enum used for establishing the different table types needed to prove non-linear functions in a model.
 pub enum TableType {
+    /// Table used for the Relu activation function
     Relu,
+    /// Table used for range checking (its size is determined by the quantisation bit size)
     Range,
+    /// Table used for clamping values, the inner [`usize`] denotes the maximum bit length a value can be before clamping to use this table
+    Clamping(usize),
 }
 
 impl TableType {
@@ -63,6 +69,30 @@ impl TableType {
                     .unzip();
                 (element_out, vec![field])
             }
+            TableType::Clamping(size) => {
+                let max = 1i128 << (size - 1);
+                let min = -max;
+                let (comb, field): (Vec<Element>, Vec<(E::BaseField, E::BaseField)>) = (min..max)
+                    .map(|i| {
+                        let out = if i < *quantization::MIN {
+                            *quantization::MIN
+                        } else if i > *quantization::MAX {
+                            *quantization::MAX
+                        } else {
+                            i
+                        };
+                        let i_field: E = i.to_field();
+                        let out_field: E = out.to_field();
+                        (
+                            i + out * column_separator,
+                            (i_field.as_bases()[0], out_field.as_bases()[0]),
+                        )
+                    })
+                    .unzip();
+                let (col_one, col_two): (Vec<E::BaseField>, Vec<E::BaseField>) =
+                    field.into_iter().unzip();
+                (comb, vec![col_one, col_two])
+            }
         }
     }
 
@@ -70,6 +100,7 @@ impl TableType {
         match self {
             TableType::Relu => "Relu".to_string(),
             TableType::Range => "Range".to_string(),
+            TableType::Clamping(size) => format!("Clamping: {}", size),
         }
     }
 
@@ -118,6 +149,43 @@ impl TableType {
                     });
                 Ok(vec![first_column, second_column])
             }
+            TableType::Clamping(size) => {
+                if point.len() != *size {
+                    return Err(LogUpError::VerifierError(format!(
+                        "Point was not the correct size to produce a clamping table evaluation, point size: {}, expected: {}",
+                        point.len(),
+                        size
+                    )));
+                }
+
+                let first_column = point
+                    .iter()
+                    .enumerate()
+                    .fold(E::ZERO, |acc, (index, p)| acc + *p * E::from(1u64 << index))
+                    - E::from(1u64 << (size - 1));
+
+                let max = 1i128 << (size - 1);
+                let min = -max;
+
+                let second_col_eval = (min..max)
+                    .map(|i| {
+                        let out = if i < *quantization::MIN {
+                            *quantization::MIN
+                        } else if i > *quantization::MAX {
+                            *quantization::MAX
+                        } else {
+                            i
+                        };
+
+                        let out_field: E = out.to_field();
+                        out_field.as_bases()[0]
+                    })
+                    .collect::<Vec<E::BaseField>>()
+                    .into_mle()
+                    .evaluate(point);
+
+                Ok(vec![first_column, second_col_eval])
+            }
         }
     }
 
@@ -128,6 +196,7 @@ impl TableType {
                 // Theres only one column for a range check so we don't need to generate a challenge
                 E::ONE
             }
+            TableType::Clamping(_) => transcript.get_and_append_challenge(b"Clamping").elements,
         }
     }
 }
@@ -153,7 +222,8 @@ pub struct LookupWitnessGen<E: ExtensionField> {
     pub(crate) tables: BTreeSet<TableType>,
     pub(crate) lookups: HashMap<TableType, HashMap<Element, u64>>,
     pub(crate) polys_with_id: Vec<(usize, Vec<E>)>,
-    pub(crate) lookups_no_challenges: HashMap<NodeId, (Vec<Vec<E::BaseField>>, usize, TableType)>,
+    pub(crate) lookups_no_challenges:
+        HashMap<NodeId, Vec<(Vec<Vec<E::BaseField>>, usize, TableType)>>,
 }
 
 impl<E: ExtensionField> Default for LookupWitnessGen<E> {
@@ -183,7 +253,7 @@ pub fn generate_lookup_witnesses<'a, E, T: Transcript<E>>(
     (
         Option<Context<E>>,
         ChallengeStorage<E>,
-        HashMap<NodeId, LogUpInput<E>>,
+        HashMap<NodeId, Vec<LogUpInput<E>>>,
         Vec<LogUpInput<E>>,
     ),
     LogUpError,
@@ -261,27 +331,29 @@ where
     let lookup_inputs = witness_gen
         .lookups_no_challenges
         .into_iter()
-        .map(
-            |(node_id, (column_evals, columns_per_instance, table_type))| {
-                let (constant_challenge, column_challenge) = challenge_storage
-                    .get_challenges_by_name(&table_type.name())
-                    .ok_or(LogUpError::ParamterError(format!(
-                        "No challegnes found for table type: {} when generating lookup witness",
-                        table_type.name()
-                    )))?;
+        .map(|(node_id, witness_data_vec)| {
+            let logup_inputs = witness_data_vec
+                .into_iter()
+                .map(|(column_evals, columns_per_instance, table_type)| {
+                    let (constant_challenge, column_challenge) = challenge_storage
+                        .get_challenges_by_name(&table_type.name())
+                        .ok_or(LogUpError::ParamterError(format!(
+                            "No challegnes found for table type: {} when generating lookup witness",
+                            table_type.name()
+                        )))?;
 
-                Ok((
-                    node_id,
                     LogUpInput::<E>::new_lookup(
                         column_evals,
                         constant_challenge,
                         column_challenge,
                         columns_per_instance,
-                    )?,
-                ))
-            },
-        )
-        .collect::<Result<HashMap<NodeId, LogUpInput<E>>, LogUpError>>()?;
+                    )
+                })
+                .collect::<Result<Vec<LogUpInput<E>>, LogUpError>>()?;
+
+            Ok((node_id, logup_inputs))
+        })
+        .collect::<Result<HashMap<NodeId, Vec<LogUpInput<E>>>, LogUpError>>()?;
 
     let table_inputs = tables_no_challenges
         .into_iter()
