@@ -50,7 +50,7 @@ where
     /// The prover related to proving multiple claims about different witness polyy (io of lookups etc)
     pub(crate) witness_prover: precommit::CommitProver<E>,
     /// The lookup witnesses
-    pub(crate) lookup_witness: HashMap<NodeId, LogUpInput<E>>,
+    pub(crate) lookup_witness: HashMap<NodeId, Vec<LogUpInput<E>>>,
     /// The Lookup table witness
     pub(crate) table_witness: Vec<LogUpInput<E>>,
     /// Stores all the challenges for the different lookup/table types
@@ -80,7 +80,7 @@ where
         }
     }
 
-    pub(crate) fn lookup_witness(&mut self, id: NodeId) -> anyhow::Result<LogUpInput<E>> {
+    pub(crate) fn lookup_witness(&mut self, id: NodeId) -> anyhow::Result<Vec<LogUpInput<E>>> {
         self.lookup_witness
             .remove(&id)
             .ok_or(anyhow!("No lookup witness found for node {id}!"))
