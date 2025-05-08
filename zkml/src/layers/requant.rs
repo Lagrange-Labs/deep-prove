@@ -364,6 +364,24 @@ where
         )?])
     }
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RequantLookupWitness<E: ExtensionField>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+{
+    /// The input to the clamping table
+    pub(crate) clamping_in: Vec<Element>,
+    /// The output of the clamping table
+    pub(crate) clamping_out: Vec<Element>,
+    /// The clamping in column as [`E::BaseField`] elements
+    pub(crate) clamping_in_field: Vec<E::BaseField>,
+    /// The clamping out column as [`E::BaseField`] elements
+    pub(crate) clamping_out_field: Vec<E::BaseField>,
+    /// The chunks that are shifted away
+    pub(crate) shifted_chunks: Vec<Vec<Element>>,
+    /// The chunks that are shifted away as [`E::BaseField`] elements
+    pub(crate) shifted_chunks_field: Vec<Vec<E::BaseField>>,
+}
 
 impl Requant {
     /// Method used to instantiate a new [`Requant`] from the scaling factors of all tensors involved in a layer.
