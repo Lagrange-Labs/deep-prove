@@ -155,7 +155,9 @@ where
                 }
                 (LayerProof::<E>::Requant(proof), LayerCtx::Requant(info)) => {
                     let (constant_challenge, column_separation_challenge) = challenge_storage
-                        .get_challenges_by_name(&TableType::Range.name())
+                        .get_challenges_by_name(
+                            &TableType::Clamping(info.requant.clamping_size()).name(),
+                        )
                         .ok_or(anyhow!(
                             "Couldn't get challenges at Step: {}, LookupType was: {}",
                             step.variant_name(),

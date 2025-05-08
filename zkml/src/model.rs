@@ -454,6 +454,7 @@ pub(crate) mod test {
                     // Figure out the requant information such that output is still within range
                     let (min_output_range, max_output_range) =
                         dense.output_range(*quantization::MIN, *quantization::MAX);
+                    let intermediate_bit_size = dense.output_bitsize();
                     let output_scaling_factor = ScalingFactor::from_scale(
                         ((max_output_range - min_output_range) as f64
                             / (*quantization::MAX - *quantization::MIN) as f64)
@@ -463,9 +464,13 @@ pub(crate) mod test {
                     let input_scaling_factor = ScalingFactor::from_scale(1.0, None);
                     let max_model = dense.matrix.max_value().max(dense.bias.max_value()) as f32;
                     let model_scaling_factor = ScalingFactor::from_absolute_max(max_model, None);
-                    let shift =
-                        input_scaling_factor.shift(&model_scaling_factor, &output_scaling_factor);
-                    let requant = Requant::new(min_output_range as usize, shift);
+
+                    let requant = Requant::from_scaling_factors(
+                        input_scaling_factor,
+                        model_scaling_factor,
+                        output_scaling_factor,
+                        intermediate_bit_size,
+                    );
                     model.add_layer(Layer::Dense(dense));
                     model.add_layer(Layer::Requant(requant));
                 } else if selector % MOD_SELECTOR == SELECTOR_RELU {

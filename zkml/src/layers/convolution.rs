@@ -269,6 +269,13 @@ impl Convolution<Element> {
         (min, max)
     }
 
+    /// Returns the maximum bitsize of the output of this layer
+    pub fn output_bitsize(&self) -> usize {
+        // 2^{BIT_LEN + log2(k_h * k_w * k_c)}
+        let (_k_n, k_c, k_h, k_w) = self.filter.get4d();
+        2 * (*quantization::BIT_LEN - 1) + ceil_log2(k_h * k_w * k_c + 1)
+    }
+
     pub fn prove_batch_fft_weights<E: ExtensionField, T: Transcript<E>>(
         &self,
         prover: &mut Prover<E, T>,

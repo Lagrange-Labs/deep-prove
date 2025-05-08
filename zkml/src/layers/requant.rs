@@ -1,21 +1,24 @@
 use crate::{
-    Claim, Prover,
-    commit::same_poly,
+    Claim, Prover, ScalingFactor, Tensor,
+    commit::compute_betas_eval,
     iop::verifier::Verifier,
     layers::LayerProof,
     lookup::logup_gkr::{prover::batch_prove as logup_batch_prove, verifier::verify_logup_proof},
     quantization,
 };
-use anyhow::{Result, anyhow};
-use ff::Field;
+use anyhow::{Result, anyhow, ensure};
+
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
-use itertools::Itertools;
-use multilinear_extensions::mle::IntoMLE;
+
+use mpcs::sum_check::eq_xy_eval;
+use multilinear_extensions::{
+    mle::{DenseMultilinearExtension, IntoMLE},
+    virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial},
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use statrs::statistics::{Data, Distribution};
-use std::ops::{Add, Mul, Sub};
-use tracing::{debug, warn};
+use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
+
 use transcript::Transcript;
 
 use crate::{
@@ -28,29 +31,28 @@ use crate::{
 
 use super::LayerCtx;
 
-enum RequantResult {
-    Ok(Element),
-    OutOfRange(Element),
-}
+/// Constnat used in fixed point multiplication for normalised [`f32`] values
+const FIXED_POINT_SCALE: usize = 25;
 
-/// Information about a requantization step:
-/// * what is the range of the input data
-/// * what should be the shift to get back data in range within QuantInteger range
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Copy, PartialOrd)]
+/// This struct contains the infomation used in requantisation (i.e. rescaling and clamping)
+/// The fields are:
+/// - `multiplier`: This is the actual [`f32`] value calculated as `S1 * S2 / S3` and in traditional quantisation is what we would multiply by and then round to requantise
+/// - `right_shift`: This is `multiplier.log2().trunc().abs()`
+/// - `fixed_point_multiplier`: This is `2.0.powf(multiplier.log2().fract()) * (1 << 25)`, 25 is chosen as the [`f32`] mantissa is only 24 bits long so this should retain all bits
+/// - `intermediate_bit_size`: This is the maximum number of bits a value can have before its requantised.
 pub struct Requant {
-    // what is the shift that needs to be applied to requantize input number to the correct range of QuantInteger.
+    /// After multiplying by `self.fixed_point_multiplier` the value need to be shifted by this plus 25.
     pub right_shift: usize,
-    // this is the range we expect the values to be in pre shift
-    // This is a magnitude: e.g. [-4;8] gives range = 12.
-    // This is to make sure to offset the values to be positive integers before doing the shift
-    // That info is used to construct a lookup table for the requantization so the size of the lookup table
-    // is directly correlated to the range of the input data.
-    pub range: usize,
-    /// The range we want the values to be in post requantizing
-    pub after_range: usize,
-    /// TEST ONLY: this can be given to simulate a perfect requantization during inference. Note that it CAN NOT
-    /// be proven currently.
-    pub multiplier: Option<f32>,
+    /// The normalised scaling factor represented as a fixed point multiplier (it should have 24 fractional bits)
+    pub fixed_point_multiplier: Element,
+    /// The scale used for the fixed point multiplier, it is calculated to be the smallest value greater than or equal to [`FIXED_POINT_SCALE`] such that
+    /// the right shift we perform is a multiple of [`quantization::BIT_LEN`]
+    pub fp_scale: usize,
+    /// THe actual multiplier, this is mainly used to compare accuracy, it has no purpose in actual proving
+    pub multiplier: f32,
+    /// This field represents how many bits the max absoloute value can be
+    pub(crate) intermediate_bit_size: usize,
 }
 
 /// Info related to the lookup protocol necessary to requantize
@@ -68,61 +70,106 @@ where
 {
     /// proof for the accumulation of the claim from activation + claim from lookup for the same poly
     /// e.g. the "link" between an activation and requant layer
-    pub(crate) io_accumulation: same_poly::Proof<E>,
-    /// the lookup proof for the requantization
-    pub(crate) lookup: LogUpProof<E>,
+    pub(crate) io_accumulation: IOPProof<E>,
+    /// The evalaution claims about witness polynomials from the io_accumualtion sumcheck
+    pub(crate) accumulation_evals: Vec<E>,
+    /// The clamping lookup proof for the requantization
+    pub(crate) clamping_lookup: LogUpProof<E>,
+    /// The range check lookup proof for the chunks that are shifted away
+    pub(crate) shifted_lookup: LogUpProof<E>,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RequantLookupWitness<E: ExtensionField>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+{
+    /// The input to the clamping table
+    pub(crate) clamping_in: Vec<Element>,
+    /// The output of the clamping table
+    pub(crate) clamping_out: Vec<Element>,
+    /// The clamping in column as [`E::BaseField`] elements
+    pub(crate) clamping_in_field: Vec<E::BaseField>,
+    /// The clamping out column as [`E::BaseField`] elements
+    pub(crate) clamping_out_field: Vec<E::BaseField>,
+    /// The chunks that are shifted away
+    pub(crate) shifted_chunks: Vec<Vec<Element>>,
+    /// The chunks that are shifted away as [`E::BaseField`] elements
+    pub(crate) shifted_chunks_field: Vec<Vec<E::BaseField>>,
+}
+
 impl Requant {
-    pub fn new(min_value: usize, right_shift: usize) -> Self {
-        Self {
-            right_shift,
-            range: min_value,
-            after_range: *quantization::RANGE as usize,
-            multiplier: None,
+    /// Method used to instantiate a new [`Requant`] from the scaling factors of all tensors involved in a layer.
+    /// The `intermediate_bit_size` is layer dependant and so should be passed as input. It can be calculated based on how many times you need to multiply and add
+    /// to get each value in the output tensor.
+    pub fn from_scaling_factors(
+        input_scale: ScalingFactor,
+        weights_scale: ScalingFactor,
+        output_scale: ScalingFactor,
+        intermediate_bit_size: usize,
+    ) -> Requant {
+        let m = input_scale.m(&weights_scale, &output_scale);
+        let log_m = m.log2();
+        // This is the right shift
+        let int_part = log_m.trunc().abs() as usize;
+        // This is used to calculate the fixed point multiplier
+        let float_part = log_m.fract();
+
+        let epsilon = 2.0f32.powf(float_part);
+
+        // We want the part that gets shifted away to be a multiple of the quantisation bit length (that way we can use the same range table for each chunk)
+        let next_multiple = (int_part + FIXED_POINT_SCALE).next_multiple_of(*quantization::BIT_LEN);
+        let fp_scale = next_multiple - int_part;
+        let fixed_point_multiplier = (epsilon * (1u64 << fp_scale) as f32).round() as Element;
+
+        Requant {
+            right_shift: int_part,
+            fixed_point_multiplier,
+            fp_scale,
+            multiplier: m,
+            intermediate_bit_size,
         }
     }
-    pub fn set_test_multiplier(&mut self, multiplier: f32) {
-        self.multiplier = Some(multiplier);
+
+    /// This returns the shift (including the part that depends on `S1 * S2/ S3`)
+    pub(crate) fn shift(&self) -> usize {
+        self.fp_scale + self.right_shift
     }
-    pub fn op(
-        &self,
-        input: &crate::tensor::Tensor<Element>,
-    ) -> Result<crate::tensor::Tensor<Element>> {
-        let mut not_ok_count = 0;
+
+    /// Internal method that applies this op to an [`Element`]
+    fn apply(&self, elem: &Element) -> Element {
+        let rounding = 1i128 << (self.shift() - 1);
+        let unclamped = (rounding + elem * self.fixed_point_multiplier) >> self.shift();
+        let sign = if unclamped.is_positive() || unclamped == 0i128 {
+            1i128
+        } else {
+            -1i128
+        };
+
+        let clamped = if unclamped.abs() >= *quantization::MAX {
+            *quantization::MAX * sign
+        } else {
+            unclamped
+        };
+
+        clamped
+    }
+
+    /// API for performing this op on a quantised tensor.
+    pub fn op(&self, input: &Tensor<Element>) -> Result<Tensor<Element>> {
         let res = input
             .get_data()
             .iter()
-            .map(|e| match self.apply(e) {
-                RequantResult::Ok(res) => res,
-                RequantResult::OutOfRange(res) => {
-                    not_ok_count += 1;
-                    res
-                }
-            })
-            .collect_vec();
-        let d = Data::new(res.iter().map(|e| *e as f64).collect_vec());
-        // Debug information to uncomment when debugging scaling factor. Sometimes the right shift is too high
-        // and we can observe values being null'd, e.g. set to 0 very quickly. Which messes up the distribution and
-        // thus the inference.
-        let stats = (d.mean().unwrap(), d.variance().unwrap());
-        debug!(
-            "AFTER REQUANT: shift {} : {:.2} % OUT OF RANGE (over total {})-> stats mean {:?} var {:?} \n\t->{:?}\n\t->{:?}",
-            self.right_shift,
-            not_ok_count as f32 / res.len() as f32 * 100.0,
-            res.len(),
-            stats.0,
-            stats.1,
-            &input.get_data()[..10.min(input.get_data().len())],
-            &res[..10.min(res.len())],
-        );
-        // ensure!(
-        //    not_ok_count == 0,
-        //    "Requantization led to out of range values"
-        //);
-        Ok(crate::tensor::Tensor::<Element>::new(
-            input.get_shape(),
-            res,
-        ))
+            .map(|e| self.apply(e))
+            .collect::<Vec<Element>>();
+
+        Ok(Tensor::<Element>::new(input.get_shape(), res))
+    }
+
+    /// Function that tells us how large to make the clamping table
+    pub(crate) fn clamping_size(&self) -> usize {
+        let fpm_bit_size = ceil_log2(self.fixed_point_multiplier as usize);
+        self.intermediate_bit_size + fpm_bit_size - self.shift()
     }
 
     pub(crate) fn step_info<E: ExtensionField>(
@@ -134,6 +181,7 @@ impl Requant {
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
+        aux.tables.insert(TableType::Clamping(self.clamping_size()));
         aux.tables.insert(TableType::Range);
         (
             LayerCtx::Requant(RequantCtx {
@@ -148,295 +196,232 @@ impl Requant {
             aux,
         )
     }
-    /// Applies requantization to a single element.
-    ///
-    /// This function performs the following steps:
-    /// 1. Adds a large offset (max_bit) to ensure all values are positive
-    /// 2. Right-shifts by the specified amount to reduce the bit width
-    /// 3. Subtracts the shifted offset to restore the correct value range
-    ///
-    /// The result is a value that has been scaled down to fit within the
-    /// target bit width while preserving the relative magnitudes.
-    #[inline(always)]
-    fn apply(&self, e: &Element) -> RequantResult {
-        if let Some(_multiplier) = self.multiplier {
-            panic!("this is only for test - disable manually");
-            #[allow(unreachable_code)]
-            let _res = (*e as f64 * _multiplier as f64).round() as Element;
-            if !(_res >= *quantization::MIN && _res <= *quantization::MAX) {
-                return RequantResult::OutOfRange(
-                    _res.clamp(*quantization::MIN, *quantization::MAX),
-                );
-            } else {
-                return RequantResult::Ok(_res);
-            }
-        }
-        let max_bit = (self.range << 1) as Element;
-        let tmp = e + max_bit;
-        assert!(
-            tmp >= 0,
-            "offset is too small: element {} + {} (self.range << 1) = {}",
-            e,
-            self.range << 1,
-            tmp
-        );
-        let tmp = tmp >> self.right_shift;
-        let res = tmp - (max_bit >> self.right_shift);
-        if !(res >= *quantization::MIN && res <= *quantization::MAX) {
-            warn!("{} is NOT quantized correctly: res {}", e, res);
-            RequantResult::OutOfRange(res)
-        } else {
-            RequantResult::Ok(res)
-        }
-    }
-
-    pub fn shape(&self) -> Vec<usize> {
-        vec![1, self.range]
-    }
 
     pub fn write_to_transcript<E: ExtensionField, T: Transcript<E>>(&self, t: &mut T) {
         t.append_field_element(&E::BaseField::from(self.right_shift as u64));
-        t.append_field_element(&E::BaseField::from(self.range as u64));
-    }
-
-    /// to_mle returns two polynomials:
-    /// f_i: one containing the input column values
-    /// f_o: one containing the output column values --> shifted to the right !
-    /// TODO: have a "cache" of lookups for similar ranges
-    pub fn to_mle<E: ExtensionField>(&self) -> Vec<E> {
-        // TODO: make a +1 or -1 somewhere
-        let min_range = -(self.after_range as Element) / 2;
-        let max_range = (self.after_range as Element) / 2 - 1;
-        (min_range..=max_range)
-            .map(|i| i.to_field())
-            .collect::<Vec<E>>()
-    }
-    /// Function that takes a list of field elements that need to be requantized (i.e. the output of a Dense layer)
-    /// and splits each value into the correct decomposition for proving via lookups.
-    pub fn prep_for_requantize<E: ExtensionField>(
-        &self,
-        input: &[Element],
-    ) -> Vec<Vec<E::BaseField>> {
-        // We calculate how many chunks we will split each entry of `input` into.
-        // Since outputs of a layer are centered around zero (i.e. some are negative) in order for all the shifting
-        // and the like to give the correct result we make sure that everything is positive.
-
-        // The number of bits that get "sliced off" is equal to `self.right_shift`, we want to know how many limbs it takes to represent
-        // this sliced off chunk in base `self.after_range`. To calculate this we perform ceiling division on `self.right_shift` by
-        // `ceil_log2(self.after_range)` and then add one for the column that represents the output we will take to the next layer.
-        let num_columns = (self.right_shift - 1) / ceil_log2(self.after_range) + 2;
-
-        let num_vars = ceil_log2(input.len());
-
-        let mut mle_evals = vec![vec![E::BaseField::ZERO; 1 << num_vars]; num_columns];
-
-        // Bit mask for the bytes
-        let bit_mask = self.after_range as i128 - 1;
-
-        let max_bit = self.range << 1;
-        let subtract = max_bit >> self.right_shift;
-
-        input.iter().enumerate().for_each(|(index, val)| {
-            let pre_shift = val + max_bit as i128;
-            let tmp = pre_shift >> self.right_shift;
-            let input = tmp - subtract as i128;
-            let input_field: E = input.to_field();
-
-            mle_evals[0][index] = input_field.as_bases()[0];
-            // the value of an input should always be basefield elements
-
-            // This leaves us with only the part that is "discarded"
-            let mut remainder_vals = pre_shift - (tmp << self.right_shift);
-            mle_evals
-                .iter_mut()
-                .skip(1)
-                .rev()
-                .for_each(|discarded_chunk| {
-                    let chunk = remainder_vals & bit_mask;
-                    let value = chunk as i128 - (self.after_range as i128 >> 1);
-                    let field_elem: E = value.to_field();
-                    discarded_chunk[index] = field_elem.as_bases()[0];
-                    remainder_vals >>= self.after_range.ilog2();
-                });
-            debug_assert_eq!(remainder_vals, 0);
-        });
-
-        debug_assert!({
-            input.iter().enumerate().fold(true, |acc, (i, value)| {
-                let calc_evals = mle_evals
-                    .iter()
-                    .map(|col| E::from(col[i]))
-                    .collect::<Vec<E>>();
-
-                let field_value: E = value.to_field();
-                acc & (self.recombine_claims(&calc_evals) == field_value)
-            })
-        });
-        mle_evals
+        t.append_field_element(&E::BaseField::from(self.fixed_point_multiplier as u64));
     }
 
     pub fn gen_lookup_witness<E: ExtensionField>(
         &self,
         input: &[Element],
-    ) -> (Vec<Element>, Vec<Vec<E::BaseField>>) {
-        // We calculate how many chunks we will split each entry of `input` into.
-        // Since outputs of a layer are centered around zero (i.e. some are negative) in order for all the shifting
-        // and the like to give the correct result we make sure that everything is positive.
+    ) -> RequantLookupWitness<E>
+    where
+        E::BaseField: Serialize + DeserializeOwned,
+    {
+        // We take the input, mutliply by the fixed point multiplier and add the rounding constant. Then we split the resulting values into
+        // parts that are either shifted away (these get range checked) or passed to the clamping table.
+        let shift = self.shift();
+        let rounding_constant = 1i128 << (shift - 1);
+        let mask = (1i128 << shift) - 1;
+        let (clamping, shifted): (Vec<Element>, Vec<Element>) = input
+            .iter()
+            .map(|&val| {
+                let tmp = val * self.fixed_point_multiplier + rounding_constant;
+                let clamp = tmp >> shift;
+                let masked = tmp & mask;
 
-        // The number of bits that get "sliced off" is equal to `self.right_shift`, we want to know how many limbs it takes to represent
-        // this sliced off chunk in base `self.after_range`. To calculate this we perform ceiling division on `self.right_shift` by
-        // `ceil_log2(self.after_range)` and then add one for the column that represents the output we will take to the next layer.
-        let num_columns = (self.right_shift - 1) / ceil_log2(self.after_range) + 2;
-
-        let num_vars = ceil_log2(input.len());
-
-        let mut lookups = vec![vec![0i128; 1 << num_vars]; num_columns];
-        let mut lookups_field = vec![vec![E::BaseField::ZERO; 1 << num_vars]; num_columns];
-        // Bit mask for the bytes
-        let bit_mask = self.after_range.next_power_of_two() as i128 - 1;
-
-        let max_bit = self.range << 1;
-        let subtract = max_bit >> self.right_shift;
-
-        input.iter().enumerate().for_each(|(index, val)| {
-            let pre_shift = val + max_bit as i128;
-            let tmp = pre_shift >> self.right_shift;
-            let input = tmp - subtract as i128 + (self.after_range as i128 >> 1);
-            let in_field: E = input.to_field();
-
-            lookups[0][index] = input;
-            lookups_field[0][index] = in_field.as_bases()[0];
-            // the value of an input should always be basefield elements
-
-            // This leaves us with only the part that is "discarded"
-            let mut remainder_vals = pre_shift - (tmp << self.right_shift);
-            lookups
-                .iter_mut()
-                .zip(lookups_field.iter_mut())
-                .skip(1)
-                .rev()
-                .for_each(|(discarded_lookup_chunk, discarded_field_chunk)| {
-                    let chunk = remainder_vals & bit_mask;
-                    let value = chunk as i128;
-                    let val_field: E = value.to_field();
-                    discarded_lookup_chunk[index] = value;
-                    discarded_field_chunk[index] = val_field.as_bases()[0];
-                    remainder_vals >>= ceil_log2(self.after_range);
-                });
-            debug_assert_eq!(remainder_vals, 0);
-        });
-
-        debug_assert!({
-            input.iter().enumerate().fold(true, |acc, (i, value)| {
-                let calc_evals = lookups_field
-                    .iter()
-                    .map(|col| E::from(col[i]))
-                    .collect::<Vec<E>>();
-
-                let field_value: E = value.to_field();
-                acc & (self.recombine_claims(&calc_evals) == field_value)
+                (clamp, masked)
             })
-        });
-        (lookups.concat(), lookups_field)
+            .unzip();
+
+        // Now we have to calculate the output for the clamped part and break the part that is shifted away into chunks to be range checked.
+        // We do the clamping part first.
+        let (clamping_in, clamping_out, clamping_in_field, clamping_out_field) =
+            clamping.into_iter().fold(
+                (vec![], vec![], vec![], vec![]),
+                |(mut c_in, mut c_out, mut c_in_f, mut c_out_f), elem| {
+                    let clamp_out = if elem < *quantization::MIN {
+                        *quantization::MIN
+                    } else if elem > *quantization::MAX {
+                        *quantization::MAX
+                    } else {
+                        elem
+                    };
+
+                    let in_field: E = elem.to_field();
+                    let out_field: E = clamp_out.to_field();
+                    c_in.push(elem);
+                    c_out.push(clamp_out);
+                    c_in_f.push(in_field.as_bases()[0]);
+                    c_out_f.push(out_field.as_bases()[0]);
+                    (c_in, c_out, c_in_f, c_out_f)
+                },
+            );
+
+        // Now we split the shifted part into pieces that fit into the range table
+        let range_check_bit_size = *quantization::BIT_LEN;
+        let range_mask = (1i128 << range_check_bit_size) - 1;
+
+        let no_chunks = shift / range_check_bit_size;
+
+        let (shifted_chunks, shifted_chunks_field): (Vec<Vec<Element>>, Vec<Vec<E::BaseField>>) =
+            (0..no_chunks)
+                .map(|j| {
+                    let (elem, field): (Vec<Element>, Vec<E::BaseField>) = shifted
+                        .iter()
+                        .map(|&elem| {
+                            let tmp = elem >> (j * range_check_bit_size);
+                            let chunk = tmp & range_mask;
+                            let chunk_field: E = chunk.to_field();
+                            (chunk, chunk_field.as_bases()[0])
+                        })
+                        .unzip();
+                    (elem, field)
+                })
+                .unzip();
+
+        RequantLookupWitness::<E> {
+            clamping_in,
+            clamping_out,
+            clamping_in_field,
+            clamping_out_field,
+            shifted_chunks,
+            shifted_chunks_field,
+        }
     }
 
     /// Function to recombine claims of constituent MLEs into a single value to be used as the initial sumcheck evaluation
     /// of the subsequent proof.
-    pub fn recombine_claims<
-        E: From<u64> + Default + Add<Output = E> + Mul<Output = E> + Sub<Output = E> + Copy,
-    >(
+    pub fn recombine_claims<E: ExtensionField>(
         &self,
-        eval_claims: &[E],
+        clamping_claim: E,
+        shifted_claims: &[E],
     ) -> E {
-        let max_bit = self.range << 1;
-        let subtract = max_bit >> self.right_shift;
+        // First we recombine the clamping claim with the shifted chunks
+        let shift_field = E::from(1u64 << self.shift());
+        let (merged_shifted, _) =
+            shifted_claims
+                .iter()
+                .fold((E::ZERO, E::ONE), |(acc, pow_two), &val| {
+                    (
+                        acc + val * pow_two,
+                        pow_two * E::from(1u64 << *quantization::BIT_LEN),
+                    )
+                });
 
-        // There may be padding claims so we only take the first `num_columns` claims
+        let full_val = shift_field * clamping_claim + merged_shifted;
 
-        let tmp_eval = E::from(1 << self.right_shift as u64)
-            * (eval_claims[0] + E::from(subtract as u64) - E::from(self.after_range as u64 >> 1))
-            + eval_claims.iter().skip(1).rev().enumerate().fold(
-                E::default(),
-                |acc, (i, &claim)| {
-                    acc + E::from((self.after_range.next_power_of_two().pow(i as u32)) as u64)
-                        * (claim)
-                },
-            );
-        tmp_eval - E::from(max_bit as u64)
+        // Now we subtract the rounding constant and then multiply by the inverse of the fixed point multiplier
+        let rounding_const_field = E::from(1u64 << (self.shift() - 1));
+
+        let fpm_field: E = self.fixed_point_multiplier.to_field();
+        let fpm_inverse = fpm_field.invert().unwrap();
+
+        (full_val - rounding_const_field) * fpm_inverse
     }
     pub(crate) fn prove_step<E: ExtensionField, T: Transcript<E>>(
         &self,
         prover: &mut Prover<E, T>,
         last_claim: &Claim<E>,
-        output: &[E],
         requant_info: &RequantCtx,
     ) -> anyhow::Result<Claim<E>>
     where
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
-        let prover_info = prover.next_lookup_witness()?;
-
+        let shifted_prover_info = prover.next_lookup_witness()?;
+        let clamping_prover_info = prover.next_lookup_witness()?;
         // Run the lookup protocol and return the lookup proof
-        let logup_proof = logup_batch_prove(&prover_info, prover.transcript)?;
-
+        let clamping_logup_proof = logup_batch_prove(&clamping_prover_info, prover.transcript)?;
+        let shifted_logup_proof = logup_batch_prove(&shifted_prover_info, prover.transcript)?;
         // We need to prove that the output of this step is the input to following activation function
-        let mut same_poly_prover = same_poly::Prover::<E>::new(output.to_vec().into_mle());
-        let same_poly_ctx = same_poly::Context::<E>::new(last_claim.point.len());
-        same_poly_prover.add_claim(last_claim.clone())?;
-        // For requant layers we have to extract the correct "chunk" from the list of claims
-        let eval_claims = logup_proof
-            .output_claims()
+        // this is done by showing that the `last_claim` and the output column of the clamping lookup both relate to the
+        // same polynomial. In addition, we need all the shifted claims to be about the same point as the clamping input claim, so we include these in the sumcheck as well
+        if clamping_prover_info.column_evals().len() != 2 {
+            return Err(anyhow!(
+                "Clamping logup proofs should only have two output evaluations, got: {}",
+                clamping_prover_info.column_evals().len()
+            ));
+        }
+
+        let clamping_polys = clamping_prover_info.column_evals();
+        let num_vars = clamping_polys[0].len().ilog2() as usize;
+
+        let clamping_mles = clamping_polys
             .iter()
-            .map(|claim| claim.eval)
-            .collect::<Vec<E>>();
+            .map(|evaluations| {
+                DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, evaluations).into()
+            })
+            .collect::<Vec<ArcMultilinearExtension<E>>>();
 
-        let combined_eval = requant_info.requant.recombine_claims(&eval_claims);
+        let shifted_mles = shifted_prover_info
+            .column_evals()
+            .iter()
+            .map(|evaluations| {
+                DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, evaluations).into()
+            })
+            .collect::<Vec<ArcMultilinearExtension<E>>>();
 
-        // Pass the eval associated with the poly used in the activation step to the same poly prover
-        let first_claim = logup_proof
-            .output_claims()
-            .first()
-            .ok_or(anyhow!("No claims found"))?;
-        let point = first_claim.point.clone();
+        let clamping_beta: ArcMultilinearExtension<E> =
+            compute_betas_eval(&clamping_logup_proof.output_claims()[0].point)
+                .into_mle()
+                .into();
+        let last_claim_beta: ArcMultilinearExtension<E> =
+            compute_betas_eval(&last_claim.point).into_mle().into();
+        let shifted_beta: ArcMultilinearExtension<E> =
+            compute_betas_eval(&shifted_logup_proof.output_claims()[0].point)
+                .into_mle()
+                .into();
 
-        let corrected_claim = Claim::<E> {
-            point: point.clone(),
-            eval: first_claim.eval - E::from((*quantization::RANGE / 2) as u64),
-        };
+        let batching_challenge = prover
+            .transcript
+            .get_and_append_challenge(b"requant_batching")
+            .elements;
 
-        // Add the claim used in the activation function
-        same_poly_prover.add_claim(corrected_claim)?;
-        let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, prover.transcript)?;
+        let mut vp = VirtualPolynomial::<E>::new(num_vars);
 
-        // Now we add the constant factor back here so that it is a claim for the committed lookup poly
-        let Claim {
-            point: acc_point,
-            eval: acc_eval,
-        } = claim_acc_proof.extract_claim();
-        let first_poly_claim = Claim::<E>::new(
-            acc_point,
-            acc_eval + E::from((*quantization::RANGE / 2) as u64),
+        vp.add_mle_list(vec![clamping_mles[1].clone(), last_claim_beta], E::ONE);
+        vp.add_mle_list(
+            vec![clamping_mles[1].clone(), clamping_beta.clone()],
+            batching_challenge,
         );
 
-        prover
-            .witness_prover
-            .add_claim(requant_info.poly_id * 100, first_poly_claim)?;
+        let mut combiner = batching_challenge * batching_challenge;
+        vp.add_mle_list(vec![clamping_mles[0].clone(), clamping_beta], combiner);
 
-        logup_proof
-            .output_claims()
+        combiner *= batching_challenge;
+        shifted_mles.iter().for_each(|mle| {
+            vp.add_mle_list(vec![shifted_beta.clone(), mle.clone()], combiner);
+            combiner *= batching_challenge;
+        });
+
+        // Run the sumcheck prover for the claims
+        #[allow(deprecated)]
+        let (claim_acc_proof, state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
+
+        // Split out the eq poly evals from witness poly evals
+        let final_evals = state.get_mle_final_evaluations();
+        let point = claim_acc_proof.point.clone();
+        let clamping_out_eval = final_evals[0];
+        let clamping_in_eval = final_evals[3];
+        let shifted_evals = &final_evals[5..];
+
+        // Calculate the combined evaluation to pass to the next layer
+        let combined_eval = requant_info
+            .requant
+            .recombine_claims(clamping_in_eval, shifted_evals);
+
+        // Add the points and evaluations to open commitments at
+        let accumulation_evals = [clamping_in_eval, clamping_out_eval]
             .iter()
+            .chain(shifted_evals.iter())
             .enumerate()
-            .skip(1)
-            .try_for_each(|(i, claim)| {
-                prover
-                    .witness_prover
-                    .add_claim(requant_info.poly_id * 100 + i, claim.clone())
-            })?;
+            .map(|(i, &eval)| {
+                prover.witness_prover.add_claim(
+                    requant_info.poly_id * 100 + i,
+                    Claim::<E>::new(point.clone(), eval),
+                )?;
+                Result::<E, anyhow::Error>::Ok(eval)
+            })
+            .collect::<Result<Vec<E>, _>>()?;
 
+        // Add the layer proof to the list
         prover.push_proof(LayerProof::Requant(RequantProof {
             io_accumulation: claim_acc_proof,
-            lookup: logup_proof,
+            accumulation_evals,
+            clamping_lookup: clamping_logup_proof,
+            shifted_lookup: shifted_logup_proof,
         }));
 
         Ok(Claim {
@@ -459,66 +444,115 @@ impl RequantCtx {
         E::BaseField: Serialize + DeserializeOwned,
         E: Serialize + DeserializeOwned,
     {
-        // 1. Verify the lookup proof
-        let num_instances =
-            (self.requant.right_shift - 1) / ceil_log2(self.requant.after_range) + 2;
-        let verifier_claims = verify_logup_proof(
-            &proof.lookup,
-            num_instances,
+        // 1. Verify the lookup proofs
+        let RequantProof {
+            io_accumulation,
+            accumulation_evals,
+            clamping_lookup,
+            shifted_lookup,
+        } = proof;
+
+        let shifted_instances = self.requant.shift() / *quantization::BIT_LEN;
+        let clamping_claims = verify_logup_proof(
+            clamping_lookup,
+            1,
             constant_challenge,
             column_separation_challenge,
             verifier.transcript,
         )?;
+        let shifted_claims = verify_logup_proof(
+            shifted_lookup,
+            shifted_instances,
+            constant_challenge,
+            E::ONE,
+            verifier.transcript,
+        )?;
 
-        // 2. Verify the accumulation proof from last_claim + lookup claim into the new claim
-        let sp_ctx = same_poly::Context::<E>::new(self.num_vars);
-        let mut sp_verifier = same_poly::Verifier::<E>::new(&sp_ctx);
-        sp_verifier.add_claim(last_claim)?;
+        // Squeeze the batching challenge for the claim accumulation sumcheck
+        let batching_challenge = verifier
+            .transcript
+            .get_and_append_challenge(b"requant_batching")
+            .elements;
 
-        let first_claim = verifier_claims
-            .claims()
-            .first()
-            .ok_or(anyhow::anyhow!("No claims found"))?;
-        let point = first_claim.point.clone();
-        // The first claim needs to be shifted down as we add a value to make sure that all its evals are in the range 0..1 << BIT_LEn
-        let corrected_claim = Claim::<E>::new(
-            point.clone(),
-            first_claim.eval - E::from((*quantization::RANGE / 2) as u64),
-        );
-        sp_verifier.add_claim(corrected_claim)?;
-
-        let Claim {
-            point: acc_point,
-            eval: acc_eval,
-        } = sp_verifier.verify(&proof.io_accumulation, verifier.transcript)?;
-        let first_poly_claim = Claim::<E>::new(
-            acc_point,
-            acc_eval + E::from((*quantization::RANGE / 2) as u64),
-        );
-        // 3. Accumulate the new claim into the witness commitment protocol
-        verifier
-            .witness_verifier
-            .add_claim(self.poly_id * 100, first_poly_claim)?;
-
-        verifier_claims
-            .claims()
-            .iter()
-            .enumerate()
-            .skip(1)
-            .try_for_each(|(i, claim)| {
-                verifier
-                    .witness_verifier
-                    .add_claim(self.poly_id * 100 + i, claim.clone())
-            })?;
-
-        // Here we recombine all of the none dummy polynomials to get the actual claim that should be passed to the next layer
-        let eval_claims = verifier_claims
+        // 2. Verify claim accumulation
+        // Work out the initial sumcheck eval
+        let clamping_point = clamping_claims.point();
+        let clamping_evals = clamping_claims
             .claims()
             .iter()
             .map(|claim| claim.eval)
             .collect::<Vec<E>>();
-        let eval = self.requant.recombine_claims(&eval_claims);
-        // 4. return the input claim for to be proven at subsequent step
-        Ok(Claim { point, eval })
+
+        let shifted_point = shifted_claims.point();
+        let shifted_evals = shifted_claims
+            .claims()
+            .iter()
+            .map(|claim| claim.eval)
+            .collect::<Vec<E>>();
+        let (initial_eval, _) = [last_claim.eval, clamping_evals[1], clamping_evals[0]]
+            .iter()
+            .chain(shifted_evals.iter())
+            .fold((E::ZERO, E::ONE), |(acc, chal), &val| {
+                (acc + chal * val, chal * batching_challenge)
+            });
+
+        let aux_info = VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
+            clamping_point.len(),
+            clamping_point.len(),
+        ]]);
+        let subclaim = IOPVerifierState::<E>::verify(
+            initial_eval,
+            io_accumulation,
+            &aux_info,
+            verifier.transcript,
+        );
+
+        let acc_point = subclaim.point_flat();
+
+        let last_claim_beta = eq_xy_eval(&last_claim.point, &acc_point);
+        let clamping_beta = eq_xy_eval(clamping_point, &acc_point);
+        let shifted_beta = eq_xy_eval(shifted_point, &acc_point);
+
+        let clamping_out_part =
+            (last_claim_beta + batching_challenge * clamping_beta) * accumulation_evals[1];
+        let mut combiner = batching_challenge * batching_challenge;
+
+        let clamping_in_part = combiner * clamping_beta * accumulation_evals[0];
+
+        combiner *= batching_challenge;
+        let (calc_claim, _) = accumulation_evals[2..].iter().fold(
+            (clamping_in_part + clamping_out_part, combiner),
+            |(value_acc, chal), &val| {
+                (
+                    value_acc + val * shifted_beta * chal,
+                    chal * batching_challenge,
+                )
+            },
+        );
+
+        ensure!(
+            calc_claim == subclaim.expected_evaluation,
+            "The calculated claim did not line up with the expected claim, calculated: {:?}, expected: {:?}",
+            calc_claim,
+            subclaim.expected_evaluation
+        );
+
+        // 3. Calculate the next layer claim evaluation
+        let next_claim_eval = self
+            .requant
+            .recombine_claims(accumulation_evals[0], &accumulation_evals[2..]);
+
+        // 4. Add claims to commitment verifier
+        accumulation_evals
+            .iter()
+            .enumerate()
+            .try_for_each(|(i, &eval)| {
+                verifier.witness_verifier.add_claim(
+                    self.poly_id * 100 + i,
+                    Claim::<E>::new(acc_point.clone(), eval),
+                )
+            })?;
+
+        Ok(Claim::<E>::new(acc_point, next_claim_eval))
     }
 }

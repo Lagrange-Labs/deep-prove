@@ -10,6 +10,7 @@ use crate::{
 };
 use anyhow::{Context, ensure};
 use ff_ext::ExtensionField;
+use gkr::util::ceil_log2;
 use itertools::Itertools;
 use multilinear_extensions::{
     mle::{IntoMLE, MultilinearExtension},
@@ -169,6 +170,13 @@ impl Dense<Element> {
         let min = -(2u64.pow(power as u32) as Element);
         let max = 2u64.pow(power as u32) as Element;
         return (min, max);
+    }
+    /// Returns the maximum size in bits of the output
+    pub fn output_bitsize(&self) -> usize {
+        // formula is 2^{2 * BIT_LEN + log(c) + 1} where c is the number of columns and +1 because of the bias
+        let ncols = self.matrix.ncols_2d();
+        // - 1 because numbers are signed so only half of the range is used when doing multiplication
+        2 * (*quantization::BIT_LEN - 1) + ceil_log2(ncols) + 1
     }
     pub fn prove_step<'b, E, T>(
         &self,

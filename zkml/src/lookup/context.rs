@@ -4,6 +4,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use ff::Field;
 use ff_ext::ExtensionField;
+use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::{debug, warn};
 use transcript::Transcript;
@@ -12,7 +13,7 @@ use crate::{
     Element,
     commit::precommit::Context,
     iop::ChallengeStorage,
-    layers::{Layer, activation::Relu},
+    layers::{Layer, activation::Relu, requant::RequantLookupWitness},
     lookup::logup_gkr::structs::LogUpInput,
     model::InferenceTrace,
     quantization::{self, Fieldizer},
@@ -22,9 +23,14 @@ use super::logup_gkr::error::LogUpError;
 pub const TABLE_POLY_ID_OFFSET: usize = 666;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+/// Enum used for establishing the different table types needed to prove non-linear functions in a model.
 pub enum TableType {
+    /// Table used for the Relu activation function
     Relu,
+    /// Table used for range checking (its size is determined by the quantisation bit size)
     Range,
+    /// Table used for clamping values, the inner [`usize`] denotes the maximum bit length a value can be before clamping to use this table
+    Clamping(usize),
 }
 
 impl TableType {
@@ -60,6 +66,30 @@ impl TableType {
                     .unzip();
                 (element_out, vec![field])
             }
+            TableType::Clamping(size) => {
+                let max = 1i128 << (size - 1);
+                let min = -max;
+                let (comb, field): (Vec<Element>, Vec<(E::BaseField, E::BaseField)>) = (min..max)
+                    .map(|i| {
+                        let out = if i < *quantization::MIN {
+                            *quantization::MIN
+                        } else if i > *quantization::MAX {
+                            *quantization::MAX
+                        } else {
+                            i
+                        };
+                        let i_field: E = i.to_field();
+                        let out_field: E = out.to_field();
+                        (
+                            i + out * column_separator,
+                            (i_field.as_bases()[0], out_field.as_bases()[0]),
+                        )
+                    })
+                    .unzip();
+                let (col_one, col_two): (Vec<E::BaseField>, Vec<E::BaseField>) =
+                    field.into_iter().unzip();
+                (comb, vec![col_one, col_two])
+            }
         }
     }
 
@@ -67,6 +97,7 @@ impl TableType {
         match self {
             TableType::Relu => "Relu".to_string(),
             TableType::Range => "Range".to_string(),
+            TableType::Clamping(size) => format!("Clamping: {}", size),
         }
     }
 
@@ -115,6 +146,43 @@ impl TableType {
                     });
                 Ok(vec![first_column, second_column])
             }
+            TableType::Clamping(size) => {
+                if point.len() != *size {
+                    return Err(LogUpError::VerifierError(format!(
+                        "Point was not the correct size to produce a clamping table evaluation, point size: {}, expected: {}",
+                        point.len(),
+                        size
+                    )));
+                }
+
+                let first_column = point
+                    .iter()
+                    .enumerate()
+                    .fold(E::ZERO, |acc, (index, p)| acc + *p * E::from(1u64 << index))
+                    - E::from(1u64 << (size - 1));
+
+                let max = 1i128 << (size - 1);
+                let min = -max;
+
+                let second_col_eval = (min..max)
+                    .map(|i| {
+                        let out = if i < *quantization::MIN {
+                            *quantization::MIN
+                        } else if i > *quantization::MAX {
+                            *quantization::MAX
+                        } else {
+                            i
+                        };
+
+                        let out_field: E = out.to_field();
+                        out_field.as_bases()[0]
+                    })
+                    .collect::<Vec<E::BaseField>>()
+                    .into_mle()
+                    .evaluate(point);
+
+                Ok(vec![first_column, second_col_eval])
+            }
         }
     }
 
@@ -125,6 +193,7 @@ impl TableType {
                 // Theres only one column for a range check so we don't need to generate a challenge
                 E::ONE
             }
+            TableType::Clamping(_) => transcript.get_and_append_challenge(b"Clamping").elements,
         }
     }
 }
@@ -215,25 +284,55 @@ where
 
             Layer::Requant(requant) => {
                 tables.insert(TableType::Range);
+                tables.insert(TableType::Clamping(requant.clamping_size()));
                 let table_lookup_map = table_lookups
                     .entry(TableType::Range)
                     .or_insert_with(|| HashMap::default());
 
-                let (merged_lookups, column_evals) =
-                    requant.gen_lookup_witness::<E>(step_input.get_data());
-                merged_lookups
+                let RequantLookupWitness {
+                    clamping_in,
+                    clamping_out,
+                    clamping_in_field,
+                    clamping_out_field,
+                    shifted_chunks,
+                    shifted_chunks_field,
+                } = requant.gen_lookup_witness::<E>(step_input.get_data());
+
+                shifted_chunks
                     .into_iter()
+                    .flatten()
                     .for_each(|val| *table_lookup_map.entry(val).or_insert(0u64) += 1);
 
-                // Add the witnesses to be committed
-                column_evals.iter().enumerate().for_each(|(i, poly)| {
-                    polys_with_id.push((
-                        step.id * 100 + i,
-                        poly.iter().map(|v| E::from(*v)).collect::<Vec<E>>(),
-                    ));
-                });
+                let clamping_table_lookup_map = table_lookups
+                    .entry(TableType::Clamping(requant.clamping_size()))
+                    .or_insert_with(|| HashMap::default());
 
-                lookups_no_challenges.push((column_evals, 1, TableType::Range));
+                clamping_in
+                    .into_iter()
+                    .zip(clamping_out.into_iter())
+                    .for_each(|(c_in, c_out)| {
+                        let merged = c_in + c_out * column_separator;
+                        *clamping_table_lookup_map.entry(merged).or_insert(0u64) += 1
+                    });
+
+                // Add the witnesses to be committed
+                [&clamping_in_field, &clamping_out_field]
+                    .into_iter()
+                    .chain(shifted_chunks_field.iter())
+                    .enumerate()
+                    .for_each(|(i, poly)| {
+                        polys_with_id.push((
+                            step.id * 100 + i,
+                            poly.iter().map(|v| E::from(*v)).collect::<Vec<E>>(),
+                        ));
+                    });
+
+                lookups_no_challenges.push((
+                    vec![clamping_in_field, clamping_out_field],
+                    2,
+                    TableType::Clamping(requant.clamping_size()),
+                ));
+                lookups_no_challenges.push((shifted_chunks_field, 1, TableType::Range));
             }
             Layer::Pooling(pooling) => {
                 tables.insert(TableType::Range);
