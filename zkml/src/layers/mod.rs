@@ -529,8 +529,19 @@ where
             LayerProof::Convolution(..) => None,
             LayerProof::Dummy => None,
             LayerProof::Activation(ActivationProof { lookup, .. })
-            | LayerProof::Requant(RequantProof { lookup, .. })
             | LayerProof::Pooling(PoolingProof { lookup, .. }) => Some(lookup.fractional_outputs()),
+            LayerProof::Requant(RequantProof {
+                clamping_lookup,
+                shifted_lookup,
+                ..
+            }) => {
+                let (clamp_nums, clamp_denoms) = clamping_lookup.fractional_outputs();
+                let (shift_nums, shift_denoms) = shifted_lookup.fractional_outputs();
+                Some((
+                    [clamp_nums, shift_nums].concat(),
+                    [clamp_denoms, shift_denoms].concat(),
+                ))
+            }
         }
     }
 }

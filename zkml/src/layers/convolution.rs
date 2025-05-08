@@ -361,6 +361,13 @@ impl Convolution<Element> {
         (min, max)
     }
 
+    /// Returns the maximum bitsize of the output of this layer
+    pub fn output_bitsize(&self) -> usize {
+        // 2^{BIT_LEN + log2(k_h * k_w * k_c)}
+        let (_k_n, k_c, k_h, k_w) = self.filter.get4d();
+        2 * (*quantization::BIT_LEN - 1) + ceil_log2(k_h * k_w * k_c + 1)
+    }
+
     pub fn prove_batch_fft_weights<E: ExtensionField, T: Transcript<E>>(
         &self,
         prover: &mut Prover<E, T>,
@@ -564,10 +571,15 @@ impl Convolution<f32> {
             )
         };
         let quantized_conv = self.quantize(&model_scaling, &bias_scaling);
-        let shift = input_scaling.shift(&model_scaling, &output_scaling);
-        let (quantized_min, _quantized_max) =
-            quantized_conv.output_range(*quantization::MIN, *quantization::MAX);
-        let requant = Requant::new(quantized_min.unsigned_abs() as usize, shift);
+
+        let intermediate_bit_size = quantized_conv.output_bitsize();
+        let requant = Requant::from_scaling_factors(
+            *input_scaling,
+            model_scaling,
+            output_scaling,
+            intermediate_bit_size,
+        );
+
         Ok(QuantizeOutput {
             quanzited_op: quantized_conv,
             output_scalings: vec![output_scaling],
