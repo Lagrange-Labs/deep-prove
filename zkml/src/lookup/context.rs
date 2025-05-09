@@ -199,14 +199,17 @@ where
                     .into_iter()
                     .for_each(|lookup| *table_lookup_map.entry(lookup).or_insert(0u64) += 1);
 
-                polys_with_id.push((
-                    step.id,
-                    step.output
-                        .get_data()
-                        .iter()
-                        .map(Fieldizer::<E>::to_field)
-                        .collect(),
-                ));
+                // Add the witness polynomials that we need to commit to
+                [&col_one, &col_two]
+                    .iter()
+                    .enumerate()
+                    .for_each(|(i, poly)| {
+                        polys_with_id.push((
+                            step.id * 100 + i,
+                            poly.iter().map(|v| E::from(*v)).collect::<Vec<E>>(),
+                        ));
+                    });
+
                 lookups_no_challenges.push((vec![col_one, col_two], 2, TableType::Relu));
             }
 
@@ -222,14 +225,13 @@ where
                     .into_iter()
                     .for_each(|val| *table_lookup_map.entry(val).or_insert(0u64) += 1);
 
-                polys_with_id.push((
-                    step.id,
-                    step.output
-                        .get_data()
-                        .iter()
-                        .map(Fieldizer::<E>::to_field)
-                        .collect(),
-                ));
+                // Add the witnesses to be committed
+                column_evals.iter().enumerate().for_each(|(i, poly)| {
+                    polys_with_id.push((
+                        step.id * 100 + i,
+                        poly.iter().map(|v| E::from(*v)).collect::<Vec<E>>(),
+                    ));
+                });
 
                 lookups_no_challenges.push((column_evals, 1, TableType::Range));
             }
@@ -245,8 +247,16 @@ where
                     .into_iter()
                     .for_each(|val| *table_lookup_map.entry(val).or_insert(0u64) += 1);
 
+                // Add the witnesses to be committed
+                column_evals.iter().enumerate().for_each(|(i, poly)| {
+                    polys_with_id.push((
+                        step.id * 100 + i,
+                        poly.iter().map(|v| E::from(*v)).collect::<Vec<E>>(),
+                    ));
+                });
+
                 polys_with_id.push((
-                    step.id,
+                    step.id * 100 + column_evals.len(),
                     step.output
                         .get_data()
                         .iter()
