@@ -2,7 +2,7 @@ use anyhow::{Context, Result, ensure};
 
 use crate::{
     Element,
-    layers::{Layer, convolution::Convolution, dense::Dense, reshape::Reshape},
+    layers::{Layer, convolution::Convolution, dense::Dense, flatten::Flatten},
     model::Model,
     onnx_parse::{check_filter, safe_conv2d_shape, safe_maxpool2d_shape},
 };
@@ -47,7 +47,7 @@ pub fn pad_model(mut model: Model<Element>) -> Result<Model<Element>> {
                     si.input_shape_padded = safe_maxpool2d_shape(&si.input_shape_padded)?;
                     Ok(Layer::Pooling(m))
                 }
-                Layer::Reshape(_) => Ok(Layer::<Element>::Reshape(reshape(&mut si)?)),
+                Layer::Flatten(_) => Ok(Layer::<Element>::Flatten(reshape(&mut si)?)),
                 e => Ok(e),
             }
         })
@@ -55,9 +55,9 @@ pub fn pad_model(mut model: Model<Element>) -> Result<Model<Element>> {
     Ok(model)
 }
 
-fn reshape(si: &mut ShapeInfo) -> Result<Reshape> {
+fn reshape(si: &mut ShapeInfo) -> Result<Flatten> {
     si.ignore_garbage_pad = Some((si.input_shape_og.clone(), si.input_shape_padded.clone()));
-    Ok(Reshape)
+    Ok(Flatten)
 }
 
 fn pad_conv(c: Convolution<Element>, si: &mut ShapeInfo) -> Result<Convolution<Element>> {

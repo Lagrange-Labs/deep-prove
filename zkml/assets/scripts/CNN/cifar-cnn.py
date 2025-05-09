@@ -83,7 +83,7 @@ parser.add_argument("--num-params", type=int, default=None,
                     help="Target number of parameters for the model (default: None, uses default model)")
 parser.add_argument("--distribution", action="store_true",
                     help="Show distribution of model weights")
-parser.add_argument("--with-bias", type=bool, default=False,
+parser.add_argument("--with-bias", type=bool, default=True,
                     help="Use bias in the model (default: False)")
 
 args = parser.parse_args()
@@ -253,12 +253,12 @@ if args.num_params:
     try:
         net = Net(target_params=args.num_params, use_bias=with_bias)
         total_params = sum(p.numel() for p in net.parameters())
-        ##print(f"✅ Model created with {total_params:,} parameters")
-        ##print(f"   Conv1: {net.conv1.out_channels} channels")
-        ##print(f"   Conv2: {net.conv2.out_channels} channels")
-        ##print(f"   FC1: {net.fc1.out_features} features")
-        ##print(f"   FC2: {net.fc2.out_features} features")
-        ##print(f"   Using bias: {args.with_bias}")
+        print(f"✅ Model created with {total_params:,} parameters")
+        print(f"   Conv1: {net.conv1.out_channels} channels")
+        print(f"   Conv2: {net.conv2.out_channels} channels")
+        print(f"   FC1: {net.fc1.out_features} features")
+        print(f"   FC2: {net.fc2.out_features} features")
+        print(f"   Using bias: {args.with_bias}")
     except AssertionError as e:
         print(f"❌ Error: {e}")
         print(f"Using default model instead.")

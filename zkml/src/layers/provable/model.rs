@@ -88,6 +88,15 @@ impl<N> ProvableModel<N> {
 
     pub(crate) fn add_node(&mut self, node: ProvableNode<N>) -> anyhow::Result<NodeId> {
         let node_id = self.nodes.len() as NodeId;
+        self.add_node_with_id(node_id, node)?;
+        Ok(node_id)
+    }
+
+    pub(crate) fn add_node_with_id(
+        &mut self,
+        node_id: NodeId,
+        node: ProvableNode<N>,
+    ) -> anyhow::Result<()> {
         // iterate over the inputs of the node and add the edges to the outputs of
         // corresponding nodes already in the model
         for (i, input) in node.inputs.iter().enumerate() {
@@ -113,7 +122,7 @@ impl<N> ProvableModel<N> {
 
         self.nodes.insert(node_id, node);
 
-        Ok(node_id)
+        Ok(())
     }
 
     pub(crate) fn route_output(&mut self, output_edges: Vec<Edge>) -> Result<()> {

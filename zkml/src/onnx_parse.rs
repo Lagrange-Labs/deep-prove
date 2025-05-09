@@ -5,8 +5,8 @@ use crate::{
         activation::{Activation, Relu},
         convolution::{Convolution, conv2d_shape},
         dense::Dense,
+        flatten::Flatten,
         pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling, maxpool2d_shape},
-        reshape::Reshape,
     },
     padding::pad_model,
     quantization::{AbsoluteMax, ModelMetadata, ScalingStrategy},
@@ -386,7 +386,7 @@ pub fn load_float_model(filepath: &str) -> Result<Model<f32>> {
                 layers.push(layer);
             }
             op if RESHAPE.contains(&op) => {
-                layers.push(Layer::Reshape(Reshape));
+                layers.push(Layer::Flatten(Flatten));
                 input_shape_og = vec![input_shape_og.iter().product()];
             }
             _ => bail!("Unsupported operation"),
@@ -725,5 +725,92 @@ mod tests {
     // BasicTranscript::new(b"m2vec");
     // let io = IO::new(input.to_fields(), output.to_fields());
     // verify::<_, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
-    // }
+
+    #[test]
+    fn test_tract() {
+        let filepath = "bench-cnn/model.onnx";
+        let model = tract_onnx::onnx()
+            .model_for_path(filepath)
+            .map_err(|e| Error::msg(format!("Failed to load model: {:?}", e)))
+            .unwrap();
+        for symbol in model.symbols.all_symbols().iter() {
+            println!("symbol: {:?}", symbol);
+        }
+        let opt = model.into_typed().unwrap();
+
+        let eval_order = opt.eval_order().unwrap();
+        eval_order.into_iter().for_each(|id| {
+            let node = opt.node(id);
+            let outputs = &node.outputs;
+            for (i, output) in outputs.iter().enumerate() {
+                println!(
+                    "Cluttered Node: {},  Output {} shape: {:?}",
+                    node,
+                    i,
+                    output.fact.shape.dims()
+                );
+            }
+            // for node_input in &node.inputs {
+            //     let label = opt.outlet_label(*node_input);
+            //     println!("Node input label: {:?}", label);
+            // }
+        });
+
+        let opt = opt.into_decluttered().unwrap();
+
+        let eval_order = opt.eval_order().unwrap();
+
+        eval_order.into_iter().for_each(|id| {
+            let node = opt.node(id);
+            let outputs = &node.outputs;
+
+            for (i, output) in outputs.iter().enumerate() {
+                println!(
+                    "Node {}: {},  Output {} shape: {:?}",
+                    id,
+                    node,
+                    i,
+                    output.fact.shape.dims()
+                );
+            }
+            // for node_input in &node.inputs {
+            //     let label = opt.outlet_label(*node_input);
+            //     println!("Node input label: {:?}", label);
+            // }
+        });
+
+        let mut values = SymbolValues::default();
+        let symbol = opt.sym("batch_size");
+        values.set(&symbol, 1);
+
+        let opt = opt.concretize_dims(&values).unwrap();
+
+        // let eval_order = opt.eval_order().unwrap();
+
+        // eval_order.into_iter().for_each(|id| {
+        //     let node = opt.node(id);
+        //     let outputs = &node.outputs;
+        //     for (i, output) in outputs.iter().enumerate() {
+        //         println!(
+        //             "Node: {},  Output {} shape: {:?}",
+        //             node,
+        //             i,
+        //             output.fact.shape.dims()
+        //         );
+        //     }
+        // });
+
+        let plan = SimplePlan::new(opt).unwrap();
+
+        for node_id in plan.order_without_consts() {
+            let node = plan.model().node(*node_id);
+            println!(
+                "planned node {}:{}: input {:?} -> op{:?}",
+                node_id,
+                node.name,
+                node.inputs,
+                node.op()
+            );
+        }
+    }
 }
