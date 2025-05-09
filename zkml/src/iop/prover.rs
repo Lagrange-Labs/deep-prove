@@ -112,7 +112,7 @@ where
                 activation.prove_step(self, &last_claim, &step.output.get_data(), act_ctx)
             }
             (Layer::Requant(requant), LayerCtx::Requant(ctx)) => {
-                requant.prove_step(self, &last_claim, &step.output.get_data(), ctx)
+                requant.prove_step(self, &last_claim, ctx)
             }
             (Layer::Pooling(pooling), LayerCtx::Pooling(info)) => {
                 pooling.prove_pooling(self, last_claim, input, &step.output, info)
