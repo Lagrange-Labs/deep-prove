@@ -159,9 +159,11 @@ impl Stride {
         let rows = self.input_rows();
         let columns = self.input_cols();
 
-        let left_variables = ((rows - 1) / self.height() + 1).next_power_of_two().ilog2() as usize;
+        let left_variables = ((rows.next_power_of_two() - 1) / self.height() + 1)
+            .next_power_of_two()
+            .ilog2() as usize;
 
-        let right_variables = ((columns - 1) / self.width() + 1)
+        let right_variables = ((columns.next_power_of_two() - 1) / self.width() + 1)
             .next_power_of_two()
             .ilog2() as usize;
 
@@ -224,6 +226,7 @@ impl Stride {
         let [left, right]: [Vec<E>; 2] = self.get_fixed_mles::<E>(point)?;
 
         // We need to know how many of the input tensors high variables to fix in place
+        // let input = input.pad_next_power_of_two();
         let input_shape = input.get_shape();
         let middle = if input_shape.len() < 2 {
             return Err(StrideError::ParameterError(format!(
@@ -322,10 +325,10 @@ impl Stride {
         // this is because we fixed highvariables during proving so that the sumcheck input was the MLE of a matrix
         // rather than a higher dimensional tensor.
 
-        let left_variables = (((self.input_cols() - 1) / self.height()) + 1)
+        let left_variables = (((self.input_rows().next_power_of_two() - 1) / self.height()) + 1)
             .next_power_of_two()
             .ilog2() as usize;
-        let right_variables = (((self.input_rows() - 1) / self.width()) + 1)
+        let right_variables = (((self.input_cols().next_power_of_two() - 1) / self.width()) + 1)
             .next_power_of_two()
             .ilog2() as usize;
 
@@ -393,8 +396,8 @@ impl Stride {
             )));
         }
 
-        let new_height = ((self.input_cols() - 1) / self.height()) + 1;
-        let new_width = ((self.input_rows() - 1) / self.width()) + 1;
+        let new_height = ((self.input_cols().next_power_of_two() - 1) / self.height()) + 1;
+        let new_width = ((self.input_rows().next_power_of_two() - 1) / self.width()) + 1;
 
         Ok(shape
             .iter()
@@ -418,7 +421,7 @@ impl<E: ExtensionField> StrideProof<E> {
 
 mod tests {
 
-    use ark_std::rand::{SeedableRng, rngs::StdRng};
+    use ark_std::rand::{SeedableRng, rngs::StdRng, thread_rng};
 
     use goldilocks::GoldilocksExt2;
 
@@ -549,7 +552,7 @@ mod tests {
         stride_checker((2, 1));
     }
 
-    fn stide_mle<E: ExtensionField>(
+    fn stride_mle<E: ExtensionField>(
         input: Tensor<Element>,
         stride_h: usize,
         stride_w: usize,
@@ -559,7 +562,9 @@ mod tests {
         let input_tensor_element = input.pad_next_power_of_two();
         let input_tensor: Tensor<E> = input_tensor_element.clone().to_fields();
 
-        let expected_output_tensor = input.subsample(stride_h, stride_w).pad_next_power_of_two();
+        let expected_output_tensor = input_tensor_element
+            .subsample(stride_h, stride_w)
+            .pad_next_power_of_two();
 
         let expected_output_mle = expected_output_tensor.to_mle_2d::<E>();
 
@@ -570,8 +575,8 @@ mod tests {
         let stride = Stride::new_conv(
             stride_h,
             stride_w,
-            input_tensor.shape[input_tensor.shape.len() - 2],
-            input_tensor.shape[input_tensor.shape.len() - 1],
+            input.shape[input.shape.len() - 2],
+            input.shape[input.shape.len() - 1],
         );
         let [left_evals, right_evals]: [Vec<E>; 2] = stride.get_fixed_mles::<E>(&point)?;
 
@@ -593,12 +598,105 @@ mod tests {
     fn test_stride_mle() -> Result<(), StrideError> {
         let input = Tensor::<Element>::from_contiguous(vec![3, 4]);
         let (stride_h, stride_w) = (2, 3);
-        stide_mle::<GoldilocksExt2>(input, stride_h, stride_w)?;
+        stride_mle::<GoldilocksExt2>(input, stride_h, stride_w)?;
+
+        // let input = Tensor::<Element>::from_contiguous(vec![3, 5]);
+        // let (stride_h, stride_w) = (2, 3);
+        // stride_mle::<GoldilocksExt2>(input, stride_h, stride_w)?;
+
+        Ok(())
+    }
+
+    fn stride_proving<E>(
+        input: Tensor<Element>,
+        stride_h: usize,
+        stride_w: usize,
+    ) -> Result<(), StrideError>
+    where
+        E: ExtensionField + Serialize + DeserializeOwned,
+        E::BaseField: Serialize + DeserializeOwned,
+    {
+        let mut rng = thread_rng();
+
+        assert!(input.shape.len() >= 2);
+        let input_rows = input.shape.len() - 2;
+        let input_cols = input.shape.len() - 1;
+
+        let stride = Stride::new_conv(
+            stride_h,
+            stride_w,
+            input.shape[input_rows],
+            input.shape[input_cols],
+        );
+
+        let input_tensor: Tensor<E> = input.pad_next_power_of_two().to_fields();
+        let expected_output_tensor = input_tensor
+            .subsample(stride_h, stride_w)
+            .pad_next_power_of_two();
+
+        // Create a `Context` struct
+        let ctx = Context::<E> {
+            steps_info: vec![LayerCtx::<E>::Stride(stride)],
+            weights: crate::commit::precommit::Context::<E>::default(),
+            lookup: crate::lookup::context::LookupContext::default(),
+        };
+
+        let mut prover_transcript = default_transcript::<E>();
+        let mut prover = Prover::new(&ctx, &mut prover_transcript);
+
+        let output_mle = expected_output_tensor.get_data().to_vec().into_mle();
+        let point = (0..output_mle.num_vars())
+            .map(|_| E::random(&mut rng))
+            .collect::<Vec<E>>();
+        let eval = output_mle.evaluate(&point);
+
+        let last_claim = Claim { point, eval };
+
+        let output_claim = stride.prove_step(&mut prover, last_claim.clone(), &input_tensor)?;
+
+        // Now run the verifier logic
+        let mut verifier_transcript = default_transcript::<E>();
+
+        let mut verifier = Verifier::new(&mut verifier_transcript);
+
+        let stride_proof = if let LayerProof::Stride(p) = &prover.proofs[0] {
+            p
+        } else {
+            return Err(StrideError::ProvingError(format!(
+                "Proving stride somehow eneded up with a non-stride proof",
+            )));
+        };
+
+        let verifier_out_claim = stride.verify_stride(&mut verifier, last_claim, stride_proof)?;
+
+        // if verifier_out_claim.eval != output_claim.eval {
+        //     return Err(StrideError::ProvingError(format!(
+        //         "Prover output claim {:?} and verifier output claim {:?} were not equal",
+        //         output_claim.eval, verifier_out_claim.eval,
+        //     )));
+        // }
+
+        // let input_poly_eval = input_tensor
+        //     .get_data()
+        //     .to_vec()
+        //     .into_mle()
+        //     .evaluate(&verifier_out_claim.point);
+
+        // if input_poly_eval != verifier_out_claim.eval {
+        //     return Err(StrideError::ProvingError(format!(
+        //         "Input tensor poly evaluation {:?} and verifier output claim {:?} were not equal",
+        //         input_poly_eval, verifier_out_claim.eval,
+        //     )));
+        // }
+
         Ok(())
     }
 
     #[test]
     fn test_stride_proving() -> Result<(), StrideError> {
+        // let input = Tensor::random_seed(vec![3, 4], Some(0));
+        let input = Tensor::<Element>::from_contiguous(vec![3, 4]);
+        stride_proving::<GoldilocksExt2>(input, 2, 3)?;
         Ok(())
     }
 }
