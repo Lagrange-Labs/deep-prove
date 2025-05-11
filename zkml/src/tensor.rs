@@ -19,7 +19,7 @@ use std::{
 use crate::{
     Element,
     layers::pooling::MAXPOOL2D_KERNEL_SIZE,
-    quantization::{Fieldizer, IntoElement},
+    quantization::{self, Fieldizer, IntoElement},
     to_bit_sequence_le,
 };
 
@@ -1271,7 +1271,11 @@ where
 
         (maxpool_result, padded_maxpool_tensor)
     }
-
+}
+impl<T> Tensor<T>
+where
+    T: Clone,
+{
     pub fn subsample(&self, r: usize, c: usize) -> Tensor<T> {
         assert!(r > 0 && c > 0, "r and c must be positive integers");
         assert!(
@@ -1320,6 +1324,16 @@ where
         }
 
         Tensor::new(new_shape, new_data)
+    }
+
+    pub fn from_contiguous(shape: Vec<usize>) -> Tensor<Element> {
+        let total_size: usize = shape.iter().product();
+
+        let data: Vec<Element> = (0..total_size as Element)
+            .map(|i| i % *quantization::MAX)
+            .collect::<Vec<Element>>();
+
+        Tensor::new(shape, data)
     }
 }
 

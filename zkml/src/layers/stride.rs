@@ -33,7 +33,7 @@ pub enum Stride {
         height: usize,
         width: usize,
         input_rows: usize,
-        input_columns: usize,
+        input_cols: usize,
     },
 }
 
@@ -87,17 +87,12 @@ impl From<SplitSumcheckError> for StrideError {
 }
 
 impl Stride {
-    pub fn new_conv(
-        height: usize,
-        width: usize,
-        input_rows: usize,
-        input_columns: usize,
-    ) -> Stride {
+    pub fn new_conv(height: usize, width: usize, input_rows: usize, input_cols: usize) -> Stride {
         Stride::Conv {
             height,
             width,
             input_rows,
-            input_columns,
+            input_cols,
         }
     }
 
@@ -123,9 +118,12 @@ impl Stride {
     }
 
     /// Getter for the number of columns of the input
-    pub fn input_columns(&self) -> usize {
+    pub fn input_cols(&self) -> usize {
         match self {
-            Stride::Conv { input_columns, .. } => *input_columns,
+            Stride::Conv {
+                input_cols: input_columns,
+                ..
+            } => *input_columns,
         }
     }
 
@@ -136,7 +134,7 @@ impl Stride {
 
     /// Returns the number of variables the right matrix MLE has after fixing the rows
     pub fn right_variables(&self) -> usize {
-        self.input_columns().next_power_of_two().ilog2() as usize
+        self.input_cols().next_power_of_two().ilog2() as usize
     }
 
     pub fn stride_sample<T: Default + Clone + From<u64>>(
@@ -145,47 +143,7 @@ impl Stride {
     ) -> Result<Tensor<T>, StrideError> {
         let height = self.height();
         let width = self.width();
-
-        if height == 0 || width == 0 {
-            return Err(StrideError::ParameterError(
-                "Strides height and width must be positive".to_string(),
-            ));
-        }
-        let mut shape = tensor.get_shape();
-        if shape.len() > 4 || shape.len() < 2 {
-            return Err(StrideError::ParameterError(
-                "Tensor must be 2, 3, or 4-dimensional".to_string(),
-            ));
-        }
-
-        for _ in 0..(4 - shape.len()) {
-            shape.insert(0, 1);
-        }
-
-        let batch = shape[0];
-        let d1 = shape[1];
-        let d2 = shape[2];
-        let d3 = shape[3];
-        let new_d2 = (d2 + height - 1) / height;
-        let new_d3 = (d3 + width - 1) / width;
-        let new_shape = vec![batch, d1, new_d2, new_d3];
-
-        // Initialize output data
-        let mut new_data = Vec::with_capacity(new_shape.iter().product());
-
-        for b in 0..batch {
-            for ch in 0..d1 {
-                for row in (0..d2).step_by(height) {
-                    for col in (0..d3).step_by(width) {
-                        let idx = b * d1 * d2 * d3 + ch * d2 * d3 + row * d3 + col;
-                        new_data.push(tensor.data[idx].clone());
-                    }
-                }
-            }
-        }
-
-        let result = Tensor::new(new_shape, new_data);
-
+        let result = tensor.subsample(height, width);
         Ok(result)
     }
 
@@ -199,7 +157,7 @@ impl Stride {
         point: &[E],
     ) -> Result<[Vec<E>; 2], StrideError> {
         let rows = self.input_rows();
-        let columns = self.input_columns();
+        let columns = self.input_cols();
 
         let left_variables = ((rows - 1) / self.height() + 1).next_power_of_two().ilog2() as usize;
 
@@ -216,8 +174,8 @@ impl Stride {
         }
 
         // Compute the left and right beta poly evals
-        let left_beta_eval = compute_betas_eval(&point[..left_variables]);
-        let right_beta_eval = compute_betas_eval(&point[left_variables..]);
+        let left_beta_eval = compute_betas_eval(&point[left_variables..]);
+        let right_beta_eval = compute_betas_eval(&point[..left_variables]);
 
         match *self {
             Stride::Conv { height, width, .. } => {
@@ -333,9 +291,8 @@ impl Stride {
         let claimed_sum = *eval;
 
         // Make the VPAuxInfo
-        let vars = (self.input_columns().next_power_of_two()
-            * self.input_rows().next_power_of_two())
-        .ilog2() as usize;
+        let vars = (self.input_cols().next_power_of_two() * self.input_rows().next_power_of_two())
+            .ilog2() as usize;
         let aux_info = VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![vars, vars]]);
 
         let subclaim = IOPVerifierState::<E>::verify(
@@ -365,7 +322,7 @@ impl Stride {
         // this is because we fixed highvariables during proving so that the sumcheck input was the MLE of a matrix
         // rather than a higher dimensional tensor.
 
-        let left_variables = (((self.input_columns() - 1) / self.height()) + 1)
+        let left_variables = (((self.input_cols() - 1) / self.height()) + 1)
             .next_power_of_two()
             .ilog2() as usize;
         let right_variables = (((self.input_rows() - 1) / self.width()) + 1)
@@ -389,7 +346,7 @@ impl Stride {
         last_point: &[E],
         sumcheck_point: &[E],
     ) -> Result<Vec<E>, StrideError> {
-        let right_variables = self.input_columns().next_power_of_two().ilog2() as usize;
+        let right_variables = self.input_cols().next_power_of_two().ilog2() as usize;
         let left_variables = self.input_rows().next_power_of_two().ilog2() as usize;
 
         if sumcheck_point.len() != left_variables + right_variables {
@@ -428,15 +385,15 @@ impl Stride {
             )));
         }
 
-        if shape[num_dims - 1] < self.input_columns() {
+        if shape[num_dims - 1] < self.input_cols() {
             return Err(StrideError::ParameterError(format!(
                 "Input tensor shape incorrect, expected minimum {} columns but input tensor had {} columns",
-                self.input_columns(),
+                self.input_cols(),
                 shape[num_dims - 1]
             )));
         }
 
-        let new_height = ((self.input_columns() - 1) / self.height()) + 1;
+        let new_height = ((self.input_cols() - 1) / self.height()) + 1;
         let new_width = ((self.input_rows() - 1) / self.width()) + 1;
 
         Ok(shape
@@ -461,7 +418,7 @@ impl<E: ExtensionField> StrideProof<E> {
 
 mod tests {
 
-    use ark_std::rand::thread_rng;
+    use ark_std::rand::{SeedableRng, rngs::StdRng};
 
     use goldilocks::GoldilocksExt2;
 
@@ -503,10 +460,10 @@ mod tests {
         };
         let (fft_output, _) = fft_conv.op::<GoldilocksExt2>(&padded_input);
 
-        println!("Conv2d: {:?}", output);
-        println!("ConvFFT: {:?}", fft_output);
+        assert!(output == fft_output);
     }
 
+    // Generate the left matrix for strides
     fn gen_left_matrix(stride_h: usize, rows: usize) -> Tensor<Element> {
         let left_h = (rows - 1) / stride_h + 1;
         let left_w = rows;
@@ -526,6 +483,7 @@ mod tests {
         Tensor::new(left_shape, data)
     }
 
+    // Generate the right matrix for strides
     fn gen_right_matrix(stride_w: usize, cols: usize) -> Tensor<Element> {
         let right_h = cols;
         let right_w = (cols - 1) / stride_w + 1;
@@ -545,23 +503,6 @@ mod tests {
         Tensor::new(right_shape, data)
     }
 
-    fn get_conv_stride<T>(input: Tensor<T>, stride_h: usize, stride_w: usize) {
-        let ndim = input.shape.len();
-        if ndim < 2 {
-            panic!("Tensor must have at least 2 dimensions, got {}.", ndim);
-        }
-
-        let h_dim = input.shape[ndim - 2];
-        let w_dim = input.shape[ndim - 1];
-        let matrix_size = h_dim * w_dim;
-
-        // Compute the number of matrices (product of leading dimensions)
-        let num_matrices = if ndim == 2 {
-            1
-        } else {
-            input.shape[..ndim - 2].iter().product::<usize>()
-        };
-    }
     #[test]
     fn test_stride_plain() {
         let input_shape: Vec<usize> = vec![1, 1, 6, 6];
@@ -601,12 +542,63 @@ mod tests {
 
             let expected = input.conv2d(&weight, &bias, (stride_h, stride_w), (0, 0));
 
-            // println!("Stride: {:?}", (stride_h, stride_w));
-            // println!("IsEqual: {}", expected == result);
             assert!(expected == result);
         };
 
         stride_checker((2, 2));
         stride_checker((2, 1));
+    }
+
+    fn stide_mle<E: ExtensionField>(
+        input: Tensor<Element>,
+        stride_h: usize,
+        stride_w: usize,
+    ) -> Result<(), StrideError> {
+        let mut rng = StdRng::seed_from_u64(0);
+
+        let input_tensor_element = input.pad_next_power_of_two();
+        let input_tensor: Tensor<E> = input_tensor_element.clone().to_fields();
+
+        let expected_output_tensor = input.subsample(stride_h, stride_w).pad_next_power_of_two();
+
+        let expected_output_mle = expected_output_tensor.to_mle_2d::<E>();
+
+        let point = (0..expected_output_mle.num_vars())
+            .map(|_| E::random(&mut rng))
+            .collect::<Vec<E>>();
+
+        let stride = Stride::new_conv(
+            stride_h,
+            stride_w,
+            input_tensor.shape[input_tensor.shape.len() - 2],
+            input_tensor.shape[input_tensor.shape.len() - 1],
+        );
+        let [left_evals, right_evals]: [Vec<E>; 2] = stride.get_fixed_mles::<E>(&point)?;
+
+        let output_eval = expected_output_mle.evaluate(&point);
+
+        let data_len = input_tensor.data.len();
+        let in_rows = input_tensor.shape[input_tensor.shape.len() - 2];
+        let in_cols = input_tensor.shape[input_tensor.shape.len() - 1];
+
+        let calculated_eval = (0usize..data_len).fold(E::ZERO, |acc, i| {
+            acc + (left_evals[i / in_cols] * input_tensor.get_data()[i] * right_evals[i % in_rows])
+        });
+
+        assert!(calculated_eval == output_eval);
+        Ok(())
+    }
+
+    #[test]
+    fn test_stride_mle() -> Result<(), StrideError> {
+        let input = Tensor::<Element>::from_contiguous(vec![3, 4]);
+        let (stride_h, stride_w) = (2, 3);
+        stide_mle::<GoldilocksExt2>(input, stride_h, stride_w)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_stride_proving() -> Result<(), StrideError> {
+        Ok(())
     }
 }
