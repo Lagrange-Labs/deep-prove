@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+//! Module containign code for performing proving friendly requantisation. This is done via a [fixed point multiplication](https://en.wikipedia.org/wiki/Fixed-point_arithmetic#Binary_fixed-point_multiplication) and use of lookup arguments.
 
 use crate::{
     Claim, Element, Prover, ScalingFactor, Tensor,
@@ -29,7 +29,9 @@ use multilinear_extensions::{
     mle::{DenseMultilinearExtension, IntoMLE},
     virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial},
 };
+
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::collections::HashMap;
 use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
 
 use transcript::Transcript;
@@ -255,31 +257,25 @@ where
 
         let no_chunks = shift / range_check_bit_size;
 
-        let (shifted_chunks, shifted_chunks_field): (Vec<Vec<Element>>, Vec<Vec<E::BaseField>>) =
-            (0..no_chunks)
-                .map(|j| {
-                    let (elem, field): (Vec<Element>, Vec<E::BaseField>) = shifted
-                        .iter()
-                        .map(|&elem| {
-                            let tmp = elem >> (j * range_check_bit_size);
-                            let chunk = tmp & range_mask;
-                            let chunk_field: E = chunk.to_field();
-                            (chunk, chunk_field.as_bases()[0])
-                        })
-                        .unzip();
-                    (elem, field)
-                })
-                .unzip();
-
         let table_lookup_map = gen
             .lookups
             .entry(TableType::Range)
             .or_insert_with(|| HashMap::default());
 
-        shifted_chunks
-            .into_iter()
-            .flatten()
-            .for_each(|val| *table_lookup_map.entry(val).or_insert(0u64) += 1);
+        let shifted_chunks_field = (0..no_chunks)
+            .map(|j| {
+                shifted
+                    .iter()
+                    .map(|&elem| {
+                        let tmp = elem >> (j * range_check_bit_size);
+                        let chunk = tmp & range_mask;
+                        let chunk_field: E = chunk.to_field();
+                        *table_lookup_map.entry(chunk).or_insert(0u64) += 1;
+                        chunk_field.as_bases()[0]
+                    })
+                    .collect::<Vec<E::BaseField>>()
+            })
+            .collect::<Vec<Vec<E::BaseField>>>();
 
         // Add the witnesses to be committed
         [&clamping_in_field, &clamping_out_field]
@@ -367,24 +363,6 @@ where
             column_separation_challenge,
         )?])
     }
-}
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct RequantLookupWitness<E: ExtensionField>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-{
-    /// The input to the clamping table
-    pub(crate) clamping_in: Vec<Element>,
-    /// The output of the clamping table
-    pub(crate) clamping_out: Vec<Element>,
-    /// The clamping in column as [`E::BaseField`] elements
-    pub(crate) clamping_in_field: Vec<E::BaseField>,
-    /// The clamping out column as [`E::BaseField`] elements
-    pub(crate) clamping_out_field: Vec<E::BaseField>,
-    /// The chunks that are shifted away
-    pub(crate) shifted_chunks: Vec<Vec<Element>>,
-    /// The chunks that are shifted away as [`E::BaseField`] elements
-    pub(crate) shifted_chunks_field: Vec<Vec<E::BaseField>>,
 }
 
 impl Requant {
