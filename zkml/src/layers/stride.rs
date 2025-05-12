@@ -137,6 +137,11 @@ impl Stride {
         self.input_cols().next_power_of_two().ilog2() as usize
     }
 
+    pub fn op(&self, tensor: &Tensor<Element>) -> Result<Tensor<Element>, StrideError> {
+        self.stride_sample(tensor)
+            .and_then(|t| Ok(t.pad_next_power_of_two()))
+    }
+
     pub fn stride_sample<T: Default + Clone + From<u64>>(
         &self,
         tensor: &Tensor<T>,
@@ -147,9 +152,42 @@ impl Stride {
         Ok(result)
     }
 
-    pub fn op(&self, tensor: &Tensor<Element>) -> Result<Tensor<Element>, StrideError> {
-        self.stride_sample(tensor)
-            .and_then(|t| Ok(t.pad_next_power_of_two()))
+    /// Given a shape returns the shape after stride is performed
+    pub fn stride_shape(&self, shape: &[usize]) -> Result<Vec<usize>, StrideError> {
+        let num_dims = shape.len();
+        // Need to have at least two dimensions to pad
+        if num_dims < 2 {
+            return Err(StrideError::ParameterError(
+                "Cannot calculate stride shape as input shape had fewer than two dimensions"
+                    .to_string(),
+            ));
+        }
+        // Check the provided shape agrees with the expected number of columns and rows
+        if shape[num_dims - 2] < self.input_rows() {
+            return Err(StrideError::ParameterError(format!(
+                "Input tensor shape incorrect, expected minimum {} rows but input tensor had {} rows",
+                self.input_rows(),
+                shape[num_dims - 2]
+            )));
+        }
+
+        if shape[num_dims - 1] < self.input_cols() {
+            return Err(StrideError::ParameterError(format!(
+                "Input tensor shape incorrect, expected minimum {} columns but input tensor had {} columns",
+                self.input_cols(),
+                shape[num_dims - 1]
+            )));
+        }
+
+        let new_height = ((self.input_cols() - 1) / self.height()) + 1;
+        let new_width = ((self.input_rows() - 1) / self.width()) + 1;
+
+        Ok(shape
+            .iter()
+            .copied()
+            .take(num_dims - 2)
+            .chain([new_height, new_width])
+            .collect::<Vec<usize>>())
     }
 
     pub fn get_fixed_mles<E: ExtensionField>(
@@ -160,7 +198,6 @@ impl Stride {
         let columns = self.input_cols();
 
         let left_variables = ((rows - 1) / self.height() + 1).next_power_of_two().ilog2() as usize;
-
         let right_variables = ((columns - 1) / self.width() + 1)
             .next_power_of_two()
             .ilog2() as usize;
@@ -309,7 +346,7 @@ impl Stride {
             .ilog2() as usize;
         let aux_info = VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![vars, vars]]);
 
-        println!("Verify_stride num vars: {}", vars);
+        // println!("Verify_stride num vars: {}", vars);
         let subclaim = IOPVerifierState::<E>::verify(
             claimed_sum,
             proof.sumcheck_proof(),
@@ -336,7 +373,6 @@ impl Stride {
         // We need to append the correct number of elements from the last claim point to the sumcheck point
         // this is because we fixed highvariables during proving so that the sumcheck input was the MLE of a matrix
         // rather than a higher dimensional tensor.
-
         let left_variables = (((self.input_rows() - 1) / self.height()) + 1)
             .next_power_of_two()
             .ilog2() as usize;
@@ -354,7 +390,19 @@ impl Stride {
             eval: out_eval,
         })
     }
+}
+impl<E: ExtensionField> StrideProof<E> {
+    pub fn new(sumcheck_proof: IOPProof<E>) -> StrideProof<E> {
+        StrideProof { sumcheck_proof }
+    }
 
+    /// Getter for the sumcheck proof
+    pub(crate) fn sumcheck_proof(&self) -> &IOPProof<E> {
+        &self.sumcheck_proof
+    }
+}
+
+impl Stride {
     /// Function used by the [`Verifier`] to compute the evaluations of the stride matrices
     fn compute_matrix_evals<E: ExtensionField>(
         &self,
@@ -374,60 +422,11 @@ impl Stride {
 
         let [left, right]: [Vec<E>; 2] = self.get_fixed_mles::<E>(last_point)?;
 
-        let left_eval = left.into_mle().evaluate(&sumcheck_point[..left_variables]);
+        let left_eval = left.into_mle().evaluate(&sumcheck_point[left_variables..]);
 
-        let right_eval = right.into_mle().evaluate(&sumcheck_point[left_variables..]);
+        let right_eval = right.into_mle().evaluate(&sumcheck_point[..left_variables]);
 
         Ok(vec![left_eval, right_eval])
-    }
-
-    /// Given a shape returns the shape after stride is performed
-    pub fn stride_shape(&self, shape: &[usize]) -> Result<Vec<usize>, StrideError> {
-        let num_dims = shape.len();
-        // Need to have at least two dimensions to pad
-        if num_dims < 2 {
-            return Err(StrideError::ParameterError(
-                "Cannot calculate stride shape as input shape had fewer than two dimensions"
-                    .to_string(),
-            ));
-        }
-        // Check the provided shape agrees with the expected number of columns and rows
-        if shape[num_dims - 2] < self.input_rows() {
-            return Err(StrideError::ParameterError(format!(
-                "Input tensor shape incorrect, expected minimum {} rows but input tensor had {} rows",
-                self.input_rows(),
-                shape[num_dims - 2]
-            )));
-        }
-
-        if shape[num_dims - 1] < self.input_cols() {
-            return Err(StrideError::ParameterError(format!(
-                "Input tensor shape incorrect, expected minimum {} columns but input tensor had {} columns",
-                self.input_cols(),
-                shape[num_dims - 1]
-            )));
-        }
-
-        let new_height = ((self.input_cols() - 1) / self.height()) + 1;
-        let new_width = ((self.input_rows() - 1) / self.width()) + 1;
-
-        Ok(shape
-            .iter()
-            .copied()
-            .take(num_dims - 2)
-            .chain([new_height, new_width])
-            .collect::<Vec<usize>>())
-    }
-}
-
-impl<E: ExtensionField> StrideProof<E> {
-    pub fn new(sumcheck_proof: IOPProof<E>) -> StrideProof<E> {
-        StrideProof { sumcheck_proof }
-    }
-
-    /// Getter for the sumcheck proof
-    pub(crate) fn sumcheck_proof(&self) -> &IOPProof<E> {
-        &self.sumcheck_proof
     }
 }
 
