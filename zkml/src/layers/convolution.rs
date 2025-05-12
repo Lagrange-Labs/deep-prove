@@ -571,7 +571,6 @@ impl Convolution<f32> {
             )
         };
         let quantized_conv = self.quantize(&model_scaling, &bias_scaling);
-
         let intermediate_bit_size = quantized_conv.output_bitsize();
         let requant = Requant::from_scaling_factors(
             *input_scaling,

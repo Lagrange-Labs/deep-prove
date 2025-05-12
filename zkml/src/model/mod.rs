@@ -585,9 +585,15 @@ pub(crate) mod test {
                     let input_scaling_factor = ScalingFactor::from_scale(1.0, None);
                     let max_model = dense.matrix.max_value().max(dense.bias.max_value()) as f32;
                     let model_scaling_factor = ScalingFactor::from_absolute_max(max_model, None);
-                    let shift =
-                        input_scaling_factor.shift(&model_scaling_factor, &output_scaling_factor);
-                    let requant = Requant::new(min_output_range as usize, shift);
+
+                    let intermediate_bit_size = dense.output_bitsize();
+                    let requant = Requant::from_scaling_factors(
+                        input_scaling_factor,
+                        model_scaling_factor,
+                        output_scaling_factor,
+                        intermediate_bit_size,
+                    );
+
                     last_node_id =
                         Some(model.add_consecutive_layer(Layer::Dense(dense), last_node_id)?);
                     last_node_id =
