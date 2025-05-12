@@ -159,11 +159,9 @@ impl Stride {
         let rows = self.input_rows();
         let columns = self.input_cols();
 
-        let left_variables = ((rows.next_power_of_two() - 1) / self.height() + 1)
-            .next_power_of_two()
-            .ilog2() as usize;
+        let left_variables = ((rows - 1) / self.height() + 1).next_power_of_two().ilog2() as usize;
 
-        let right_variables = ((columns.next_power_of_two() - 1) / self.width() + 1)
+        let right_variables = ((columns - 1) / self.width() + 1)
             .next_power_of_two()
             .ilog2() as usize;
 
@@ -251,6 +249,19 @@ impl Stride {
             input.get_data().to_vec()
         };
 
+        // let in_cols = input_shape[1];
+        // let calculated_eval = (0usize..middle.len()).fold(E::ZERO, |acc, i| {
+        //     println!(
+        //         "i: {} (r, c): ({}, {}), acc[i]: {:?}",
+        //         i,
+        //         i / in_cols,
+        //         i % in_cols,
+        //         left[i / in_cols] * middle[i] * right[i % in_cols],
+        //     );
+        //     acc + (left[i / in_cols] * middle[i] * right[i % in_cols])
+        // });
+
+        // assert_eq!(calculated_eval, last_claim.eval);
         let (proof, state) =
             IOPSplitProverState::<E>::prove_split_sumcheck(left, middle, right, prover.transcript)?;
         // Clone the point so we can use it in the out claim
@@ -298,6 +309,7 @@ impl Stride {
             .ilog2() as usize;
         let aux_info = VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![vars, vars]]);
 
+        println!("Verify_stride num vars: {}", vars);
         let subclaim = IOPVerifierState::<E>::verify(
             claimed_sum,
             proof.sumcheck_proof(),
@@ -325,10 +337,10 @@ impl Stride {
         // this is because we fixed highvariables during proving so that the sumcheck input was the MLE of a matrix
         // rather than a higher dimensional tensor.
 
-        let left_variables = (((self.input_rows().next_power_of_two() - 1) / self.height()) + 1)
+        let left_variables = (((self.input_rows() - 1) / self.height()) + 1)
             .next_power_of_two()
             .ilog2() as usize;
-        let right_variables = (((self.input_cols().next_power_of_two() - 1) / self.width()) + 1)
+        let right_variables = (((self.input_cols() - 1) / self.width()) + 1)
             .next_power_of_two()
             .ilog2() as usize;
 
@@ -396,8 +408,8 @@ impl Stride {
             )));
         }
 
-        let new_height = ((self.input_cols().next_power_of_two() - 1) / self.height()) + 1;
-        let new_width = ((self.input_rows().next_power_of_two() - 1) / self.width()) + 1;
+        let new_height = ((self.input_cols() - 1) / self.height()) + 1;
+        let new_width = ((self.input_rows() - 1) / self.width()) + 1;
 
         Ok(shape
             .iter()
@@ -557,16 +569,33 @@ mod tests {
         stride_h: usize,
         stride_w: usize,
     ) -> Result<(), StrideError> {
+        // println!(
+        //     "Height: {:?}, Weight: {:?}, Input rows: {:?}, Input columns: {:?}",
+        //     stride_h,
+        //     stride_w,
+        //     input.shape[input.shape.len() - 2],
+        //     input.shape[input.shape.len() - 1]
+        // );
+
         let mut rng = StdRng::seed_from_u64(0);
 
         let input_tensor_element = input.pad_next_power_of_two();
         let input_tensor: Tensor<E> = input_tensor_element.clone().to_fields();
 
-        let expected_output_tensor = input_tensor_element
-            .subsample(stride_h, stride_w)
-            .pad_next_power_of_two();
+        let expected_output_tensor = input.subsample(stride_h, stride_w).pad_next_power_of_two();
 
         let expected_output_mle = expected_output_tensor.to_mle_2d::<E>();
+
+        // println!("Input tensor: {}", input_tensor_element);
+        // println!(
+        //     "Input tensor MLE: {:?}",
+        //     input_tensor_element.to_mle_2d::<E>()
+        // );
+        // println!("Expected output tensor: {}", expected_output_tensor);
+        // println!(
+        //     "Expected output variables: {}",
+        //     expected_output_mle.num_vars()
+        // );
 
         let point = (0..expected_output_mle.num_vars())
             .map(|_| E::random(&mut rng))
@@ -586,23 +615,38 @@ mod tests {
         let in_rows = input_tensor.shape[input_tensor.shape.len() - 2];
         let in_cols = input_tensor.shape[input_tensor.shape.len() - 1];
 
+        // println!("In rows, cols: ({}, {})", in_rows, in_cols);
+        // println!("In data_len: {}", data_len);
+        // println!("Lt evals: {:?}", left_evals.len());
+        // println!("Rt evals: {:?}", right_evals.len());
+
+        // println!("Lt SUM: {:?}", left_evals.iter().sum::<E>());
+        // println!("Rt SUM: {:?}", right_evals.iter().sum::<E>());
+
         let calculated_eval = (0usize..data_len).fold(E::ZERO, |acc, i| {
-            acc + (left_evals[i / in_cols] * input_tensor.get_data()[i] * right_evals[i % in_rows])
+            // println!(
+            //     "i: {} (r, c): ({}, {}), acc[i]: {:?}",
+            //     i,
+            //     i / in_cols,
+            //     i % in_cols,
+            //     left_evals[i / in_cols] * input_tensor.get_data()[i] * right_evals[i % in_cols],
+            // );
+            acc + (left_evals[i / in_cols] * input_tensor.get_data()[i] * right_evals[i % in_cols])
         });
 
-        assert!(calculated_eval == output_eval);
+        assert_eq!(calculated_eval, output_eval);
         Ok(())
     }
 
     #[test]
     fn test_stride_mle() -> Result<(), StrideError> {
-        let input = Tensor::<Element>::from_contiguous(vec![3, 4]);
-        let (stride_h, stride_w) = (2, 3);
-        stride_mle::<GoldilocksExt2>(input, stride_h, stride_w)?;
-
-        // let input = Tensor::<Element>::from_contiguous(vec![3, 5]);
+        // let input = Tensor::<Element>::from_contiguous(vec![3, 4]);
         // let (stride_h, stride_w) = (2, 3);
         // stride_mle::<GoldilocksExt2>(input, stride_h, stride_w)?;
+
+        let input = Tensor::<Element>::from_contiguous(vec![3, 5]);
+        let (stride_h, stride_w) = (2, 3);
+        stride_mle::<GoldilocksExt2>(input, stride_h, stride_w)?;
 
         Ok(())
     }
@@ -630,9 +674,10 @@ mod tests {
         );
 
         let input_tensor: Tensor<E> = input.pad_next_power_of_two().to_fields();
-        let expected_output_tensor = input_tensor
+        let expected_output_tensor: Tensor<E> = input
             .subsample(stride_h, stride_w)
-            .pad_next_power_of_two();
+            .pad_next_power_of_two()
+            .to_fields();
 
         // Create a `Context` struct
         let ctx = Context::<E> {
@@ -669,25 +714,25 @@ mod tests {
 
         let verifier_out_claim = stride.verify_stride(&mut verifier, last_claim, stride_proof)?;
 
-        // if verifier_out_claim.eval != output_claim.eval {
-        //     return Err(StrideError::ProvingError(format!(
-        //         "Prover output claim {:?} and verifier output claim {:?} were not equal",
-        //         output_claim.eval, verifier_out_claim.eval,
-        //     )));
-        // }
+        if verifier_out_claim.eval != output_claim.eval {
+            return Err(StrideError::ProvingError(format!(
+                "Prover output claim {:?} and verifier output claim {:?} were not equal",
+                output_claim.eval, verifier_out_claim.eval,
+            )));
+        }
 
-        // let input_poly_eval = input_tensor
-        //     .get_data()
-        //     .to_vec()
-        //     .into_mle()
-        //     .evaluate(&verifier_out_claim.point);
+        let input_poly_eval = input_tensor
+            .get_data()
+            .to_vec()
+            .into_mle()
+            .evaluate(&verifier_out_claim.point);
 
-        // if input_poly_eval != verifier_out_claim.eval {
-        //     return Err(StrideError::ProvingError(format!(
-        //         "Input tensor poly evaluation {:?} and verifier output claim {:?} were not equal",
-        //         input_poly_eval, verifier_out_claim.eval,
-        //     )));
-        // }
+        if input_poly_eval != verifier_out_claim.eval {
+            return Err(StrideError::ProvingError(format!(
+                "Input tensor poly evaluation {:?} and verifier output claim {:?} were not equal",
+                input_poly_eval, verifier_out_claim.eval,
+            )));
+        }
 
         Ok(())
     }
