@@ -21,7 +21,7 @@ ff_ext = { version = "0.1.0", path = "../ff_ext" }
 gkr = { version = "0.1.0", path = "../gkr" }
 goldilocks.workspace = true
 itertools.workspace = true
-mpcs = { version = "0.1.0", path = "../mpcs" }
+mpcs = { version = "0.1.0", path = "../mpcs", features = ["parallel"] }
 multilinear_extensions = { version = "0.1.0", path = "../multilinear_extensions", features = [
     "parallel",
 ] }
