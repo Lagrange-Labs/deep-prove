@@ -483,8 +483,8 @@ impl Padding {
         }
 
         // Compute the left ang right beta poly evals
-        let left_beta_eval = compute_betas_eval(&point[..left_variables]);
-        let right_beta_eval = compute_betas_eval(&point[left_variables..]);
+        let left_beta_eval = compute_betas_eval(&point[left_variables..]);
+        let right_beta_eval = compute_betas_eval(&point[..left_variables]);
 
         match *self {
             Padding::Zeroes { top, left, .. } | Padding::Constant { top, left, .. } => {
@@ -1029,9 +1029,9 @@ impl Padding {
 
         let [left, right]: [Vec<E>; 2] = self.get_fixed_mles::<E>(last_point)?;
 
-        let left_eval = left.into_mle().evaluate(&sumcheck_point[..left_variables]);
+        let left_eval = left.into_mle().evaluate(&sumcheck_point[left_variables..]);
 
-        let right_eval = right.into_mle().evaluate(&sumcheck_point[left_variables..]);
+        let right_eval = right.into_mle().evaluate(&sumcheck_point[..left_variables]);
 
         Ok(vec![left_eval, right_eval])
     }
@@ -1430,7 +1430,7 @@ mod tests {
         let output_eval = expected_output_mle.evaluate(&point);
 
         let calculated_eval = (0usize..16).fold(E::ZERO, |acc, i| {
-            acc + (left_evals[i % 4] * input_tensor.get_data()[i] * right_evals[i / 4])
+            acc + (left_evals[i / 4] * input_tensor.get_data()[i] * right_evals[i % 4])
         });
 
         let calculated_eval = if let Some(const_eval) = padding.calc_constant_eval(&point) {
