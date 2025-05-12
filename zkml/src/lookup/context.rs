@@ -292,46 +292,72 @@ where
                 let RequantLookupWitness {
                     clamping_in,
                     clamping_out,
-                    clamping_in_field,
-                    clamping_out_field,
                     shifted_chunks,
-                    shifted_chunks_field,
+                    ..
                 } = requant.gen_lookup_witness::<E>(step_input.get_data());
 
                 shifted_chunks
-                    .into_iter()
+                    .iter()
                     .flatten()
-                    .for_each(|val| *table_lookup_map.entry(val).or_insert(0u64) += 1);
+                    .for_each(|&val| *table_lookup_map.entry(val).or_insert(0u64) += 1);
 
                 let clamping_table_lookup_map = table_lookups
                     .entry(TableType::Clamping(requant.clamping_size()))
                     .or_insert_with(|| HashMap::default());
 
                 clamping_in
-                    .into_iter()
-                    .zip(clamping_out.into_iter())
-                    .for_each(|(c_in, c_out)| {
+                    .iter()
+                    .zip(clamping_out.iter())
+                    .for_each(|(&c_in, &c_out)| {
                         let merged = c_in + c_out * column_separator;
                         *clamping_table_lookup_map.entry(merged).or_insert(0u64) += 1
                     });
 
                 // Add the witnesses to be committed
-                [&clamping_in_field, &clamping_out_field]
+                [&clamping_in, &clamping_out]
                     .into_iter()
-                    .chain(shifted_chunks_field.iter())
+                    .chain(shifted_chunks.iter())
                     .enumerate()
                     .for_each(|(i, poly)| {
                         polys_with_id.push((
                             step.id * 100 + i,
-                            poly.iter().map(|v| E::from(*v)).collect::<Vec<E>>(),
+                            poly.iter()
+                                .map(|v| {
+                                    let field_val: E = v.to_field();
+                                    field_val
+                                })
+                                .collect::<Vec<E>>(),
                         ));
                     });
 
+                let clamping_polys = [clamping_in, clamping_out]
+                    .into_iter()
+                    .map(|vals| {
+                        vals.into_iter()
+                            .map(|v| {
+                                let f: E = v.to_field();
+                                f.as_bases()[0]
+                            })
+                            .collect::<Vec<E::BaseField>>()
+                    })
+                    .collect::<Vec<Vec<E::BaseField>>>();
                 lookups_no_challenges.push((
-                    vec![clamping_in_field, clamping_out_field],
+                    clamping_polys,
                     2,
                     TableType::Clamping(requant.clamping_size()),
                 ));
+                let shifted_chunks_field = shifted_chunks
+                    .into_iter()
+                    .map(|chunk| {
+                        chunk
+                            .into_iter()
+                            .map(|v| {
+                                let f: E = v.to_field();
+                                f.as_bases()[0]
+                            })
+                            .collect::<Vec<E::BaseField>>()
+                    })
+                    .collect::<Vec<Vec<E::BaseField>>>();
                 lookups_no_challenges.push((shifted_chunks_field, 1, TableType::Range));
             }
             Layer::Pooling(pooling) => {
