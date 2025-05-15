@@ -1,6 +1,5 @@
 use crate::{
-    VectorTranscript, iop::context::ShapeStep, layers::hadamard, padding::PaddingMode,
-    quantization::TensorFielder,
+    iop::context::ShapeStep, layers::{hadamard, requant::Requant}, model::StepData, padding::{pad_conv, PaddingMode, ShapeInfo}, quantization::{AbsoluteMax, InferenceObserver, InferenceTracker, TensorFielder, BIT_LEN}, ScalingStrategy, VectorTranscript
 };
 use core::f32;
 
@@ -12,7 +11,7 @@ use crate::{
     quantization::{self, ScalingFactor},
     tensor::{ConvData, Number, get_root_of_unity},
 };
-use anyhow::Context;
+use anyhow::{Context, ensure};
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
 // use itertools::assert_equal;
@@ -28,10 +27,14 @@ use multilinear_extensions::{
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
-use tracing::{instrument, warn};
+use tracing::{debug, warn};
 use transcript::Transcript;
 
-use super::LayerCtx;
+use super::{
+    provable::{
+        Evaluate, LayerOut, NodeId, Op, OpInfo, PadOp, ProvableOp, ProvableOpError, ProveInfo, QuantizeOp, QuantizeOutput, VerifiableCtx
+    }, LayerCtx
+};
 
 pub(crate) const BIAS_POLY_ID: PolyID = 200_000;
 /// Convolution layer description (weights)
@@ -76,8 +79,8 @@ pub fn to_bits<E: ExtensionField>(mut num: usize, bitlen: usize) -> Vec<E> {
     bits
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SchoolBookConvCtx;
+#[derive(Clone, Debug)]
+pub struct SchoolBookConv<T>(pub(crate) Convolution<T>);
 
 /// Contains proof material related to one step of the inference for a convolution layer
 #[derive(Default, Clone, Serialize, Deserialize)]
@@ -113,6 +116,11 @@ impl<T: Number> Convolution<T> {
         assert_eq!(filter.get_shape().len(), 4);
         let filter_shape = filter.get_shape();
         Self::new_padded(filter, bias, &filter_shape)
+    }
+
+    pub(crate) fn new_without_bias(filter: Tensor<T>) -> Self {
+        let bias = Tensor::zeros(vec![filter.kw()]);
+        Self::new(filter, bias)
     }
 
     pub fn new_padded(filter: Tensor<T>, bias: Tensor<T>, unpadded_shape: &[usize]) -> Self {
@@ -184,6 +192,57 @@ impl<T: Number> Convolution<T> {
     }
 }
 
+impl<T: Number> OpInfo for Convolution<T> {
+    fn output_shapes(
+        &self,
+        input_shapes: &[Vec<usize>],
+        padding_mode: PaddingMode,
+    ) -> Vec<Vec<usize>> {
+        input_shapes
+            .into_iter()
+            .map(|shape| self.output_shape(shape.as_slice(), padding_mode))
+            .collect()
+    }
+
+    fn num_outputs(&self, num_inputs: usize) -> usize {
+        num_inputs
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "Conv: ({},{},{},{})",
+            self.filter.kw(),
+            self.filter.kx(),
+            self.filter.nw(),
+            self.filter.nw()
+        )
+    }
+
+    fn is_provable(&self) -> bool {
+        true
+    }
+}
+
+impl Evaluate<f32> for Convolution<f32> {
+    fn evaluate<E: ExtensionField>(
+        &self,
+        inputs: &[&Tensor<f32>],
+        _unpadded_input_shapes: Vec<Vec<usize>>,
+    ) -> Result<LayerOut<f32, E>, super::provable::ProvableOpError> {
+        if inputs.len() != 1 {
+            return Err(super::provable::ProvableOpError::ParameterError(
+                "Convolution layer expects 1 input".to_string(),
+            ));
+        }
+        let input = inputs[0];
+        Ok(LayerOut::from_vec(vec![input.conv2d(
+            &self.filter,
+            &self.bias,
+            1,
+        )]))
+    }
+}
+
 impl Convolution<f32> {
     /// Quantizes the filter and the bias.
     /// It uses a custom scaling factor `bias_s` for the bias, if provided,
@@ -212,6 +271,31 @@ impl Convolution<f32> {
     }
 }
 
+impl Evaluate<Element> for Convolution<Element> {
+    fn evaluate<E: ExtensionField>(
+        &self,
+        inputs: &[&Tensor<Element>],
+        unpadded_input_shapes: Vec<Vec<usize>>,
+    ) -> Result<LayerOut<Element, E>, ProvableOpError> {
+        if inputs.len() != 1 {
+            return Err(ProvableOpError::ParameterError(
+                "Convolution layer expects 1 input".to_string(),
+            ));
+        }
+        let input = inputs[0];
+        if unpadded_input_shapes.len() != 1 {
+            return Err(ProvableOpError::ParameterError(
+                "Convolution layer expects 1 input shape".to_string(),
+            ));
+        }
+        let (output, proving_data) = self.op(input, unpadded_input_shapes[0].as_slice());
+        Ok(LayerOut {
+            outputs: vec![output],
+            proving_data: Some(proving_data),
+        })
+    }
+}
+
 impl Convolution<Element> {
     /// Pads the filter and bias, and adapt the filter to the convolution fft operation.
     pub fn into_padded_and_ffted(mut self, unpadded_input_shape: &[usize]) -> Self {
@@ -224,6 +308,7 @@ impl Convolution<Element> {
         self.filter = self.filter.into_fft_conv(&padded_input_shape);
         self
     }
+
     pub fn op<E: ExtensionField>(
         &self,
         input: &Tensor<Element>,
@@ -359,19 +444,23 @@ impl Convolution<Element> {
             prover.delegate_matrix_evaluation(&mut f_middle, r1.clone(), out_point, false),
         )
     }
+}
 
-    pub(crate) fn step_info<E: ExtensionField>(
+impl<E> ProveInfo<E> for Convolution<Element>
+where
+    E: ExtensionField + DeserializeOwned,
+    E::BaseField: Serialize + DeserializeOwned,
+{
+    fn step_info(
         &self,
         id: PolyID,
         mut aux: ContextAux,
-    ) -> (LayerCtx<E>, ContextAux)
-    where
-        E: ExtensionField + DeserializeOwned,
-        E::BaseField: Serialize + DeserializeOwned,
-    {
+    ) -> Result<(LayerCtx<E>, ContextAux), ProvableOpError> {
         let mut filter_shape = self.filter.get_shape();
         filter_shape.remove(1);
-        aux.last_output_shape = filter_shape;
+        aux.last_output_shape
+            .iter_mut()
+            .for_each(|shape| *shape = filter_shape.clone());
 
         let mut delegation_fft: Vec<VPAuxInfo<E>> = Vec::new();
         let mut delegation_fft_weights: Vec<VPAuxInfo<E>> = Vec::new();
@@ -425,9 +514,176 @@ impl Convolution<Element> {
             unpadded_filter_shape: self.unpadded_shape.clone(),
             padded_filter_shape: self.filter.real_shape(),
         });
-        (conv_info, aux)
+        Ok((conv_info, aux))
     }
 
+    fn commit_info(&self, id: NodeId) -> Vec<Option<(PolyID, Vec<E>)>> {
+        let filter_evals = self.filter.get_conv_weights();
+        let bias_evals = self.bias.evals_flat();
+        let id = id as PolyID;
+        debug!(
+            "Commitment : conv layer ID {}: size {}",
+            id,
+            filter_evals.len().ilog2()
+        );
+        debug!(
+            "Commitment : conv layer bias ID {}: size {}",
+            BIAS_POLY_ID + id,
+            bias_evals.len().ilog2()
+        );
+        vec![
+            Some((id, filter_evals)),
+            Some((BIAS_POLY_ID + id, bias_evals)),
+        ]
+    }
+}
+
+impl Convolution<f32> {
+    fn quantize_from_scalings(
+        self,
+        input_scaling: &[ScalingFactor],
+        output_scaling: ScalingFactor,
+    ) -> anyhow::Result<QuantizeOutput<Convolution<Element>>> {
+        let model_scaling = ScalingFactor::from_absolute_max(self.max_abs_weight(), None);
+        let num_inputs = input_scaling.len();
+        ensure!(
+            num_inputs == 1,
+            "Number of input scaling factor for convolution layer different from 1"
+        );
+        let input_scaling = &input_scaling[0];
+        let bias_scaling = {
+            // bias has to be quantized over integers with double bit length
+            let min_quantized = -(1 << (2 * (*BIT_LEN) - 1)) + 1;
+            let max_quantized = (1 << (2 * (*BIT_LEN) - 1)) - 1;
+            ScalingFactor::from_scale(
+                input_scaling.scale() * model_scaling.scale(),
+                Some((min_quantized, max_quantized)),
+            )
+        };
+        let quantized_conv = self.quantize(&model_scaling, &bias_scaling);
+        let shift = input_scaling.shift(&model_scaling, &output_scaling);
+        let (quantized_min, _quantized_max) =
+            quantized_conv.output_range(*quantization::MIN, *quantization::MAX);
+        let requant = Requant::new(quantized_min.abs() as usize, shift);
+        Ok(QuantizeOutput {
+            quanzited_op: quantized_conv,
+            output_scalings: vec![output_scaling],
+            requant_layer: Some(requant),
+        })
+    }
+}
+
+impl QuantizeOp<InferenceObserver> for Convolution<f32> {
+    type QuantizedOp = Convolution<Element>;
+
+    fn quantize_op(
+        self,
+        tracker: &InferenceTracker,
+        node_id: NodeId,
+        input_scaling: &[ScalingFactor],
+    ) -> anyhow::Result<QuantizeOutput<Self::QuantizedOp>> {
+        let (min, max) = tracker.distribution_info(node_id, 0);
+        let output_scaling = ScalingFactor::from_absolute_max(min.abs().max(max.abs()), None);
+        self.quantize_from_scalings(input_scaling, output_scaling)
+    }
+}
+
+impl QuantizeOp<AbsoluteMax> for Convolution<f32> {
+    type QuantizedOp = Convolution<Element>;
+
+    fn quantize_op(
+        self,
+        _: &<AbsoluteMax as ScalingStrategy>::AuxData,
+        _node_id: NodeId,
+        input_scaling: &[ScalingFactor],
+    ) -> anyhow::Result<QuantizeOutput<Self::QuantizedOp>> {
+        //TODO: remove this is broken
+        let output_scaling = ScalingFactor::default();
+        self.quantize_from_scalings(input_scaling, output_scaling)
+    }
+}
+
+impl PadOp for Convolution<Element> {
+    fn pad_node(self, si: &mut ShapeInfo) -> Result<Self, ProvableOpError>
+    where
+        Self: Sized,
+    {
+        pad_conv(self, si).map_err(|e| ProvableOpError::GenericError(e))
+    }
+}
+
+impl<E> ProvableOp<E> for Convolution<Element>
+where
+    E: ExtensionField,
+    E::BaseField: Serialize + DeserializeOwned,
+    E: Serialize + DeserializeOwned,
+{
+    type Ctx = ConvCtx<E>;
+
+    fn prove<T: Transcript<E>>(
+        &self,
+        id: NodeId,
+        ctx: &Self::Ctx,
+        last_claims: Vec<&Claim<E>>,
+        step_data: &StepData<E, E>,
+        prover: &mut Prover<E, T>,
+    ) -> Result<Vec<Claim<E>>, ProvableOpError> {
+        Ok(vec![self.prove_convolution_step(
+            prover,
+            last_claims[0],
+            &step_data.outputs.outputs()[0],
+            &step_data.unpadded_output_shapes[0],
+            &step_data.outputs.proving_data.as_ref().unwrap(),
+            ctx,
+            id,
+        )?])
+    }
+}
+
+impl<E> Op<E, Element> for Convolution<Element>
+where
+    E: ExtensionField,
+    E::BaseField: Serialize + DeserializeOwned,
+    E: Serialize + DeserializeOwned,
+{
+}
+
+impl<E> VerifiableCtx<E> for ConvCtx<E>
+where
+    E: ExtensionField,
+    E::BaseField: Serialize + DeserializeOwned,
+    E: Serialize + DeserializeOwned,
+{
+    type Proof = ConvProof<E>;
+
+    fn verify<T: Transcript<E>>(
+        &self,
+        proof: &Self::Proof,
+        last_claims: &[&Claim<E>],
+        verifier: &mut Verifier<E, T>,
+        shape_step: &ShapeStep,
+    ) -> Result<Vec<Claim<E>>, ProvableOpError> {
+        Ok(vec![self.verify_convolution(
+            verifier,
+            last_claims[0],
+            proof,
+            shape_step,
+        )?])
+    }
+
+    fn output_shapes(
+        &self,
+        input_shapes: &[Vec<usize>],
+        padding_mode: PaddingMode,
+    ) -> Vec<Vec<usize>> {
+        input_shapes
+            .into_iter()
+            .map(|shape| self.output_shape(&shape, padding_mode))
+            .collect()
+    }
+}
+
+impl Convolution<Element> {
     // Prove convolution of a CNN network. This is a convolution between in a 3D matrix X of dimension k_x * n_x * n_x
     // and a 4D filter matrix W of dimension k_w * k_x * n_w * n_w. The output is a 3D matrix Y of dimension k_w * n_x * n_x
     // We want to batch prove the following: Y[i] = iFFT(sum_{j \in [n_x]}(FFT(X[j]) o FFT(W[i][j])).
@@ -436,13 +692,14 @@ impl Convolution<Element> {
         &self,
         prover: &mut Prover<E, T>,
         // last random claim made
-        last_claim: Claim<E>,
+        last_claim: &Claim<E>,
         // Struct containing all necessary information
         // to generate a convolution proof
         output: &Tensor<E>,
         unpadded_output_shape: &[usize],
         proving_data: &ConvData<E>,
         info: &ConvCtx<E>,
+        id: NodeId,
     ) -> anyhow::Result<Claim<E>>
     where
         E::BaseField: Serialize + DeserializeOwned,
@@ -732,25 +989,28 @@ impl Convolution<Element> {
             .add_claim(info.bias_poly_id, Claim::new(bias_point, bias_eval))
             .context("unable to add bias claim in convolution")?;
 
-        prover.push_proof(LayerProof::Convolution(ConvProof {
-            fft_proof: fft_proof.clone(),
-            fft_claims: fft_claim.clone(),
-            fft_proof_weights,
-            ifft_proof,
-            fft_delegation_proof: fft_del_proof.0,
-            fft_delegation_proof_weights: fft_weights_del_proof.0,
-            ifft_delegation_proof: ifft_del_proof.0,
-            hadamard_proof: hadamard_proof.clone(),
-            ifft_claims: ifft_claim,
-            fft_weight_claims,
-            fft_delegation_claims: fft_del_proof.1,
-            fft_delegation_weights_claims: fft_weights_del_proof.1,
-            ifft_delegation_claims: ifft_del_proof.1,
-            hadamard_clams: hadamard_claims,
-            bias_claim: bias_eval,
-            partial_evals,
-            clearing_proof,
-        }));
+        prover.push_proof(
+            id,
+            LayerProof::Convolution(ConvProof {
+                fft_proof: fft_proof.clone(),
+                fft_claims: fft_claim.clone(),
+                fft_proof_weights,
+                ifft_proof,
+                fft_delegation_proof: fft_del_proof.0,
+                fft_delegation_proof_weights: fft_weights_del_proof.0,
+                ifft_delegation_proof: ifft_del_proof.0,
+                hadamard_proof: hadamard_proof.clone(),
+                ifft_claims: ifft_claim,
+                fft_weight_claims,
+                fft_delegation_claims: fft_del_proof.1,
+                fft_delegation_weights_claims: fft_weights_del_proof.1,
+                ifft_delegation_claims: ifft_del_proof.1,
+                hadamard_clams: hadamard_claims,
+                bias_claim: bias_eval,
+                partial_evals,
+                clearing_proof,
+            }),
+        );
         let mut input_point = fft_proof.point.clone();
         let mut v = input_point.pop().unwrap();
         v = (E::ONE - v).invert().unwrap();
@@ -864,10 +1124,18 @@ where
     pub(crate) fn verify_convolution<T: Transcript<E>>(
         &self,
         verifier: &mut Verifier<E, T>,
-        last_claim: Claim<E>,
+        last_claim: &Claim<E>,
         proof: &ConvProof<E>,
         shape_step: &ShapeStep,
     ) -> anyhow::Result<Claim<E>> {
+        ensure!(
+            shape_step.unpadded_input_shape.len() == 1,
+            "More than 1 unpadded input shape found for convolution layer",
+        );
+        ensure!(
+            shape_step.padded_input_shape.len() == 1,
+            "More than 1 padded input shape found for convolution layer",
+        );
         // The first thing to do is to recreate the hadamard clearing tensor
         // Since this is only coming from public information, the verifier
         // creates the vector and evaluates it.
@@ -877,11 +1145,11 @@ where
         //
         // To recreat it, we need the unpadded output shape and the real output shape.
         let unpadded_output_shape = conv2d_shape(
-            &shape_step.unpadded_input_shape,
+            &shape_step.unpadded_input_shape[0],
             &self.unpadded_filter_shape,
         );
         let real_output_shape =
-            padded_conv2d_shape(&shape_step.padded_input_shape, &self.padded_filter_shape);
+            padded_conv2d_shape(&shape_step.padded_input_shape[0], &self.padded_filter_shape);
         let clearing_tensor = new_clearing_tensor(&unpadded_output_shape, &real_output_shape);
         // now we need to verify the hadamard proof for the sumcheck part.
         let hctx = hadamard::HadamardCtx::from_len(real_output_shape.iter().product());
@@ -1086,18 +1354,106 @@ where
     }
 }
 
-impl SchoolBookConvCtx {
-    pub(crate) fn step_info<E: ExtensionField>(
+impl<T: Number> OpInfo for SchoolBookConv<T> {
+    fn output_shapes(
+        &self,
+        input_shapes: &[Vec<usize>],
+        padding_mode: PaddingMode,
+    ) -> Vec<Vec<usize>> {
+        self.0.output_shapes(input_shapes, padding_mode)
+    }
+
+    fn num_outputs(&self, num_inputs: usize) -> usize {
+        self.0.num_outputs(num_inputs)
+    }
+
+    fn describe(&self) -> String {
+        todo!()
+    }
+
+    fn is_provable(&self) -> bool {
+        false
+    }
+}
+
+impl<T: Number> Evaluate<T> for SchoolBookConv<T> {
+    fn evaluate<E: ExtensionField>(
+        &self,
+        inputs: &[&Tensor<T>],
+        _unpadded_input_shapes: Vec<Vec<usize>>,
+    ) -> anyhow::Result<LayerOut<T, E>, ProvableOpError> {
+        if inputs.len() != 1 {
+            return Err(super::provable::ProvableOpError::ParameterError(
+                "Convolution layer expects 1 input".to_string(),
+            ));
+        }
+        let input = inputs[0];
+        Ok(LayerOut::from_vec(vec![input.conv2d(
+            &self.0.filter,
+            &self.0.bias,
+            1,
+        )]))
+    }
+}
+
+impl PadOp for SchoolBookConv<Element> {}
+
+impl<E: ExtensionField> ProvableOp<E> for SchoolBookConv<Element>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+    E: Serialize + DeserializeOwned,
+{
+    type Ctx = LayerCtx<E>; //unused
+}
+
+impl<E: ExtensionField> Op<E, Element> for SchoolBookConv<Element>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+    E: Serialize + DeserializeOwned,
+{
+}
+
+
+impl<S: ScalingStrategy> QuantizeOp<S> for SchoolBookConv<f32> {
+    type QuantizedOp = SchoolBookConv<Element>;
+
+    fn quantize_op(
+        self,
+        _: &<S as ScalingStrategy>::AuxData,
+        _node_id: NodeId,
+        input_scaling: &[ScalingFactor],
+    ) -> anyhow::Result<QuantizeOutput<Self::QuantizedOp>> {
+        Ok(
+            QuantizeOutput {
+                quanzited_op: SchoolBookConv(
+                    self.0.quantize(
+                        // we don't care about accurate quantization for schoolbook conv
+                        &input_scaling[0],
+                        &input_scaling[0],
+                    ),
+                ),
+                output_scalings: input_scaling.to_vec(),
+                requant_layer: None,
+            }
+        )
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SchoolBookConvCtx;
+
+impl<E: ExtensionField> ProveInfo<E> for SchoolBookConv<Element>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+    E: ExtensionField + Serialize + DeserializeOwned,
+{
+    fn step_info(
         &self,
         _id: PolyID,
         aux: ContextAux,
-    ) -> (LayerCtx<E>, ContextAux)
-    where
-        E::BaseField: Serialize + DeserializeOwned,
-        E: ExtensionField + Serialize + DeserializeOwned,
-    {
+    ) -> Result<(LayerCtx<E>, ContextAux), ProvableOpError> {
         let conv_info = LayerCtx::SchoolBookConvolution(SchoolBookConvCtx);
-        (conv_info, aux)
+        Ok((conv_info, aux))
     }
 }
 
@@ -1241,12 +1597,11 @@ pub fn padded_conv2d_shape(input_shape: &[usize], filter_shape: &[usize]) -> Vec
 #[cfg(test)]
 mod test {
     use crate::{
-        NextPowerOfTwo,
         layers::{
             activation::{Activation, Relu},
             dense::{self, Dense},
-            pooling::{Maxpool2D, Pooling, maxpool2d_shape},
-        },
+            pooling::{maxpool2d_shape, Maxpool2D, Pooling}, provable::evaluate_layer,
+        }, NextPowerOfTwo
     };
 
     use super::*;
@@ -1431,8 +1786,16 @@ mod test {
         );
         let padded_nrows = padded_dense.nrows();
         padded_dense.bias = padded_dense.bias.pad_1d(padded_nrows);
-        let no_garbage_fft_output = padded_dense.op(&flat_fft_output);
-        let no_garbage_normal_output = dense.op(&flat_normal_output);
+        let no_garbage_fft_output =
+            evaluate_layer::<GoldilocksExt2, _, _>(&padded_dense, &vec![&flat_fft_output], None)
+                .unwrap()
+                .outputs()[0]
+                .clone();
+        let no_garbage_normal_output =
+            evaluate_layer::<GoldilocksExt2, _, _>(&dense, &vec![&flat_normal_output], None)
+                .unwrap()
+                .outputs()[0]
+                .clone();
         let max_rows = dense.nrows();
         assert_eq!(
             &no_garbage_fft_output.get_data()[..max_rows],
@@ -1484,8 +1847,14 @@ mod test {
 
         // add a RELU layer
         let relu = Activation::Relu(Relu::new());
-        let output = relu.op(&output);
-        let fft_output = relu.op(&fft_output);
+        let output = evaluate_layer::<GoldilocksExt2, _, _>(&relu, &vec![&output], None)
+            .unwrap()
+            .outputs()[0]
+            .clone();
+        let fft_output = evaluate_layer::<GoldilocksExt2, _, _>(&relu, &vec![&fft_output], None)
+            .unwrap()
+            .outputs()[0]
+            .clone();
 
         // make a pooled output
         let pool = Pooling::Maxpool2D(Maxpool2D::default());
@@ -1514,8 +1883,14 @@ mod test {
 
         // Add another RELU
         let relu = Activation::Relu(Relu::new());
-        let output = relu.op(&output);
-        let fft_output = relu.op(&fft_output);
+        let output = evaluate_layer::<GoldilocksExt2, _, _>(&relu, &vec![&output], None)
+            .unwrap()
+            .outputs()[0]
+            .clone();
+        let fft_output = evaluate_layer::<GoldilocksExt2, _, _>(&relu, &vec![&fft_output], None)
+            .unwrap()
+            .outputs()[0]
+            .clone();
 
         // make a pooled output
         let pool = Pooling::Maxpool2D(Maxpool2D::default());
@@ -1542,7 +1917,10 @@ mod test {
         let conv_shape_og = ignore_garbage_pad.0.clone();
         let conv_shape_pad = ignore_garbage_pad.1.clone();
         let dense = Dense::new(weight.clone(), bias.clone());
-        let dense_output = dense.op(&output);
+        let dense_output = evaluate_layer::<GoldilocksExt2, _, _>(&dense, &vec![&output], None)
+            .unwrap()
+            .outputs()[0]
+            .clone();
 
         let fft_weight =
             weight.pad_matrix_to_ignore_garbage(&conv_shape_og, &conv_shape_pad, &vec![
@@ -1561,7 +1939,11 @@ mod test {
             output.get_shape(),
             output.get_shape().iter().product::<usize>()
         );
-        let fft_dense_output = fft_dense.op(&fft_output);
+        let fft_dense_output =
+            evaluate_layer::<GoldilocksExt2, _, _>(&fft_dense, &vec![&fft_output], None)
+                .unwrap()
+                .outputs()[0]
+                .clone();
         assert_eq!(
             dense_output.get_data()[..weight.nrows_2d()],
             fft_dense_output.get_data()[..weight.nrows_2d()]

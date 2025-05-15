@@ -2,7 +2,7 @@ use crate::{
     ScalingFactor,
     quantization::{self, MAX_FLOAT, MIN_FLOAT},
 };
-use anyhow::bail;
+use anyhow::{bail, ensure};
 use ark_std::rand::{self, Rng, SeedableRng, rngs::StdRng};
 use ff::Field;
 use ff_ext::ExtensionField;
@@ -65,6 +65,7 @@ pub trait Number:
     }
     fn compare(&self, other: &Self) -> Ordering;
     fn is_negative(&self) -> bool;
+    fn to_f32(&self) -> anyhow::Result<f32>;
 }
 
 impl Number for Element {
@@ -81,6 +82,17 @@ impl Number for Element {
     }
     fn is_negative(&self) -> bool {
         *self < 0
+    }
+    fn to_f32(&self) -> anyhow::Result<f32> {
+        ensure!(
+            *self >= f32::MIN.ceil() as Element,
+            "Element {self} is smaller than the minimum integer representable by f32"
+        );
+        ensure!(
+            *self <= f32::MAX.floor() as Element,
+            "Element {self} is bigger than the maximum integer representable by f32"
+        );
+        Ok(*self as f32)
     }
 }
 impl Number for f32 {
@@ -105,6 +117,9 @@ impl Number for f32 {
     fn is_negative(&self) -> bool {
         *self < 0.0
     }
+    fn to_f32(&self) -> anyhow::Result<f32> {
+        Ok(*self)
+    }
 }
 impl Number for GoldilocksExt2 {
     const MIN: GoldilocksExt2 = GoldilocksExt2::ZERO;
@@ -122,6 +137,10 @@ impl Number for GoldilocksExt2 {
 
     fn is_negative(&self) -> bool {
         panic!("GoldilocksExt2: is_negative is meaningless");
+    }
+
+    fn to_f32(&self) -> anyhow::Result<f32> {
+        unreachable!("Called to_f32 for Goldilocks")
     }
 }
 
@@ -316,6 +335,7 @@ impl Tensor<Element> {
             .collect::<Vec<_>>();
         Tensor::new(self.shape.clone(), data)
     }
+
     pub fn into_fft_conv(self, input_shape: &[usize]) -> Self {
         let shape = self.shape;
         let data = self.data;
@@ -561,6 +581,11 @@ impl<T> Tensor<T> {
         }
     }
 
+    /// Is an empty tensor
+    pub fn is_empty(&self) -> bool {
+        self.shape.len() == 0
+    }
+
     /// Is vector
     pub fn is_vector(&self) -> bool {
         self.get_shape().len() == 1
@@ -611,13 +636,13 @@ impl<T> Tensor<T> {
     }
     /// Get the dimensions of the tensor
     pub fn get_shape(&self) -> Vec<usize> {
-        assert!(self.shape.len() > 0, "Empty tensor");
+        assert!(!self.is_empty(), "Empty tensor");
         self.shape.clone()
     }
     /// Get the input shape of the tensor
     /// TODO: Remove it
     pub fn get_input_shape(&self) -> Vec<usize> {
-        assert!(self.shape.len() > 0, "Empty tensor");
+        assert!(!self.is_empty(), "Empty tensor");
         self.og_shape.clone()
     }
     ///
@@ -1324,6 +1349,18 @@ where
             shape: out_shape,
             og_shape: vec![0],
         }
+    }
+
+    pub fn to_f32(&self) -> anyhow::Result<Tensor<f32>> {
+        Ok(Tensor {
+            data: self
+                .data
+                .iter()
+                .map(Number::to_f32)
+                .collect::<anyhow::Result<Vec<_>>>()?,
+            shape: self.shape.clone(),
+            og_shape: self.og_shape.clone(),
+        })
     }
 }
 

@@ -6,12 +6,9 @@ use std::{
     time,
 };
 use timed_core::Output;
-use zkml::{
-    model::Model,
-    quantization::{AbsoluteMax, InferenceObserver, ModelMetadata, ScalingStrategy},
-};
+use zkml::{model::ProvableModel, quantization::{AbsoluteMax, InferenceObserver, ModelMetadata}};
 
-use anyhow::{Context as CC, ensure};
+use anyhow::{Context as CC, ensure, Result};
 use clap::Parser;
 use csv::WriterBuilder;
 use goldilocks::GoldilocksExt2;
@@ -21,7 +18,7 @@ use zkml::FloatOnnxLoader;
 
 use serde::{Deserialize, Serialize};
 use zkml::{
-    Context, Element, IO, Prover, argmax, default_transcript, quantization::TensorFielder, verify,
+    Context, Element, Prover, argmax, default_transcript, verify,
 };
 
 use rmp_serde::encode::to_vec_named;
@@ -149,12 +146,13 @@ impl InputJSON {
         Ok(())
     }
     fn to_elements(self, md: &ModelMetadata) -> (Vec<Vec<Element>>, Vec<Vec<Element>>) {
+        let input_sf = md.input.first().unwrap();
         let inputs = self
             .input_data
             .into_iter()
-            .map(|input| input.into_iter().map(|e| md.input.quantize(&e)).collect())
+            .map(|input| input.into_iter().map(|e| input_sf.quantize(&e)).collect())
             .collect();
-        let output_sf = md.output_scaling_factor();
+        let output_sf = md.output_scaling_factor().first().unwrap().clone();
         let outputs = self
             .output_data
             .into_iter()
@@ -198,7 +196,7 @@ const CSV_ACCURACY: &str = "accuracy (bool)";
 const CSV_PROOF_SIZE: &str = "proof size (KB)";
 
 /// Runs the model in float format and returns the average accuracy
-fn run_float_model(raw_inputs: &InputJSON, model: &Model<f32>) -> f32 {
+fn run_float_model(raw_inputs: &InputJSON, model: &ProvableModel<f32>) -> Result<f32> {
     let mut accuracies = Vec::new();
     info!("[+] Running model in float format");
 
@@ -209,7 +207,8 @@ fn run_float_model(raw_inputs: &InputJSON, model: &Model<f32>) -> f32 {
         .enumerate()
     {
         // Run the model in float mode
-        let output = model.run_float(input.clone());
+        let input = model.load_input_flat(vec![input.clone()])?;
+        let output = &model.run_float(&input)?[0];
         let accuracy = argmax_compare(expected, &output.get_data());
         accuracies.push(accuracy);
         debug!(
@@ -220,29 +219,48 @@ fn run_float_model(raw_inputs: &InputJSON, model: &Model<f32>) -> f32 {
         );
     }
 
-    calculate_average_accuracy(&accuracies)
+    Ok(calculate_average_accuracy(&accuracies))
+}
+
+fn read_model(args: &Args, inputs: &InputJSON) -> Result<(ProvableModel<Element>, ModelMetadata)> {
+    let calibration_inputs = inputs.filter(args.calibration_indices.as_ref());
+    match args.quantization.as_ref() {
+        "inference" => {
+            let strategy = InferenceObserver::new_with_representative_input(
+                calibration_inputs
+                    .input_data
+                    .iter()
+                    .map(|inp| vec![inp.clone()])
+                    .collect(),
+            );
+            FloatOnnxLoader::new_with_scaling_strategy(&args.onnx, strategy)
+                .with_keep_float(true)
+                .build()
+        },
+        "maxabs" => {
+            let strategy = AbsoluteMax::new();
+            FloatOnnxLoader::new_with_scaling_strategy(&args.onnx, strategy)
+                .with_keep_float(true)
+                .build()
+        },
+        _ => panic!("Unsupported quantization strategy: {}", args.quantization),
+    }
 }
 
 fn run(args: Args) -> anyhow::Result<()> {
     info!("[+] Reading raw input/output from {}", args.io);
     let run_inputs = InputJSON::from(&args.io, args.num_samples).context("loading input:")?;
     info!("[+] Found {} IO samples", run_inputs.input_data.len());
-    let calibration_inputs = run_inputs.filter(args.calibration_indices.as_ref());
-    let run_inputs = run_inputs.filter(args.run_indices.as_ref());
-    let strategy = quantization_strategy_from(&args, &calibration_inputs);
-    let strat_name = strategy.name().to_string();
-    info!("[+] Reading onnx model");
-    let (model, md) = FloatOnnxLoader::new(&args.onnx)
-        .with_scaling_strategy(strategy)
-        .with_keep_float(true)
-        .build()?;
+    let (model, md) = read_model(&args, &run_inputs)?;
     info!("[+] Model loaded");
     model.describe();
-
+    
+    let run_inputs = run_inputs.filter(args.run_indices.as_ref());
+    
     // Get float accuracy if float model is available
     let float_accuracy = if let Some(ref float_model) = md.float_model {
         info!("[+] Running float model");
-        run_float_model(&run_inputs, float_model)
+        run_float_model(&run_inputs, float_model)?
     } else {
         info!("[!] No float model available");
         0.0
@@ -251,7 +269,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     info!("[+] Computing PyTorch accuracy");
     let num_samples = run_inputs.output_data.len();
     let pytorch_accuracy = run_inputs.compute_pytorch_accuracy();
-    info!("[+] Quantizing inputs with strategy: {}", strat_name);
+    info!("[+] Quantizing inputs with strategy: {}", args.quantization);
     let (inputs, given_outputs) = run_inputs.to_elements(&md);
 
     // Generate context once and measure the time
@@ -288,12 +306,12 @@ fn run(args: Args) -> anyhow::Result<()> {
         // Store the setup time in the bencher (without re-running setup)
         bencher.set(CSV_SETUP, setup_time);
 
-        let input_tensor = model.load_input_flat(input);
+        let input_tensor = model.load_input_flat(vec![input])?;
         // let input_tensor : Tensor<Element> = Tensor::new(model.input_not_padded.clone(), input);
 
         info!("[+] Running inference");
         // Handle model.run failures gracefully
-        let trace_result = bencher.r(CSV_INFERENCE, || model.run(input_tensor.clone()));
+        let trace_result = bencher.r(CSV_INFERENCE, || model.run(&input_tensor));
 
         // If model.run fails, print the error and continue to the next input
         let trace = match trace_result {
@@ -323,7 +341,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         //        );
         //    }
         //}
-        let output = trace.final_output().clone();
+        let output = trace.outputs()?[0];
         let accuracy = argmax_compare(&given_output, &output.get_data().to_vec());
         accuracies.push(accuracy);
         bencher.set(CSV_ACCURACY, accuracy);
@@ -339,6 +357,7 @@ fn run(args: Args) -> anyhow::Result<()> {
             continue;
         }
         info!("[+] Running prover");
+        let io = trace.to_verifier_io();
         let mut prover_transcript = default_transcript();
         let prover = Prover::<_, _>::new(ctx.as_ref().unwrap(), &mut prover_transcript);
         let proof = bencher.r(CSV_PROVING, move || {
@@ -352,7 +371,6 @@ fn run(args: Args) -> anyhow::Result<()> {
 
         info!("[+] Running verifier");
         let mut verifier_transcript = default_transcript();
-        let io = IO::new(input_tensor.to_fields(), output.to_fields());
         bencher.r(CSV_VERIFYING, || {
             verify::<_, _>(
                 ctx.as_ref().unwrap().clone(),
@@ -475,14 +493,4 @@ fn calculate_average_accuracy(accuracies: &[usize]) -> f32 {
     }
     let sum: usize = accuracies.iter().sum();
     sum as f32 / accuracies.len() as f32
-}
-
-fn quantization_strategy_from(args: &Args, inputs: &InputJSON) -> Box<dyn ScalingStrategy> {
-    match args.quantization.as_ref() {
-        "inference" => Box::new(InferenceObserver::new_with_representative_input(
-            inputs.input_data.clone(),
-        )),
-        "maxabs" => Box::new(AbsoluteMax::new()),
-        _ => panic!("Unsupported quantization strategy: {}", args.quantization),
-    }
 }

@@ -6,10 +6,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    Claim, Element, VectorTranscript,
-    commit::{aggregated_rlc, compute_beta_eval_poly, compute_betas_eval},
-    layers::{Layer, convolution, dense},
-    model::Model,
+    commit::{aggregated_rlc, compute_beta_eval_poly, compute_betas_eval}, layers::provable::ProveInfo, model::ProvableModel, Claim, Element, VectorTranscript
 };
 use anyhow::{Context as CC, ensure};
 use ff_ext::ExtensionField;
@@ -82,48 +79,10 @@ where
     E: Serialize + DeserializeOwned,
 {
     /// NOTE: it assumes the model's layers are already padded to power of two
-    pub fn generate_from_model(m: &Model<Element>) -> anyhow::Result<Self> {
+    pub fn generate_from_model(m: &ProvableModel<Element>) -> anyhow::Result<Self> {
         Self::generate(
-            m.provable_layers()
-                .flat_map(|(id, l)| match l {
-                    Layer::Dense(dense) => {
-                        let evals = dense.matrix.evals_2d();
-                        let bias_evals = dense.bias.evals_flat();
-                        debug!(
-                            "Commitment : dense layer ID {}: size {}",
-                            id,
-                            evals.len().ilog2()
-                        );
-                        debug!(
-                            "Commitment : dense layer bias ID {}: size {}",
-                            dense::BIAS_POLY_ID + id,
-                            bias_evals.len().ilog2()
-                        );
-                        vec![
-                            Some((id, evals)),
-                            Some((dense::BIAS_POLY_ID + id, bias_evals)),
-                        ]
-                    }
-                    Layer::Convolution(m) => {
-                        let filter_evals = m.filter.get_conv_weights();
-                        let bias_evals = m.bias.evals_flat();
-                        debug!(
-                            "Commitment : conv layer ID {}: size {}",
-                            id,
-                            filter_evals.len().ilog2()
-                        );
-                        debug!(
-                            "Commitment : conv layer bias ID {}: size {}",
-                            convolution::BIAS_POLY_ID + id,
-                            bias_evals.len().ilog2()
-                        );
-                        vec![
-                            Some((id, filter_evals)),
-                            Some((convolution::BIAS_POLY_ID + id, bias_evals)),
-                        ]
-                    }
-                    _ => vec![None],
-                })
+            m.provable_nodes()
+                .flat_map(|(id, l)| l.operation.commit_info(*id))
                 .flatten()
                 .collect_vec(),
         )

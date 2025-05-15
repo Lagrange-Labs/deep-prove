@@ -9,13 +9,10 @@ use tracing::{debug, warn};
 use transcript::Transcript;
 
 use crate::{
-    Element,
-    commit::precommit::Context,
-    iop::ChallengeStorage,
-    layers::{Layer, activation::Relu},
-    lookup::logup_gkr::structs::LogUpInput,
-    model::InferenceTrace,
-    quantization::{self, Fieldizer},
+    commit::precommit::Context, iop::ChallengeStorage, layers::{
+        activation::Relu,
+        provable::{NodeId, ProvableOp},
+    }, lookup::logup_gkr::structs::LogUpInput, model::{InferenceTrace, ModelCtx, ToIterator}, quantization::{self, Fieldizer}, Element
 };
 
 use super::logup_gkr::error::LogUpError;
@@ -146,14 +143,35 @@ impl LookupContext {
     }
 }
 
-pub fn generate_lookup_witnesses<E: ExtensionField, T: Transcript<E>>(
-    trace: &InferenceTrace<Element, E>,
+pub struct LookupWitnessGen<E: ExtensionField> {
+    pub(crate) tables: BTreeSet<TableType>,
+    pub(crate) lookups: HashMap<TableType, HashMap<Element, u64>>,
+    pub(crate) polys_with_id: Vec<(usize, Vec<E>)>,
+    pub(crate) lookups_no_challenges: HashMap<NodeId, (Vec<Vec<E::BaseField>>, usize, TableType)>,
+}
+
+impl<E: ExtensionField> LookupWitnessGen<E> {
+    pub fn new() -> Self {
+        Self {
+            tables: BTreeSet::new(),
+            lookups: HashMap::new(),
+            polys_with_id: Vec::new(),
+            lookups_no_challenges: HashMap::new(),
+        }
+    }
+}
+
+pub(crate) const COLUMN_SEPARATOR: Element = 1i128 << 32;
+
+pub fn generate_lookup_witnesses<'a, E: ExtensionField, T: Transcript<E>>(
+    trace: &InferenceTrace<'a, E, Element>,
+    ctx: &ModelCtx<E>,
     transcript: &mut T,
 ) -> Result<
     (
         Option<Context<E>>,
         ChallengeStorage<E>,
-        Vec<LogUpInput<E>>,
+        HashMap<NodeId, LogUpInput<E>>,
         Vec<LogUpInput<E>>,
     ),
     LogUpError,
@@ -162,104 +180,27 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    let mut table_lookups = HashMap::<TableType, HashMap<Element, u64>>::new();
-    let mut tables = BTreeSet::new();
-    let mut polys_with_id = Vec::<(usize, Vec<E>)>::new();
-    let mut lookups_no_challenges = Vec::<(Vec<Vec<E::BaseField>>, usize, TableType)>::new();
-    let column_separator = 1i128 << 32;
+    let mut witness_gen = LookupWitnessGen::<E>::new();
+
     debug!("Lookup witness generation: generating poly fields...");
-    trace.iter().for_each(|(step_input, step)| {
-        match step.layer {
-            Layer::Activation(..) => {
-                tables.insert(TableType::Relu);
+    for (node_id, _) in ctx.to_forward_iterator() {
+        let step = trace
+            .get_step(&node_id)
+            .ok_or(LogUpError::ProvingError(format!(
+                "Node {node_id} not found in trace"
+            )))?;
+        step.op
+            .gen_lookup_witness(node_id, &mut witness_gen, &step.step_data)
+            .map_err(|e| {
+                LogUpError::ParamterError(format!(
+                    "Error generating lookup witness for node {} with error: {}",
+                    node_id,
+                    e.to_string()
+                ))
+            })?;
+    }
 
-                // Calculate the column_evals and also the merged lookups
-                let (merged_lookups, field): (Vec<Element>, Vec<(E::BaseField, E::BaseField)>) =
-                    step_input
-                        .get_data()
-                        .iter()
-                        .zip(step.output.get_data().iter())
-                        .map(|(a, b)| {
-                            let a_field: E = a.to_field();
-                            let b_field: E = b.to_field();
-                            (
-                                a + column_separator * b,
-                                (a_field.as_bases()[0], b_field.as_bases()[0]),
-                            )
-                        })
-                        .unzip();
-
-                let (col_one, col_two): (Vec<E::BaseField>, Vec<E::BaseField>) =
-                    field.into_iter().unzip();
-                let table_lookup_map = table_lookups
-                    .entry(TableType::Relu)
-                    .or_insert_with(|| HashMap::default());
-
-                merged_lookups
-                    .into_iter()
-                    .for_each(|lookup| *table_lookup_map.entry(lookup).or_insert(0u64) += 1);
-
-                polys_with_id.push((
-                    step.id,
-                    step.output
-                        .get_data()
-                        .iter()
-                        .map(Fieldizer::<E>::to_field)
-                        .collect(),
-                ));
-                lookups_no_challenges.push((vec![col_one, col_two], 2, TableType::Relu));
-            }
-
-            Layer::Requant(requant) => {
-                tables.insert(TableType::Range);
-                let table_lookup_map = table_lookups
-                    .entry(TableType::Range)
-                    .or_insert_with(|| HashMap::default());
-
-                let (merged_lookups, column_evals) =
-                    requant.gen_lookup_witness::<E>(step_input.get_data());
-                merged_lookups
-                    .into_iter()
-                    .for_each(|val| *table_lookup_map.entry(val).or_insert(0u64) += 1);
-
-                polys_with_id.push((
-                    step.id,
-                    step.output
-                        .get_data()
-                        .iter()
-                        .map(Fieldizer::<E>::to_field)
-                        .collect(),
-                ));
-
-                lookups_no_challenges.push((column_evals, 1, TableType::Range));
-            }
-            Layer::Pooling(pooling) => {
-                tables.insert(TableType::Range);
-                let table_lookup_map = table_lookups
-                    .entry(TableType::Range)
-                    .or_insert_with(|| HashMap::default());
-
-                let (merged_lookups, column_evals) = pooling.gen_lookup_witness::<E>(step_input);
-
-                merged_lookups
-                    .into_iter()
-                    .for_each(|val| *table_lookup_map.entry(val).or_insert(0u64) += 1);
-
-                polys_with_id.push((
-                    step.id,
-                    step.output
-                        .get_data()
-                        .iter()
-                        .map(Fieldizer::<E>::to_field)
-                        .collect(),
-                ));
-                lookups_no_challenges.push((column_evals, 1, TableType::Range));
-            }
-            _ => (),
-        }
-    });
-
-    if tables.is_empty() {
+    if witness_gen.tables.is_empty() {
         warn!("Lookup witness generation: no tables found, returning empty context TEST?");
         return Ok((
             None,
@@ -267,17 +208,17 @@ where
                 constant_challenge: E::ZERO,
                 challenge_map: HashMap::new(),
             },
-            vec![],
+            HashMap::new(),
             vec![],
         ));
     }
 
     debug!("Lookup witness generation: generating table multiplicities...");
     // calculate the table multiplicities
-    let tables_no_challenges = tables.iter().enumerate().map(|(i,table_type)| {
-        let (table_column, column_evals) = table_type.get_merged_table_column::<E>(column_separator);
+    let tables_no_challenges = witness_gen.tables.iter().enumerate().map(|(i,table_type)| {
+        let (table_column, column_evals) = table_type.get_merged_table_column::<E>(COLUMN_SEPARATOR);
 
-        let table_lookup_data = table_lookups.get(table_type).ok_or(LogUpError::ParamterError(format!("Tried to retrieve lookups for a table of type: {:?}, but no table of that type exists", table_type)))?;
+        let table_lookup_data = witness_gen.lookups.get(table_type).ok_or(LogUpError::ParamterError(format!("Tried to retrieve lookups for a table of type: {:?}, but no table of that type exists", table_type)))?;
 
         let (multiplicities, mults_ext)  = table_column.iter().map(|table_val| {
             if let Some(lookup_count) = table_lookup_data.get(table_val) {
@@ -287,12 +228,12 @@ where
             }
         }).unzip();
 
-        polys_with_id.push((i + TABLE_POLY_ID_OFFSET, mults_ext));
+        witness_gen.polys_with_id.push((i + TABLE_POLY_ID_OFFSET, mults_ext));
         Ok((column_evals, multiplicities, *table_type))
     }).collect::<Result<Vec<(Vec<Vec<E::BaseField>>, Vec<E::BaseField>, TableType)>, LogUpError>>()?;
 
     debug!("Lookup witness generation: commit context generation...");
-    let ctx = Context::generate(polys_with_id).map_err(|e| {
+    let ctx = Context::generate(witness_gen.polys_with_id).map_err(|e| {
         LogUpError::ParamterError(format!(
             "Could not generate Lookup witness commit context {{ inner: {:?}}}",
             e
@@ -307,26 +248,32 @@ where
     })?;
 
     debug!("Lookup witness generation: challenge storage...");
-    let challenge_storage = initialise_from_table_set::<E, T>(&tables, transcript);
+    let challenge_storage = initialise_from_table_set::<E, T>(&witness_gen.tables, transcript);
 
-    let lookup_inputs = lookups_no_challenges
+    let lookup_inputs = witness_gen
+        .lookups_no_challenges
         .into_iter()
-        .map(|(column_evals, columns_per_instance, table_type)| {
-            let (constant_challenge, column_challenge) = challenge_storage
-                .get_challenges_by_name(&table_type.name())
-                .ok_or(LogUpError::ParamterError(format!(
-                    "No challegnes found for table type: {} when generating lookup witness",
-                    table_type.name()
-                )))?;
+        .map(
+            |(node_id, (column_evals, columns_per_instance, table_type))| {
+                let (constant_challenge, column_challenge) = challenge_storage
+                    .get_challenges_by_name(&table_type.name())
+                    .ok_or(LogUpError::ParamterError(format!(
+                        "No challegnes found for table type: {} when generating lookup witness",
+                        table_type.name()
+                    )))?;
 
-            LogUpInput::<E>::new_lookup(
-                column_evals,
-                constant_challenge,
-                column_challenge,
-                columns_per_instance,
-            )
-        })
-        .collect::<Result<Vec<LogUpInput<E>>, LogUpError>>()?;
+                Ok((
+                    node_id,
+                    LogUpInput::<E>::new_lookup(
+                        column_evals,
+                        constant_challenge,
+                        column_challenge,
+                        columns_per_instance,
+                    )?,
+                ))
+            },
+        )
+        .collect::<Result<HashMap<NodeId, LogUpInput<E>>, LogUpError>>()?;
 
     let table_inputs = tables_no_challenges
         .into_iter()
