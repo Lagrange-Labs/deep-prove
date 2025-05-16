@@ -8,3 +8,4 @@ numpy
 torch
 tqdm
 psutil
+transformers
