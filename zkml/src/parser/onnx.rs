@@ -516,7 +516,7 @@ fn is_const(node: &OnnxNode) -> bool {
 
 fn extract_const_tensor(node: &OnnxNode) -> Result<crate::Tensor<f32>> {
     let tensor = downcast_to::<Const>(node)?;
-    let slice = tensor.val().as_slice::<f32>()?;
+    let slice = tensor.0.as_slice::<f32>()?;
     ensure_onnx!(node.outputs.len() == 1, "constant output shape len == 1");
     let Some(shape) = node.outputs[0].fact.shape.as_concrete() else {
         return err(format!("Filter shape {} is not concrete", node.name));
