@@ -1,3 +1,4 @@
+pub mod gguf;
 pub mod onnx;
 
 use crate::{

@@ -18,6 +18,62 @@ fn parse_gguf(path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+// 1. LayerNorm (Pre-Norm)
+// Input: [seq_len, hidden_size] (e.g. [N, 768])
+// Operation: Normalize across hidden_size (i.e., last axis)
+// 
+// Parameters:
+// blk.N.attn_norm.weight (scale)
+// blk.N.attn_norm.bias (shift)
+// 
+// 2. Fused QKV Projection
+// Operation: Linear layer projecting input into Q, K, V vectors in one go.
+// Matmul: x @ W_qkv.T + b_qkv
+// Shapes:
+// x: [N, 768]
+// W_qkv: [3 * hidden_size, 768] → [2304, 768]
+// b_qkv: [2304]
+// 
+// Tensors:
+// blk.N.attn_qkv.weight
+// blk.N.attn_qkv.bias
+// 
+// After matmul: Output [N, 2304] → split into:
+// q: [N, 768]
+// k: [N, 768]
+// v: [N, 768]
+// 
+// 3. Attention Scores
+// Matmul: attn_scores = q @ k.T / sqrt(d_k)
+// Shape:
+// q: [N, 768] reshaped to [N, n_heads, head_dim]
+// k: [N, 768] reshaped to [N, n_heads, head_dim]
+// 
+// Result: [N, n_heads, N]
+// 
+// Optionally add attention mask (causal or padding mask)
+// 
+// 4. Softmax + Dropout
+// Apply softmax over the last axis (tokens)
+// Optional dropout during training
+// 
+// 5. Attention Output
+// Weighted sum: attn_output = softmax_scores @ v
+// Shape: [N, n_heads, head_dim] → merge heads → [N, 768]
+// 
+// 6. Output Projection
+// Linear projection back to hidden size
+// Matmul: attn_output @ W_o.T + b_o
+// Shapes:
+// W_o: [768, 768]
+// b_o: [768]
+// Tensors:
+// blk.N.attn_output.weight
+// blk.N.attn_output.bias
+// 
+// 7. Residual Add
+// Output: x + attn_output → shape [N, 768]
+
 #[derive(Debug, Clone)]
 struct Gpt2Config {
     embedding_size: usize,
@@ -42,13 +98,25 @@ impl Gpt2Config {
     }
 }
 
-struct MatMul<N: Number> {
-    pub rhs: Tensor<N>,
+struct FeedForward<N: Number> {
+    norm_gamma: Tensor<N>,
+    norm_beta: Tensor<N>,
+    up: Tensor<N>,
+    up_bias: Tensor<N>,
+    down: Tensor<N>,
+    down_bias: Tensor<N>,
 }
 
-impl<N: Number> MatMul<N> {
-    pub fn new(rhs: Tensor<N>) -> Self {
-        Self { rhs }
+impl FeedForward<f32> {
+    pub fn from_var_builder(b: &VarBuilder, embedding_size: usize) -> anyhow::Result<Self> {
+        let norm_gamma = dequantize(b.get_no_shape("ffn_norm.weight")?)?;
+        let norm_beta = dequantize(b.get_no_shape("ffn_norm.bias")?)?;
+        assert!(norm_gamma.get_shape() == vec![embedding_size], "norm_gamma must have shape [hidden_size]");
+        let up = dequantize(b.get_no_shape("ffn_up.weight")?)?;
+        let up_bias = dequantize(b.get_no_shape("ffn_up.bias")?)?;
+        let down = dequantize(b.get_no_shape("ffn_down.weight")?)?;
+        let down_bias = dequantize(b.get_no_shape("ffn_down.bias")?)?;
+        Ok(Self { norm_gamma, norm_beta, up, up_bias, down, down_bias })
     }
 }
 
@@ -59,9 +127,29 @@ struct Attention<N: Number> {
     k_bias: Tensor<N>,
     v: Tensor<N>,
     v_bias: Tensor<N>,
+    out: Tensor<N>,
+    norm_gamma: Tensor<N>,
 }
 
 impl Attention<f32> {
+    //
+    // TTENTION SUBLAYER (Self-Attention)
+    // Tensor Name	Role	Shape	Explanation
+    // blk.8.attn_norm.weight	LayerNorm scale (γ)	[768, 1, 1, 1]	Pre-attention LayerNorm
+    // blk.8.attn_norm.bias	LayerNorm bias (β)	[768, 768, 1, 1]	Same
+    // blk.8.attn_qkv.weight	Fused QKV weight	[2304, 768, 1, 1]	Projects input to Q, K, V in one matmul
+    // blk.8.attn_qkv.bias	Fused QKV bias	[2304, 1, 1, 1]	Bias added to Q, K, V output
+    // blk.8.attn_output.weight	Attention output projection	[768, 2304, 1, 1]	Projects concatenated heads back to hidden size
+    // blk.8.attn_output.bias	Attention output bias	[768, 1, 1, 1]	Bias after projection
+
+    // FEED-FORWARD SUBLAYER (MLP / FFN)
+    // Tensor Name	Role	Shape	Explanation
+    // blk.8.ffn_norm.weight	LayerNorm scale (γ)	[768, 1, 1, 1]	Pre-FFN LayerNorm
+    // blk.8.ffn_norm.bias	LayerNorm bias (β)	[768, 1, 1, 1]	Same
+    // blk.8.ffn_up.weight	Up-projection (hidden → 3072)	[3072, 768, 1, 1]	Expands dimension
+    // blk.8.ffn_up.bias	Bias for up-projection	[3072, 1, 1, 1]	Bias for up-proj
+    // blk.8.ffn_down.weight	Down-projection (3072 → hidden)	[768, 3072, 1, 1]	Compresses dimension
+    // blk.8.ffn_down.bias	Bias for down-projection	[768, 1, 1, 1]	Final FFN bias
     pub fn from_var_builder(
         var_builder: &VarBuilder,
         embedding_size: usize,
@@ -86,8 +174,14 @@ impl Attention<f32> {
         let q_bias = Tensor::new(vec![hidden_size], unfused.remove(0));
         let k_bias = Tensor::new(vec![hidden_size], unfused.remove(0));
         let v_bias = Tensor::new(vec![hidden_size], unfused.remove(0));
+        let norm_gamma = dequantize(var_builder.get_no_shape("attn_norm.weight")?)?;
+        ensure!(norm_gamma.get_shape() == vec![hidden_size], "norm_gamma must have shape [hidden_size]");
+        let out = dequantize(var_builder.get_no_shape("attn_output.weight")?)?;
+        ensure!(out.get_shape() == vec![embedding_size, embedding_size], "out must have shape [hidden_size, hidden_size]");
         Ok(
             Self {
+                out,
+                norm_gamma,
                 q,
                 q_bias,
                 k,
@@ -195,7 +289,7 @@ mod tests {
     fn test_gguf_load_embedding() -> anyhow::Result<()> {
         let gguf_path = GPT2_Q8_0_PATH;
         /// VarBuilder has the disadvantage of loading everything into memory first, but it has the
-        /// advantage of sub scoping the naming.
+        /// advantage of sub scoping the naming so each layer can have the exact same parsing logic name.
         /// TODO: make a lazy var builder that combine benefits from current VarBuilder and just COntent
         /// that lazy load
         let gguf_candle = VarBuilder::from_gguf(&gguf_path, &Device::Cpu)?;
