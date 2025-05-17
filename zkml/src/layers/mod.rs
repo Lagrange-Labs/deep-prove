@@ -7,6 +7,8 @@ pub mod matvec;
 pub mod pooling;
 pub mod provable;
 pub mod requant;
+pub mod embeddings;
+pub mod layernorm;
 
 use std::fmt::Debug;
 
@@ -30,6 +32,8 @@ use crate::{
         dense::Dense,
         pooling::Pooling,
         requant::{Requant, RequantProof},
+        embeddings::Embeddings,
+        layernorm::LayerNorm,
     },
     lookup::context::LookupWitnessGen,
     model::StepData,
@@ -112,10 +116,10 @@ where
     }
 
     pub fn has_proof(&self) -> bool {
-        !matches!(
-            self,
-            Self::Flatten | Self::Table(_) | Self::SchoolBookConvolution(_)
-        )
+        match self {
+            Self::Flatten | Self::Table(_) | Self::SchoolBookConvolution(_) => false,
+            _ => true,
+        }
     }
 
     pub fn output_shape(&self, input_shape: &[usize], padding_mode: PaddingMode) -> Vec<usize> {

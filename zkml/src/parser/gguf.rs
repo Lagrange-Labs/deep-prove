@@ -8,13 +8,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::{bail, ensure};
+use anyhow::{bail, ensure, Context};
 use candle_core::{
     CpuStorage, DType, Device, Storage,
     quantized::{GgmlDType, gguf_file::Content},
 };
 
-use crate::{Tensor, tensor::Number};
+use crate::{layers::{embeddings::Embeddings, layernorm::LayerNorm}, tensor::Number, Tensor};
 
 fn parse_gguf(path: &str) -> anyhow::Result<()> {
     Ok(())
@@ -77,12 +77,24 @@ fn parse_gguf(path: &str) -> anyhow::Result<()> {
 // Output: x + attn_output → shape [N, 768]
 
 #[derive(Debug, Clone)]
-struct Gpt2Config {
+struct LLMConfig {
+    /// The size of an embedding vector (each token gets translated to an embedding vector of this size)
     embedding_size: usize,
+    /// The number of "heads" that are used within each attention layer.
     num_heads: usize,
+    /// The number of blocks / attention layers there is in the model
+    num_block: usize,
+    /// The maximum size that the tensor containing input + generated token can have. Beyond that, we should not
+    /// run the tensor through the model anymore.
+    context_length: usize,
+    /// LayerNorm needs an epsilon value to determine the precision. This is it.
+    norm_epsilon: f32,
+    /// The specific config for the variant.
+    specific_config: LLMVariant,
 }
 
-impl Gpt2Config {
+
+impl LLMConfig {
     pub fn embedding_size(&self) -> usize {
         self.embedding_size
     }
@@ -93,31 +105,97 @@ impl Gpt2Config {
     pub fn num_heads(&self) -> usize {
         self.num_heads
     }
-    pub fn from_content(content: &Content) -> anyhow::Result<Self> {
-        let embedding_size = content.metadata["gpt2.embedding_length"].to_u32()? as usize;
-        let num_heads = content.metadata["gpt2.attention.head_count"].to_u32()? as usize;
-        Ok(Self { embedding_size, num_heads })
+    pub fn from_content(l: &FileTensorLoader) -> anyhow::Result<Self> {
+        let variant = LLMVariant::from_content(l)?;
+        let embedding_size = l.content.metadata[variant.embedding_size_key()].to_u32()? as usize;
+        let num_heads = l.content.metadata[variant.num_heads_key()].to_u32()? as usize;
+        let context_length = l.content.metadata[variant.context_length_key()].to_u32()? as usize;
+        let norm_epsilon = l.content.metadata[variant.norm_epsilon_key()].to_f32()?;
+        let num_block = l.content.metadata[variant.num_block_key()].to_u32()? as usize;
+        Ok(Self { embedding_size, num_heads, context_length, norm_epsilon, num_block, specific_config: variant })
+    }
+
+    pub fn model(&self, l: &FileTensorLoader) -> anyhow::Result<LLMModel> {
+        self.specific_config.model(l, &self)
     }
 }
 
 #[derive(Debug, Clone)]
-struct LayerNorm<N: Number> {
-    gamma: Tensor<N>,
-    beta: Tensor<N>,
+pub enum LLMVariant {
+    GPT2,
 }
 
-impl LayerNorm<f32> {
-    // Replaces from_var_builder and from_tensor_loader
-    // The 'loader' passed here is expected to be pre-scoped by the caller 
-    // (e.g., loader.pp("attn_") or loader.pp("ffn_"))
-    pub fn from_loader(loader: &FileTensorLoader, exp_size: usize) -> anyhow::Result<Self> {
-        let gamma = loader.get_tensor("norm.weight")?;
-        let beta = loader.get_tensor("norm.bias")?;
-        ensure!(gamma.get_shape().as_slice() == &[exp_size], "norm_gamma must have shape [{}] vs given {:?}", exp_size, gamma.get_shape());
-        ensure!(beta.get_shape().as_slice() == &[exp_size], "norm_beta must have shape [{}] vs given {:?}", exp_size, beta.get_shape());
-        Ok(Self { gamma, beta })
+impl LLMVariant {
+    pub fn from_content(l: &FileTensorLoader) -> anyhow::Result<Self> {
+        let Some(variant) = l.content.metadata.get("general.name").or_else(|| l.content.metadata.get("general.architecture")) else {
+            bail!("no variant found");
+        };
+        match variant.to_string().context("unable to get variant into string")?.as_str(){
+            "gpt2" =>  Ok(Self::GPT2),
+            a => bail!("unsupported architecture: {:?}", a),
+        }
+    }
+
+    pub fn num_heads_key(&self) -> &str {
+        match self {
+            Self::GPT2 => "gpt2.attention.head_count",
+        }
+    }
+
+    pub fn context_length_key(&self) -> &str {
+        match self {
+            Self::GPT2 => "gpt2.context_length",
+        }
+    }
+    pub fn num_block_key(&self) -> &str {
+        match self {
+            Self::GPT2 => "gpt2.block_count",
+        }
+    }
+    pub fn embedding_size_key(&self) -> &str {
+        match self {
+            Self::GPT2 => "gpt2.embedding_length",
+        }
+    }
+    pub fn norm_epsilon_key(&self) -> &str {
+        match self {
+            Self::GPT2 => "gpt2.attention.layer_norm_epsilon",
+        }
+    }
+    pub fn model(&self, l: &FileTensorLoader,config: &LLMConfig) -> anyhow::Result<LLMModel> {
+        match self {
+            Self::GPT2 => Ok(LLMModel::GPT2(GPT2Model::from_loader(l, config)?)),
+        }
     }
 }
+
+#[derive(Debug, Clone)]
+pub enum LLMModel {
+    GPT2(GPT2Model),
+}
+
+
+
+#[derive(Debug, Clone)]
+struct GPT2Model {
+    embeddings: Embeddings<f32>,
+    blocks: Vec<Attention<f32>>,
+}
+
+impl GPT2Model {
+    pub fn from_loader(loader: &FileTensorLoader, config: &LLMConfig) -> anyhow::Result<Self> {
+        let embeddings = Embeddings::from_loader(loader)?;
+        let num_layers = config.num_block;
+        let blocks = (0..num_layers).map(|i| 
+            Attention::from_loader(&loader.pp(&format!("blk.{i}.")), 
+                config.embedding_size(), 
+                config.hidden_size())
+        ).collect::<anyhow::Result<Vec<Attention<f32>>>>()?;
+        Ok(Self { embeddings, blocks })
+    }
+}
+
+
 
 #[derive(Debug, Clone)]
 struct FeedForward<N: Number> {
@@ -206,23 +284,7 @@ impl Attention<f32> {
     }
 }
 
-#[derive(Debug, Clone)]
-struct Embeddings<N: Number> {
-    pub emb: Tensor<N>,
-}
 
-impl<N: Number> Embeddings<N> {
-    pub fn new(emb: Tensor<N>) -> Self {
-        Self { emb }
-    }
-}
-
-impl Embeddings<f32> {
-    pub fn from_loader(loader: &FileTensorLoader) -> anyhow::Result<Self> {
-        let emb_tensor = loader.get_tensor("token_embd.weight")?;
-        Ok(Embeddings::new(emb_tensor))
-    }
-}
 
 fn dequantize(qtensor: Arc<QTensor>) -> anyhow::Result<Tensor<f32>> {
     let shape = qtensor.shape().dims().to_vec();
@@ -388,21 +450,26 @@ mod tests {
     use gguf_rs::get_gguf_container;
     use std::{fs::File, io::Read, ops::Deref, path::Path};
 
-    use crate::parser::gguf::{FeedForward, Gpt2Config};
+    use crate::{layers::embeddings::Embeddings, parser::gguf::{FeedForward, LLMConfig}};
 
-    use super::{Attention, Embeddings, TensorLoader};
+    use super::{Attention, TensorLoader};
     // download at https://huggingface.co/igorbkz/gpt2-Q8_0-GGUF
     const GPT2_Q8_0_PATH: &str = "assets/scripts/llms/gpt2.q8_0.gguf";
 
     #[test]
+    fn test_gguf_load_model() -> anyhow::Result<()> {
+        let loader = FileTensorLoader::from_path(GPT2_Q8_0_PATH)?;
+        let config = LLMConfig::from_content(&loader)?;
+        let model = config.model(&loader)?;
+        println!("model: {:?}", config.specific_config);
+        Ok(())
+    }
+
+    #[test]
     fn test_gguf_load_attention() -> anyhow::Result<()> {
-        let gguf_path = GPT2_Q8_0_PATH;
-        let mut file = File::open(gguf_path)?;
-        let gguf_candle_content = Content::read(&mut file)?;
-        let config = Gpt2Config::from_content(&gguf_candle_content)?;
+        let loader = FileTensorLoader::from_path(GPT2_Q8_0_PATH)?;
+        let config = LLMConfig::from_content(&loader)?;
         // println!("config: {:?}", config); // Keep original println if desired for debugging
-        
-        let loader = FileTensorLoader::from_path(gguf_path)?;
         let block0_loader = loader.pp("blk.0.");
         
         let _attention = Attention::from_loader(&block0_loader, config.embedding_size(), config.hidden_size())?;
@@ -411,10 +478,8 @@ mod tests {
 
     #[test]
     fn test_gguf_load_config() -> anyhow::Result<()> {
-        let gguf_path = GPT2_Q8_0_PATH;
-        let mut file = File::open(gguf_path)?;
-        let gguf_candle = Content::read(&mut file)?;
-        let config = Gpt2Config::from_content(&gguf_candle)?;
+        let loader = FileTensorLoader::from_path(GPT2_Q8_0_PATH)?;
+        let config = LLMConfig::from_content(&loader)?;
         println!("config: {:?}", config);
         Ok(())
     }
