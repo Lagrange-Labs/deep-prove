@@ -1,9 +1,11 @@
 use candle_transformers::{models::deepseek2::SplitOp, quantized_var_builder::VarBuilder};
 use candle_core::{quantized::QTensor};
 use std::{
-    io::{Read, Seek},
+    fs::File,
+    io::{BufReader, Read, Seek},
     ops::Deref,
-    sync::Arc,
+    path::Path,
+    sync::{Arc, Mutex},
 };
 
 use anyhow::{bail, ensure};
@@ -98,9 +100,28 @@ impl Gpt2Config {
     }
 }
 
+#[derive(Debug, Clone)]
+struct LayerNorm<N: Number> {
+    gamma: Tensor<N>,
+    beta: Tensor<N>,
+}
+
+impl LayerNorm<f32> {
+    // Replaces from_var_builder and from_tensor_loader
+    // The 'loader' passed here is expected to be pre-scoped by the caller 
+    // (e.g., loader.pp("attn_") or loader.pp("ffn_"))
+    pub fn from_loader(loader: &FileTensorLoader, exp_size: usize) -> anyhow::Result<Self> {
+        let gamma = loader.get_tensor("norm.weight")?;
+        let beta = loader.get_tensor("norm.bias")?;
+        ensure!(gamma.get_shape().as_slice() == &[exp_size], "norm_gamma must have shape [{}] vs given {:?}", exp_size, gamma.get_shape());
+        ensure!(beta.get_shape().as_slice() == &[exp_size], "norm_beta must have shape [{}] vs given {:?}", exp_size, beta.get_shape());
+        Ok(Self { gamma, beta })
+    }
+}
+
+#[derive(Debug, Clone)]
 struct FeedForward<N: Number> {
-    norm_gamma: Tensor<N>,
-    norm_beta: Tensor<N>,
+    norm: LayerNorm<N>,
     up: Tensor<N>,
     up_bias: Tensor<N>,
     down: Tensor<N>,
@@ -108,18 +129,25 @@ struct FeedForward<N: Number> {
 }
 
 impl FeedForward<f32> {
-    pub fn from_var_builder(b: &VarBuilder, embedding_size: usize) -> anyhow::Result<Self> {
-        let norm_gamma = dequantize(b.get_no_shape("ffn_norm.weight")?)?;
-        let norm_beta = dequantize(b.get_no_shape("ffn_norm.bias")?)?;
-        assert!(norm_gamma.get_shape() == vec![embedding_size], "norm_gamma must have shape [hidden_size]");
-        let up = dequantize(b.get_no_shape("ffn_up.weight")?)?;
-        let up_bias = dequantize(b.get_no_shape("ffn_up.bias")?)?;
-        let down = dequantize(b.get_no_shape("ffn_down.weight")?)?;
-        let down_bias = dequantize(b.get_no_shape("ffn_down.bias")?)?;
-        Ok(Self { norm_gamma, norm_beta, up, up_bias, down, down_bias })
+    // Replaces from_var_builder and from_tensor_loader
+    // 'loader' is expected to be the block-level loader (e.g., scoped to "blk.N.")
+    pub fn from_loader(loader: &FileTensorLoader, embedding_size: usize, _hidden_size: usize) -> anyhow::Result<Self> {
+        // Create a sub-scope for the feed-forward network's LayerNorm
+        let ffn_norm_loader = loader.pp("ffn_");
+        // Use the new LayerNorm::from_loader
+        let norm = LayerNorm::from_loader(&ffn_norm_loader, embedding_size)?;
+        
+        let up = loader.get_tensor("ffn_up.weight")?;
+        let up_bias = loader.get_tensor("ffn_up.bias")?;
+        let down = loader.get_tensor("ffn_down.weight")?;
+        let down_bias = loader.get_tensor("ffn_down.bias")?;
+        
+        ensure!(down.get_shape()[0] == embedding_size, "down must have shape {:?} vs embedding_size: {}", down.get_shape(), embedding_size);
+        Ok(Self { norm, up, up_bias, down, down_bias })
     }
 }
 
+#[derive(Debug, Clone)]
 struct Attention<N: Number> {
     q: Tensor<N>,
     q_bias: Tensor<N>,
@@ -128,68 +156,53 @@ struct Attention<N: Number> {
     v: Tensor<N>,
     v_bias: Tensor<N>,
     out: Tensor<N>,
-    norm_gamma: Tensor<N>,
+    /// Bias for the output projection.
+    out_bias: Tensor<N>,
+    norm: LayerNorm<N>,
+    feedforward: FeedForward<N>,
 }
 
 impl Attention<f32> {
-    //
-    // TTENTION SUBLAYER (Self-Attention)
-    // Tensor Name	Role	Shape	Explanation
-    // blk.8.attn_norm.weight	LayerNorm scale (γ)	[768, 1, 1, 1]	Pre-attention LayerNorm
-    // blk.8.attn_norm.bias	LayerNorm bias (β)	[768, 768, 1, 1]	Same
-    // blk.8.attn_qkv.weight	Fused QKV weight	[2304, 768, 1, 1]	Projects input to Q, K, V in one matmul
-    // blk.8.attn_qkv.bias	Fused QKV bias	[2304, 1, 1, 1]	Bias added to Q, K, V output
-    // blk.8.attn_output.weight	Attention output projection	[768, 2304, 1, 1]	Projects concatenated heads back to hidden size
-    // blk.8.attn_output.bias	Attention output bias	[768, 1, 1, 1]	Bias after projection
-
-    // FEED-FORWARD SUBLAYER (MLP / FFN)
-    // Tensor Name	Role	Shape	Explanation
-    // blk.8.ffn_norm.weight	LayerNorm scale (γ)	[768, 1, 1, 1]	Pre-FFN LayerNorm
-    // blk.8.ffn_norm.bias	LayerNorm bias (β)	[768, 1, 1, 1]	Same
-    // blk.8.ffn_up.weight	Up-projection (hidden → 3072)	[3072, 768, 1, 1]	Expands dimension
-    // blk.8.ffn_up.bias	Bias for up-projection	[3072, 1, 1, 1]	Bias for up-proj
-    // blk.8.ffn_down.weight	Down-projection (3072 → hidden)	[768, 3072, 1, 1]	Compresses dimension
-    // blk.8.ffn_down.bias	Bias for down-projection	[768, 1, 1, 1]	Final FFN bias
-    pub fn from_var_builder(
-        var_builder: &VarBuilder,
+    // Replaces from_var_builder and from_tensor_loader
+    // 'loader' is expected to be the block-level loader (e.g., scoped to "blk.N.")
+    pub fn from_loader(
+        loader: &FileTensorLoader,
         embedding_size: usize,
         hidden_size: usize,
     ) -> anyhow::Result<Self> {
         ensure!(embedding_size == hidden_size, "embedding_size must be equal to hidden_size");
-        //var_builder.get_no_shape(name)
-        let qkv = var_builder.get_no_shape("attn_qkv.weight")?;
-        let qkv = qkv.dequantize(&Device::Cpu)?;
-        println!("qkv: {:?} (elem count: {})", qkv.shape(), qkv.elem_count());
-        // Dimension is [hidden_size * 3, embedding_size] or [output_dim, input_dim]
-        // Since hidden_size == embedding_size, we can just use the embedding_size * embedding_size
-        let mut unfused = unfuse_tensors(qkv, embedding_size * embedding_size)?;
-        ensure!(unfused.len() == 3, "bias must have 3 chunks");
-        let q = Tensor::new(vec![embedding_size, hidden_size], unfused.remove(0));
-        let k = Tensor::new(vec![embedding_size, hidden_size], unfused.remove(0));
-        let v = Tensor::new(vec![embedding_size, hidden_size], unfused.remove(0));
-        let bias = var_builder.get_no_shape("attn_qkv.bias")?;
-        let bias = bias.dequantize(&Device::Cpu)?;
-        let mut unfused = unfuse_tensors(bias, embedding_size)?;
-        ensure!(unfused.len() == 3, "bias must have 3 chunks");
-        let q_bias = Tensor::new(vec![hidden_size], unfused.remove(0));
-        let k_bias = Tensor::new(vec![hidden_size], unfused.remove(0));
-        let v_bias = Tensor::new(vec![hidden_size], unfused.remove(0));
-        let norm_gamma = dequantize(var_builder.get_no_shape("attn_norm.weight")?)?;
-        ensure!(norm_gamma.get_shape() == vec![hidden_size], "norm_gamma must have shape [hidden_size]");
-        let out = dequantize(var_builder.get_no_shape("attn_output.weight")?)?;
-        ensure!(out.get_shape() == vec![embedding_size, embedding_size], "out must have shape [hidden_size, hidden_size]");
-        Ok(
-            Self {
-                out,
-                norm_gamma,
-                q,
-                q_bias,
-                k,
-                k_bias,
-                v,
-                v_bias,
-            },
-        )
+
+        let qkv_weight_qtensor = loader.get_qtensor("attn_qkv.weight")?;
+        let qkv_weight_candle = qkv_weight_qtensor.dequantize(&Device::Cpu)?;
+        let mut unfused_weights = unfuse_tensors(qkv_weight_candle, embedding_size * embedding_size)?;
+        ensure!(unfused_weights.len() == 3, "qkv_weight must have 3 chunks");
+        let q = crate::Tensor::new(vec![embedding_size, hidden_size], unfused_weights.remove(0));
+        let k = crate::Tensor::new(vec![embedding_size, hidden_size], unfused_weights.remove(0));
+        let v = crate::Tensor::new(vec![embedding_size, hidden_size], unfused_weights.remove(0));
+
+        let qkv_bias_qtensor = loader.get_qtensor("attn_qkv.bias")?;
+        let qkv_bias_candle = qkv_bias_qtensor.dequantize(&Device::Cpu)?;
+        let mut unfused_biases = unfuse_tensors(qkv_bias_candle, embedding_size)?;
+        ensure!(unfused_biases.len() == 3, "qkv_bias must have 3 chunks");
+        let q_bias = crate::Tensor::new(vec![hidden_size], unfused_biases.remove(0));
+        let k_bias = crate::Tensor::new(vec![hidden_size], unfused_biases.remove(0));
+        let v_bias = crate::Tensor::new(vec![hidden_size], unfused_biases.remove(0));
+
+        let attn_norm_loader = loader.pp("attn_");
+        // Use new LayerNorm::from_loader
+        let norm = LayerNorm::from_loader(&attn_norm_loader, hidden_size)?;
+        
+        let out = loader.get_tensor("attn_output.weight")?;
+        let out_bias = loader.get_tensor("attn_output.bias")?;
+        ensure!(out.get_shape().as_slice() == &[embedding_size, embedding_size], "out must have shape [hidden_size, hidden_size]");
+        ensure!(out_bias.get_shape().as_slice() == &[embedding_size], "out_bias must have shape [hidden_size]");
+
+        // Use new FeedForward::from_loader
+        let ff = FeedForward::from_loader(loader, embedding_size, hidden_size)?;
+        
+        Ok(Self {
+            out, out_bias, norm, q, q_bias, k, k_bias, v, v_bias, feedforward: ff,
+        })
     }
 }
 
@@ -205,9 +218,9 @@ impl<N: Number> Embeddings<N> {
 }
 
 impl Embeddings<f32> {
-    pub fn from_var_builder(b: &VarBuilder) -> anyhow::Result<Self> {
-        let qtensor = b.get_no_shape(&"token_embd.weight")?;
-        Ok(Embeddings::new(dequantize(qtensor)?))
+    pub fn from_loader(loader: &FileTensorLoader) -> anyhow::Result<Self> {
+        let emb_tensor = loader.get_tensor("token_embd.weight")?;
+        Ok(Embeddings::new(emb_tensor))
     }
 }
 
@@ -250,6 +263,124 @@ fn unfuse_tensors(fused: candle_core::Tensor, chunk_len: usize) -> anyhow::Resul
         Ok(tensors)
 }
 
+/// Type alias for a TensorLoader specialized for reading from a BufReader<File>.
+/// This simplifies the instantiation when loading tensors directly from a file path.
+pub type FileTensorLoader = TensorLoader<BufReader<File>>;
+
+#[derive(Clone)]
+/// Manages lazy loading of tensors from a GGUF file.
+///
+/// This structure allows for efficient, on-demand loading of tensor data.
+/// It supports sub-scoping for tensor names (e.g., `blk.0.attn_norm.weight`)
+/// by maintaining an internal prefix. It is designed to be cloneable, making
+/// it easy to pass around or use in different parts of a model definition.
+/// Tensor loading is deferred until a specific tensor is requested via `get_tensor`.
+pub struct TensorLoader<R: Read + Seek> {
+    /// Parsed GGUF metadata and tensor information.
+    /// This is an `Arc` to allow cheap cloning of the `TensorLoader`.
+    content: Arc<Content>,
+    /// Reader for the GGUF file, allowing lazy loading of tensor data.
+    /// It's wrapped in `Arc<Mutex<>>` to enable shared, mutable access
+    /// across cloned instances and for thread-safety if used in concurrent contexts.
+    reader: Arc<Mutex<R>>,
+    /// Current prefix for tensor names. When a tensor is requested,
+    /// this prefix is prepended to the requested name to form the full tensor name.
+    current_prefix: String,
+    /// The `Device` on which `QTensor`s (quantized tensors) should be initially loaded.
+    /// Note: The existing `dequantize` function subsequently converts these to `crate::Tensor<f32>`
+    /// and currently materializes them on the CPU.
+    device: Device,
+}
+
+impl<R: Read + Seek + Send + 'static> TensorLoader<R> {
+    /// Creates a new `TensorLoader` from a given reader and device.
+    /// The reader must be positioned at the beginning of the GGUF file.
+    ///
+    /// # Arguments
+    /// * `reader` - A type implementing `Read` and `Seek` for the GGUF file (e.g., `BufReader<File>`).
+    ///
+    /// # Errors
+    /// Returns an error if reading the GGUF content metadata fails.
+    pub fn from_reader(mut reader: R) -> anyhow::Result<Self> {
+        let content = Content::read(&mut reader)?;
+        Ok(Self {
+            content: Arc::new(content),
+            reader: Arc::new(Mutex::new(reader)),
+            current_prefix: String::new(),
+            device: Device::Cpu,
+        })
+    }
+
+    /// Creates a new `TensorLoader` instance representing a sub-scope.
+    /// The new scope's prefix is formed by concatenating the current loader's prefix
+    /// with the `prefix_extension`. For example, if the current prefix is `blk.0.`
+    /// and `prefix_extension` is `attn_`, the new prefix will be `blk.0.attn_`.
+    ///
+    /// # Arguments
+    /// * `prefix_extension` - The string to append to the current prefix to define the new scope.
+    ///
+    /// # Returns
+    /// A new `TensorLoader` instance for the specified sub-scope.
+    pub fn pp(&self, prefix_extension: &str) -> Self {
+        Self {
+            content: Arc::clone(&self.content),
+            reader: Arc::clone(&self.reader),
+            current_prefix: format!("{}{}", self.current_prefix, prefix_extension),
+            device: self.device.clone(),
+        }
+    }
+
+    /// Retrieves a quantized tensor (`QTensor`) by its name relative to the current scope.
+    /// The full tensor name is formed by `current_prefix + name`.
+    /// This method is primarily for internal use or advanced scenarios where the `QTensor` is needed directly.
+    ///
+    /// # Arguments
+    /// * `name` - The name of the tensor, relative to the current scope (e.g., `weight`).
+    ///
+    /// # Errors
+    /// Returns an error if the reader lock cannot be acquired or if `Content::tensor` fails to load the `QTensor`.
+    pub(crate) fn get_qtensor(&self, name: &str) -> anyhow::Result<Arc<QTensor>> {
+        let full_name = format!("{}{}", self.current_prefix, name);
+        let mut reader_guard = self.reader.lock()
+            .map_err(|e| anyhow::anyhow!("Failed to acquire reader lock for tensor '{}': {}", full_name, e))?;
+        self.content.tensor(&mut *reader_guard, &full_name, &self.device)
+            .map(|qtensor| Arc::new(qtensor))
+            .map_err(|e| anyhow::anyhow!("Failed to load QTensor '{}' from GGUF: {}", full_name, e))
+    }
+
+    /// Retrieves and dequantizes a tensor by its name relative to the current scope.
+    ///
+    /// This method first loads the quantized tensor (`QTensor`) using `get_qtensor`,
+    /// then calls the `dequantize` function (expected to be available in the same module)
+    /// to convert it into a `crate::Tensor<f32>`.
+    ///
+    /// # Arguments
+    /// * `name` - The name of the tensor, relative to the current scope (e.g., `attn_norm.weight`).
+    ///
+    /// # Errors
+    /// Returns an error if `get_qtensor` fails or if the subsequent dequantization fails.
+    pub fn get_tensor(&self, name: &str) -> anyhow::Result<crate::Tensor<f32>> {
+        let qtensor = self.get_qtensor(name)?;
+        dequantize(qtensor)
+    }
+}
+
+impl TensorLoader<BufReader<File>> {
+    /// Creates a new `TensorLoader` by opening and reading a GGUF file from the specified path.
+    ///
+    /// # Arguments
+    /// * `path` - The file system path to the GGUF file.
+    ///
+    /// # Errors
+    /// Returns an error if the file cannot be opened or if reading the GGUF content metadata fails.
+    pub fn from_path<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
+        let file = File::open(path.as_ref())
+            .map_err(|e| anyhow::anyhow!("Failed to open file {:?}: {}", path.as_ref(), e))?;
+        let reader = BufReader::new(file);
+        Self::from_reader(reader)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use candle_core::{CpuStorage, Device, Storage, Tensor, quantized::gguf_file::Content};
@@ -257,9 +388,9 @@ mod tests {
     use gguf_rs::get_gguf_container;
     use std::{fs::File, io::Read, ops::Deref, path::Path};
 
-    use crate::parser::gguf::Gpt2Config;
+    use crate::parser::gguf::{FeedForward, Gpt2Config};
 
-    use super::{Attention, Embeddings};
+    use super::{Attention, Embeddings, TensorLoader};
     // download at https://huggingface.co/igorbkz/gpt2-Q8_0-GGUF
     const GPT2_Q8_0_PATH: &str = "assets/scripts/llms/gpt2.q8_0.gguf";
 
@@ -267,11 +398,14 @@ mod tests {
     fn test_gguf_load_attention() -> anyhow::Result<()> {
         let gguf_path = GPT2_Q8_0_PATH;
         let mut file = File::open(gguf_path)?;
-        let gguf_candle = Content::read(&mut file)?;
-        let config = Gpt2Config::from_content(&gguf_candle)?;
-        println!("config: {:?}", config);
-        let var_builder = VarBuilder::from_gguf(&gguf_path, &Device::Cpu)?;
-        let attention = Attention::from_var_builder(&var_builder.pp("blk.0"), config.embedding_size(), config.hidden_size())?;
+        let gguf_candle_content = Content::read(&mut file)?;
+        let config = Gpt2Config::from_content(&gguf_candle_content)?;
+        // println!("config: {:?}", config); // Keep original println if desired for debugging
+        
+        let loader = FileTensorLoader::from_path(gguf_path)?;
+        let block0_loader = loader.pp("blk.0.");
+        
+        let _attention = Attention::from_loader(&block0_loader, config.embedding_size(), config.hidden_size())?;
         Ok(())
     }
 
@@ -288,12 +422,8 @@ mod tests {
     #[test]
     fn test_gguf_load_embedding() -> anyhow::Result<()> {
         let gguf_path = GPT2_Q8_0_PATH;
-        /// VarBuilder has the disadvantage of loading everything into memory first, but it has the
-        /// advantage of sub scoping the naming so each layer can have the exact same parsing logic name.
-        /// TODO: make a lazy var builder that combine benefits from current VarBuilder and just COntent
-        /// that lazy load
-        let gguf_candle = VarBuilder::from_gguf(&gguf_path, &Device::Cpu)?;
-        let embedding = Embeddings::from_var_builder(&gguf_candle)?;
+        let loader = FileTensorLoader::from_path(gguf_path)?;
+        let _embedding = Embeddings::from_loader(&loader)?;
         Ok(())
     }
 
@@ -336,6 +466,47 @@ mod tests {
                 }
             };
         }
+        Ok(())
+    }
+
+   use crate::parser::gguf::FileTensorLoader;
+    #[test]
+    fn test_tensor_loader_subscoping_and_lazy_load() -> anyhow::Result<()> {
+        let gguf_path = GPT2_Q8_0_PATH;
+
+        // Create TensorLoader using the type alias
+        let loader = FileTensorLoader::from_path(gguf_path)?;
+
+        // Test loading a tensor from the root scope
+        let embedding_tensor = loader.get_tensor("token_embd.weight")?;
+        // Expected shape for gpt2 token_embd.weight: [vocab_size, embedding_length] = [50257, 768]
+        assert_eq!(embedding_tensor.get_shape(), vec![50257usize, 768usize], "Shape mismatch for token_embd.weight");
+
+        // Test sub-scoping with a trailing dot (VarBuilder style)
+        let blk0_loader = loader.pp("blk.0.");
+        let attn_norm_weight = blk0_loader.get_tensor("attn_norm.weight")?;
+        // Expected shape for blk.0.attn_norm.weight: [embedding_length] = [768]
+        assert_eq!(attn_norm_weight.get_shape(), vec![768usize], "Shape mismatch for blk.0.attn_norm.weight");
+
+        let qkv_weight = blk0_loader.get_tensor("attn_qkv.weight")?;
+        // Expected shape for blk.0.attn_qkv.weight: [3 * embedding_length, embedding_length] = [2304, 768]
+        assert_eq!(qkv_weight.get_shape(), vec![2304usize, 768usize], "Shape mismatch for blk.0.attn_qkv.weight");
+
+        // Test sub-scoping with custom prefix as requested ("attn_", "ffn_")
+        // Current prefix of blk0_loader is "blk.0."
+        let blk0_attn_loader = blk0_loader.pp("attn_"); // New prefix: "blk.0.attn_"
+        let attn_norm_weight_v2 = blk0_attn_loader.get_tensor("norm.weight")?; // Full name: "blk.0.attn_norm.weight"
+        assert_eq!(attn_norm_weight_v2.get_shape(), vec![768usize], "Shape mismatch for blk.0.attn_norm.weight via custom subscope");
+
+        let blk0_ffn_loader = blk0_loader.pp("ffn_"); // New prefix: "blk.0.ffn_"
+        let ffn_norm_weight = blk0_ffn_loader.get_tensor("norm.weight")?; // Full name: "blk.0.ffn_norm.weight"
+        // Expected shape for blk.0.ffn_norm.weight: [embedding_length] = [768]
+        assert_eq!(ffn_norm_weight.get_shape(), vec![768usize], "Shape mismatch for blk.0.ffn_norm.weight via custom subscope");
+        
+        // Test that loading a non-existent tensor fails
+        let non_existent_tensor_result = blk0_loader.get_tensor("non_existent_tensor.weight");
+        assert!(non_existent_tensor_result.is_err(), "Expected error for non-existent tensor");
+
         Ok(())
     }
 }
