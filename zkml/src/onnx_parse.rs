@@ -1,7 +1,10 @@
 use crate::{
-    layers::{
-        convolution::conv2d_shape, pooling::maxpool2d_shape,
-    }, model::ProvableModel, padding::pad_model, parser::onnx::from_path, quantization::{AbsoluteMax, ModelMetadata, ScalingStrategy}, Element
+    Element,
+    layers::{convolution::conv2d_shape, pooling::maxpool2d_shape},
+    model::ProvableModel,
+    padding::pad_model,
+    parser::onnx::from_path,
+    quantization::{AbsoluteMax, ModelMetadata, ScalingStrategy},
 };
 use anyhow::{Context, Error, Result, bail, ensure};
 use tract_onnx::prelude::*;
@@ -45,7 +48,7 @@ impl<S: ScalingStrategy> FloatOnnxLoader<S> {
         self.keep_float = keep_float;
         self
     }
-    
+
     pub fn build(self) -> Result<(ProvableModel<Element>, ModelMetadata)> {
         if let Some(model_type) = self.model_type {
             model_type.validate(&self.model_path)?;
@@ -68,7 +71,6 @@ const CONVOLUTION: [&str; 1] = ["Conv"];
 const DOWNSAMPLING: [&str; 1] = ["MaxPool"];
 const LINEAR_ALG: [&str; 2] = ["Gemm", "MatMul"];
 const RESHAPE: [&str; 2] = ["Flatten", "Reshape"];
-
 
 fn is_mlp(filepath: &str) -> Result<bool> {
     let is_mlp = true;
@@ -237,9 +239,7 @@ mod tests {
     use super::*;
 
     use crate::{
-        Context, Prover, ScalingFactor, init_test_logging,
-        quantization::InferenceObserver,
-        verify,
+        Context, Prover, ScalingFactor, init_test_logging, quantization::InferenceObserver, verify,
     };
     use goldilocks::GoldilocksExt2;
     use transcript::BasicTranscript;
@@ -252,12 +252,12 @@ mod tests {
     fn test_load_mlp() {
         let filepath = "assets/scripts/MLP/mlp-iris-01.onnx";
         let result = FloatOnnxLoader::new(&filepath)
-        .with_model_type(ModelType::MLP)
-        .build();
-        
+            .with_model_type(ModelType::MLP)
+            .build();
+
         assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
     }
-    
+
     #[test]
     fn test_mlp_model_run() {
         init_test_logging();
@@ -267,7 +267,7 @@ mod tests {
             .build()
             .unwrap();
         let input =
-        crate::tensor::Tensor::<f32>::random(&model.input_shapes()[0]).quantize(&md.input[0]);
+            crate::tensor::Tensor::<f32>::random(&model.input_shapes()[0]).quantize(&md.input[0]);
         let input = model.prepare_inputs(vec![input]).unwrap();
         let trace = model.run::<F>(&input).unwrap();
         println!("Result: {:?}", trace.outputs());
@@ -333,42 +333,42 @@ mod tests {
 
         assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
     }
-     #[test]
-     fn test_load_cnn() {
+    #[test]
+    fn test_load_cnn() {
         init_test_logging();
         let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
         ModelType::CNN.validate(filepath).unwrap();
-        let result = FloatOnnxLoader::new_with_scaling_strategy(
-            &filepath,
-        InferenceObserver::new(),
-        )
-        .with_model_type(ModelType::CNN)
-        .build();
-        
+        let result =
+            FloatOnnxLoader::new_with_scaling_strategy(&filepath, InferenceObserver::new())
+                .with_model_type(ModelType::CNN)
+                .build();
+
         assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
-        
+
         let (model, md) = result.unwrap();
         model.describe();
-        let native_input = model.unpadded_input_shapes().into_iter().zip(&md.input)
-            .map(|(shape, s)|
-                crate::tensor::Tensor::<f32>::random(&shape).quantize(s)
-        ).collect();
+        let native_input = model
+            .unpadded_input_shapes()
+            .into_iter()
+            .zip(&md.input)
+            .map(|(shape, s)| crate::tensor::Tensor::<f32>::random(&shape).quantize(s))
+            .collect();
         let input = model.prepare_inputs(native_input).unwrap();
         let trace = model.run::<F>(&input).unwrap();
         println!("Result: {:?}", trace.outputs());
-        
+
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
-        let ctx = Context::<GoldilocksExt2>::generate(&model, None)
-        .expect("Unable to generate context");
-        
+        let ctx =
+            Context::<GoldilocksExt2>::generate(&model, None).expect("Unable to generate context");
+
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>> =
-        Prover::new(&ctx, &mut tr);
+            Prover::new(&ctx, &mut tr);
         let io = trace.to_verifier_io();
         let proof = prover.prove(trace).expect("unable to generate proof");
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
-        BasicTranscript::new(b"m2vec");
+            BasicTranscript::new(b"m2vec");
         verify::<_, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
-     }
+    }
 
     #[test]
     fn test_tract() {

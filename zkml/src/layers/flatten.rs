@@ -10,7 +10,9 @@ use crate::{
     tensor::Number,
 };
 
-use super::provable::{Evaluate, LayerOut, Op, OpInfo, PadOp, ProvableOp, ProvableOpError, ProveInfo};
+use super::provable::{
+    Evaluate, LayerOut, Op, OpInfo, PadOp, ProvableOp, ProvableOpError, ProveInfo,
+};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Flatten;
 

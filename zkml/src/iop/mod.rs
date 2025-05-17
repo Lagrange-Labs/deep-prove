@@ -84,15 +84,9 @@ where
 mod test {
     use goldilocks::GoldilocksExt2;
 
-    use crate::{
-        default_transcript, init_test_logging, model::ProvableModel,
-    };
+    use crate::{default_transcript, init_test_logging, model::ProvableModel};
 
-    use super::{
-        Context,
-        prover::Prover,
-        verifier::verify,
-    };
+    use super::{Context, prover::Prover, verifier::verify};
 
     type F = GoldilocksExt2;
 

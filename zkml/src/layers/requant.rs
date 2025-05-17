@@ -1,8 +1,15 @@
 use crate::{
-    commit::same_poly, iop::{context::ShapeStep, verifier::Verifier}, layers::LayerProof, lookup::{
+    Claim, Prover, Tensor,
+    commit::same_poly,
+    iop::{context::ShapeStep, verifier::Verifier},
+    layers::LayerProof,
+    lookup::{
         context::LookupWitnessGen,
         logup_gkr::{prover::batch_prove as logup_batch_prove, verifier::verify_logup_proof},
-    }, model::StepData, padding::PaddingMode, quantization, Claim, Prover, Tensor
+    },
+    model::StepData,
+    padding::PaddingMode,
+    quantization,
 };
 use anyhow::{Result, anyhow, ensure};
 use ff::Field;

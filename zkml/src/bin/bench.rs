@@ -6,9 +6,12 @@ use std::{
     time,
 };
 use timed_core::Output;
-use zkml::{model::ProvableModel, quantization::{AbsoluteMax, InferenceObserver, ModelMetadata}};
+use zkml::{
+    model::ProvableModel,
+    quantization::{AbsoluteMax, InferenceObserver, ModelMetadata},
+};
 
-use anyhow::{Context as CC, ensure, Result};
+use anyhow::{Context as CC, Result, ensure};
 use clap::Parser;
 use csv::WriterBuilder;
 use goldilocks::GoldilocksExt2;
@@ -17,9 +20,7 @@ use tracing_subscriber::{EnvFilter, fmt};
 use zkml::FloatOnnxLoader;
 
 use serde::{Deserialize, Serialize};
-use zkml::{
-    Context, Element, Prover, argmax, default_transcript, verify,
-};
+use zkml::{Context, Element, Prover, argmax, default_transcript, verify};
 
 use rmp_serde::encode::to_vec_named;
 
@@ -236,13 +237,13 @@ fn read_model(args: &Args, inputs: &InputJSON) -> Result<(ProvableModel<Element>
             FloatOnnxLoader::new_with_scaling_strategy(&args.onnx, strategy)
                 .with_keep_float(true)
                 .build()
-        },
+        }
         "maxabs" => {
             let strategy = AbsoluteMax::new();
             FloatOnnxLoader::new_with_scaling_strategy(&args.onnx, strategy)
                 .with_keep_float(true)
                 .build()
-        },
+        }
         _ => panic!("Unsupported quantization strategy: {}", args.quantization),
     }
 }
@@ -254,9 +255,9 @@ fn run(args: Args) -> anyhow::Result<()> {
     let (model, md) = read_model(&args, &run_inputs)?;
     info!("[+] Model loaded");
     model.describe();
-    
+
     let run_inputs = run_inputs.filter(args.run_indices.as_ref());
-    
+
     // Get float accuracy if float model is available
     let float_accuracy = if let Some(ref float_model) = md.float_model {
         info!("[+] Running float model");

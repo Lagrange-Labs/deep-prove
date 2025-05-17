@@ -2,7 +2,14 @@ use std::collections::HashMap;
 
 use ff_ext::ExtensionField;
 
-use crate::{layers::{provable::{LayerOut, NodeId}, Layer}, quantization::{Fieldizer, ModelMetadata, TensorFielder}, Element, Tensor, IO};
+use crate::{
+    Element, IO, Tensor,
+    layers::{
+        Layer,
+        provable::{LayerOut, NodeId},
+    },
+    quantization::{Fieldizer, ModelMetadata, TensorFielder},
+};
 
 pub struct Trace<'a, E: ExtensionField, N, D> {
     pub(crate) steps: HashMap<NodeId, InferenceStep<'a, E, N, D>>,
@@ -25,7 +32,7 @@ impl<'a, E: ExtensionField, N, D> Trace<'a, E, N, D> {
         self.steps.insert(node_id, step);
     }
 
-    /// Compute the inputs and outputs tensors from the trace, which are necessary 
+    /// Compute the inputs and outputs tensors from the trace, which are necessary
     /// for the verifier to verify the proof of the model inference
     pub fn to_verifier_io(&self) -> IO<E>
     where
@@ -87,7 +94,7 @@ impl<'a, E: ExtensionField, N, D> Trace<'a, E, N, D> {
 
 impl<'a, E: ExtensionField> InferenceTrace<'a, E, Element> {
     /// Given as input a trace over quantized values, compute the equivalent
-    /// trace with dequantized values 
+    /// trace with dequantized values
     pub fn dequantized(&self, md: &ModelMetadata) -> Trace<'a, E, Element, f32> {
         let inputs = self
             .input
@@ -156,11 +163,10 @@ impl<'a, E: ExtensionField, N, D> InferenceStep<'a, E, N, D> {
     }
 }
 
-/// Data about the input and output tensors in a trace 
+/// Data about the input and output tensors in a trace
 /// for each node in the model
 pub struct StepData<D, E: ExtensionField> {
     pub(crate) inputs: Vec<Tensor<D>>,
     pub(crate) outputs: LayerOut<D, E>,
     pub(crate) unpadded_output_shapes: Vec<Vec<usize>>,
 }
-

@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use ff_ext::ExtensionField;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 
 use crate::layers::provable::{NodeCtx, NodeEgdes, NodeId, ProvableNode};
 
@@ -9,12 +9,12 @@ use super::{ModelCtx, ProvableModel};
 
 pub trait ToIterator<E: NodeEgdes> {
     /// Produces an iterator over a set of nodes in a model, starting from the inputs
-    /// and yielding nodes in order according to whether their inputs all come from 
+    /// and yielding nodes in order according to whether their inputs all come from
     /// nodes already visited by the iterator  
     fn to_forward_iterator<'a>(&'a self) -> NodeIterator<'a, E, true>;
 
-    /// Produces an iterator over a set of nodes in a model, starting from the outputs 
-    /// and yielding nodes in order according to whether their outputs all come from 
+    /// Produces an iterator over a set of nodes in a model, starting from the outputs
+    /// and yielding nodes in order according to whether their outputs all come from
     /// nodes already visited by the iterator.
     fn to_backward_iterator<'a>(&'a self) -> NodeIterator<'a, E, false>;
 
@@ -25,7 +25,7 @@ pub trait ToIterator<E: NodeEgdes> {
     {
         IntoNodeIterator::new(self)
     }
-    
+
     /// Variant of `to_backward_iterator` which takes ownership of the set of nodes
     fn into_backward_iterator(self) -> IntoNodeIterator<E, false>
     where

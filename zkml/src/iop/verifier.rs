@@ -1,7 +1,17 @@
 use std::collections::HashMap;
 
 use crate::{
-    commit::{self, precommit}, iop::{context::ShapeStep, ChallengeStorage}, layers::{provable::{NodeCtx, NodeId, ProvableOpError, VerifiableCtx}, LayerProof}, lookup::{context::TableType, logup_gkr::verifier::verify_logup_proof}, model::ToIterator, tensor::Tensor, try_unzip, Claim, VectorTranscript
+    Claim, VectorTranscript,
+    commit::{self, precommit},
+    iop::{ChallengeStorage, context::ShapeStep},
+    layers::{
+        LayerProof,
+        provable::{NodeCtx, NodeId, ProvableOpError, VerifiableCtx},
+    },
+    lookup::{context::TableType, logup_gkr::verifier::verify_logup_proof},
+    model::ToIterator,
+    tensor::Tensor,
+    try_unzip,
 };
 use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
@@ -156,9 +166,9 @@ where
         for (node_id, step) in ctx.steps_info.to_backward_iterator() {
             let node_proof = if step.ctx.has_proof() {
                 proof
-                .steps
-                .get(&node_id)
-                .ok_or(anyhow!("Proof for node {} not found", node_id))?
+                    .steps
+                    .get(&node_id)
+                    .ok_or(anyhow!("Proof for node {} not found", node_id))?
             } else {
                 &LayerProof::Dummy
             };

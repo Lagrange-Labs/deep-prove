@@ -1,16 +1,24 @@
 use std::collections::HashMap;
 
 use crate::{
-    commit::same_poly, iop::{
+    Claim, Element, Prover,
+    commit::same_poly,
+    iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
-    }, layers::{LayerCtx, LayerProof, PolyID}, lookup::{
-        context::{LookupWitnessGen, TableType, COLUMN_SEPARATOR},
+    },
+    layers::{LayerCtx, LayerProof, PolyID},
+    lookup::{
+        context::{COLUMN_SEPARATOR, LookupWitnessGen, TableType},
         logup_gkr::{
             prover::batch_prove as logup_batch_prove, structs::LogUpProof,
             verifier::verify_logup_proof,
         },
-    }, model::StepData, padding::PaddingMode, quantization::Fieldizer, tensor::Number, Claim, Element, Prover
+    },
+    model::StepData,
+    padding::PaddingMode,
+    quantization::Fieldizer,
+    tensor::Number,
 };
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;

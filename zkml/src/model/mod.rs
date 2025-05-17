@@ -1,19 +1,30 @@
 use std::collections::{BTreeMap, HashMap};
 
-use anyhow::{ensure, Result, anyhow};
+use anyhow::{Result, anyhow, ensure};
 use ff_ext::ExtensionField;
 use goldilocks::GoldilocksExt2;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use trace::Trace;
 use tracing::info;
 
-use crate::{layers::{provable::{Edge, Evaluate, NodeCtx, NodeId, OpInfo, ProvableNode}, requant::Requant, Layer}, padding::PaddingMode, quantization::InferenceTracker, tensor::Number, try_unzip, Tensor};
+use crate::{
+    Tensor,
+    layers::{
+        Layer,
+        provable::{Edge, Evaluate, NodeCtx, NodeId, OpInfo, ProvableNode},
+        requant::Requant,
+    },
+    padding::PaddingMode,
+    quantization::InferenceTracker,
+    tensor::Number,
+    try_unzip,
+};
 
-pub(crate) mod trace;
 pub(crate) mod iterator;
+pub(crate) mod trace;
 
-pub use trace::{InferenceTrace, StepData, InferenceStep}; 
 pub use iterator::ToIterator;
+pub use trace::{InferenceStep, InferenceTrace, StepData};
 
 /// Represents a model
 #[derive(Debug, Clone)]
@@ -75,11 +86,11 @@ where
         model
     }
 
-    /// Instantiate a model from the set of nodes and the input shapes. 
+    /// Instantiate a model from the set of nodes and the input shapes.
     /// `actual_input_shapes` correspond to the expected shape of the input
-    /// tensors for the model; therefore, `actual_input_shapes` can be the same 
-    /// as `unpadded_input_shapes` if the input tensors of the model are 
-    /// not expected to be padded 
+    /// tensors for the model; therefore, `actual_input_shapes` can be the same
+    /// as `unpadded_input_shapes` if the input tensors of the model are
+    /// not expected to be padded
     pub fn new_from_shapes<I: Iterator<Item = (NodeId, ProvableNode<N>)>>(
         unpadded_input_shapes: Vec<Vec<usize>>,
         actual_input_shapes: Vec<Vec<usize>>,
@@ -133,7 +144,7 @@ where
     }
 
     /// Build the inputs tensors, according to the expected input shapes,
-    /// from a set of flat data 
+    /// from a set of flat data
     pub fn load_input_flat(&self, input: Vec<Vec<N>>) -> Result<Vec<Tensor<N>>> {
         let input_tensor = input
             .into_iter()
@@ -254,18 +265,20 @@ where
     /// Add the node provided as input to the model. The id of the added node is
     /// computed inside this method and returned as output
     pub fn add_node(&mut self, node: ProvableNode<N>) -> anyhow::Result<NodeId> {
-        let node_id = (0..self.nodes.len()+1).find_map(|i| 
-            if !self.nodes.contains_key(&i) {
-                Some(i)
-            } else {
-                None
-            }
-        ).ok_or(anyhow!("No valid node id found for new node"))?;
+        let node_id = (0..self.nodes.len() + 1)
+            .find_map(|i| {
+                if !self.nodes.contains_key(&i) {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .ok_or(anyhow!("No valid node id found for new node"))?;
         self.add_node_with_id(node_id, node)?;
         Ok(node_id)
     }
 
-    /// Add the node provided as input to the model, binding it to the `node id` 
+    /// Add the node provided as input to the model, binding it to the `node id`
     /// provided as input
     pub fn add_node_with_id(
         &mut self,
@@ -365,13 +378,13 @@ where
 }
 
 impl ProvableModel<f32> {
-    pub fn run_float(
-        &self,
-        input: &[Tensor<f32>],
-    ) -> anyhow::Result<Vec<Tensor<f32>>> {
-        Ok(self.run::<GoldilocksExt2>(input)?.outputs()?.into_iter().map(|out| 
-            out.clone()
-        ).collect())
+    pub fn run_float(&self, input: &[Tensor<f32>]) -> anyhow::Result<Vec<Tensor<f32>>> {
+        Ok(self
+            .run::<GoldilocksExt2>(input)?
+            .outputs()?
+            .into_iter()
+            .map(|out| out.clone())
+            .collect())
     }
 }
 
@@ -513,9 +526,20 @@ where
 #[cfg(test)]
 pub(crate) mod test {
     use crate::{
-        init_test_logging, layers::{
-            activation::{Activation, Relu}, convolution::{Convolution, SchoolBookConv}, dense::Dense, pooling::{Maxpool2D, Pooling, MAXPOOL2D_KERNEL_SIZE}, provable::{evaluate_layer, Edge, OpInfo, ProvableNode}, requant::Requant, Layer
-        }, padding::{pad_model, PaddingMode}, quantization::{self, InferenceObserver}, tensor::Number, testing::{random_bool_vector, random_vector}, ScalingFactor, ScalingStrategy
+        ScalingFactor, ScalingStrategy, init_test_logging,
+        layers::{
+            Layer,
+            activation::{Activation, Relu},
+            convolution::{Convolution, SchoolBookConv},
+            dense::Dense,
+            pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
+            provable::{Edge, OpInfo, ProvableNode, evaluate_layer},
+            requant::Requant,
+        },
+        padding::{PaddingMode, pad_model},
+        quantization::{self, InferenceObserver},
+        tensor::Number,
+        testing::{random_bool_vector, random_vector},
     };
     use anyhow::Result;
     use ark_std::rand::{Rng, RngCore, thread_rng};

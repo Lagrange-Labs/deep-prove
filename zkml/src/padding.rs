@@ -3,13 +3,16 @@ use std::collections::HashMap;
 use anyhow::{Context, Result, anyhow, ensure};
 
 use crate::{
+    Element,
     layers::{
         convolution::Convolution,
         dense::Dense,
         flatten::Flatten,
         pooling::Pooling,
         provable::{NodeId, ProvableNode},
-    }, model::{ProvableModel, ToIterator}, onnx_parse::{check_filter, safe_conv2d_shape, safe_maxpool2d_shape}, Element
+    },
+    model::{ProvableModel, ToIterator},
+    onnx_parse::{check_filter, safe_conv2d_shape, safe_maxpool2d_shape},
 };
 type GarbagePad = Option<(Vec<usize>, Vec<usize>)>;
 type Shape = Vec<usize>;

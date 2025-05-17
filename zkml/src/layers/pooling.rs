@@ -1,13 +1,21 @@
 use std::collections::HashMap;
 
 use crate::{
-    commit::{compute_betas_eval, identity_eval, precommit::PolyID, same_poly}, iop::{context::ShapeStep, verifier::Verifier}, layers::{ContextAux, LayerProof}, lookup::{
+    Claim, Element, Prover,
+    commit::{compute_betas_eval, identity_eval, precommit::PolyID, same_poly},
+    iop::{context::ShapeStep, verifier::Verifier},
+    layers::{ContextAux, LayerProof},
+    lookup::{
         context::{LookupWitnessGen, TableType},
         logup_gkr::{
             prover::batch_prove as logup_batch_prove, structs::LogUpProof,
             verifier::verify_logup_proof,
         },
-    }, model::StepData, padding::{pooling, PaddingMode, ShapeInfo}, quantization::{Fieldizer, IntoElement}, tensor::{Number, Tensor}, Claim, Element, Prover
+    },
+    model::StepData,
+    padding::{PaddingMode, ShapeInfo, pooling},
+    quantization::{Fieldizer, IntoElement},
+    tensor::{Number, Tensor},
 };
 use anyhow::{Context, anyhow, ensure};
 use ff_ext::ExtensionField;

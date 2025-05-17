@@ -173,11 +173,7 @@ mod test {
 
     use crate::{
         FloatOnnxLoader, default_transcript,
-        iop::{
-            Context,
-            prover::Prover,
-            verifier::verify,
-        },
+        iop::{Context, prover::Prover, verifier::verify},
         onnx_parse::ModelType,
         tensor::Tensor,
         to_bit_sequence_le,
@@ -199,38 +195,38 @@ mod test {
         PathBuf::from(manifest_dir).parent().unwrap().to_path_buf()
     }
 
-     fn test_model_run_helper() -> anyhow::Result<()> {
+    fn test_model_run_helper() -> anyhow::Result<()> {
         let filepath = workspace_root().join("zkml/assets/model.onnx");
         let (model, _md) = FloatOnnxLoader::new(&filepath.to_string_lossy())
-        .with_model_type(ModelType::MLP)
-        .build()?;
-        
+            .with_model_type(ModelType::MLP)
+            .build()?;
+
         println!("[+] Loaded onnx file");
         let ctx = Context::<E>::generate(&model, None).expect("unable to generate context");
         println!("[+] Setup parameters");
-        
+
         let shapes = model.input_shapes();
         assert_eq!(shapes.len(), 1);
         let shape = &shapes[0];
         assert_eq!(shape.len(), 1);
         let input = Tensor::random(&vec![shape[0] - 1]);
         let input = model.prepare_inputs(vec![input])?;
-        
+
         let trace = model.run(&input).unwrap();
         let output = trace.outputs()?[0];
         println!("[+] Run inference. Result: {:?}", output);
-        
+
         let io = trace.to_verifier_io();
         let mut prover_transcript = default_transcript();
         let prover = Prover::<_, _>::new(&ctx, &mut prover_transcript);
         println!("[+] Run prover");
         let proof = prover.prove(trace).expect("unable to generate proof");
-        
+
         let mut verifier_transcript = default_transcript();
         verify::<_, _>(ctx, proof, io, &mut verifier_transcript).expect("invalid proof");
         println!("[+] Verify proof: valid");
         Ok(())
-     }
+    }
 
     // TODO: move below code to a vector module
 

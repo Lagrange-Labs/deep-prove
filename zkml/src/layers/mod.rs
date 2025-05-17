@@ -7,6 +7,8 @@ pub mod matvec;
 pub mod pooling;
 pub mod provable;
 pub mod requant;
+pub mod embeddings;
+pub mod layernorm;
 
 use std::fmt::Debug;
 
@@ -15,19 +17,30 @@ use ff_ext::ExtensionField;
 use flatten::Flatten;
 use pooling::{PoolingCtx, PoolingProof};
 use provable::{
-    quantize_op, Evaluate, LayerOut, Op, OpInfo, PadOp, ProvableNode, ProvableOp, ProvableOpError, ProveInfo, QuantizeOp, QuantizeOutput,
+    Evaluate, LayerOut, Op, OpInfo, PadOp, ProvableNode, ProvableOp, ProvableOpError, ProveInfo,
+    QuantizeOp, QuantizeOutput, quantize_op,
 };
 use requant::RequantCtx;
 use transcript::Transcript;
 
 use crate::{
-    commit::precommit::PolyID, iop::context::{ContextAux, ShapeStep, TableCtx}, layers::{
+    Element, ScalingStrategy,
+    commit::precommit::PolyID,
+    iop::context::{ContextAux, ShapeStep, TableCtx},
+    layers::{
         activation::{Activation, ActivationProof},
         convolution::Convolution,
         dense::Dense,
         pooling::Pooling,
         requant::{Requant, RequantProof},
-    }, lookup::context::LookupWitnessGen, model::StepData, padding::{PaddingMode, ShapeInfo}, quantization::ScalingFactor, tensor::{Number, Tensor}, Element, ScalingStrategy
+        embeddings::Embeddings,
+        layernorm::LayerNorm,
+    },
+    lookup::context::LookupWitnessGen,
+    model::StepData,
+    padding::{PaddingMode, ShapeInfo},
+    quantization::ScalingFactor,
+    tensor::{Number, Tensor},
 };
 use activation::ActivationCtx;
 use convolution::{ConvCtx, ConvProof, SchoolBookConv, SchoolBookConvCtx};
@@ -106,7 +119,7 @@ where
     pub fn has_proof(&self) -> bool {
         match self {
             Self::Flatten | Self::Table(_) | Self::SchoolBookConvolution(_) => false,
-            _ => true, 
+            _ => true,
         }
     }
 
@@ -458,8 +471,8 @@ where
 {
 }
 
-impl<S: ScalingStrategy> QuantizeOp<S> for Layer<f32> 
-where 
+impl<S: ScalingStrategy> QuantizeOp<S> for Layer<f32>
+where
     Dense<f32>: QuantizeOp<S, QuantizedOp = Dense<Element>>,
     Convolution<f32>: QuantizeOp<S, QuantizedOp = Convolution<Element>>,
 {
@@ -489,13 +502,14 @@ where
                 }
             }
             Layer::SchoolBookConvolution(school_book_conv) => {
-                let output = quantize_op::<S, _>(school_book_conv, tracker, node_id, input_scaling)?;
+                let output =
+                    quantize_op::<S, _>(school_book_conv, tracker, node_id, input_scaling)?;
                 QuantizeOutput {
                     quanzited_op: Layer::SchoolBookConvolution(output.quanzited_op),
                     output_scalings: output.output_scalings,
                     requant_layer: output.requant_layer,
                 }
-            },
+            }
             Layer::Activation(activation) => QuantizeOutput {
                 quanzited_op: Layer::Activation(activation),
                 output_scalings: input_scaling.to_vec(),
@@ -541,9 +555,8 @@ where
             LayerProof::Convolution(..) => None,
             LayerProof::Dummy => None,
             LayerProof::Activation(ActivationProof { lookup, .. })
-                    | LayerProof::Requant(RequantProof { lookup, .. })
-                    | LayerProof::Pooling(PoolingProof { lookup, .. }) => Some(lookup.fractional_outputs()),
-
+            | LayerProof::Requant(RequantProof { lookup, .. })
+            | LayerProof::Pooling(PoolingProof { lookup, .. }) => Some(lookup.fractional_outputs()),
         }
     }
 }

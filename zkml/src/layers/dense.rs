@@ -1,10 +1,18 @@
 use std::cmp::Ordering;
 
 use crate::{
+    Claim, NextPowerOfTwo, Prover,
     iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
-    }, layers::{requant::Requant, LayerCtx, LayerProof, PolyID}, model::StepData, padding::{pad_dense, PaddingMode, ShapeInfo}, quantization::{self, AbsoluteMax, InferenceObserver, InferenceTracker, ScalingFactor, BIT_LEN}, tensor::Number, Claim, NextPowerOfTwo, Prover
+    },
+    layers::{LayerCtx, LayerProof, PolyID, requant::Requant},
+    model::StepData,
+    padding::{PaddingMode, ShapeInfo, pad_dense},
+    quantization::{
+        self, AbsoluteMax, BIT_LEN, InferenceObserver, InferenceTracker, ScalingFactor,
+    },
+    tensor::Number,
 };
 use anyhow::{Context, ensure};
 use ff_ext::ExtensionField;
@@ -240,7 +248,7 @@ impl PadOp for Dense<Element> {
 impl Dense<f32> {
     // Quantize a dense layer using scaling factor of input and output
     fn quantize_from_scalings(
-        self, 
+        self,
         input_scaling: &[ScalingFactor],
         output_scaling: ScalingFactor,
     ) -> anyhow::Result<QuantizeOutput<Dense<Element>>> {
@@ -354,11 +362,7 @@ where
         verifier: &mut Verifier<E, T>,
         _shape_step: &ShapeStep,
     ) -> Result<Vec<Claim<E>>, ProvableOpError> {
-        Ok(vec![self.verify_dense(
-            verifier,
-            last_claims[0],
-            proof,
-        )?])
+        Ok(vec![self.verify_dense(verifier, last_claims[0], proof)?])
     }
 
     fn output_shapes(
@@ -538,7 +542,10 @@ impl Dense<Element> {
         // to only verify the matrix2vec product via the sumcheck proof.
         prover
             .commit_prover
-            .add_claim(info.bias_poly_id, Claim::new(last_claim.point.clone(), bias_eval))
+            .add_claim(
+                info.bias_poly_id,
+                Claim::new(last_claim.point.clone(), bias_eval),
+            )
             .context("unable to add bias claim")?;
 
         // the claim that this proving step outputs is the claim about not the matrix but the vector poly.
