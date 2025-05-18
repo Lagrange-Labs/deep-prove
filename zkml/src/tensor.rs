@@ -20,7 +20,7 @@ use rayon::{
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::{Ordering, PartialEq},
-    fmt::{self, Debug},
+    fmt::{self, Debug}, ops::RangeBounds,
 };
 
 use crate::{
@@ -1542,6 +1542,22 @@ impl<T: Number> Tensor<T> {
             og_shape: vec![0],
         }
     }
+
+    // slice the tensor on the second dimension
+    // dim2_start inclusive
+    // dim2_end exclusive
+    // TODO: refactor to take generic shape dimensions where to slice ... or just use burn API tensor
+    pub fn slice_2d(&self, dim2_start: usize, dim2_end: usize) -> Self {
+        assert!(self.shape.len() == 2);
+        let range = dim2_start * self.shape[1]..dim2_end * self.shape[1];
+        let data = self.data[range].to_vec();
+        let new_shape = vec![dim2_end - dim2_start, self.shape[1]];
+        Self {
+            data: data,
+            shape: new_shape,
+            og_shape: vec![0],
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1912,5 +1928,16 @@ mod test {
             pad_result.get_data()[..orows],
             "Unable to get rid of garbage values from conv fft."
         );
+    }
+
+    #[test]
+    fn test_tensor_slice_2d() {
+        let tensor = Tensor::<Element>::new(vec![3, 3], vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        let sliced = tensor.slice_2d(0,2);
+        assert_eq!(sliced.get_shape(), vec![2, 3]);
+        assert_eq!(sliced.get_data(), vec![1, 2, 3, 4, 5, 6]);
+        let sliced = tensor.slice_2d(2,3);
+        assert_eq!(sliced.get_shape(), vec![1, 3]);
+        assert_eq!(sliced.get_data(), vec![7, 8, 9]);
     }
 }
