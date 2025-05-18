@@ -1,5 +1,5 @@
+use candle_core::quantized::QTensor;
 use candle_transformers::{models::deepseek2::SplitOp, quantized_var_builder::VarBuilder};
-use candle_core::{quantized::QTensor};
 use std::{
     fs::File,
     io::{BufReader, Read, Seek},
@@ -8,13 +8,17 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::{bail, ensure, Context};
+use anyhow::{Context, bail, ensure};
 use candle_core::{
     CpuStorage, DType, Device, Storage,
     quantized::{GgmlDType, gguf_file::Content},
 };
 
-use crate::{layers::{embeddings::Embeddings, layernorm::LayerNorm}, tensor::Number, Tensor};
+use crate::{
+    Tensor,
+    layers::{embeddings::Embeddings, layernorm::LayerNorm, positional::Positional},
+    tensor::Number,
+};
 
 fn parse_gguf(path: &str) -> anyhow::Result<()> {
     Ok(())
@@ -23,11 +27,11 @@ fn parse_gguf(path: &str) -> anyhow::Result<()> {
 // 1. LayerNorm (Pre-Norm)
 // Input: [seq_len, hidden_size] (e.g. [N, 768])
 // Operation: Normalize across hidden_size (i.e., last axis)
-// 
+//
 // Parameters:
 // blk.N.attn_norm.weight (scale)
 // blk.N.attn_norm.bias (shift)
-// 
+//
 // 2. Fused QKV Projection
 // Operation: Linear layer projecting input into Q, K, V vectors in one go.
 // Matmul: x @ W_qkv.T + b_qkv
@@ -35,34 +39,34 @@ fn parse_gguf(path: &str) -> anyhow::Result<()> {
 // x: [N, 768]
 // W_qkv: [3 * hidden_size, 768] → [2304, 768]
 // b_qkv: [2304]
-// 
+//
 // Tensors:
 // blk.N.attn_qkv.weight
 // blk.N.attn_qkv.bias
-// 
+//
 // After matmul: Output [N, 2304] → split into:
 // q: [N, 768]
 // k: [N, 768]
 // v: [N, 768]
-// 
+//
 // 3. Attention Scores
 // Matmul: attn_scores = q @ k.T / sqrt(d_k)
 // Shape:
 // q: [N, 768] reshaped to [N, n_heads, head_dim]
 // k: [N, 768] reshaped to [N, n_heads, head_dim]
-// 
+//
 // Result: [N, n_heads, N]
-// 
+//
 // Optionally add attention mask (causal or padding mask)
-// 
+//
 // 4. Softmax + Dropout
 // Apply softmax over the last axis (tokens)
 // Optional dropout during training
-// 
+//
 // 5. Attention Output
 // Weighted sum: attn_output = softmax_scores @ v
 // Shape: [N, n_heads, head_dim] → merge heads → [N, 768]
-// 
+//
 // 6. Output Projection
 // Linear projection back to hidden size
 // Matmul: attn_output @ W_o.T + b_o
@@ -72,47 +76,47 @@ fn parse_gguf(path: &str) -> anyhow::Result<()> {
 // Tensors:
 // blk.N.attn_output.weight
 // blk.N.attn_output.bias
-// 
+//
 // 7. Residual Add
 // Output: x + attn_output → shape [N, 768]
 
 #[derive(Debug, Clone)]
-struct LLMConfig {
+pub struct LLMConfig {
     /// The size of an embedding vector (each token gets translated to an embedding vector of this size)
-    embedding_size: usize,
+    pub embedding_size: usize,
+    /// Size of the attention layer matrices.
+    pub hidden_size: usize,
     /// The number of "heads" that are used within each attention layer.
-    num_heads: usize,
+    pub num_heads: usize,
     /// The number of blocks / attention layers there is in the model
-    num_block: usize,
+    pub num_block: usize,
     /// The maximum size that the tensor containing input + generated token can have. Beyond that, we should not
     /// run the tensor through the model anymore.
-    context_length: usize,
+    pub context_length: usize,
     /// LayerNorm needs an epsilon value to determine the precision. This is it.
-    norm_epsilon: f32,
+    pub norm_epsilon: f32,
     /// The specific config for the variant.
-    specific_config: LLMVariant,
+    pub specific_config: LLMVariant,
 }
 
-
 impl LLMConfig {
-    pub fn embedding_size(&self) -> usize {
-        self.embedding_size
-    }
-    // In gpt2 and llama, Q K V are square
-    pub fn hidden_size(&self) -> usize {
-        self.embedding_size
-    }
-    pub fn num_heads(&self) -> usize {
-        self.num_heads
-    }
     pub fn from_content(l: &FileTensorLoader) -> anyhow::Result<Self> {
         let variant = LLMVariant::from_content(l)?;
         let embedding_size = l.content.metadata[variant.embedding_size_key()].to_u32()? as usize;
+        let hidden_size = l.content.metadata[variant.hidden_size_key()].to_u32()? as usize;
         let num_heads = l.content.metadata[variant.num_heads_key()].to_u32()? as usize;
         let context_length = l.content.metadata[variant.context_length_key()].to_u32()? as usize;
         let norm_epsilon = l.content.metadata[variant.norm_epsilon_key()].to_f32()?;
         let num_block = l.content.metadata[variant.num_block_key()].to_u32()? as usize;
-        Ok(Self { embedding_size, num_heads, context_length, norm_epsilon, num_block, specific_config: variant })
+        Ok(Self {
+            hidden_size,
+            embedding_size,
+            num_heads,
+            context_length,
+            norm_epsilon,
+            num_block,
+            specific_config: variant,
+        })
     }
 
     pub fn model(&self, l: &FileTensorLoader) -> anyhow::Result<LLMModel> {
@@ -127,11 +131,20 @@ pub enum LLMVariant {
 
 impl LLMVariant {
     pub fn from_content(l: &FileTensorLoader) -> anyhow::Result<Self> {
-        let Some(variant) = l.content.metadata.get("general.name").or_else(|| l.content.metadata.get("general.architecture")) else {
+        let Some(variant) = l
+            .content
+            .metadata
+            .get("general.name")
+            .or_else(|| l.content.metadata.get("general.architecture"))
+        else {
             bail!("no variant found");
         };
-        match variant.to_string().context("unable to get variant into string")?.as_str(){
-            "gpt2" =>  Ok(Self::GPT2),
+        match variant
+            .to_string()
+            .context("unable to get variant into string")?
+            .as_str()
+        {
+            "gpt2" => Ok(Self::GPT2),
             a => bail!("unsupported architecture: {:?}", a),
         }
     }
@@ -157,12 +170,18 @@ impl LLMVariant {
             Self::GPT2 => "gpt2.embedding_length",
         }
     }
+    pub fn hidden_size_key(&self) -> &str {
+        match self {
+            // same size as embedding for gpt2
+            Self::GPT2 => self.embedding_size_key(),
+        }
+    }
     pub fn norm_epsilon_key(&self) -> &str {
         match self {
             Self::GPT2 => "gpt2.attention.layer_norm_epsilon",
         }
     }
-    pub fn model(&self, l: &FileTensorLoader,config: &LLMConfig) -> anyhow::Result<LLMModel> {
+    pub fn model(&self, l: &FileTensorLoader, config: &LLMConfig) -> anyhow::Result<LLMModel> {
         match self {
             Self::GPT2 => Ok(LLMModel::GPT2(GPT2Model::from_loader(l, config)?)),
         }
@@ -174,28 +193,34 @@ pub enum LLMModel {
     GPT2(GPT2Model),
 }
 
-
-
 #[derive(Debug, Clone)]
 struct GPT2Model {
     embeddings: Embeddings<f32>,
+    positional: Positional<f32>,
     blocks: Vec<Attention<f32>>,
 }
 
 impl GPT2Model {
     pub fn from_loader(loader: &FileTensorLoader, config: &LLMConfig) -> anyhow::Result<Self> {
         let embeddings = Embeddings::from_loader(loader)?;
+        let positional = Positional::from_loader(loader, config)?;
         let num_layers = config.num_block;
-        let blocks = (0..num_layers).map(|i| 
-            Attention::from_loader(&loader.pp(&format!("blk.{i}.")), 
-                config.embedding_size(), 
-                config.hidden_size())
-        ).collect::<anyhow::Result<Vec<Attention<f32>>>>()?;
-        Ok(Self { embeddings, blocks })
+        let blocks = (0..num_layers)
+            .map(|i| {
+                Attention::from_loader(
+                    &loader.pp(&format!("blk.{i}.")),
+                    config.embedding_size,
+                    config.hidden_size,
+                )
+            })
+            .collect::<anyhow::Result<Vec<Attention<f32>>>>()?;
+        Ok(Self {
+            embeddings,
+            positional,
+            blocks,
+        })
     }
 }
-
-
 
 #[derive(Debug, Clone)]
 struct FeedForward<N: Number> {
@@ -209,19 +234,34 @@ struct FeedForward<N: Number> {
 impl FeedForward<f32> {
     // Replaces from_var_builder and from_tensor_loader
     // 'loader' is expected to be the block-level loader (e.g., scoped to "blk.N.")
-    pub fn from_loader(loader: &FileTensorLoader, embedding_size: usize, _hidden_size: usize) -> anyhow::Result<Self> {
+    pub fn from_loader(
+        loader: &FileTensorLoader,
+        embedding_size: usize,
+        _hidden_size: usize,
+    ) -> anyhow::Result<Self> {
         // Create a sub-scope for the feed-forward network's LayerNorm
         let ffn_norm_loader = loader.pp("ffn_");
         // Use the new LayerNorm::from_loader
         let norm = LayerNorm::from_loader(&ffn_norm_loader, embedding_size)?;
-        
+
         let up = loader.get_tensor("ffn_up.weight")?;
         let up_bias = loader.get_tensor("ffn_up.bias")?;
         let down = loader.get_tensor("ffn_down.weight")?;
         let down_bias = loader.get_tensor("ffn_down.bias")?;
-        
-        ensure!(down.get_shape()[0] == embedding_size, "down must have shape {:?} vs embedding_size: {}", down.get_shape(), embedding_size);
-        Ok(Self { norm, up, up_bias, down, down_bias })
+
+        ensure!(
+            down.get_shape()[0] == embedding_size,
+            "down must have shape {:?} vs embedding_size: {}",
+            down.get_shape(),
+            embedding_size
+        );
+        Ok(Self {
+            norm,
+            up,
+            up_bias,
+            down,
+            down_bias,
+        })
     }
 }
 
@@ -248,11 +288,15 @@ impl Attention<f32> {
         embedding_size: usize,
         hidden_size: usize,
     ) -> anyhow::Result<Self> {
-        ensure!(embedding_size == hidden_size, "embedding_size must be equal to hidden_size");
+        ensure!(
+            embedding_size == hidden_size,
+            "embedding_size must be equal to hidden_size"
+        );
 
         let qkv_weight_qtensor = loader.get_qtensor("attn_qkv.weight")?;
         let qkv_weight_candle = qkv_weight_qtensor.dequantize(&Device::Cpu)?;
-        let mut unfused_weights = unfuse_tensors(qkv_weight_candle, embedding_size * embedding_size)?;
+        let mut unfused_weights =
+            unfuse_tensors(qkv_weight_candle, embedding_size * embedding_size)?;
         ensure!(unfused_weights.len() == 3, "qkv_weight must have 3 chunks");
         let q = crate::Tensor::new(vec![embedding_size, hidden_size], unfused_weights.remove(0));
         let k = crate::Tensor::new(vec![embedding_size, hidden_size], unfused_weights.remove(0));
@@ -269,22 +313,35 @@ impl Attention<f32> {
         let attn_norm_loader = loader.pp("attn_");
         // Use new LayerNorm::from_loader
         let norm = LayerNorm::from_loader(&attn_norm_loader, hidden_size)?;
-        
+
         let out = loader.get_tensor("attn_output.weight")?;
         let out_bias = loader.get_tensor("attn_output.bias")?;
-        ensure!(out.get_shape().as_slice() == &[embedding_size, embedding_size], "out must have shape [hidden_size, hidden_size]");
-        ensure!(out_bias.get_shape().as_slice() == &[embedding_size], "out_bias must have shape [hidden_size]");
+        ensure!(
+            out.get_shape().as_slice() == &[embedding_size, embedding_size],
+            "out must have shape [hidden_size, hidden_size]"
+        );
+        ensure!(
+            out_bias.get_shape().as_slice() == &[embedding_size],
+            "out_bias must have shape [hidden_size]"
+        );
 
         // Use new FeedForward::from_loader
         let ff = FeedForward::from_loader(loader, embedding_size, hidden_size)?;
-        
+
         Ok(Self {
-            out, out_bias, norm, q, q_bias, k, k_bias, v, v_bias, feedforward: ff,
+            out,
+            out_bias,
+            norm,
+            q,
+            q_bias,
+            k,
+            k_bias,
+            v,
+            v_bias,
+            feedforward: ff,
         })
     }
 }
-
-
 
 fn dequantize(qtensor: Arc<QTensor>) -> anyhow::Result<Tensor<f32>> {
     let shape = qtensor.shape().dims().to_vec();
@@ -310,19 +367,22 @@ fn dequantize(qtensor: Arc<QTensor>) -> anyhow::Result<Tensor<f32>> {
 }
 
 fn unfuse_tensors(fused: candle_core::Tensor, chunk_len: usize) -> anyhow::Result<Vec<Vec<f32>>> {
-        let (s, l) = fused.storage_and_layout();
-       // let shape = l.shape().dims().to_vec();
-        let data = match s.deref() {
-            Storage::Cpu(cpu) => match cpu {
-                CpuStorage::F32(d) => d.to_vec(),
+    let (s, l) = fused.storage_and_layout();
+    // let shape = l.shape().dims().to_vec();
+    let data = match s.deref() {
+        Storage::Cpu(cpu) => match cpu {
+            CpuStorage::F32(d) => d.to_vec(),
             CpuStorage::F16(d) => d.iter().map(|x| x.to_f32()).collect(),
             _ => bail!("unsupported storage type (only f32 or f16 is supported)"),
         },
         _ => bail!("unsupported storage backend (only cpu is supported)"),
-        };
-        let tensors: Vec<Vec<f32>> = data.chunks(chunk_len).map(|chunk| chunk.to_vec()).collect();
-        ensure!(tensors.iter().all(|t| t.len() == chunk_len), "all chunks must have the same length");
-        Ok(tensors)
+    };
+    let tensors: Vec<Vec<f32>> = data.chunks(chunk_len).map(|chunk| chunk.to_vec()).collect();
+    ensure!(
+        tensors.iter().all(|t| t.len() == chunk_len),
+        "all chunks must have the same length"
+    );
+    Ok(tensors)
 }
 
 /// Type alias for a TensorLoader specialized for reading from a BufReader<File>.
@@ -403,9 +463,15 @@ impl<R: Read + Seek + Send + 'static> TensorLoader<R> {
     /// Returns an error if the reader lock cannot be acquired or if `Content::tensor` fails to load the `QTensor`.
     pub(crate) fn get_qtensor(&self, name: &str) -> anyhow::Result<Arc<QTensor>> {
         let full_name = format!("{}{}", self.current_prefix, name);
-        let mut reader_guard = self.reader.lock()
-            .map_err(|e| anyhow::anyhow!("Failed to acquire reader lock for tensor '{}': {}", full_name, e))?;
-        self.content.tensor(&mut *reader_guard, &full_name, &self.device)
+        let mut reader_guard = self.reader.lock().map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to acquire reader lock for tensor '{}': {}",
+                full_name,
+                e
+            )
+        })?;
+        self.content
+            .tensor(&mut *reader_guard, &full_name, &self.device)
             .map(|qtensor| Arc::new(qtensor))
             .map_err(|e| anyhow::anyhow!("Failed to load QTensor '{}' from GGUF: {}", full_name, e))
     }
@@ -450,7 +516,10 @@ mod tests {
     use gguf_rs::get_gguf_container;
     use std::{fs::File, io::Read, ops::Deref, path::Path};
 
-    use crate::{layers::embeddings::Embeddings, parser::gguf::{FeedForward, LLMConfig}};
+    use crate::{
+        layers::embeddings::Embeddings,
+        parser::gguf::{FeedForward, LLMConfig},
+    };
 
     use super::{Attention, TensorLoader};
     // download at https://huggingface.co/igorbkz/gpt2-Q8_0-GGUF
@@ -471,8 +540,9 @@ mod tests {
         let config = LLMConfig::from_content(&loader)?;
         // println!("config: {:?}", config); // Keep original println if desired for debugging
         let block0_loader = loader.pp("blk.0.");
-        
-        let _attention = Attention::from_loader(&block0_loader, config.embedding_size(), config.hidden_size())?;
+
+        let _attention =
+            Attention::from_loader(&block0_loader, config.embedding_size, config.hidden_size)?;
         Ok(())
     }
 
@@ -534,7 +604,7 @@ mod tests {
         Ok(())
     }
 
-   use crate::parser::gguf::FileTensorLoader;
+    use crate::parser::gguf::FileTensorLoader;
     #[test]
     fn test_tensor_loader_subscoping_and_lazy_load() -> anyhow::Result<()> {
         let gguf_path = GPT2_Q8_0_PATH;
@@ -545,32 +615,55 @@ mod tests {
         // Test loading a tensor from the root scope
         let embedding_tensor = loader.get_tensor("token_embd.weight")?;
         // Expected shape for gpt2 token_embd.weight: [vocab_size, embedding_length] = [50257, 768]
-        assert_eq!(embedding_tensor.get_shape(), vec![50257usize, 768usize], "Shape mismatch for token_embd.weight");
+        assert_eq!(
+            embedding_tensor.get_shape(),
+            vec![50257usize, 768usize],
+            "Shape mismatch for token_embd.weight"
+        );
 
         // Test sub-scoping with a trailing dot (VarBuilder style)
         let blk0_loader = loader.pp("blk.0.");
         let attn_norm_weight = blk0_loader.get_tensor("attn_norm.weight")?;
         // Expected shape for blk.0.attn_norm.weight: [embedding_length] = [768]
-        assert_eq!(attn_norm_weight.get_shape(), vec![768usize], "Shape mismatch for blk.0.attn_norm.weight");
+        assert_eq!(
+            attn_norm_weight.get_shape(),
+            vec![768usize],
+            "Shape mismatch for blk.0.attn_norm.weight"
+        );
 
         let qkv_weight = blk0_loader.get_tensor("attn_qkv.weight")?;
         // Expected shape for blk.0.attn_qkv.weight: [3 * embedding_length, embedding_length] = [2304, 768]
-        assert_eq!(qkv_weight.get_shape(), vec![2304usize, 768usize], "Shape mismatch for blk.0.attn_qkv.weight");
+        assert_eq!(
+            qkv_weight.get_shape(),
+            vec![2304usize, 768usize],
+            "Shape mismatch for blk.0.attn_qkv.weight"
+        );
 
         // Test sub-scoping with custom prefix as requested ("attn_", "ffn_")
         // Current prefix of blk0_loader is "blk.0."
         let blk0_attn_loader = blk0_loader.pp("attn_"); // New prefix: "blk.0.attn_"
         let attn_norm_weight_v2 = blk0_attn_loader.get_tensor("norm.weight")?; // Full name: "blk.0.attn_norm.weight"
-        assert_eq!(attn_norm_weight_v2.get_shape(), vec![768usize], "Shape mismatch for blk.0.attn_norm.weight via custom subscope");
+        assert_eq!(
+            attn_norm_weight_v2.get_shape(),
+            vec![768usize],
+            "Shape mismatch for blk.0.attn_norm.weight via custom subscope"
+        );
 
         let blk0_ffn_loader = blk0_loader.pp("ffn_"); // New prefix: "blk.0.ffn_"
         let ffn_norm_weight = blk0_ffn_loader.get_tensor("norm.weight")?; // Full name: "blk.0.ffn_norm.weight"
         // Expected shape for blk.0.ffn_norm.weight: [embedding_length] = [768]
-        assert_eq!(ffn_norm_weight.get_shape(), vec![768usize], "Shape mismatch for blk.0.ffn_norm.weight via custom subscope");
-        
+        assert_eq!(
+            ffn_norm_weight.get_shape(),
+            vec![768usize],
+            "Shape mismatch for blk.0.ffn_norm.weight via custom subscope"
+        );
+
         // Test that loading a non-existent tensor fails
         let non_existent_tensor_result = blk0_loader.get_tensor("non_existent_tensor.weight");
-        assert!(non_existent_tensor_result.is_err(), "Expected error for non-existent tensor");
+        assert!(
+            non_existent_tensor_result.is_err(),
+            "Expected error for non-existent tensor"
+        );
 
         Ok(())
     }

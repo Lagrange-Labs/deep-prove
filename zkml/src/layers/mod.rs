@@ -1,14 +1,15 @@
 pub mod activation;
 pub mod convolution;
 pub mod dense;
+pub mod embeddings;
 pub mod flatten;
 pub mod hadamard;
+pub mod layernorm;
 pub mod matvec;
 pub mod pooling;
+pub mod positional;
 pub mod provable;
 pub mod requant;
-pub mod embeddings;
-pub mod layernorm;
 
 use std::fmt::Debug;
 
@@ -30,10 +31,11 @@ use crate::{
         activation::{Activation, ActivationProof},
         convolution::Convolution,
         dense::Dense,
-        pooling::Pooling,
-        requant::{Requant, RequantProof},
         embeddings::Embeddings,
         layernorm::LayerNorm,
+        pooling::Pooling,
+        positional::Positional,
+        requant::{Requant, RequantProof},
     },
     lookup::context::LookupWitnessGen,
     model::StepData,
