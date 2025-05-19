@@ -1558,6 +1558,16 @@ impl<T: Number> Tensor<T> {
             og_shape: vec![0],
         }
     }
+    pub fn concat(self, other: Self) -> Self {
+        assert_eq!(self.shape.len(), other.shape.len());
+        let new_shape = self.shape.iter().zip(other.shape.iter()).map(|(a, b)| a + b).collect_vec();
+        let data = self.data.into_iter().chain(other.data.into_iter()).collect_vec();
+        Self {
+            data,
+            shape: new_shape,
+            og_shape: vec![0],
+        }
+    }
 }
 
 #[cfg(test)]
