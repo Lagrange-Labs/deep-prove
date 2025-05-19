@@ -17,7 +17,7 @@ use candle_core::{
 
 use crate::{
     Tensor,
-    layers::{embeddings::Embeddings, layernorm::LayerNorm, positional::Positional},
+    layers::transformer::{embeddings::Embeddings, layernorm::LayerNorm, positional::Positional},
     tensor::Number,
 };
 
@@ -544,7 +544,7 @@ mod tests {
     use std::{fs::File, io::Read, ops::Deref, path::Path};
 
     use crate::{
-        layers::embeddings::Embeddings,
+        layers::transformer::embeddings::Embeddings,
         parser::gguf::{FeedForward, LLMConfig},
     };
 

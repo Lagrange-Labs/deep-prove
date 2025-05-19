@@ -1,13 +1,11 @@
 pub mod activation;
 pub mod convolution;
 pub mod dense;
-pub mod embeddings;
 pub mod flatten;
 pub mod hadamard;
-pub mod layernorm;
+pub mod transformer;
 pub mod matvec;
 pub mod pooling;
-pub mod positional;
 pub mod provable;
 pub mod requant;
 
@@ -31,10 +29,7 @@ use crate::{
         activation::{Activation, ActivationProof},
         convolution::Convolution,
         dense::Dense,
-        embeddings::Embeddings,
-        layernorm::LayerNorm,
         pooling::Pooling,
-        positional::Positional,
         requant::{Requant, RequantProof},
     },
     lookup::context::LookupWitnessGen,
