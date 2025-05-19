@@ -129,6 +129,10 @@ impl<T, E: ExtensionField> LayerOut<T, E> {
         }
     }
 
+    pub(crate) fn from_tensor(out: Tensor<T>) -> Self {
+        Self::from_vec(vec![out])
+    }
+
     pub fn outputs(&self) -> Vec<&Tensor<T>> {
         self.outputs.iter().collect()
     }

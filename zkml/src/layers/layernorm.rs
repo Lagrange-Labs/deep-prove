@@ -1,35 +1,40 @@
 use anyhow::ensure;
+use anyhow::Context as AC;
 
-use crate::{Tensor, padding::PaddingMode, parser::gguf::FileTensorLoader, tensor::Number};
+use crate::{padding::PaddingMode, parser::gguf::{FileTensorLoader, LLMConfig}, tensor::Number, Element, Tensor};
 
-use super::provable::{Evaluate, OpInfo};
+use burn::{module::Param, nn::{LayerNorm as BLayerNorm, LayerNormConfig as BLayerNormConfig}, tensor::{Tensor as BTensor, TensorData}};
+use burn::backend::Wgpu;
+use super::provable::{Evaluate, LayerOut, OpInfo};
 
 #[derive(Debug, Clone)]
 pub struct LayerNorm<N: Number> {
     gamma: Tensor<N>,
     beta: Tensor<N>,
+    eps: f64,
 }
 
 impl LayerNorm<f32> {
     // Replaces from_var_builder and from_tensor_loader
     // The 'loader' passed here is expected to be pre-scoped by the caller
     // (e.g., loader.pp("attn_") or loader.pp("ffn_"))
-    pub fn from_loader(loader: &FileTensorLoader, exp_size: usize) -> anyhow::Result<Self> {
+    pub fn from_loader(loader: &FileTensorLoader, c: &LLMConfig) -> anyhow::Result<Self> {
         let gamma = loader.get_tensor("norm.weight")?;
         let beta = loader.get_tensor("norm.bias")?;
         ensure!(
-            gamma.get_shape().as_slice() == &[exp_size],
+            gamma.get_shape().as_slice() == &[c.embedding_size],
             "norm_gamma must have shape [{}] vs given {:?}",
-            exp_size,
+            c.embedding_size,
             gamma.get_shape()
         );
         ensure!(
-            beta.get_shape().as_slice() == &[exp_size],
+            beta.get_shape().as_slice() == &[c.embedding_size],
             "norm_beta must have shape [{}] vs given {:?}",
-            exp_size,
+            c.embedding_size,
             beta.get_shape()
         );
-        Ok(Self { gamma, beta })
+        let eps = loader.metadata::<f64>(c.specific_config.norm_epsilon_key());
+        Ok(Self { gamma, beta, eps })
     }
 }
 
@@ -60,12 +65,74 @@ impl<N: Number> OpInfo for LayerNorm<N> {
     }
 }
 
-impl<N: Number> Evaluate<N> for LayerNorm<N> {
+
+// Type alias for the backend to use.
+type Backend = Wgpu;
+
+
+impl Evaluate<f32> for LayerNorm<f32> {
     fn evaluate<E: ff_ext::ExtensionField>(
         &self,
-        inputs: &[&Tensor<N>],
+        inputs: &[&Tensor<f32>],
+        _unpadded_input_shapes: Vec<Vec<usize>>,
+    ) -> anyhow::Result<LayerOut<f32, E>> {
+        assert!(inputs.len() == 1);
+        let input = inputs[0];
+        assert!(input.get_shape().len() == 2);
+        let embedding_size = input.get_shape()[1];
+        let device = Default::default();
+        // NOTE: simply use the burn tensor API for now as we want to move towards using more burn features
+        // instead of re-implementing everything ourselves.
+        // copy implementation https://docs.rs/burn-core/0.17.0/src/burn_core/nn/norm/layer.rs.html#67
+        let input = BTensor::<Backend, 2>::from_data(TensorData::new(input.get_data().to_vec(),input.get_shape()), &device);
+        let gamma = BTensor::<Backend, 1>::from_data(TensorData::new(self.gamma.get_data().to_vec(),self.gamma.get_shape()), &device);
+        let beta = BTensor::<Backend, 1>::from_data(TensorData::new(self.beta.get_data().to_vec(),self.beta.get_shape()), &device);
+        let config = BLayerNormConfig::new(embedding_size as usize).with_epsilon(self.eps as f64);
+        let mut norm = config.init(&device);
+        norm.gamma = Param::from_tensor(gamma);
+        norm.beta = Param::from_tensor(beta);
+        let output = norm.forward(input);
+        let Ok(data) : Result<Vec<f32>, _> = output.to_data().into_vec() else {
+            anyhow::bail!("failed to convert to f32");
+        };
+        let output_shape = output.shape().dims.to_vec();
+        Ok(LayerOut::from_tensor(Tensor::<f32>::new(output_shape,data)))
+
+
+    }
+}
+
+impl Evaluate<Element> for LayerNorm<Element> {
+    fn evaluate<E: ff_ext::ExtensionField>(
+        &self,
+        inputs: &[&Tensor<Element>],
         unpadded_input_shapes: Vec<Vec<usize>>,
-    ) -> anyhow::Result<super::provable::LayerOut<N, E>> {
+    ) -> anyhow::Result<super::provable::LayerOut<Element, E>> {
         unimplemented!()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use goldilocks::GoldilocksExt2;
+
+    use super::*;
+
+    type E = GoldilocksExt2;
+    
+    #[test]
+    fn test_layernorm() {
+        let gamma = Tensor::<f32>::new(vec![1024], vec![1.0; 1024]);
+        let beta = Tensor::<f32>::new(vec![1024], vec![0.0; 1024]);
+        let eps = 1e-5;
+        let layernorm = LayerNorm {
+            gamma,
+            beta,
+            eps,
+        };
+        let input = Tensor::<f32>::new(vec![1, 1024], vec![0.0; 1024]);
+        let output = layernorm.evaluate::<E>(&[&input], vec![]).unwrap();
+        assert_eq!(output.outputs[0].get_shape(), vec![1, 1024]);
+        assert_eq!(output.outputs[0].get_data(), vec![0.0; 1024]);
     }
 }

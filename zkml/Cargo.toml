@@ -11,6 +11,7 @@ version.workspace = true
 [dependencies]
 anyhow.workspace = true
 ark-std.workspace = true
+burn = { version = "0.17.0", features = ["wgpu"] }
 candle-core = "0.9.1"
 candle-transformers = "0.9.1"
 clap = { version = "4", features = ["derive"] }

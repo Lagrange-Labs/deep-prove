@@ -1,4 +1,5 @@
-use candle_core::quantized::QTensor;
+use candle_core::quantized::{gguf_file::{Value, ValueType}, QTensor};
+use std::any::TypeId;
 use candle_transformers::{models::deepseek2::SplitOp, quantized_var_builder::VarBuilder};
 use std::{
     fs::File,
@@ -209,8 +210,7 @@ impl GPT2Model {
             .map(|i| {
                 Attention::from_loader(
                     &loader.pp(&format!("blk.{i}.")),
-                    config.embedding_size,
-                    config.hidden_size,
+                    &config,
                 )
             })
             .collect::<anyhow::Result<Vec<Attention<f32>>>>()?;
@@ -236,13 +236,12 @@ impl FeedForward<f32> {
     // 'loader' is expected to be the block-level loader (e.g., scoped to "blk.N.")
     pub fn from_loader(
         loader: &FileTensorLoader,
-        embedding_size: usize,
-        _hidden_size: usize,
+        c: &LLMConfig,
     ) -> anyhow::Result<Self> {
         // Create a sub-scope for the feed-forward network's LayerNorm
         let ffn_norm_loader = loader.pp("ffn_");
         // Use the new LayerNorm::from_loader
-        let norm = LayerNorm::from_loader(&ffn_norm_loader, embedding_size)?;
+        let norm = LayerNorm::from_loader(&ffn_norm_loader, &c)?;
 
         let up = loader.get_tensor("ffn_up.weight")?;
         let up_bias = loader.get_tensor("ffn_up.bias")?;
@@ -250,10 +249,10 @@ impl FeedForward<f32> {
         let down_bias = loader.get_tensor("ffn_down.bias")?;
 
         ensure!(
-            down.get_shape()[0] == embedding_size,
+            down.get_shape()[0] == c.embedding_size,
             "down must have shape {:?} vs embedding_size: {}",
             down.get_shape(),
-            embedding_size
+            c.embedding_size
         );
         Ok(Self {
             norm,
@@ -285,9 +284,10 @@ impl Attention<f32> {
     // 'loader' is expected to be the block-level loader (e.g., scoped to "blk.N.")
     pub fn from_loader(
         loader: &FileTensorLoader,
-        embedding_size: usize,
-        hidden_size: usize,
+        c: &LLMConfig,
     ) -> anyhow::Result<Self> {
+        let embedding_size = c.embedding_size;
+        let hidden_size = c.hidden_size;
         ensure!(
             embedding_size == hidden_size,
             "embedding_size must be equal to hidden_size"
@@ -312,7 +312,7 @@ impl Attention<f32> {
 
         let attn_norm_loader = loader.pp("attn_");
         // Use new LayerNorm::from_loader
-        let norm = LayerNorm::from_loader(&attn_norm_loader, hidden_size)?;
+        let norm = LayerNorm::from_loader(&attn_norm_loader, &c)?;
 
         let out = loader.get_tensor("attn_output.weight")?;
         let out_bias = loader.get_tensor("attn_output.bias")?;
@@ -326,7 +326,7 @@ impl Attention<f32> {
         );
 
         // Use new FeedForward::from_loader
-        let ff = FeedForward::from_loader(loader, embedding_size, hidden_size)?;
+        let ff = FeedForward::from_loader(loader, &c)?;
 
         Ok(Self {
             out,
@@ -383,6 +383,28 @@ fn unfuse_tensors(fused: candle_core::Tensor, chunk_len: usize) -> anyhow::Resul
         "all chunks must have the same length"
     );
     Ok(tensors)
+}
+
+
+trait FromValue<T> {
+    fn from_value(v: &Value) -> T;
+}
+
+impl FromValue<f32> for Value {
+    fn from_value(v: &Value) -> f32 {
+        v.to_f32().expect("failed to convert f32 to f32")
+    }
+}
+
+impl FromValue<f64> for Value {
+    fn from_value(v: &Value) -> f64 {
+        v.to_f64().expect("failed to convert f64 to f64")
+    }
+}
+impl FromValue<usize> for Value {
+    fn from_value(v: &Value) -> usize {
+        v.to_u32().expect("failed to convert u32 to u32") as usize
+    }
 }
 
 /// Type alias for a TensorLoader specialized for reading from a BufReader<File>.
@@ -491,6 +513,11 @@ impl<R: Read + Seek + Send + 'static> TensorLoader<R> {
         let qtensor = self.get_qtensor(name)?;
         dequantize(qtensor)
     }
+
+    pub fn metadata<T>(&self, key: &str) -> T where Value: FromValue<T> {
+        let v = &self.content.metadata[key];
+        Value::from_value(v)
+    }
 }
 
 impl TensorLoader<BufReader<File>> {
@@ -542,7 +569,7 @@ mod tests {
         let block0_loader = loader.pp("blk.0.");
 
         let _attention =
-            Attention::from_loader(&block0_loader, config.embedding_size, config.hidden_size)?;
+            Attention::from_loader(&block0_loader, &config)?;
         Ok(())
     }
 
@@ -594,7 +621,7 @@ mod tests {
                     CpuStorage::F16(d) => d.iter().map(|x| x.to_f32()).collect(),
                     _ => {
                         panic!("unsupported type of tensor: {:?}", s);
-                    }
+                   }
                 },
                 _ => {
                     panic!("only cpu storage type is supported");
