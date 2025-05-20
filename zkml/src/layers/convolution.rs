@@ -748,12 +748,12 @@ impl Convolution<Element> {
         });
 
         prover
-            .new_commit_prover
+            .commit_prover
             .add_common_claim(Claim::new(bias_point, bias_eval))
             .context("unable to add bias claim in convolution")?;
 
         prover
-            .new_commit_prover
+            .commit_prover
             .add_common_claim(Claim::new(
                 [
                     weights_rand.clone(),
@@ -1073,11 +1073,11 @@ where
         ]
         .concat();
 
-        verifier.new_commit_verifier.add_common_claim(Claim::new(
+        verifier.commit_verifier.add_common_claim(Claim::new(
             last_claim.point[(proof.ifft_delegation_proof.len())..].to_vec(),
             proof.bias_claim,
         ))?;
-        verifier.new_commit_verifier.add_common_claim(Claim::new(
+        verifier.commit_verifier.add_common_claim(Claim::new(
             [
                 weights_rand.clone(),
                 point[(2 * self.nw * self.nw).ilog2() as usize..].to_vec(),

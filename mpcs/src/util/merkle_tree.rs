@@ -435,10 +435,6 @@ fn authenticate_merkle_path_root<E: ExtensionField>(
         };
         x_index >>= 1;
     }
-    if &hash != root {
-        println!("x index: {}", x_index);
-        println!("calculated hash: {:?}", hash);
-    }
     assert_eq!(&hash, root);
 }
 

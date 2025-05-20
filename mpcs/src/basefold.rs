@@ -34,12 +34,12 @@ use query_phase::{
     prover_query_phase, simple_batch_prover_query_phase, simple_batch_verifier_query_phase,
     verifier_query_phase,
 };
-use std::{borrow::BorrowMut, collections::HashMap, ops::Deref};
+use std::{borrow::BorrowMut, ops::Deref};
 pub use structure::BasefoldSpec;
 use structure::{BasefoldProof, ProofQueriesResultWithMerklePath};
 use transcript::Transcript;
 
-use itertools::{Either, Itertools};
+use itertools::Itertools;
 use serde::{Serialize, de::DeserializeOwned};
 
 use multilinear_extensions::{
@@ -550,72 +550,19 @@ where
         transcript: &mut impl Transcript<E>,
     ) -> Result<Self::Proof, Error> {
         let timer = start_timer!(|| "Basefold::batch_open");
+        let num_vars = polys.iter().map(|poly| poly.num_vars).max().unwrap();
+        let min_num_vars = polys.iter().map(|p| p.num_vars).min().unwrap();
+        assert!(
+            min_num_vars > Spec::get_basecode_msg_size_log(),
+            "minimum number of variables was {} must be greater than {}",
+            min_num_vars,
+            Spec::get_basecode_msg_size_log()
+        );
 
         comms.iter().for_each(|comm| {
             assert!(comm.num_polys == 1);
+            assert!(!comm.is_trivial::<Spec>());
         });
-
-        let mut reindexing_polys_map = HashMap::<usize, usize>::new();
-        let mut reindexing_points_map = HashMap::<usize, usize>::new();
-        let mut trivial_index = 0usize;
-        let mut non_trivial_index = 0usize;
-
-        let (trivial_comms, non_trivial): (Vec<&BasefoldCommitmentWithWitness<E>>, Vec<(_, _)>) =
-            comms
-                .iter()
-                .zip(polys.iter())
-                .enumerate()
-                .partition_map(|(i, (comm, poly))| {
-                    if comm.num_vars <= Spec::get_basecode_msg_size_log() {
-                        reindexing_polys_map.insert(i, trivial_index);
-                        trivial_index += 1;
-                        Either::Left(comm)
-                    } else {
-                        reindexing_polys_map.insert(i, non_trivial_index);
-                        non_trivial_index += 1;
-                        Either::Right((poly.clone(), comm.clone()))
-                    }
-                });
-
-        let mut non_trivial_index = 0usize;
-
-        let points = points
-            .iter()
-            .enumerate()
-            .filter_map(|(i, point)| {
-                if point.len() <= Spec::get_basecode_msg_size_log() {
-                    None
-                } else {
-                    reindexing_points_map.insert(i, non_trivial_index);
-                    non_trivial_index += 1;
-                    Some(point.clone())
-                }
-            })
-            .collect::<Vec<Vec<E>>>();
-
-        let evals = evals
-            .iter()
-            .filter_map(|eval| {
-                let poly_opt = reindexing_polys_map.get(&eval.poly());
-                let point_opt = reindexing_points_map.get(&eval.point());
-
-                match (poly_opt, point_opt) {
-                    (Some(poly), Some(point)) => Some(Evaluation::<E> {
-                        poly: *poly,
-                        point: *point,
-                        value: eval.value,
-                    }),
-                    _ => None,
-                }
-            })
-            .collect::<Vec<Evaluation<E>>>();
-
-        let (polys, comms): (Vec<DenseMultilinearExtension<E>>, Vec<_>) =
-            non_trivial.into_iter().unzip();
-
-        let num_vars = polys.iter().map(|poly| poly.num_vars).max().unwrap();
-        let min_num_vars = polys.iter().map(|p| p.num_vars).min().unwrap();
-        assert!(min_num_vars >= Spec::get_basecode_msg_size_log());
 
         if cfg!(feature = "sanity-check") {
             evals.iter().for_each(|eval| {
@@ -626,14 +573,7 @@ where
             })
         }
 
-        // Make the trivial proof
-        let trivial_proof = trivial_comms
-            .iter()
-            .flat_map(|comm| comm.get_evals_ref())
-            .cloned()
-            .collect::<Vec<FieldType<E>>>();
-
-        validate_input("batch open", pp.get_max_message_size_log(), &polys, &points)?;
+        validate_input("batch open", pp.get_max_message_size_log(), polys, points)?;
 
         let sumcheck_timer = start_timer!(|| "Basefold::batch_open::initial sumcheck");
         // evals.len() is the batch size, i.e., how many polynomials are being opened together
@@ -698,6 +638,7 @@ where
             },
         );
 
+        let points = points.to_vec();
         if cfg!(feature = "sanity-check") {
             let expected_sum = merged_polys
                 .iter()
@@ -779,22 +720,22 @@ where
         // them to the transcript.
 
         let point = challenges;
-
+        let now = std::time::Instant::now();
         let (trees, commit_phase_proof) = batch_commit_phase::<E, Spec>(
             &pp.encoding_params,
             &point,
-            &comms,
+            comms,
             transcript,
             num_vars,
             num_vars - Spec::get_basecode_msg_size_log(),
             coeffs.as_slice(),
         );
-
+        println!("Batch commit phase time: {:?}", now.elapsed());
         let query_timer = start_timer!(|| "Basefold::batch_open query phase");
         let query_result = batch_prover_query_phase(
             transcript,
             1 << (num_vars + Spec::get_rate_log()),
-            &comms,
+            comms,
             &trees,
             Spec::get_number_queries(),
         );
@@ -805,7 +746,7 @@ where
             BatchedQueriesResultWithMerklePath::from_batched_query_result(
                 query_result,
                 &trees,
-                &comms,
+                comms,
             );
         end_timer!(query_timer);
         end_timer!(timer);
@@ -818,7 +759,7 @@ where
                 query_result_with_merkle_path,
             ),
             sumcheck_proof: Some(sumcheck_proof),
-            trivial_proof,
+            trivial_proof: vec![],
         })
     }
 
@@ -1021,105 +962,19 @@ where
         transcript: &mut impl Transcript<E>,
     ) -> Result<(), Error> {
         let timer = start_timer!(|| "Basefold::batch_verify");
-
-        let mut reindexing_polys_map = HashMap::<usize, usize>::new();
-        let mut reindexing_points_map = HashMap::<usize, usize>::new();
-        let mut trivial_index = 0usize;
-        let mut non_trivial_index = 0usize;
-
-        let (trivial_comms, new_comms): (Vec<&BasefoldCommitment<E>>, Vec<&BasefoldCommitment<E>>) =
-            comms.iter().enumerate().partition_map(|(i, comm)| {
-                if comm.num_vars().unwrap() <= Spec::get_basecode_msg_size_log() {
-                    reindexing_polys_map.insert(i, trivial_index);
-                    trivial_index += 1;
-                    Either::Left(comm)
-                } else {
-                    reindexing_polys_map.insert(i, non_trivial_index);
-                    non_trivial_index += 1;
-                    Either::Right(comm)
-                }
-            });
-
-        let mut trivial_index = 0usize;
-        let mut non_trivial_index = 0usize;
-
-        let (trivial_points, points): (Vec<Vec<E>>, Vec<Vec<E>>) =
-            points.iter().enumerate().partition_map(|(i, point)| {
-                if point.len() <= Spec::get_basecode_msg_size_log() {
-                    reindexing_points_map.insert(i, trivial_index);
-                    trivial_index += 1;
-                    Either::Left(point.clone())
-                } else {
-                    reindexing_points_map.insert(i, non_trivial_index);
-                    non_trivial_index += 1;
-                    Either::Right(point.clone())
-                }
-            });
-
-        let (trivial_evals, evals): (Vec<Evaluation<E>>, Vec<Evaluation<E>>) =
-            evals.par_iter().partition_map(|eval| {
-                let poly = *reindexing_polys_map.get(&eval.poly()).unwrap();
-                let point = *reindexing_points_map.get(&eval.point()).unwrap();
-                if comms[eval.poly()].num_vars().unwrap() <= Spec::get_basecode_msg_size_log() {
-                    Either::Left(Evaluation::<E> {
-                        poly,
-                        point,
-                        value: eval.value,
-                    })
-                } else {
-                    Either::Right(Evaluation::<E> {
-                        poly,
-                        point,
-                        value: eval.value,
-                    })
-                }
-            });
-
-        let comms = new_comms;
-
+        let comms = comms.iter().collect_vec();
         let num_vars = points.iter().map(|point| point.len()).max().unwrap();
         let num_rounds = num_vars - Spec::get_basecode_msg_size_log();
-        validate_input("batch verify", num_vars, &[], &points)?;
+        validate_input("batch verify", num_vars, &[], points)?;
         let poly_num_vars = comms.iter().map(|c| c.num_vars().unwrap()).collect_vec();
-        evals.iter().enumerate().for_each(|(i, eval)| {
+        evals.iter().for_each(|eval| {
             assert_eq!(
                 points[eval.point()].len(),
-                comms[eval.poly()].num_vars().unwrap(),
-                "eval point length did not match up with comm vars at index: {}, commitment: {:?}, point: {:?}",
-                i,
-                comms[eval.poly()],
-                eval.point(),
-
+                comms[eval.poly()].num_vars().unwrap()
             );
         });
         assert!(poly_num_vars.iter().min().unwrap() >= &Spec::get_basecode_msg_size_log());
-
-        // First we check the trivial proof if there is one
-        if proof.is_trivial() {
-            trivial_evals.par_iter().try_for_each(|eval| {
-                let trivial_proof = &proof.trivial_proof[eval.poly()];
-                let merkle_tree = MerkleTree::from_batch_leaves(vec![trivial_proof.clone()]);
-                let comm = trivial_comms[eval.poly()];
-                if comm.root() == merkle_tree.root() {
-                    let num_vars = comm.num_vars().unwrap();
-                    let value = DenseMultilinearExtension::<E> {
-                        evaluations: trivial_proof.clone(),
-                        num_vars,
-                    }
-                    .evaluate(&trivial_points[eval.point()]);
-
-                    if value == *eval.value() {
-                        Ok(())
-                    } else {
-                        Err(Error::InvalidPcsOpen(
-                            "Trivial commitment did not evaluate to the correct value".to_string(),
-                        ))
-                    }
-                } else {
-                    Err(Error::MerkleRootMismatch)
-                }
-            })?;
-        }
+        assert!(!proof.is_trivial());
 
         let sumcheck_timer = start_timer!(|| "Basefold::batch_verify::initial sumcheck");
         let batch_size_log = evals.len().next_power_of_two().ilog2() as usize;
@@ -1155,13 +1010,14 @@ where
         // Now the goal is to use the BaseFold to check the new target sum. Note that this time
         // we only have one eq polynomial in the sum-check.
         let eq_xy_evals = points
-            .iter()
+            .par_iter()
             .map(|point| eq_xy_eval(&verify_point[..point.len()], point))
-            .collect_vec();
+            .collect::<Vec<E>>();
         let mut coeffs = vec![E::ZERO; comms.len()];
-        evals.iter().enumerate().for_each(|(i, eval)| {
-            coeffs[eval.poly()] += eq_xy_evals[eval.point()] * poly_index_ext(&eq_xt, i)
-        });
+        evals
+            .iter()
+            .zip(poly_iter_ext(&eq_xt))
+            .for_each(|(eval, eqxt)| coeffs[eval.poly()] += eq_xy_evals[eval.point()] * eqxt);
 
         let mut fold_challenges: Vec<E> = Vec::with_capacity(num_vars);
         let roots = &proof.roots;
@@ -1189,7 +1045,6 @@ where
                 ) % (1 << (num_vars + Spec::get_rate_log()))
             })
             .collect();
-
         let query_result_with_merkle_path = proof.query_result_with_merkle_path.as_batched();
 
         // coeff is the eq polynomial evaluated at the last challenge.len() variables
@@ -1339,7 +1194,7 @@ mod test {
         basefold::Basefold,
         test_util::{
             gen_rand_poly_base, gen_rand_poly_ext, run_batch_commit_open_verify,
-            run_batch_commit_open_verify_with_trivial, run_commit_open_verify,
+            run_batch_commit_open_verify_multiple_sizes, run_commit_open_verify,
             run_simple_batch_commit_open_verify,
         },
     };
@@ -1428,18 +1283,18 @@ mod test {
     }
 
     #[test]
-    fn batch_commit_open_verify_with_trivial() {
+    fn batch_commit_open_verify_multiple_sizes() {
         for gen_rand_poly in [gen_rand_poly_base, gen_rand_poly_ext] {
             // Both challenge and poly are over base field
-            run_batch_commit_open_verify_with_trivial::<GoldilocksExt2, PcsGoldilocksBaseCode>(
+            run_batch_commit_open_verify_multiple_sizes::<GoldilocksExt2, PcsGoldilocksBaseCode>(
                 gen_rand_poly,
-                5,
-                13,
+                8,
+                21,
             );
-            run_batch_commit_open_verify_with_trivial::<GoldilocksExt2, PcsGoldilocksRSCode>(
+            run_batch_commit_open_verify_multiple_sizes::<GoldilocksExt2, PcsGoldilocksRSCode>(
                 gen_rand_poly,
-                5,
-                13,
+                8,
+                21,
             );
         }
     }

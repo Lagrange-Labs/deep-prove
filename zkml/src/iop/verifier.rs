@@ -1,6 +1,6 @@
 use crate::{
     Claim, VectorTranscript,
-    commit::{self, new_commit, precommit},
+    commit::{self, context},
     iop::ChallengeStorage,
     layers::{LayerCtx, LayerProof},
     lookup::{context::TableType, logup_gkr::verifier::verify_logup_proof},
@@ -40,9 +40,7 @@ where
     PCS: PolynomialCommitmentScheme<E>,
 {
     pub(crate) ctx: Context<E, PCS>,
-    pub(crate) commit_verifier: precommit::CommitVerifier<E>,
-    pub(crate) witness_verifier: precommit::CommitVerifier<E>,
-    pub(crate) new_commit_verifier: new_commit::CommitmentVerifier<E, PCS>,
+    pub(crate) commit_verifier: context::CommitmentVerifier<E, PCS>,
     pub(crate) transcript: &'a mut T,
 }
 
@@ -53,12 +51,10 @@ where
     PCS: PolynomialCommitmentScheme<E>,
 {
     pub(crate) fn new(ctx: Context<E, PCS>, transcript: &'a mut T) -> Self {
-        let new_commit_verifier = new_commit::CommitmentVerifier::<E, PCS>::new(&ctx.new_weights);
+        let commit_verifier = context::CommitmentVerifier::<E, PCS>::new(&ctx.weights);
         Self {
             ctx,
-            commit_verifier: precommit::CommitVerifier::new(),
-            witness_verifier: precommit::CommitVerifier::new(),
-            new_commit_verifier,
+            commit_verifier,
             transcript,
         }
     }
@@ -210,7 +206,7 @@ where
         }
 
         // 5. Verify the lookup table proofs
-        let mut table_poly_id = proof.steps.len();
+
         proof
             .table_proofs
             .iter()
@@ -226,13 +222,11 @@ where
                 verify_table::<_, _, _>(
                     table_proof,
                     *table_type,
-                    table_poly_id,
-                    &mut self.new_commit_verifier,
+                    &mut self.commit_verifier,
                     self.transcript,
                     constant_challenge,
                     column_separation_challenge,
                 )?;
-                table_poly_id += 1;
 
                 Result::<(), anyhow::Error>::Ok(())
             })?;
@@ -246,13 +240,8 @@ where
             "input not valid from proof"
         );
         // 7. verify the opening of the accumulation of claims
-        self.new_commit_verifier.verify(
-            &self.ctx.new_weights,
-            &proof.opening_proof,
-            self.transcript,
-        )?;
-        // self.commit_verifier
-        //     .verify(&ctx.weights, proof.commit, self.transcript)?;
+        self.commit_verifier
+            .verify(&self.ctx.weights, &proof.opening_proof, self.transcript)?;
 
         // 8. verify that the accumulated numerator is zero and accumulated denominator is non-zero
         let (final_num, final_denom) = numerators.into_iter().zip(denominators.into_iter()).fold(
@@ -294,8 +283,7 @@ where
 fn verify_table<E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
     proof: &TableProof<E, PCS>,
     table_type: TableType,
-    poly_id: usize,
-    witness_verifier: &mut commit::new_commit::CommitmentVerifier<E, PCS>,
+    witness_verifier: &mut commit::context::CommitmentVerifier<E, PCS>,
     t: &mut T,
     constant_challenge: E,
     column_separation_challenge: E,

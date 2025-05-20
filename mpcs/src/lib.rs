@@ -114,7 +114,7 @@ pub trait PolynomialCommitmentScheme<E: ExtensionField>: Clone + Debug {
     type ProverParam: Clone + Debug + Serialize + DeserializeOwned + Send + Sync;
     type VerifierParam: Clone + Debug + Serialize + DeserializeOwned + Send + Sync;
     type CommitmentWithWitness: Clone + Debug + Serialize + DeserializeOwned + Send + Sync;
-    type Commitment: Clone + Debug + Default + Serialize + DeserializeOwned;
+    type Commitment: Clone + Debug + Default + Serialize + DeserializeOwned + Send + Sync;
     type CommitmentChunk: Clone + Debug + Default;
     type Proof: Clone + Debug + Serialize + DeserializeOwned + Send + Sync;
 
@@ -578,7 +578,7 @@ pub mod test_util {
     }
 
     #[cfg(test)]
-    pub fn run_batch_commit_open_verify_with_trivial<E, Pcs>(
+    pub fn run_batch_commit_open_verify_multiple_sizes<E, Pcs>(
         gen_rand_poly: fn(usize) -> DenseMultilinearExtension<E>,
         num_vars_start: usize,
         num_vars_end: usize,

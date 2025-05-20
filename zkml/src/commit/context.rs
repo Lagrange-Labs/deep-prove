@@ -4,19 +4,14 @@
 use std::collections::HashMap;
 
 use super::PCSError;
-use crate::Claim;
+use crate::{Claim, default_transcript};
 use ff_ext::ExtensionField;
 
 use mpcs::{Evaluation, PolynomialCommitmentScheme};
-use multilinear_extensions::{
-    mle::{DenseMultilinearExtension, FieldType, MultilinearExtension},
-    util::ceil_log2,
-    virtual_poly::{VPAuxInfo, VirtualPolynomial},
-};
+use multilinear_extensions::mle::{DenseMultilinearExtension, MultilinearExtension};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
-use tracing::debug;
+
 use transcript::Transcript;
 
 /// A polynomial has an unique ID associated to it.
@@ -107,15 +102,28 @@ where
         &self.verifier_params
     }
 
+    /// Helper method to commit to polynomial.
     pub fn commit(
         &self,
         mle: &DenseMultilinearExtension<E>,
     ) -> Result<PCS::CommitmentWithWitness, PCSError> {
         PCS::commit(&self.prover_params, mle).map_err(|e| e.into())
     }
+
+    /// Write the commitment context to the transcript
+    pub fn write_to_transcript<T: Transcript<E>>(
+        &self,
+        transcript: &mut T,
+    ) -> Result<(), PCSError> {
+        self.model_comms.iter().try_for_each(|(comm, _)| {
+            let v_comm = PCS::get_pure_commitment(comm);
+            PCS::write_commitment(&v_comm, transcript).map_err(PCSError::from)
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
+/// Claim about a polynomial used by the prover (so contain witness as well)
 pub struct CommitmentClaim<E, PCS>
 where
     PCS: PolynomialCommitmentScheme<E>,
@@ -128,6 +136,7 @@ where
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+/// Claim about a commitment used by the verifier (so no witness is included).
 pub struct VerifierClaim<E, PCS>
 where
     PCS: PolynomialCommitmentScheme<E>,
@@ -139,6 +148,8 @@ where
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+/// The opening proof for a model inference. We may have trivial proofs that occur when the prover has to commit
+/// to small witness polynomials.
 pub struct ModelOpeningProof<E, PCS>
 where
     PCS: PolynomialCommitmentScheme<E>,
@@ -166,11 +177,6 @@ where
         }
     }
 
-    /// Returns a [`bool`] specifying whether there are trivial proofs
-    pub fn has_trivial(&self) -> bool {
-        !self.trivial_proofs.is_empty()
-    }
-
     /// Getter for the batch proof
     pub fn batch_proof(&self) -> &PCS::Proof {
         &self.batch_proof
@@ -183,14 +189,18 @@ where
 }
 
 #[derive(Debug, Clone)]
+/// Struct used to batch prove all commitment openings in a model proof.
 pub struct CommitmentProver<E, PCS>
 where
     PCS: PolynomialCommitmentScheme<E>,
     E::BaseField: Serialize + DeserializeOwned,
     E: ExtensionField + Serialize + DeserializeOwned,
 {
+    /// Commitments to the model weights, ordered in inference order (so the last element of the vec is the first commitment used in proving).
     model_commits: Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
+    /// Claims that are made about non-trivial commitments
     claims: Vec<CommitmentClaim<E, PCS>>,
+    /// Claims about trivial commitments (fewer than 8 variables, in this case its more efficient just to evaluate the polynomial)
     trivial_claims: Vec<CommitmentClaim<E, PCS>>,
 }
 
@@ -200,6 +210,7 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: ExtensionField + Serialize + DeserializeOwned,
 {
+    /// Create a new [`CommitmentProver`] from the [`CommitmentContext`] for the model.
     pub fn new(ctx: &CommitmentContext<E, PCS>) -> CommitmentProver<E, PCS> {
         let model_commits = ctx.model_comms.clone();
 
@@ -209,6 +220,7 @@ where
             trivial_claims: vec![],
         }
     }
+    /// Add a claim about a witness polynomial.
     pub fn add_witness_claim(
         &mut self,
         (commitment, mle): (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>),
@@ -229,19 +241,27 @@ where
         }
         Ok(())
     }
-
+    /// Add a claim about a model weight
     pub fn add_common_claim(&mut self, claim: Claim<E>) -> Result<(), PCSError> {
-        let (commitment, poly) = self.model_commits.pop().ok_or(PCSError::ParameterError(
+        let (commitment, mle) = self.model_commits.pop().ok_or(PCSError::ParameterError(
             "Tried to commit to a model commitment but there were none left!".to_string(),
         ))?;
-        self.claims.push(CommitmentClaim {
-            commitment,
-            poly,
-            claim,
-        });
+        if mle.num_vars() <= TRIVIAL_COMMIT_SIZE {
+            self.trivial_claims.push(CommitmentClaim {
+                commitment,
+                poly: mle,
+                claim,
+            });
+        } else {
+            self.claims.push(CommitmentClaim {
+                commitment,
+                poly: mle,
+                claim,
+            });
+        }
         Ok(())
     }
-
+    /// Produce the [`ModelOpeningProof`] for this inference trace.
     pub fn prove<T: Transcript<E>>(
         &mut self,
         commitment_context: &CommitmentContext<E, PCS>,
@@ -270,7 +290,7 @@ where
                 (commitment, (poly, (point, evaluation)))
             })
             .unzip();
-
+        // Make the trivial proofs.
         let trivial_proofs = self
             .trivial_claims
             .iter()
@@ -293,6 +313,7 @@ where
             })
             .collect::<Result<Vec<PCS::Proof>, PCSError>>()?;
 
+        // Make the batch proof
         let batch_proof = PCS::batch_open(
             commitment_context.prover_params(),
             &polys,
@@ -307,6 +328,7 @@ where
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// The struct used to verify all of the commitment openings in a model proof.
 pub struct CommitmentVerifier<E, PCS>
 where
     PCS: PolynomialCommitmentScheme<E>,
@@ -324,6 +346,7 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: ExtensionField + Serialize + DeserializeOwned,
 {
+    /// Create a new [`CommitmentVerifier`] from the models [`CommitmentContext`].
     pub fn new(ctx: &CommitmentContext<E, PCS>) -> CommitmentVerifier<E, PCS> {
         let model_commits = ctx
             .model_comms
@@ -336,6 +359,7 @@ where
             trivial_claims: vec![],
         }
     }
+    /// Add a claim about a witness poly to be verified.
     pub fn add_witness_claim(
         &mut self,
         commitment: PCS::Commitment,
@@ -349,15 +373,20 @@ where
         }
         Ok(())
     }
-
+    /// Add a claim about a model weight to be verified.
     pub fn add_common_claim(&mut self, claim: Claim<E>) -> Result<(), PCSError> {
         let commitment = self.model_commits.pop().ok_or(PCSError::ParameterError(
             "Tried to commit to a model commitment but there were none left!".to_string(),
         ))?;
-        self.claims.push(VerifierClaim { commitment, claim });
+        if claim.point.len() <= TRIVIAL_COMMIT_SIZE {
+            self.trivial_claims
+                .push(VerifierClaim { commitment, claim });
+        } else {
+            self.claims.push(VerifierClaim { commitment, claim });
+        }
         Ok(())
     }
-
+    /// Verify the [`ModelOpeningProof`] for this inference trace.
     pub fn verify<T: Transcript<E>>(
         &mut self,
         commitment_context: &CommitmentContext<E, PCS>,
@@ -397,28 +426,29 @@ where
                 self.trivial_claims.len()
             )));
         }
-
+        // Check all trivial commitments are correct
         self.trivial_claims
-            .iter()
-            .zip(trivial_proofs)
+            .par_iter()
+            .zip(trivial_proofs.par_iter())
             .try_for_each(|(claim, proof)| {
                 let VerifierClaim {
                     commitment,
                     claim: inner_claim,
                 } = claim;
                 let Claim { point, eval } = inner_claim;
-                // Checke that the commitments align
+                // Check that the commitments align, we can use a defualt transcript because trivial openings don't require a transcript
+                let mut t = default_transcript::<E>();
                 PCS::verify(
                     commitment_context.verifier_params(),
                     commitment,
                     point,
-                    eval,
+                    &eval,
                     proof,
-                    transcript,
+                    &mut t,
                 )?;
                 Result::<(), PCSError>::Ok(())
             })?;
-
+        // Verify the batch opening
         PCS::batch_verify(
             commitment_context.verifier_params(),
             &comms,

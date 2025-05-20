@@ -4,8 +4,8 @@ use rayon::iter::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
 };
 
+pub mod context;
 mod error;
-pub mod new_commit;
 pub mod precommit;
 pub mod same_poly;
 

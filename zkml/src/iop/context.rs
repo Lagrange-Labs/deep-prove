@@ -1,12 +1,11 @@
 use crate::{
     Element,
-    commit::new_commit::CommitmentContext,
-    iop::precommit::{self, PolyID},
+    commit::context::CommitmentContext,
+    iop::precommit::PolyID,
     layers::LayerCtx,
     lookup::context::{LookupContext, TableType},
     model::Model,
 };
-use anyhow::Context as CC;
 
 use ff_ext::ExtensionField;
 use itertools::Itertools;
@@ -49,8 +48,7 @@ where
     pub steps_info: Vec<LayerCtx<E>>,
     /// Context related to the commitment and accumulation of claims related to the weights of model.
     /// This part contains the commitment of the weights.
-    pub weights: precommit::Context<E>,
-    pub new_weights: CommitmentContext<E, PCS>,
+    pub weights: CommitmentContext<E, PCS>,
     /// Context holding all the different table types we use in lookups
     pub lookup: LookupContext,
     /// unpadded shape of the first initial input
@@ -142,18 +140,13 @@ where
                 layer.describe()
             );
             let (info, new_aux) = layer.step_info(id, ctx_aux);
-            println!(
-                "new polys length: {}, name: {}",
-                new_aux.model_polys.len(),
-                info.variant_name()
-            );
+
             model_polys.push(
                 new_aux
                     .model_polys
                     .iter()
                     .map(|evals| {
                         let num_vars = ceil_log2(evals.len());
-                        println!("num vars: {}", num_vars);
                         DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, evals)
                     })
                     .collect::<Vec<DenseMultilinearExtension<E>>>(),
@@ -175,15 +168,13 @@ where
         // // We reverse the order of `model_polys` as we start proving at the last layer
         // model_polys.reverse();
 
-        let new_commit_ctx = CommitmentContext::<E, PCS>::new(max_poly_len, model_polys.concat())?;
-        let commit_ctx = precommit::Context::generate_from_model(model)
-            .context("can't generate context for commitment part")?;
+        let commit_ctx = CommitmentContext::<E, PCS>::new(max_poly_len, model_polys.concat())?;
+
         debug!("Context : lookup generation ...");
         let lookup_ctx = LookupContext::new(ctx_aux.tables);
         Ok(Self {
             steps_info: step_infos.into_iter().rev().collect_vec(),
             weights: commit_ctx,
-            new_weights: new_commit_ctx,
             lookup: lookup_ctx,
             unpadded_input_shape: model.unpadded_input_shape(),
         })

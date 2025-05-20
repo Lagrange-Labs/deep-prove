@@ -225,7 +225,7 @@ impl Pooling {
             .zip(commits)
             .map(|(&eval, comm_with_wit)| {
                 let commit = PCS::get_pure_commitment(&comm_with_wit.0);
-                prover.new_commit_prover.add_witness_claim(
+                prover.commit_prover.add_witness_claim(
                     comm_with_wit,
                     Claim::<E>::new(zerocheck_point.clone(), eval),
                 )?;
@@ -385,7 +385,7 @@ impl PoolingCtx {
             .iter()
             .zip(proof.commitments.iter())
             .try_for_each(|(&eval, commit)| {
-                verifier.new_commit_verifier.add_witness_claim(
+                verifier.commit_verifier.add_witness_claim(
                     commit.clone(),
                     Claim::<E>::new(zerocheck_point.clone(), eval),
                 )

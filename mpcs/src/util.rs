@@ -8,6 +8,7 @@ use ff_ext::ExtensionField;
 use goldilocks::SmallField;
 use itertools::{Either, Itertools, izip};
 use multilinear_extensions::mle::{DenseMultilinearExtension, FieldType};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 pub mod merkle_tree;
 use crate::{Error, util::parallel::parallelize};
@@ -160,6 +161,16 @@ pub fn field_type_iter_ext<E: ExtensionField>(
     match evaluations {
         FieldType::Ext(coeffs) => Either::Left(coeffs.iter().copied()),
         FieldType::Base(coeffs) => Either::Right(coeffs.iter().map(|x| (*x).into())),
+        _ => unreachable!(),
+    }
+}
+
+pub fn field_type_par_iter_ext<E: ExtensionField>(
+    evaluations: &FieldType<E>,
+) -> impl IndexedParallelIterator<Item = E> + '_ {
+    match evaluations {
+        FieldType::Ext(coeffs) => Either::Left(coeffs.par_iter().copied()),
+        FieldType::Base(coeffs) => Either::Right(coeffs.par_iter().map(|x| (*x).into())),
         _ => unreachable!(),
     }
 }

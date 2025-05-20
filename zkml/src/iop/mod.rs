@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    commit::{new_commit::ModelOpeningProof, precommit},
+    commit::{context::ModelOpeningProof, precommit},
     layers::LayerProof,
     lookup::logup_gkr::structs::LogUpProof,
 };

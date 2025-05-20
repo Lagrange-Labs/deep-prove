@@ -429,7 +429,7 @@ impl Requant {
                 .map(|(&eval, comm_with_wit)| {
                     let commitment = PCS::get_pure_commitment(&comm_with_wit.0);
                     prover
-                        .new_commit_prover
+                        .commit_prover
                         .add_witness_claim(comm_with_wit, Claim::<E>::new(point.clone(), eval))?;
 
                     Result::<(E, PCS::Commitment), PCSError>::Ok((eval, commitment))
@@ -585,7 +585,7 @@ impl RequantCtx {
             .zip(commitments)
             .try_for_each(|(&eval, commit)| {
                 verifier
-                    .new_commit_verifier
+                    .commit_verifier
                     .add_witness_claim(commit.clone(), Claim::<E>::new(acc_point.clone(), eval))
             })?;
 

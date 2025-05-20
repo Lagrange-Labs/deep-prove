@@ -185,7 +185,6 @@ impl Dense<Element> {
         last_claim: Claim<E>,
         input: &Tensor<E>,
         output: &Tensor<E>,
-        info: &DenseCtx<E>,
     ) -> anyhow::Result<Claim<E>>
     where
         E: ExtensionField + Serialize + DeserializeOwned,
@@ -292,12 +291,12 @@ impl Dense<Element> {
         // add the bias claim over the last claim input, since that is what is needed to "remove" the bias
         // to only verify the matrix2vec product via the sumcheck proof.
         prover
-            .new_commit_prover
+            .commit_prover
             .add_common_claim(Claim::new(last_claim.point, bias_eval))
             .context("unable to add bias claim")?;
 
         prover
-            .new_commit_prover
+            .commit_prover
             .add_common_claim(Claim::new(point, eval))
             .context("unable to add matrix claim")?;
 
@@ -422,10 +421,10 @@ where
         let pcs_eval_output = proof.individual_claims[0];
 
         verifier
-            .new_commit_verifier
+            .commit_verifier
             .add_common_claim(Claim::new(last_claim.point, proof.bias_eval))?;
         verifier
-            .new_commit_verifier
+            .commit_verifier
             .add_common_claim(Claim::new(pcs_eval_input, pcs_eval_output))?;
 
         // SUMCHECK verification part

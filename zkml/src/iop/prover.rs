@@ -1,23 +1,22 @@
 use super::{ChallengeStorage, Context, Proof, TableProof};
 use crate::{
     Claim, Element, VectorTranscript,
-    commit::{Pcs, compute_betas_eval, new_commit, precommit},
+    commit::{compute_betas_eval, context},
     layers::{Layer, LayerCtx, LayerProof},
     lookup::{
         context::{TABLE_POLY_ID_OFFSET, generate_lookup_witnesses},
-        logup_gkr::{prover::batch_prove as logup_batch_prove, structs::LogUpInput},
+        logup_gkr::prover::batch_prove as logup_batch_prove,
         witness::LogUpWitness,
     },
     model::{InferenceStep, InferenceTrace},
     tensor::{Tensor, get_root_of_unity},
 };
-use anyhow::{anyhow, bail, ensure};
+use anyhow::{anyhow, bail};
 use ff_ext::ExtensionField;
 
 use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::{
-    mle::{DenseMultilinearExtension, IntoMLE, MultilinearExtension},
-    util::ceil_log2,
+    mle::{IntoMLE, MultilinearExtension},
     virtual_poly::VirtualPolynomial,
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -38,15 +37,8 @@ where
     proofs: Vec<LayerProof<E, PCS>>,
     table_proofs: Vec<TableProof<E, PCS>>,
     pub(crate) transcript: &'a mut T,
-    pub(crate) commit_prover: precommit::CommitProver<E>,
-    // /// the context of the witness part (IO of lookups, linked with matrix2vec for example)
-    // /// is generated during proving time. It is first generated and then the fiat shamir starts.
-    // /// The verifier doesn't know about the individual polys (otherwise it beats the purpose) so
-    // /// that's why it is generated at proof time.
-    // pub(crate) witness_ctx: Option<precommit::Context<E>>,
-    /// The prover related to proving multiple claims about different witness poly (io of lookups etc)
-    pub(crate) witness_prover: precommit::CommitProver<E>,
-    pub(crate) new_commit_prover: new_commit::CommitmentProver<E, PCS>,
+    /// Proves commitment openings
+    pub(crate) commit_prover: context::CommitmentProver<E, PCS>,
     /// The lookup witnesses
     pub(crate) lookup_witness: Vec<LogUpWitness<E, PCS>>,
     /// The Lookup table witness
@@ -64,17 +56,15 @@ where
     PCS: PolynomialCommitmentScheme<E>,
 {
     pub fn new(ctx: &'a Context<E, PCS>, transcript: &'a mut T) -> Self {
-        let new_commit_prover = new_commit::CommitmentProver::new(&ctx.new_weights);
+        let commit_prover = context::CommitmentProver::new(&ctx.weights);
         Self {
             ctx,
             transcript,
             proofs: Default::default(),
             table_proofs: Vec::default(),
-            commit_prover: precommit::CommitProver::new(),
             // at this step, we can't build the ctx since we don't know the individual polys
             // witness_ctx: None,
-            new_commit_prover,
-            witness_prover: precommit::CommitProver::new(),
+            commit_prover,
             lookup_witness: Vec::default(),
             table_witness: Vec::default(),
             challenge_storage: ChallengeStorage::default(),
@@ -103,8 +93,8 @@ where
             info.variant_name()
         );
         let claim = match (step.layer, info) {
-            (Layer::Dense(dense), LayerCtx::Dense(info)) => {
-                dense.prove_step(self, last_claim, input, &step.output, info)
+            (Layer::Dense(dense), LayerCtx::Dense(_)) => {
+                dense.prove_step(self, last_claim, input, &step.output)
             }
             (Layer::Convolution(filter), LayerCtx::Convolution(info)) => filter
                 .prove_convolution_step(
@@ -115,8 +105,8 @@ where
                     &step.conv_data,
                     info,
                 ),
-            (Layer::Activation(activation), LayerCtx::Activation(act_ctx)) => {
-                activation.prove_step(self, &last_claim, &step.output.get_data(), act_ctx)
+            (Layer::Activation(activation), LayerCtx::Activation(..)) => {
+                activation.prove_step(self, &last_claim, &step.output.get_data())
             }
             (Layer::Requant(requant), LayerCtx::Requant(ctx)) => {
                 requant.prove_step(self, &last_claim, ctx)
@@ -157,7 +147,7 @@ where
             let table_proof = logup_batch_prove(&logup_input, self.transcript)?;
 
             // Add the multiplicity poly claim
-            self.new_commit_prover.add_witness_claim(
+            self.commit_prover.add_witness_claim(
                 comm_with_wit,
                 table_proof.output_claims().first().unwrap().clone(),
             )?;
@@ -481,8 +471,8 @@ where
         //     .prove(&self.ctx.weights, self.transcript)?;
 
         let opening_proof = self
-            .new_commit_prover
-            .prove(&self.ctx.new_weights, self.transcript)?;
+            .commit_prover
+            .prove(&self.ctx.weights, self.transcript)?;
         let output_proof = Proof {
             steps: self.proofs,
             table_proofs: self.table_proofs,
@@ -502,25 +492,11 @@ where
         let (challenge_storage, lookup_witnesses, table_witnesses) =
             generate_lookup_witnesses::<E, T, PCS>(&self.ctx, trace, self.transcript)?;
         println!("Time to generate lookup witness: {:?}", now.elapsed());
-        // let (lookup_witness, polys) =
-        //     lookup::WitnessContext::<E>::initialise_witness_ctx(&self.ctx.lookup, trace)?;
 
-        // self.witness_ctx = witness_ctx;
         self.challenge_storage = challenge_storage;
         self.lookup_witness = lookup_witnesses;
         self.table_witness = table_witnesses;
-        // if !polys.is_empty() {
-        //     let ctx = precommit::Context::generate(polys)
-        //         .context("unable to generate ctx for witnesses")?;
-        //     ctx.write_to_transcript(self.transcript)?;
-        //     // Set the witness context
-        //     self.witness_ctx = Some(ctx);
-        //     // generate all the lookup related challenges
-        //     self.challenge_storage = ChallengeStorage::<E>::initialise(self.ctx, self.transcript);
-        // } else {
-        //     warn!("no activation functions found - no witness commitment");
-        // }
-        // self.lookup_witness = lookup_witness;
+
         Ok(())
     }
 }

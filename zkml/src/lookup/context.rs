@@ -294,7 +294,7 @@ where
                                 num_vars,
                                 &evaluations,
                             );
-                            let commit = ctx.new_weights.commit(&mle)?;
+                            let commit = ctx.weights.commit(&mle)?;
                             Ok(((commit, mle), evaluations))
                         })
                         .collect::<Result<Vec<_>, PCSError>>()?.into_iter().unzip();
@@ -354,7 +354,7 @@ where
                                 num_vars,
                                 &evaluations,
                             );
-                            let commit = ctx.new_weights.commit(&mle)?;
+                            let commit = ctx.weights.commit(&mle)?;
                             Ok(((commit, mle), evaluations))
                         })
                         .collect::<Result<Vec<_>, PCSError>>()?.into_iter().unzip();
@@ -373,7 +373,7 @@ where
                                 num_vars,
                                 &evaluations,
                             );
-                            let commit = ctx.new_weights.commit(&mle)?;
+                            let commit = ctx.weights.commit(&mle)?;
                             Ok(((commit, mle), evaluations))
                         })
                         .collect::<Result<Vec<_>, PCSError>>()?.into_iter().unzip();
@@ -428,7 +428,7 @@ where
                                 num_vars,
                                 evaluations,
                             );
-                            let commit = ctx.new_weights.commit(&mle)?;
+                            let commit = ctx.weights.commit(&mle)?;
                             Ok((commit, mle))
                         })
                         .collect::<Result<Vec<_>, PCSError>>()?;
@@ -500,7 +500,7 @@ where
                     .collect::<Vec<E::BaseField>>();
                 let num_vars = ceil_log2(multiplicities.len());
                 let mle = DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, &multiplicities);
-                let commit = ctx.new_weights.commit(
+                let commit = ctx.weights.commit(
                     &mle,
                 )?;
                 Ok(LogUpWitness::<E, PCS>::new_table(

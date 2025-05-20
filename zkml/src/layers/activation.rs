@@ -91,7 +91,6 @@ impl Activation {
         prover: &mut Prover<E, T, PCS>,
         last_claim: &Claim<E>,
         output: &[E],
-        step: &ActivationCtx,
     ) -> anyhow::Result<Claim<E>>
     where
         E: ExtensionField + Serialize + DeserializeOwned,
@@ -122,7 +121,7 @@ impl Activation {
             .map(|(claim, comm_with_wit)| {
                 let comm = PCS::get_pure_commitment(&comm_with_wit.0);
                 prover
-                    .new_commit_prover
+                    .commit_prover
                     .add_witness_claim(comm_with_wit, claim)?;
                 Ok(comm)
             })
@@ -183,7 +182,7 @@ impl ActivationCtx {
             .zip(proof.commits.iter())
             .try_for_each(|(claim, commit)| {
                 verifier
-                    .new_commit_verifier
+                    .commit_verifier
                     .add_witness_claim(commit.clone(), claim)
             })?;
 
