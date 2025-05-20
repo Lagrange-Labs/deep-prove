@@ -5,13 +5,14 @@ use crate::{
     iop::{context::ContextAux, verifier::Verifier},
     layers::{LayerCtx, LayerProof, PolyID},
     padding::PaddingMode,
-    quantization::{self, ScalingFactor},
+    quantization::{self, Fieldizer, ScalingFactor},
     tensor::Number,
 };
 use anyhow::{Context, ensure};
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
 use itertools::Itertools;
+use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::{
     mle::{IntoMLE, MultilinearExtension},
     virtual_poly::{VPAuxInfo, VirtualPolynomial},
@@ -178,9 +179,9 @@ impl Dense<Element> {
         // - 1 because numbers are signed so only half of the range is used when doing multiplication
         2 * (*quantization::BIT_LEN - 1) + ceil_log2(ncols) + 1
     }
-    pub fn prove_step<'b, E, T>(
+    pub fn prove_step<'b, E, T, PCS>(
         &self,
-        prover: &mut Prover<E, T>,
+        prover: &mut Prover<E, T, PCS>,
         last_claim: Claim<E>,
         input: &Tensor<E>,
         output: &Tensor<E>,
@@ -190,6 +191,7 @@ impl Dense<Element> {
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
         T: Transcript<E>,
+        PCS: PolynomialCommitmentScheme<E>,
     {
         let matrix = &self.matrix;
         let (nrows, ncols) = (matrix.nrows_2d(), matrix.ncols_2d());
@@ -284,17 +286,20 @@ impl Dense<Element> {
         // PCS part: here we need to create an opening proof for the final evaluation of the matrix poly
         // Note we need the _full_ input to the matrix since the matrix MLE has (row,column) vars space
         let point = [proof.point.as_slice(), last_claim.point.as_slice()].concat();
+
         let eval = state.get_mle_final_evaluations()[0];
-        prover
-            .commit_prover
-            .add_claim(info.matrix_poly_id, Claim::new(point, eval))
-            .context("unable to add matrix claim")?;
+
         // add the bias claim over the last claim input, since that is what is needed to "remove" the bias
         // to only verify the matrix2vec product via the sumcheck proof.
         prover
-            .commit_prover
-            .add_claim(info.bias_poly_id, Claim::new(last_claim.point, bias_eval))
+            .new_commit_prover
+            .add_common_claim(Claim::new(last_claim.point, bias_eval))
             .context("unable to add bias claim")?;
+
+        prover
+            .new_commit_prover
+            .add_common_claim(Claim::new(point, eval))
+            .context("unable to add matrix claim")?;
 
         // the claim that this proving step outputs is the claim about not the matrix but the vector poly.
         // at next step, that claim will be proven over this vector poly (either by the next dense layer proving, or RELU etc).
@@ -313,8 +318,8 @@ impl Dense<Element> {
     pub(crate) fn step_info<E: ExtensionField>(
         &self,
         id: PolyID,
-        mut ctx_aux: ContextAux,
-    ) -> (LayerCtx<E>, ContextAux)
+        mut ctx_aux: ContextAux<E>,
+    ) -> (LayerCtx<E>, ContextAux<E>)
     where
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
@@ -338,6 +343,30 @@ impl Dense<Element> {
             unpadded_matrix_shape: self.unpadded_matrix_shape.clone(),
             padded_matrix_shape: self.matrix.get_shape().to_vec(),
         });
+
+        let weights_evals = self
+            .matrix
+            .pad_next_power_of_two()
+            .get_data()
+            .iter()
+            .map(|val| {
+                let f: E = val.to_field();
+                f.as_bases()[0]
+            })
+            .collect::<Vec<E::BaseField>>();
+        let bias_evals = self
+            .bias
+            .pad_next_power_of_two()
+            .get_data()
+            .iter()
+            .map(|val| {
+                let f: E = val.to_field();
+                f.as_bases()[0]
+            })
+            .collect::<Vec<E::BaseField>>();
+
+        ctx_aux.model_polys = vec![weights_evals, bias_evals];
+
         (dense_info, ctx_aux)
     }
 }
@@ -362,9 +391,9 @@ where
         );
         vec![mat_shape[0]]
     }
-    pub(crate) fn verify_dense<T: Transcript<E>>(
+    pub(crate) fn verify_dense<T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
-        verifier: &mut Verifier<E, T>,
+        verifier: &mut Verifier<E, T, PCS>,
         last_claim: Claim<E>,
         proof: &DenseProof<E>,
     ) -> anyhow::Result<Claim<E>> {
@@ -391,14 +420,13 @@ where
         // Note we don't care about verifying that for the vector since it's verified at the next
         // step.
         let pcs_eval_output = proof.individual_claims[0];
-        verifier.commit_verifier.add_claim(
-            info.matrix_poly_id,
-            Claim::new(pcs_eval_input, pcs_eval_output),
-        )?;
-        verifier.commit_verifier.add_claim(
-            info.bias_poly_id,
-            Claim::new(last_claim.point, proof.bias_eval),
-        )?;
+
+        verifier
+            .new_commit_verifier
+            .add_common_claim(Claim::new(last_claim.point, proof.bias_eval))?;
+        verifier
+            .new_commit_verifier
+            .add_common_claim(Claim::new(pcs_eval_input, pcs_eval_output))?;
 
         // SUMCHECK verification part
         // Instead of computing the polynomial at the random point requested like this

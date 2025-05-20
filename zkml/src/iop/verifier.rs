@@ -1,6 +1,6 @@
 use crate::{
     Claim, VectorTranscript,
-    commit::{self, precommit},
+    commit::{self, new_commit, precommit},
     iop::ChallengeStorage,
     layers::{LayerCtx, LayerProof},
     lookup::{context::TableType, logup_gkr::verifier::verify_logup_proof},
@@ -10,6 +10,7 @@ use anyhow::{anyhow, bail, ensure};
 use ff_ext::ExtensionField;
 
 use itertools::Itertools;
+use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 
 use serde::{Serialize, de::DeserializeOwned};
@@ -32,29 +33,40 @@ impl<E> IO<E> {
     }
 }
 
-pub(crate) struct Verifier<'a, E: ExtensionField, T: Transcript<E>> {
-    pub(crate) commit_verifier: precommit::CommitVerifier<E>,
-    pub(crate) witness_verifier: precommit::CommitVerifier<E>,
-    pub(crate) transcript: &'a mut T,
-}
-
-impl<'a, E: ExtensionField, T: Transcript<E>> Verifier<'a, E, T>
+pub(crate) struct Verifier<'a, E: ExtensionField, T: Transcript<E>, PCS>
 where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
 {
-    pub(crate) fn new(transcript: &'a mut T) -> Self {
+    pub(crate) ctx: Context<E, PCS>,
+    pub(crate) commit_verifier: precommit::CommitVerifier<E>,
+    pub(crate) witness_verifier: precommit::CommitVerifier<E>,
+    pub(crate) new_commit_verifier: new_commit::CommitmentVerifier<E, PCS>,
+    pub(crate) transcript: &'a mut T,
+}
+
+impl<'a, E: ExtensionField, T: Transcript<E>, PCS> Verifier<'a, E, T, PCS>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+    E: Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
+{
+    pub(crate) fn new(ctx: Context<E, PCS>, transcript: &'a mut T) -> Self {
+        let new_commit_verifier = new_commit::CommitmentVerifier::<E, PCS>::new(&ctx.new_weights);
         Self {
+            ctx,
             commit_verifier: precommit::CommitVerifier::new(),
             witness_verifier: precommit::CommitVerifier::new(),
+            new_commit_verifier,
             transcript,
         }
     }
 
     pub(crate) fn verify(
         mut self,
-        ctx: Context<E>,
-        proof: Proof<E>,
+        ctx: Context<E, PCS>,
+        proof: Proof<E, PCS>,
         io: IO<E>,
     ) -> anyhow::Result<()> {
         // Ordering of proofs.
@@ -67,15 +79,10 @@ where
         let mut denominators = Vec::<E>::new();
 
         ctx.write_to_transcript(self.transcript)?;
-
+        proof.write_to_transcript(self.transcript)?;
         // Here we generate and store all lookup related challenges
         // TODO: make this part of verifier struct
-        let challenge_storage = if let Some((_, witness_context)) = proof.witness {
-            witness_context.write_to_transcript(self.transcript)?;
-            ChallengeStorage::<E>::initialise(&ctx, self.transcript)
-        } else {
-            ChallengeStorage::default()
-        };
+        let challenge_storage = ChallengeStorage::<E>::initialise(&ctx, self.transcript);
 
         proof.steps.iter().rev().for_each(|proof| {
             if let Some((num, denom)) = proof.get_lookup_data() {
@@ -134,7 +141,7 @@ where
         {
             // println!("VERIFIER: layer {:?} -> output_shape step: {:?}", step.variant_name(), shape_step);
             output_claim = match (proof, step) {
-                (LayerProof::<E>::Activation(proof), LayerCtx::Activation(info)) => {
+                (LayerProof::<E, PCS>::Activation(proof), LayerCtx::Activation(info)) => {
                     let (constant_challenge, column_separation_challenge) = challenge_storage
                         .get_challenges_by_name(&TableType::Relu.name())
                         .ok_or(anyhow!(
@@ -150,10 +157,10 @@ where
                         column_separation_challenge,
                     )?
                 }
-                (LayerProof::<E>::Dense(proof), LayerCtx::Dense(info)) => {
+                (LayerProof::<E, PCS>::Dense(proof), LayerCtx::Dense(info)) => {
                     info.verify_dense(&mut self, output_claim, &proof)?
                 }
-                (LayerProof::<E>::Requant(proof), LayerCtx::Requant(info)) => {
+                (LayerProof::<E, PCS>::Requant(proof), LayerCtx::Requant(info)) => {
                     let (constant_challenge, column_separation_challenge) = challenge_storage
                         .get_challenges_by_name(
                             &TableType::Clamping(info.requant.clamping_size()).name(),
@@ -187,10 +194,10 @@ where
                         column_separation_challenge,
                     )?
                 }
-                (LayerProof::<E>::Convolution(proof), LayerCtx::<E>::Convolution(info)) => {
+                (LayerProof::<E, PCS>::Convolution(proof), LayerCtx::<E>::Convolution(info)) => {
                     info.verify_convolution(&mut self, output_claim, &proof, &shape_step)?
                 }
-                (LayerProof::<E>::Reshape, LayerCtx::Reshape) => {
+                (LayerProof::<E, PCS>::Reshape, LayerCtx::Reshape) => {
                     // reshape doesn't change anything apart the shape but we dont "prove" the shape really
                     output_claim
                 }
@@ -216,11 +223,11 @@ where
                         table_type.name()
                     ))?;
 
-                verify_table::<_, _>(
+                verify_table::<_, _, _>(
                     table_proof,
                     *table_type,
                     table_poly_id,
-                    &mut self.witness_verifier,
+                    &mut self.new_commit_verifier,
                     self.transcript,
                     constant_challenge,
                     column_separation_challenge,
@@ -239,8 +246,13 @@ where
             "input not valid from proof"
         );
         // 7. verify the opening of the accumulation of claims
-        self.commit_verifier
-            .verify(&ctx.weights, proof.commit, self.transcript)?;
+        self.new_commit_verifier.verify(
+            &self.ctx.new_weights,
+            &proof.opening_proof,
+            self.transcript,
+        )?;
+        // self.commit_verifier
+        //     .verify(&ctx.weights, proof.commit, self.transcript)?;
 
         // 8. verify that the accumulated numerator is zero and accumulated denominator is non-zero
         let (final_num, final_denom) = numerators.into_iter().zip(denominators.into_iter()).fold(
@@ -265,9 +277,9 @@ where
 }
 
 /// Verifies an inference proof given a context, a proof and the input / output of the model.
-pub fn verify<E: ExtensionField, T: Transcript<E>>(
-    ctx: Context<E>,
-    proof: Proof<E>,
+pub fn verify<E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
+    ctx: Context<E, PCS>,
+    proof: Proof<E, PCS>,
     io: IO<E>,
     transcript: &mut T,
 ) -> anyhow::Result<()>
@@ -275,15 +287,15 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    let verifier = Verifier::new(transcript);
+    let verifier = Verifier::new(ctx.clone(), transcript);
     verifier.verify(ctx, proof, io)
 }
 
-fn verify_table<E: ExtensionField, T: Transcript<E>>(
-    proof: &TableProof<E>,
+fn verify_table<E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
+    proof: &TableProof<E, PCS>,
     table_type: TableType,
     poly_id: usize,
-    witness_verifier: &mut commit::precommit::CommitVerifier<E>,
+    witness_verifier: &mut commit::new_commit::CommitmentVerifier<E, PCS>,
     t: &mut T,
     constant_challenge: E,
     column_separation_challenge: E,
@@ -303,13 +315,15 @@ where
 
     // 2. Accumulate the multiplicity poly claim into the witness commitment protocol
     let poly_claims = verifier_claims.claims();
-    witness_verifier.add_claim(
-        poly_id,
+
+    witness_verifier.add_witness_claim(
+        proof.get_commitment().clone(),
         poly_claims
             .first()
             .ok_or(anyhow!("Claims was empty in table verification!"))?
             .clone(),
     )?;
+
     // Hard indexing is okay here because we checked above that at least one claim exists
     let expected_claim_evals = table_type.evaluate_table_columns::<E>(&poly_claims[0].point)?;
 

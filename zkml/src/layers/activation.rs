@@ -1,6 +1,6 @@
 use crate::{
     Claim, Prover,
-    commit::same_poly,
+    commit::{PCSError, same_poly},
     iop::{context::ContextAux, verifier::Verifier},
     layers::{LayerCtx, LayerProof, PolyID},
     lookup::{
@@ -14,6 +14,7 @@ use crate::{
 };
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
+use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::mle::IntoMLE;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -35,7 +36,7 @@ pub struct ActivationCtx {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct ActivationProof<E: ExtensionField>
+pub struct ActivationProof<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
@@ -44,6 +45,8 @@ where
     pub(crate) io_accumulation: same_poly::Proof<E>,
     /// the lookup proof for the relu
     pub(crate) lookup: LogUpProof<E>,
+    /// The witness commitments from this function
+    pub(crate) commits: Vec<PCS::Commitment>,
 }
 
 impl Activation {
@@ -55,8 +58,8 @@ impl Activation {
     pub(crate) fn step_info<E: ExtensionField>(
         &self,
         id: PolyID,
-        mut aux: ContextAux,
-    ) -> (LayerCtx<E>, ContextAux)
+        mut aux: ContextAux<E>,
+    ) -> (LayerCtx<E>, ContextAux<E>)
     where
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
@@ -73,12 +76,19 @@ impl Activation {
                     .sum::<usize>(),
             }),
         };
+        // There are no fixed tensors for Relu so set model_polys to be empty
+        aux.model_polys = vec![];
+
         (info, aux)
     }
 
-    pub(crate) fn prove_step<E: ExtensionField, T: Transcript<E>>(
+    pub(crate) fn prove_step<
+        E: ExtensionField,
+        T: Transcript<E>,
+        PCS: PolynomialCommitmentScheme<E>,
+    >(
         &self,
-        prover: &mut Prover<E, T>,
+        prover: &mut Prover<E, T, PCS>,
         last_claim: &Claim<E>,
         output: &[E],
         step: &ActivationCtx,
@@ -87,8 +97,10 @@ impl Activation {
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
-        let prover_info = prover.next_lookup_witness()?;
+        let logup_witness = prover.next_lookup_witness()?;
+        let prover_info = logup_witness.get_logup_input(&prover.challenge_storage)?;
 
+        let commits = logup_witness.get_commitments();
         // Run the lookup protocol and return the lookup proof
         let logup_proof = logup_batch_prove(&prover_info, prover.transcript)?;
 
@@ -102,29 +114,40 @@ impl Activation {
 
         same_poly_prover.add_claim(output_claim)?;
         let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, prover.transcript)?;
-        // order is (input, output)
-        prover
-            .witness_prover
-            .add_claim(step.poly_id * 100, input_claim.clone())?;
-        prover
-            .witness_prover
-            .add_claim(step.poly_id * 100 + 1, claim_acc_proof.extract_claim())?;
+
+        // Add commitment claims to prover
+        let commits = [input_claim.clone(), claim_acc_proof.extract_claim()]
+            .into_iter()
+            .zip(commits)
+            .map(|(claim, comm_with_wit)| {
+                let comm = PCS::get_pure_commitment(&comm_with_wit.0);
+                prover
+                    .new_commit_prover
+                    .add_witness_claim(comm_with_wit, claim)?;
+                Ok(comm)
+            })
+            .collect::<Result<Vec<PCS::Commitment>, PCSError>>()?;
 
         // Add the proof in
         prover.push_proof(LayerProof::Activation(ActivationProof {
             io_accumulation: claim_acc_proof,
             lookup: logup_proof,
+            commits,
         }));
         Ok(input_claim)
     }
 }
 
 impl ActivationCtx {
-    pub(crate) fn verify_activation<E: ExtensionField, T: Transcript<E>>(
+    pub(crate) fn verify_activation<
+        E: ExtensionField,
+        T: Transcript<E>,
+        PCS: PolynomialCommitmentScheme<E>,
+    >(
         &self,
-        verifier: &mut Verifier<E, T>,
+        verifier: &mut Verifier<E, T, PCS>,
         last_claim: Claim<E>,
-        proof: &ActivationProof<E>,
+        proof: &ActivationProof<E, PCS>,
         constant_challenge: E,
         column_separation_challenge: E,
     ) -> anyhow::Result<Claim<E>>
@@ -151,9 +174,18 @@ impl ActivationCtx {
 
         let new_output_claim = sp_verifier.verify(&proof.io_accumulation, verifier.transcript)?;
         // 3. Accumulate the new claim into the witness commitment protocol
-        verifier
-            .witness_verifier
-            .add_claim(self.poly_id, new_output_claim)?;
+        verifier_claims
+            .claims()
+            .iter()
+            .take(1)
+            .cloned()
+            .chain(std::iter::once(new_output_claim))
+            .zip(proof.commits.iter())
+            .try_for_each(|(claim, commit)| {
+                verifier
+                    .new_commit_verifier
+                    .add_witness_claim(commit.clone(), claim)
+            })?;
 
         // 4. return the input claim for to be proven at subsequent step
         Ok(verifier_claims.claims()[0].clone())

@@ -23,14 +23,15 @@ pub trait EncodingProverParameters {
 }
 
 pub trait EncodingScheme<E: ExtensionField>: std::fmt::Debug + Clone {
-    type PublicParameters: Clone + std::fmt::Debug + Serialize + DeserializeOwned;
+    type PublicParameters: Clone + std::fmt::Debug + Serialize + DeserializeOwned + Send + Sync;
     type ProverParameters: Clone
         + std::fmt::Debug
         + Serialize
         + DeserializeOwned
         + EncodingProverParameters
-        + Sync;
-    type VerifierParameters: Clone + std::fmt::Debug + Serialize + DeserializeOwned + Sync;
+        + Sync
+        + Send;
+    type VerifierParameters: Clone + std::fmt::Debug + Serialize + DeserializeOwned + Sync + Send;
 
     fn setup(max_msg_size_log: usize) -> Self::PublicParameters;
 

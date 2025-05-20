@@ -246,6 +246,7 @@ where
     let mut roots = Vec::with_capacity(num_rounds - 1);
     let mut final_message = Vec::new();
     let mut running_tree_inner = Vec::new();
+    let mut new_running_oracle: Vec<E> = Vec::new();
     for i in 0..num_rounds {
         let sumcheck_timer = start_timer!(|| format!("Batch basefold round {}", i));
         // For the first round, no need to send the running root, because this root is
@@ -257,30 +258,12 @@ where
             .get_and_append_challenge(b"commit round")
             .elements;
 
-        // Fold the current oracle for FRI
-        let mut new_running_oracle = basefold_one_round_by_interpolation_weights::<E, Spec>(
-            pp,
-            log2_strict(running_oracle.len()) - 1,
-            &running_oracle,
-            challenge,
-        );
-
         if i > 0 {
             let running_tree = MerkleTree::<E>::from_inner_leaves(
                 running_tree_inner,
-                FieldType::Ext(running_oracle),
+                FieldType::Ext(new_running_oracle.clone()),
             );
             trees.push(running_tree);
-        }
-
-        if i < num_rounds - 1 {
-            last_sumcheck_message =
-                sum_check_challenge_round(&mut eq, &mut sum_of_all_evals_for_sumcheck, challenge);
-            sumcheck_messages.push(last_sumcheck_message.clone());
-            running_tree_inner = MerkleTree::<E>::compute_inner_ext(&new_running_oracle);
-            let running_root = MerkleTree::<E>::root_from_inner(&running_tree_inner);
-            write_digest_to_transcript(&running_root, transcript);
-            roots.push(running_root);
 
             // Then merge the rest polynomials whose sizes match the current running oracle
             let running_oracle_len = new_running_oracle.len();
@@ -294,7 +277,29 @@ where
                         .zip_eq(field_type_iter_ext(&comm.get_codewords()[0]))
                         .for_each(|(r, a)| *r += a * coeffs[index]);
                 });
+
             running_oracle = new_running_oracle;
+        }
+
+        // Fold the current oracle for FRI
+        new_running_oracle = basefold_one_round_by_interpolation_weights::<E, Spec>(
+            pp,
+            log2_strict(running_oracle.len()) - 1,
+            &running_oracle,
+            challenge,
+        );
+
+        if i < num_rounds - 1 {
+            last_sumcheck_message =
+                sum_check_challenge_round(&mut eq, &mut sum_of_all_evals_for_sumcheck, challenge);
+            sumcheck_messages.push(last_sumcheck_message.clone());
+
+            running_tree_inner = MerkleTree::<E>::compute_inner_ext(&new_running_oracle);
+            let running_root = MerkleTree::<E>::root_from_inner(&running_tree_inner);
+            write_digest_to_transcript(&running_root, transcript);
+            roots.push(running_root);
+
+            // running_oracle = new_running_oracle;
         } else {
             // Clear the value so the compiler does not think they are moved
             running_oracle = Vec::new();

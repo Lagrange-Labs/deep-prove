@@ -11,6 +11,7 @@ pub mod reshape;
 use anyhow::Result;
 use ff_ext::ExtensionField;
 use itertools::Itertools;
+use mpcs::PolynomialCommitmentScheme;
 use pooling::{PoolingCtx, PoolingProof};
 use requant::RequantCtx;
 use reshape::Reshape;
@@ -77,15 +78,15 @@ where
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub enum LayerProof<E: ExtensionField>
+pub enum LayerProof<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
     Dense(DenseProof<E>),
     Convolution(ConvProof<E>),
-    Activation(ActivationProof<E>),
-    Requant(RequantProof<E>),
-    Pooling(PoolingProof<E>),
+    Activation(ActivationProof<E, PCS>),
+    Requant(RequantProof<E, PCS>),
+    Pooling(PoolingProof<E, PCS>),
     Reshape,
 }
 #[derive(Clone, Debug)]
@@ -280,7 +281,11 @@ impl Layer<f32> {
 }
 
 impl Layer<Element> {
-    pub(crate) fn step_info<E>(&self, id: PolyID, aux: ContextAux) -> (LayerCtx<E>, ContextAux)
+    pub(crate) fn step_info<E>(
+        &self,
+        id: PolyID,
+        aux: ContextAux<E>,
+    ) -> (LayerCtx<E>, ContextAux<E>)
     where
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
@@ -349,7 +354,7 @@ impl Layer<Element> {
     }
 }
 
-impl<E: ExtensionField> LayerProof<E>
+impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> LayerProof<E, PCS>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
@@ -383,6 +388,19 @@ where
                     [clamp_denoms, shift_denoms].concat(),
                 ))
             }
+        }
+    }
+
+    /// Getter for any commitments from a [`LayerProof`]
+    pub fn get_commitments(&self) -> &[PCS::Commitment] {
+        match self {
+            LayerProof::Activation(ActivationProof {
+                commits: commitments,
+                ..
+            })
+            | LayerProof::Pooling(PoolingProof { commitments, .. })
+            | LayerProof::Requant(RequantProof { commitments, .. }) => &commitments,
+            _ => &[],
         }
     }
 }

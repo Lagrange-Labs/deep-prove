@@ -8,7 +8,10 @@ use crate::{
 use anyhow::Result;
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rayon::{
+    iter::plumbing::{Consumer, Producer, ProducerCallback, UnindexedConsumer, bridge},
+    prelude::*,
+};
 use tracing::info;
 
 // The index of the step, starting from the input layer. (proving is done in the opposite flow)
@@ -322,6 +325,136 @@ pub struct InferenceTraceIterator<'t, 'a, E, F: ExtensionField> {
     end_idx: usize,
 }
 
+/// Parallel iterator that yields (input, step) pairs for each inference step
+pub struct ParInferenceTraceIterator<'t, 'a, E, F: ExtensionField> {
+    trace: &'t InferenceTrace<'a, E, F>,
+    current_idx: usize,
+    /// For double-ended iteration
+    end_idx: usize,
+}
+
+pub struct InferenceTraceProducer<'t, 'a, E: Send + Sync, F: ExtensionField> {
+    trace_iter: InferenceTraceIterator<'t, 'a, E, F>,
+}
+
+impl<'t, 'a, E: Send + Sync, F: ExtensionField> Producer for InferenceTraceProducer<'t, 'a, E, F> {
+    type Item = (&'t Tensor<E>, &'t InferenceStep<'a, E, F>);
+
+    type IntoIter = InferenceTraceIterator<'t, 'a, E, F>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let InferenceTraceProducer { trace_iter } = self;
+        trace_iter
+    }
+
+    fn split_at(self, index: usize) -> (Self, Self) {
+        let InferenceTraceProducer { trace_iter } = self;
+        let InferenceTraceIterator {
+            trace,
+            current_idx,
+            end_idx,
+        } = trace_iter;
+
+        if index > end_idx {
+            panic!("Cannot split after end_idx")
+        }
+
+        let (left_current, right_current) = if current_idx < index {
+            (current_idx, 0)
+        } else {
+            (index, current_idx - index)
+        };
+
+        let left_trace_iter = InferenceTraceIterator {
+            trace,
+            current_idx: left_current,
+            end_idx: index,
+        };
+        let right_trace_iter = InferenceTraceIterator {
+            trace,
+            current_idx: right_current,
+            end_idx: end_idx - index,
+        };
+
+        (
+            InferenceTraceProducer {
+                trace_iter: left_trace_iter,
+            },
+            InferenceTraceProducer {
+                trace_iter: right_trace_iter,
+            },
+        )
+    }
+}
+
+impl<'t, 'a, E: Send + Sync, F: ExtensionField> From<ParInferenceTraceIterator<'t, 'a, E, F>>
+    for InferenceTraceProducer<'t, 'a, E, F>
+{
+    fn from(iterator: ParInferenceTraceIterator<'t, 'a, E, F>) -> Self {
+        let ParInferenceTraceIterator {
+            trace,
+            current_idx,
+            end_idx,
+        } = iterator;
+        let trace_iter = InferenceTraceIterator {
+            trace,
+            current_idx,
+            end_idx,
+        };
+        InferenceTraceProducer { trace_iter }
+    }
+}
+
+impl<'t, 'a, E: Send + Sync, F: ExtensionField> ParallelIterator
+    for ParInferenceTraceIterator<'t, 'a, E, F>
+{
+    type Item = (&'t Tensor<E>, &'t InferenceStep<'a, E, F>);
+
+    fn drive_unindexed<C>(self, consumer: C) -> C::Result
+    where
+        C: UnindexedConsumer<Self::Item>,
+    {
+        bridge(self, consumer)
+    }
+
+    fn opt_len(&self) -> Option<usize> {
+        Some(self.end_idx)
+    }
+}
+
+impl<'t, 'a, E: Send + Sync, F: ExtensionField> IndexedParallelIterator
+    for ParInferenceTraceIterator<'t, 'a, E, F>
+{
+    fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
+        let producer = InferenceTraceProducer::from(self);
+        callback.callback(producer)
+    }
+
+    fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
+        bridge(self, consumer)
+    }
+
+    fn len(&self) -> usize {
+        self.trace.steps.len()
+    }
+}
+
+impl<'a, 't, E: Send + Sync, F: ExtensionField> IntoParallelIterator
+    for &'t InferenceTrace<'a, E, F>
+{
+    type Iter = ParInferenceTraceIterator<'t, 'a, E, F>;
+
+    type Item = (&'t Tensor<E>, &'t InferenceStep<'a, E, F>);
+
+    fn into_par_iter(self) -> Self::Iter {
+        ParInferenceTraceIterator {
+            trace: &self,
+            current_idx: 0,
+            end_idx: self.steps.len(),
+        }
+    }
+}
+
 impl<'t, 'a, E, F: ExtensionField> Iterator for InferenceTraceIterator<'t, 'a, E, F> {
     type Item = (&'t Tensor<E>, &'t InferenceStep<'a, E, F>);
 
@@ -339,6 +472,11 @@ impl<'t, 'a, E, F: ExtensionField> Iterator for InferenceTraceIterator<'t, 'a, E
 
         self.current_idx += 1;
         Some((input, step))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.end_idx - self.current_idx;
+        (remaining, Some(remaining))
     }
 }
 
@@ -359,6 +497,8 @@ impl<'t, 'a, E, F: ExtensionField> DoubleEndedIterator for InferenceTraceIterato
         Some((input, step))
     }
 }
+
+impl<'t, 'a, E, F: ExtensionField> ExactSizeIterator for InferenceTraceIterator<'t, 'a, E, F> {}
 
 #[derive(Clone)]
 pub struct InferenceStep<'a, E, F: ExtensionField> {
@@ -399,6 +539,7 @@ impl Model<f32> {
 pub(crate) mod test {
     use crate::{
         ScalingFactor,
+        commit::Pcs,
         layers::{
             Layer,
             activation::{Activation, Relu},
@@ -861,16 +1002,16 @@ pub(crate) mod test {
         let trace: crate::model::InferenceTrace<'_, _, GoldilocksExt2> =
             model.run::<F>(input.clone()).unwrap();
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
-        let ctx =
-            Context::<GoldilocksExt2>::generate(&model, None).expect("Unable to generate context");
+        let ctx = Context::<GoldilocksExt2, Pcs<F>>::generate(&model, None)
+            .expect("Unable to generate context");
         let output = trace.final_output().clone();
-        let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>> =
+        let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
             Prover::new(&ctx, &mut tr);
         let proof = prover.prove(trace).expect("unable to generate proof");
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
         let io = IO::new(input.to_fields(), output.to_fields());
-        verify::<_, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
+        verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
     }
 
     #[test]
@@ -896,18 +1037,18 @@ pub(crate) mod test {
         let trace: crate::model::InferenceTrace<'_, _, GoldilocksExt2> =
             model.run::<F>(input.clone()).unwrap();
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
-        let ctx = Context::<GoldilocksExt2>::generate(&model, Some(input.get_shape()))
+        let ctx = Context::<GoldilocksExt2, Pcs<F>>::generate(&model, Some(input.get_shape()))
             .expect("Unable to generate context");
         let output = trace.final_output().clone();
 
-        let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>> =
+        let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
             Prover::new(&ctx, &mut tr);
         let proof = prover.prove(trace).expect("unable to generate proof");
 
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
         let io = IO::new(input.to_fields(), output.to_fields());
-        verify::<_, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
+        verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
     }
 
     #[test]
@@ -936,17 +1077,19 @@ pub(crate) mod test {
                             model.run::<F>(input.clone()).unwrap();
                         let mut tr: BasicTranscript<GoldilocksExt2> =
                             BasicTranscript::new(b"m2vec");
-                        let ctx =
-                            Context::<GoldilocksExt2>::generate(&model, Some(input.get_shape()))
-                                .expect("Unable to generate context");
+                        let ctx = Context::<GoldilocksExt2, Pcs<F>>::generate(
+                            &model,
+                            Some(input.get_shape()),
+                        )
+                        .expect("Unable to generate context");
                         let output = trace.final_output().clone();
-                        let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>> =
+                        let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
                             Prover::new(&ctx, &mut tr);
                         let proof = prover.prove(trace).expect("unable to generate proof");
                         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
                             BasicTranscript::new(b"m2vec");
                         let io = IO::new(input.to_fields(), output.to_fields());
-                        verify::<_, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
+                        verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
                     }
                 }
             }

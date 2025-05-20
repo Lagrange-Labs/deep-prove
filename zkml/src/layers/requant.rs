@@ -2,7 +2,7 @@
 
 use crate::{
     Claim, Prover, ScalingFactor, Tensor,
-    commit::compute_betas_eval,
+    commit::{PCSError, compute_betas_eval},
     iop::verifier::Verifier,
     layers::LayerProof,
     lookup::logup_gkr::{prover::batch_prove as logup_batch_prove, verifier::verify_logup_proof},
@@ -13,7 +13,7 @@ use anyhow::{Result, anyhow, ensure};
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
 
-use mpcs::sum_check::eq_xy_eval;
+use mpcs::{PolynomialCommitmentScheme, sum_check::eq_xy_eval};
 use multilinear_extensions::{
     mle::{DenseMultilinearExtension, IntoMLE},
     virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial},
@@ -70,7 +70,7 @@ pub struct RequantCtx {
 #[derive(Clone, Serialize, Deserialize)]
 /// Struct holding all the information needed to verify requantisation was performed correctly.
 /// This includes both lookup proofs and an additional sumcheck proof that we use so that all evaluations are at the same point.
-pub struct RequantProof<E: ExtensionField>
+pub struct RequantProof<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
@@ -83,6 +83,8 @@ where
     pub(crate) clamping_lookup: LogUpProof<E>,
     /// The range check lookup proof for the chunks that are shifted away
     pub(crate) shifted_lookup: LogUpProof<E>,
+    /// COmmitments to lookup polynomials, they are in the order clamping commitments -> shifted commitments
+    pub(crate) commitments: Vec<PCS::Commitment>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -176,8 +178,8 @@ impl Requant {
     pub(crate) fn step_info<E: ExtensionField>(
         &self,
         id: PolyID,
-        mut aux: ContextAux,
-    ) -> (LayerCtx<E>, ContextAux)
+        mut aux: ContextAux<E>,
+    ) -> (LayerCtx<E>, ContextAux<E>)
     where
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
@@ -185,6 +187,9 @@ impl Requant {
         // Specify the two different tables that are required by this step
         aux.tables.insert(TableType::Clamping(self.clamping_size()));
         aux.tables.insert(TableType::Range);
+        // There are no model polys for requantisation
+        aux.model_polys = vec![];
+
         (
             LayerCtx::Requant(RequantCtx {
                 requant: *self,
@@ -302,9 +307,13 @@ impl Requant {
     /// Method that proves requantisation was performed correctly. First it runs the lookup argument for the clamping claim and batches all the range checks
     /// for the shifted polys together. Then it performs a sumcheck that takes the output claims from the two lookup arguments and produces a new claim where all of the polynomials are
     /// evaluated at the same point. This sumcheck also checks that the output column of the clamping lookup relates to the same polynomial as `last_claim`.
-    pub(crate) fn prove_step<E: ExtensionField, T: Transcript<E>>(
+    pub(crate) fn prove_step<
+        E: ExtensionField,
+        T: Transcript<E>,
+        PCS: PolynomialCommitmentScheme<E>,
+    >(
         &self,
-        prover: &mut Prover<E, T>,
+        prover: &mut Prover<E, T, PCS>,
         last_claim: &Claim<E>,
         requant_info: &RequantCtx,
     ) -> anyhow::Result<Claim<E>>
@@ -313,8 +322,16 @@ impl Requant {
         E::BaseField: Serialize + DeserializeOwned,
     {
         // Retrieve the precalculated lookup witnesses.
-        let shifted_prover_info = prover.next_lookup_witness()?;
-        let clamping_prover_info = prover.next_lookup_witness()?;
+        let shifted_logup_witness = prover.next_lookup_witness()?;
+        let clamping_logup_witness = prover.next_lookup_witness()?;
+
+        let shifted_prover_info =
+            shifted_logup_witness.get_logup_input(&prover.challenge_storage)?;
+        let clamping_prover_info =
+            clamping_logup_witness.get_logup_input(&prover.challenge_storage)?;
+
+        let shifted_commitments = shifted_logup_witness.get_commitments();
+        let clamping_commitments = clamping_logup_witness.get_commitments();
         // Run the lookup protocol and return the lookup proof
         let clamping_logup_proof = logup_batch_prove(&clamping_prover_info, prover.transcript)?;
         let shifted_logup_proof = logup_batch_prove(&shifted_prover_info, prover.transcript)?;
@@ -404,18 +421,22 @@ impl Requant {
             .recombine_claims(clamping_in_eval, shifted_evals);
 
         // Add the points and evaluations to open commitments at
-        let accumulation_evals = [clamping_in_eval, clamping_out_eval]
-            .iter()
-            .chain(shifted_evals.iter())
-            .enumerate()
-            .map(|(i, &eval)| {
-                prover.witness_prover.add_claim(
-                    requant_info.poly_id * 100 + i,
-                    Claim::<E>::new(point.clone(), eval),
-                )?;
-                Result::<E, anyhow::Error>::Ok(eval)
-            })
-            .collect::<Result<Vec<E>, _>>()?;
+        let (accumulation_evals, commitments): (Vec<E>, Vec<PCS::Commitment>) =
+            [clamping_in_eval, clamping_out_eval]
+                .iter()
+                .chain(shifted_evals.iter())
+                .zip(clamping_commitments.into_iter().chain(shifted_commitments))
+                .map(|(&eval, comm_with_wit)| {
+                    let commitment = PCS::get_pure_commitment(&comm_with_wit.0);
+                    prover
+                        .new_commit_prover
+                        .add_witness_claim(comm_with_wit, Claim::<E>::new(point.clone(), eval))?;
+
+                    Result::<(E, PCS::Commitment), PCSError>::Ok((eval, commitment))
+                })
+                .collect::<Result<Vec<(E, PCS::Commitment)>, PCSError>>()?
+                .into_iter()
+                .unzip();
 
         // Add the layer proof to the list
         prover.push_proof(LayerProof::Requant(RequantProof {
@@ -423,6 +444,7 @@ impl Requant {
             accumulation_evals,
             clamping_lookup: clamping_logup_proof,
             shifted_lookup: shifted_logup_proof,
+            commitments,
         }));
 
         Ok(Claim {
@@ -437,11 +459,15 @@ impl RequantCtx {
     /// It verifies both lookup argument proofs, calculates the initial claim for the sumcheck proof using the lookup argument claims
     /// and then verifies the sumcheck using this initial claim. It then takes the output claims provided by the prover, checks they relate to the sumcheck
     /// subclaim, adds them to the list of claims of commitment openings and then calculates the next claim.
-    pub(crate) fn verify_requant<E: ExtensionField, T: Transcript<E>>(
+    pub(crate) fn verify_requant<
+        E: ExtensionField,
+        T: Transcript<E>,
+        PCS: PolynomialCommitmentScheme<E>,
+    >(
         &self,
-        verifier: &mut Verifier<E, T>,
+        verifier: &mut Verifier<E, T, PCS>,
         last_claim: Claim<E>,
-        proof: &RequantProof<E>,
+        proof: &RequantProof<E, PCS>,
         constant_challenge: E,
         column_separation_challenge: E,
     ) -> anyhow::Result<Claim<E>>
@@ -455,6 +481,7 @@ impl RequantCtx {
             accumulation_evals,
             clamping_lookup,
             shifted_lookup,
+            commitments,
         } = proof;
         // Work out how many instances of range check are batched into the shifted claims
         let shifted_instances = self.requant.shift() / *quantization::BIT_LEN;
@@ -555,12 +582,11 @@ impl RequantCtx {
         // 4. Add claims to commitment verifier
         accumulation_evals
             .iter()
-            .enumerate()
-            .try_for_each(|(i, &eval)| {
-                verifier.witness_verifier.add_claim(
-                    self.poly_id * 100 + i,
-                    Claim::<E>::new(acc_point.clone(), eval),
-                )
+            .zip(commitments)
+            .try_for_each(|(&eval, commit)| {
+                verifier
+                    .new_commit_verifier
+                    .add_witness_claim(commit.clone(), Claim::<E>::new(acc_point.clone(), eval))
             })?;
 
         Ok(Claim::<E>::new(acc_point, next_claim_eval))

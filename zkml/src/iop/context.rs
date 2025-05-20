@@ -1,15 +1,20 @@
 use crate::{
     Element,
+    commit::new_commit::CommitmentContext,
     iop::precommit::{self, PolyID},
     layers::LayerCtx,
     lookup::context::{LookupContext, TableType},
     model::Model,
 };
 use anyhow::Context as CC;
+
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use mpcs::BasefoldCommitment;
+use mpcs::{BasefoldCommitment, PolynomialCommitmentScheme};
+use multilinear_extensions::{mle::DenseMultilinearExtension, util::ceil_log2};
+
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+
 use std::collections::BTreeSet;
 use tracing::{debug, info, trace};
 use transcript::Transcript;
@@ -33,7 +38,7 @@ pub const RESHAPE_FS_ID: u64 = 0xdeadbeef;
 /// Common information between prover and verifier
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
-pub struct Context<E: ExtensionField>
+pub struct Context<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>
 where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
@@ -45,6 +50,7 @@ where
     /// Context related to the commitment and accumulation of claims related to the weights of model.
     /// This part contains the commitment of the weights.
     pub weights: precommit::Context<E>,
+    pub new_weights: CommitmentContext<E, PCS>,
     /// Context holding all the different table types we use in lookups
     pub lookup: LookupContext,
     /// unpadded shape of the first initial input
@@ -90,12 +96,13 @@ impl ShapeStep {
 
 /// Auxiliary information for the context creation
 #[derive(Clone, Debug)]
-pub(crate) struct ContextAux {
+pub(crate) struct ContextAux<E: ExtensionField> {
     pub tables: BTreeSet<TableType>,
     pub last_output_shape: Vec<usize>,
+    pub model_polys: Vec<Vec<E::BaseField>>,
 }
 
-impl<E: ExtensionField> Context<E>
+impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> Context<E, PCS>
 where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
@@ -113,12 +120,21 @@ where
         } else {
             model.input_shape()
         };
-        let mut ctx_aux = ContextAux {
+
+        // We start tracking the witness poly size
+        let mut max_poly_len = last_output_shape.iter().product::<usize>();
+
+        // Make a `ContextAux` so that layers can tell us what info they need to store
+        let mut ctx_aux = ContextAux::<E> {
             tables,
             last_output_shape,
+            model_polys: vec![],
         };
-        let mut step_infos = Vec::with_capacity(model.layer_count());
+
         debug!("Context : layer info generation ...");
+
+        let mut step_infos = Vec::with_capacity(model.layer_count());
+        let mut model_polys = Vec::<Vec<DenseMultilinearExtension<E>>>::new();
         for (id, layer) in model.layers() {
             trace!(
                 "Context : {}-th layer {}info generation ...",
@@ -126,21 +142,48 @@ where
                 layer.describe()
             );
             let (info, new_aux) = layer.step_info(id, ctx_aux);
+            println!(
+                "new polys length: {}, name: {}",
+                new_aux.model_polys.len(),
+                info.variant_name()
+            );
+            model_polys.push(
+                new_aux
+                    .model_polys
+                    .iter()
+                    .map(|evals| {
+                        let num_vars = ceil_log2(evals.len());
+                        println!("num vars: {}", num_vars);
+                        DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, evals)
+                    })
+                    .collect::<Vec<DenseMultilinearExtension<E>>>(),
+            );
+
+            // Check to see if we have a new largest witness commitment
+            max_poly_len = max_poly_len.max(new_aux.last_output_shape.iter().product::<usize>());
+
+            // Push the step info, update the context aux
             step_infos.push(info);
             ctx_aux = new_aux;
         }
+
         info!(
             "step_infos: {:?}",
             step_infos.iter().map(|x| x.variant_name()).join(", ")
         );
         debug!("Context : commitment generating ...");
+        // // We reverse the order of `model_polys` as we start proving at the last layer
+        // model_polys.reverse();
+
+        let new_commit_ctx = CommitmentContext::<E, PCS>::new(max_poly_len, model_polys.concat())?;
         let commit_ctx = precommit::Context::generate_from_model(model)
             .context("can't generate context for commitment part")?;
         debug!("Context : lookup generation ...");
-        let lookup_ctx = LookupContext::new(&ctx_aux.tables);
+        let lookup_ctx = LookupContext::new(ctx_aux.tables);
         Ok(Self {
             steps_info: step_infos.into_iter().rev().collect_vec(),
             weights: commit_ctx,
+            new_weights: new_commit_ctx,
             lookup: lookup_ctx,
             unpadded_input_shape: model.unpadded_input_shape(),
         })

@@ -1,6 +1,6 @@
 use crate::{
     Claim, Element, Prover,
-    commit::{compute_betas_eval, precommit::PolyID},
+    commit::{PCSError, compute_betas_eval, precommit::PolyID},
     iop::verifier::Verifier,
     layers::{ContextAux, LayerProof},
     lookup::{
@@ -13,11 +13,11 @@ use crate::{
     quantization::{Fieldizer, IntoElement},
     tensor::{Number, Tensor},
 };
-use anyhow::{Context, ensure};
+use anyhow::ensure;
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
 use itertools::{Itertools, izip};
-use mpcs::sum_check::eq_xy_eval;
+use mpcs::{PolynomialCommitmentScheme, sum_check::eq_xy_eval};
 use multilinear_extensions::{
     mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension, IntoMLE},
     virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial},
@@ -48,7 +48,7 @@ pub struct PoolingCtx {
 
 /// Contains proof material related to one step of the inference
 #[derive(Clone, Serialize, Deserialize)]
-pub struct PoolingProof<E: ExtensionField>
+pub struct PoolingProof<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
@@ -60,6 +60,8 @@ where
     pub(crate) zerocheck_evals: Vec<E>,
     /// This tells the verifier how far apart the variables get fixed on the input MLE
     pub(crate) variable_gap: usize,
+    /// Commitments that are part of the commitment opening proof for this layer
+    pub(crate) commitments: Vec<PCS::Commitment>,
 }
 
 impl Pooling {
@@ -72,8 +74,8 @@ impl Pooling {
     pub(crate) fn step_info<E: ExtensionField>(
         &self,
         id: PolyID,
-        mut aux: ContextAux,
-    ) -> (LayerCtx<E>, ContextAux)
+        mut aux: ContextAux<E>,
+    ) -> (LayerCtx<E>, ContextAux<E>)
     where
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
@@ -81,6 +83,7 @@ impl Pooling {
         let info = match self {
             Pooling::Maxpool2D(info) => {
                 aux.tables.insert(TableType::Range);
+
                 // Pooling only affects the last two dimensions
                 let total_number_dims = aux.last_output_shape.len();
 
@@ -88,6 +91,9 @@ impl Pooling {
                     .iter_mut()
                     .skip(total_number_dims - 2)
                     .for_each(|dim| *dim = (*dim - info.kernel_size) / info.stride + 1);
+                // There are noe model polys for pooling
+                aux.model_polys = vec![];
+
                 LayerCtx::Pooling(PoolingCtx {
                     poolinfo: *info,
                     poly_id: id,
@@ -124,9 +130,9 @@ impl Pooling {
         }
     }
     #[timed::timed_instrument(level = "debug")]
-    pub fn prove_pooling<E: ExtensionField, T: Transcript<E>>(
+    pub fn prove_pooling<E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
-        prover: &mut Prover<E, T>,
+        prover: &mut Prover<E, T, PCS>,
         // last random claim made
         last_claim: Claim<E>,
         // input to the dense layer
@@ -141,8 +147,9 @@ impl Pooling {
     {
         assert_eq!(input.get_shape().len(), 3, "Maxpool needs 3D inputs.");
         // Create the range check proof for the diff
-        let prover_info = prover.next_lookup_witness()?;
-
+        let logup_witness = prover.next_lookup_witness()?;
+        let prover_info = logup_witness.get_logup_input(&prover.challenge_storage)?;
+        let commits = logup_witness.get_commitments();
         let logup_proof = logup_batch_prove(&prover_info, prover.transcript)?;
 
         // These are the polys that get passed to the zero check make sure their product is zero at every evaluation point
@@ -210,24 +217,22 @@ impl Pooling {
         let sumcheck_evals = sumcheck_state.get_mle_final_evaluations();
         let kernel_size = info.poolinfo.kernel_size * info.poolinfo.kernel_size;
 
-        sumcheck_evals[..kernel_size]
-            .iter()
-            .enumerate()
-            .try_for_each(|(i, &eval)| {
-                let claim = Claim::<E>::new(zerocheck_point.clone(), eval);
-                prover
-                    .witness_prover
-                    .add_claim(info.poly_id * 100 + i, claim)
-            })?;
         let output_eval = sumcheck_evals[kernel_size + 1];
 
-        prover
-            .witness_prover
-            .add_claim(
-                info.poly_id * 100 + kernel_size,
-                Claim::<E>::new(zerocheck_point.clone(), output_eval),
-            )
-            .context("unable to add claim")?;
+        let commitments = sumcheck_evals[..kernel_size]
+            .iter()
+            .chain(std::iter::once(&output_eval))
+            .zip(commits)
+            .map(|(&eval, comm_with_wit)| {
+                let commit = PCS::get_pure_commitment(&comm_with_wit.0);
+                prover.new_commit_prover.add_witness_claim(
+                    comm_with_wit,
+                    Claim::<E>::new(zerocheck_point.clone(), eval),
+                )?;
+                Ok(commit)
+            })
+            .collect::<Result<Vec<PCS::Commitment>, PCSError>>()?;
+
         // Now we must do the samething accumulating evals for the input poly as we fix variables on the input poly.
         // The point length is 2 longer because for now we only support MaxPool2D.
 
@@ -287,6 +292,7 @@ impl Pooling {
             lookup: logup_proof,
             zerocheck_evals,
             variable_gap: padded_input_row_length_log - 1,
+            commitments,
         }));
         Ok(next_claim)
     }
@@ -296,11 +302,15 @@ impl PoolingCtx {
     pub fn output_shape(&self, input_shape: &[usize]) -> Vec<usize> {
         maxpool2d_shape(input_shape)
     }
-    pub(crate) fn verify_pooling<E: ExtensionField, T: Transcript<E>>(
+    pub(crate) fn verify_pooling<
+        E: ExtensionField,
+        T: Transcript<E>,
+        PCS: PolynomialCommitmentScheme<E>,
+    >(
         &self,
-        verifier: &mut Verifier<E, T>,
+        verifier: &mut Verifier<E, T, PCS>,
         last_claim: Claim<E>,
-        proof: &PoolingProof<E>,
+        proof: &PoolingProof<E, PCS>,
         constant_challenge: E,
         column_separation_challenge: E,
     ) -> anyhow::Result<Claim<E>>
@@ -373,10 +383,10 @@ impl PoolingCtx {
         proof
             .zerocheck_evals
             .iter()
-            .enumerate()
-            .try_for_each(|(i, &eval)| {
-                verifier.witness_verifier.add_claim(
-                    self.poly_id * 100 + i,
+            .zip(proof.commitments.iter())
+            .try_for_each(|(&eval, commit)| {
+                verifier.new_commit_verifier.add_witness_claim(
+                    commit.clone(),
                     Claim::<E>::new(zerocheck_point.clone(), eval),
                 )
             })?;

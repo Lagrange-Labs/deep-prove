@@ -1,20 +1,26 @@
 //! File containg code for lookup witness generation.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use ff::Field;
 use ff_ext::ExtensionField;
-use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
+use mpcs::PolynomialCommitmentScheme;
+use multilinear_extensions::{
+    mle::{DenseMultilinearExtension, IntoMLE, MultilinearExtension},
+    util::ceil_log2,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::{debug, warn};
 use transcript::Transcript;
 
+use rayon::prelude::*;
+
 use crate::{
     Element,
-    commit::precommit::Context,
+    commit::{PCSError},
     iop::ChallengeStorage,
     layers::{Layer, activation::Relu, requant::RequantLookupWitness},
-    lookup::logup_gkr::structs::LogUpInput,
+    lookup::{witness::LogUpWitness},
     model::InferenceTrace,
     quantization::{self, Fieldizer},
 };
@@ -200,14 +206,12 @@ impl TableType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LookupContext {
-    tables: Vec<TableType>,
+    tables: BTreeSet<TableType>,
 }
 
 impl LookupContext {
-    pub fn new(set: &BTreeSet<TableType>) -> LookupContext {
-        LookupContext {
-            tables: set.iter().copied().collect(),
-        }
+    pub fn new(set: BTreeSet<TableType>) -> LookupContext {
+        LookupContext { tables: set }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &TableType> {
@@ -215,15 +219,15 @@ impl LookupContext {
     }
 }
 
-pub fn generate_lookup_witnesses<E: ExtensionField, T: Transcript<E>>(
+pub fn generate_lookup_witnesses<E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
+    ctx: &crate::iop::context::Context<E, PCS>,
     trace: &InferenceTrace<Element, E>,
     transcript: &mut T,
 ) -> Result<
     (
-        Option<Context<E>>,
         ChallengeStorage<E>,
-        Vec<LogUpInput<E>>,
-        Vec<LogUpInput<E>>,
+        Vec<LogUpWitness<E, PCS>>,
+        Vec<LogUpWitness<E, PCS>>,
     ),
     LogUpError,
 >
@@ -231,173 +235,11 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    let mut table_lookups = HashMap::<TableType, HashMap<Element, u64>>::new();
-    let mut tables = BTreeSet::new();
-    let mut polys_with_id = Vec::<(usize, Vec<E>)>::new();
-    let mut lookups_no_challenges = Vec::<(Vec<Vec<E::BaseField>>, usize, TableType)>::new();
-    let column_separator = 1i128 << 32;
-    debug!("Lookup witness generation: generating poly fields...");
-    trace.iter().for_each(|(step_input, step)| {
-        match step.layer {
-            Layer::Activation(..) => {
-                tables.insert(TableType::Relu);
-
-                // Calculate the column_evals and also the merged lookups
-                let (merged_lookups, field): (Vec<Element>, Vec<(E::BaseField, E::BaseField)>) =
-                    step_input
-                        .get_data()
-                        .iter()
-                        .zip(step.output.get_data().iter())
-                        .map(|(a, b)| {
-                            let a_field: E = a.to_field();
-                            let b_field: E = b.to_field();
-                            (
-                                a + column_separator * b,
-                                (a_field.as_bases()[0], b_field.as_bases()[0]),
-                            )
-                        })
-                        .unzip();
-
-                let (col_one, col_two): (Vec<E::BaseField>, Vec<E::BaseField>) =
-                    field.into_iter().unzip();
-                let table_lookup_map = table_lookups
-                    .entry(TableType::Relu)
-                    .or_insert_with(|| HashMap::default());
-
-                merged_lookups
-                    .into_iter()
-                    .for_each(|lookup| *table_lookup_map.entry(lookup).or_insert(0u64) += 1);
-
-                // Add the witness polynomials that we need to commit to
-                [&col_one, &col_two]
-                    .iter()
-                    .enumerate()
-                    .for_each(|(i, poly)| {
-                        polys_with_id.push((
-                            step.id * 100 + i,
-                            poly.iter().map(|v| E::from(*v)).collect::<Vec<E>>(),
-                        ));
-                    });
-
-                lookups_no_challenges.push((vec![col_one, col_two], 2, TableType::Relu));
-            }
-
-            Layer::Requant(requant) => {
-                tables.insert(TableType::Range);
-                tables.insert(TableType::Clamping(requant.clamping_size()));
-                let table_lookup_map = table_lookups
-                    .entry(TableType::Range)
-                    .or_insert_with(|| HashMap::default());
-
-                let RequantLookupWitness {
-                    clamping_in,
-                    clamping_out,
-                    shifted_chunks,
-                    ..
-                } = requant.gen_lookup_witness::<E>(step_input.get_data());
-
-                shifted_chunks
-                    .iter()
-                    .flatten()
-                    .for_each(|&val| *table_lookup_map.entry(val).or_insert(0u64) += 1);
-
-                let clamping_table_lookup_map = table_lookups
-                    .entry(TableType::Clamping(requant.clamping_size()))
-                    .or_insert_with(|| HashMap::default());
-
-                clamping_in
-                    .iter()
-                    .zip(clamping_out.iter())
-                    .for_each(|(&c_in, &c_out)| {
-                        let merged = c_in + c_out * column_separator;
-                        *clamping_table_lookup_map.entry(merged).or_insert(0u64) += 1
-                    });
-
-                // Add the witnesses to be committed
-                [&clamping_in, &clamping_out]
-                    .into_iter()
-                    .chain(shifted_chunks.iter())
-                    .enumerate()
-                    .for_each(|(i, poly)| {
-                        polys_with_id.push((
-                            step.id * 100 + i,
-                            poly.iter()
-                                .map(|v| {
-                                    let field_val: E = v.to_field();
-                                    field_val
-                                })
-                                .collect::<Vec<E>>(),
-                        ));
-                    });
-
-                let clamping_polys = [clamping_in, clamping_out]
-                    .into_iter()
-                    .map(|vals| {
-                        vals.into_iter()
-                            .map(|v| {
-                                let f: E = v.to_field();
-                                f.as_bases()[0]
-                            })
-                            .collect::<Vec<E::BaseField>>()
-                    })
-                    .collect::<Vec<Vec<E::BaseField>>>();
-                lookups_no_challenges.push((
-                    clamping_polys,
-                    2,
-                    TableType::Clamping(requant.clamping_size()),
-                ));
-                let shifted_chunks_field = shifted_chunks
-                    .into_iter()
-                    .map(|chunk| {
-                        chunk
-                            .into_iter()
-                            .map(|v| {
-                                let f: E = v.to_field();
-                                f.as_bases()[0]
-                            })
-                            .collect::<Vec<E::BaseField>>()
-                    })
-                    .collect::<Vec<Vec<E::BaseField>>>();
-                lookups_no_challenges.push((shifted_chunks_field, 1, TableType::Range));
-            }
-            Layer::Pooling(pooling) => {
-                tables.insert(TableType::Range);
-                let table_lookup_map = table_lookups
-                    .entry(TableType::Range)
-                    .or_insert_with(|| HashMap::default());
-
-                let (merged_lookups, column_evals) = pooling.gen_lookup_witness::<E>(step_input);
-
-                merged_lookups
-                    .into_iter()
-                    .for_each(|val| *table_lookup_map.entry(val).or_insert(0u64) += 1);
-
-                // Add the witnesses to be committed
-                column_evals.iter().enumerate().for_each(|(i, poly)| {
-                    polys_with_id.push((
-                        step.id * 100 + i,
-                        poly.iter().map(|v| E::from(*v)).collect::<Vec<E>>(),
-                    ));
-                });
-
-                polys_with_id.push((
-                    step.id * 100 + column_evals.len(),
-                    step.output
-                        .get_data()
-                        .iter()
-                        .map(Fieldizer::<E>::to_field)
-                        .collect(),
-                ));
-                lookups_no_challenges.push((column_evals, 1, TableType::Range));
-            }
-            _ => (),
-        }
-    });
+    let tables = &ctx.lookup.tables;
 
     if tables.is_empty() {
         warn!("Lookup witness generation: no tables found, returning empty context TEST?");
         return Ok((
-            None,
             ChallengeStorage {
                 constant_challenge: E::ZERO,
                 challenge_map: HashMap::new(),
@@ -407,81 +249,279 @@ where
         ));
     }
 
-    debug!("Lookup witness generation: generating table multiplicities...");
-    // calculate the table multiplicities
-    let tables_no_challenges = tables.iter().enumerate().map(|(i,table_type)| {
-        let (table_column, column_evals) = table_type.get_merged_table_column::<E>(column_separator);
+    let column_separator = 1i128 << 32;
+    debug!("Lookup witness generation: generating poly fields...");
 
-        let table_lookup_data = table_lookups.get(table_type).ok_or(LogUpError::ParamterError(format!("Tried to retrieve lookups for a table of type: {:?}, but no table of that type exists", table_type)))?;
+    // We iterate through the trace in parallel, for each layer that requires a lookup we commit to all needed polynomials,
+    // calculate all the values that will be looked up and then return a HashMap that stores all the lookups into each table
+    // together with a vector of witnesses that should iterate in reverse trace order (i.e. the first element in the vector is the witness for the
+    // last layer in the trace that requires a lookup).
+    let now = std::time::Instant::now();
+    let (multiplicity_map, witnesses) = trace
+        .iter()
+        .map(|(step_input, step)| {
+            match step.layer {
+                Layer::Activation(..) => {
+                    if !tables.contains(&TableType::Relu) {
+                        return Err(PCSError::ParameterError("Model context did not contain a Relu table so shouldn't be producing a Relu witness".to_string()));
+                    }
+                    // Calculate the column_evals and also the merged lookups
+                    let (merged_lookups, field): (Vec<Element>, Vec<(E::BaseField, E::BaseField)>) =
+                        step_input
+                            .get_data()
+                            .iter()
+                            .zip(step.output.get_data().iter())
+                            .map(|(a, b)| {
+                                let a_field: E = a.to_field();
+                                let b_field: E = b.to_field();
+                                (
+                                    a + column_separator * b,
+                                    (a_field.as_bases()[0], b_field.as_bases()[0]),
+                                )
+                            })
+                            .unzip();
 
-        let (multiplicities, mults_ext)  = table_column.iter().map(|table_val| {
-            if let Some(lookup_count) = table_lookup_data.get(table_val) {
-                (E::BaseField::from(*lookup_count), E::from(*lookup_count))
-            } else {
-                (E::BaseField::ZERO, E::ZERO)
+                    let (col_one, col_two): (Vec<E::BaseField>, Vec<E::BaseField>) =
+                        field.into_iter().unzip();
+
+                    let num_vars = ceil_log2(col_one.len());
+
+                    // Add the witness polynomials that we need to commit to
+                    let (commits, column_evals): (Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>, Vec<Vec<E::BaseField>>) = [col_one, col_two]
+                        .into_par_iter()
+                        .map(|evaluations| {
+                            let mle = DenseMultilinearExtension::<E>::from_evaluations_slice(
+                                num_vars,
+                                &evaluations,
+                            );
+                            let commit = ctx.new_weights.commit(&mle)?;
+                            Ok(((commit, mle), evaluations))
+                        })
+                        .collect::<Result<Vec<_>, PCSError>>()?.into_iter().unzip();
+
+                    Result::<
+                            (Vec<(Vec<Element>, TableType)>, Vec<LogUpWitness<E, PCS>>),
+                            PCSError,
+                        >::Ok((
+                            vec![(merged_lookups, TableType::Relu)],
+                            vec![LogUpWitness::<E, PCS>::new_lookup(
+                                commits,
+                                column_evals,
+                                2,
+                                TableType::Relu,
+                            )],
+                        ))
+                }
+
+                Layer::Requant(requant) => {
+                    if !tables.contains(&TableType::Clamping(requant.clamping_size())) {
+                        return Err(PCSError::ParameterError(format!("Model context did not contain a Clamping table of size {}, so shouldn't be producing a Clamping witness", requant.clamping_size())));
+                    }
+                    if !tables.contains(&TableType::Range) {
+                        return Err(PCSError::ParameterError("Model context did not contain a Range table, so shouldn't be producing a Range witness".to_string()));
+                    }
+                    let RequantLookupWitness {
+                        clamping_in,
+                        clamping_out,
+                        shifted_chunks,
+                    } = requant.gen_lookup_witness::<E>(step_input.get_data());
+
+                    let merged_shifted = shifted_chunks
+                        .iter()
+                        .flatten()
+                        .copied()
+                        .collect::<Vec<Element>>();
+
+                    let merged_clamping = clamping_in
+                        .iter()
+                        .zip(clamping_out.iter())
+                        .map(|(&c_in, &c_out)| c_in + c_out * column_separator)
+                        .collect::<Vec<Element>>();
+                    let num_vars = ceil_log2(clamping_in.len());
+                    // Add the witnesses to be committed
+
+                    let (clamping_commits, clamping_evals): (Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>, Vec<Vec<E::BaseField>>) = [clamping_in, clamping_out]
+                        .into_par_iter()
+                        .map(|vals| {
+                            let evaluations = vals
+                                .into_iter()
+                                .map(|v| {
+                                    let f: E = v.to_field();
+                                    f.as_bases()[0]
+                                })
+                                .collect::<Vec<E::BaseField>>();
+                            let mle = DenseMultilinearExtension::<E>::from_evaluations_slice(
+                                num_vars,
+                                &evaluations,
+                            );
+                            let commit = ctx.new_weights.commit(&mle)?;
+                            Ok(((commit, mle), evaluations))
+                        })
+                        .collect::<Result<Vec<_>, PCSError>>()?.into_iter().unzip();
+
+                    let (shifted_chunk_commits, shifted_chunks_evals): (Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>, Vec<Vec<E::BaseField>>) = shifted_chunks
+                        .into_par_iter()
+                        .map(|chunk| {
+                            let evaluations = chunk
+                                .into_iter()
+                                .map(|v| {
+                                    let f: E = v.to_field();
+                                    f.as_bases()[0]
+                                })
+                                .collect::<Vec<E::BaseField>>();
+                            let mle = DenseMultilinearExtension::<E>::from_evaluations_slice(
+                                num_vars,
+                                &evaluations,
+                            );
+                            let commit = ctx.new_weights.commit(&mle)?;
+                            Ok(((commit, mle), evaluations))
+                        })
+                        .collect::<Result<Vec<_>, PCSError>>()?.into_iter().unzip();
+                    Ok((
+                        vec![
+                            (
+                                merged_clamping,
+                                TableType::Clamping(requant.clamping_size()),
+                            ),
+                            (merged_shifted, TableType::Range),
+                        ],
+                        vec![
+                            LogUpWitness::<E, PCS>::new_lookup(
+                                clamping_commits,
+                                clamping_evals,
+                                2,
+                                TableType::Clamping(requant.clamping_size()),
+                            ),
+                            LogUpWitness::<E, PCS>::new_lookup(
+                                shifted_chunk_commits,
+                                shifted_chunks_evals,
+                                1,
+                                TableType::Range,
+                            ),
+                        ],
+                    ))
+                }
+                Layer::Pooling(pooling) => {
+                    if !tables.contains(&TableType::Range) {
+                        return Err(PCSError::ParameterError("Model context did not contain a Range table, so shouldn't be producing a Range witness".to_string()));
+                    }
+                    let (merged_lookups, column_evals) =
+                        pooling.gen_lookup_witness::<E>(step_input);
+                    
+                    // Commit to the witnes polys
+                    let output_poly = step
+                        .output
+                        .get_data()
+                        .iter()
+                        .map(|val| {
+                            let f: E = val.to_field();
+                            f.as_bases()[0]
+                        })
+                        .collect::<Vec<E::BaseField>>();
+                    let num_vars = ceil_log2(output_poly.len());
+                    
+                    let commit_evals = column_evals.iter().chain(std::iter::once(&output_poly)).collect::<Vec<_>>();
+                    let commits = commit_evals
+                        .into_par_iter()
+                        .map(|evaluations| {
+                            let mle = DenseMultilinearExtension::<E>::from_evaluations_slice(
+                                num_vars,
+                                evaluations,
+                            );
+                            let commit = ctx.new_weights.commit(&mle)?;
+                            Ok((commit, mle))
+                        })
+                        .collect::<Result<Vec<_>, PCSError>>()?;
+
+                    Ok((vec![(merged_lookups, TableType::Range)], vec![
+                        LogUpWitness::<E, PCS>::new_lookup(commits, column_evals, 1, TableType::Range),
+                    ]))
+                }
+                _ => Ok((vec![], vec![])),
             }
-        }).unzip();
+        })
+        .try_fold(
+            (BTreeMap::<TableType, Vec<Element>>::default(), vec![]),
+            |(mut multiplicity_map, mut witnesses), items| {
+                let (inner_lookups, inner_witnesses): (
+                    Vec<(Vec<Element>, TableType)>,
+                    Vec<LogUpWitness<E, PCS>>,
+                ) = items?;
+                inner_lookups.into_iter().for_each(|(lookups, table_type)| {
+                    multiplicity_map
+                        .entry(table_type)
+                        .or_insert_with(|| Vec::<Element>::default())
+                        .extend(lookups);
+                });
+                witnesses.extend(inner_witnesses);
+                Result::<
+                    (
+                        BTreeMap<TableType, Vec<Element>>,
+                        Vec<LogUpWitness<E, PCS>>,
+                    ),
+                    PCSError,
+                >::Ok((multiplicity_map, witnesses))
+            },
+        )?;
+        // .try_reduce(
+        //     || (BTreeMap::<TableType, Vec<Element>>::default(), vec![]),
+        //     |(mut hashmap_a, mut witness_a), (hashmap_b, witness_b)| {
+        //         hashmap_a.extend(hashmap_b);
+        //         witness_a.extend(witness_b);
+        //         Ok((hashmap_a, witness_a))
+        //     },
+        // )?;
+    println!("time to commit to witness: {:?}", now.elapsed());
+    debug!("Lookup witness generation: generating table multiplicities...");
+    let now = std::time::Instant::now();
+    let table_witnesses =
+        multiplicity_map
+            .par_iter()
+            .map(|(table_type, lookups)| {
+                let table_lookup_data =
+                    lookups
+                        .iter()
+                        .fold(HashMap::<Element, u64>::new(), |mut map, elem| {
+                            *map.entry(*elem).or_insert(0) += 1;
+                            map
+                        });
+                let (table_column, column_evals) =
+                    table_type.get_merged_table_column::<E>(column_separator);
 
-        polys_with_id.push((i + TABLE_POLY_ID_OFFSET, mults_ext));
-        Ok((column_evals, multiplicities, *table_type))
-    }).collect::<Result<Vec<(Vec<Vec<E::BaseField>>, Vec<E::BaseField>, TableType)>, LogUpError>>()?;
-
-    debug!("Lookup witness generation: commit context generation...");
-    let ctx = Context::generate(polys_with_id).map_err(|e| {
-        LogUpError::ParamterError(format!(
-            "Could not generate Lookup witness commit context {{ inner: {:?}}}",
-            e
-        ))
-    })?;
-
-    ctx.write_to_transcript(transcript).map_err(|e| {
-        LogUpError::ParamterError(format!(
-            "Unable to write lookup witness commit context to transcript, {{ inner: {:?}}}",
-            e
-        ))
-    })?;
-
+                let multiplicities = table_column
+                    .iter()
+                    .map(|table_val| {
+                        if let Some(lookup_count) = table_lookup_data.get(table_val) {
+                            E::BaseField::from(*lookup_count)
+                        } else {
+                            E::BaseField::ZERO
+                        }
+                    })
+                    .collect::<Vec<E::BaseField>>();
+                let num_vars = ceil_log2(multiplicities.len());
+                let mle = DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, &multiplicities);
+                let commit = ctx.new_weights.commit(
+                    &mle,
+                )?;
+                Ok(LogUpWitness::<E, PCS>::new_table(
+                    (commit, mle),
+                    multiplicities,
+                    column_evals,
+                    *table_type,
+                ))
+            })
+            .collect::<Result<Vec<LogUpWitness<E, PCS>>, PCSError>>()?;
+        println!("Time to commit to multiplicities: {:?}", now.elapsed());
+    // Write all the witness commitments to the transcript
+    witnesses
+        .iter()
+        .chain(table_witnesses.iter())
+        .try_for_each(|witness| witness.write_to_transcript(transcript))?;
+    
     debug!("Lookup witness generation: challenge storage...");
     let challenge_storage = initialise_from_table_set::<E, T>(&tables, transcript);
 
-    let lookup_inputs = lookups_no_challenges
-        .into_iter()
-        .map(|(column_evals, columns_per_instance, table_type)| {
-            let (constant_challenge, column_challenge) = challenge_storage
-                .get_challenges_by_name(&table_type.name())
-                .ok_or(LogUpError::ParamterError(format!(
-                    "No challegnes found for table type: {} when generating lookup witness",
-                    table_type.name()
-                )))?;
-
-            LogUpInput::<E>::new_lookup(
-                column_evals,
-                constant_challenge,
-                column_challenge,
-                columns_per_instance,
-            )
-        })
-        .collect::<Result<Vec<LogUpInput<E>>, LogUpError>>()?;
-
-    let table_inputs = tables_no_challenges
-        .into_iter()
-        .map(|(column_evals, multiplicities, table_type)| {
-            let (constant_challenge, column_challenge) = challenge_storage
-                .get_challenges_by_name(&table_type.name())
-                .ok_or(LogUpError::ParamterError(format!(
-                    "No challegnes found for table type: {} when generating table witness",
-                    table_type.name()
-                )))?;
-
-            LogUpInput::<E>::new_table(
-                column_evals,
-                multiplicities,
-                constant_challenge,
-                column_challenge,
-            )
-        })
-        .collect::<Result<Vec<LogUpInput<E>>, LogUpError>>()?;
-    Ok((Some(ctx), challenge_storage, lookup_inputs, table_inputs))
+    Ok((challenge_storage, witnesses, table_witnesses))
 }
 
 fn initialise_from_table_set<E: ExtensionField, T: Transcript<E>>(

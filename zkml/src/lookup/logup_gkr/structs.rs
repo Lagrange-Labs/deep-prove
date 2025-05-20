@@ -130,7 +130,7 @@ impl<F: ExtensionField> Fraction<F> {
 }
 
 #[derive(Clone, Debug)]
-/// Enum defining inputs to LogUp proofs.
+/// Enum defining inputs to LogUp GKR prover.
 /// We split lookup inputs and table inputs as different optimisations can be made in each case. Additionally it allows us to only do work proportional to the table size in the table proving case
 /// which is useful when multiple different model layers use the same table.
 pub enum LogUpInput<E: ExtensionField> {

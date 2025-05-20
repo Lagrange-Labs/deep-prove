@@ -1,20 +1,23 @@
 use super::{ChallengeStorage, Context, Proof, TableProof};
 use crate::{
     Claim, Element, VectorTranscript,
-    commit::{compute_betas_eval, precommit},
+    commit::{Pcs, compute_betas_eval, new_commit, precommit},
     layers::{Layer, LayerCtx, LayerProof},
     lookup::{
         context::{TABLE_POLY_ID_OFFSET, generate_lookup_witnesses},
         logup_gkr::{prover::batch_prove as logup_batch_prove, structs::LogUpInput},
+        witness::LogUpWitness,
     },
     model::{InferenceStep, InferenceTrace},
     tensor::{Tensor, get_root_of_unity},
 };
-use anyhow::{anyhow, bail};
+use anyhow::{anyhow, bail, ensure};
 use ff_ext::ExtensionField;
 
+use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::{
-    mle::{IntoMLE, MultilinearExtension},
+    mle::{DenseMultilinearExtension, IntoMLE, MultilinearExtension},
+    util::ceil_log2,
     virtual_poly::VirtualPolynomial,
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -25,40 +28,43 @@ use tracing::debug;
 use transcript::Transcript;
 
 /// Prover generates a series of sumcheck proofs to prove the inference of a model
-pub struct Prover<'a, E: ExtensionField, T: Transcript<E>>
+pub struct Prover<'a, E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>
 where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    ctx: &'a Context<E>,
+    pub(crate) ctx: &'a Context<E, PCS>,
     // proofs for each layer being filled
-    proofs: Vec<LayerProof<E>>,
-    table_proofs: Vec<TableProof<E>>,
+    proofs: Vec<LayerProof<E, PCS>>,
+    table_proofs: Vec<TableProof<E, PCS>>,
     pub(crate) transcript: &'a mut T,
     pub(crate) commit_prover: precommit::CommitProver<E>,
-    /// the context of the witness part (IO of lookups, linked with matrix2vec for example)
-    /// is generated during proving time. It is first generated and then the fiat shamir starts.
-    /// The verifier doesn't know about the individual polys (otherwise it beats the purpose) so
-    /// that's why it is generated at proof time.
-    pub(crate) witness_ctx: Option<precommit::Context<E>>,
-    /// The prover related to proving multiple claims about different witness polyy (io of lookups etc)
+    // /// the context of the witness part (IO of lookups, linked with matrix2vec for example)
+    // /// is generated during proving time. It is first generated and then the fiat shamir starts.
+    // /// The verifier doesn't know about the individual polys (otherwise it beats the purpose) so
+    // /// that's why it is generated at proof time.
+    // pub(crate) witness_ctx: Option<precommit::Context<E>>,
+    /// The prover related to proving multiple claims about different witness poly (io of lookups etc)
     pub(crate) witness_prover: precommit::CommitProver<E>,
+    pub(crate) new_commit_prover: new_commit::CommitmentProver<E, PCS>,
     /// The lookup witnesses
-    pub(crate) lookup_witness: Vec<LogUpInput<E>>,
+    pub(crate) lookup_witness: Vec<LogUpWitness<E, PCS>>,
     /// The Lookup table witness
-    pub(crate) table_witness: Vec<LogUpInput<E>>,
+    pub(crate) table_witness: Vec<LogUpWitness<E, PCS>>,
     /// Stores all the challenges for the different lookup/table types
-    challenge_storage: ChallengeStorage<E>,
+    pub(crate) challenge_storage: ChallengeStorage<E>,
 }
 
-impl<'a, E, T> Prover<'a, E, T>
+impl<'a, E, T, PCS> Prover<'a, E, T, PCS>
 where
     T: Transcript<E>,
     E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
 {
-    pub fn new(ctx: &'a Context<E>, transcript: &'a mut T) -> Self {
+    pub fn new(ctx: &'a Context<E, PCS>, transcript: &'a mut T) -> Self {
+        let new_commit_prover = new_commit::CommitmentProver::new(&ctx.new_weights);
         Self {
             ctx,
             transcript,
@@ -66,7 +72,8 @@ where
             table_proofs: Vec::default(),
             commit_prover: precommit::CommitProver::new(),
             // at this step, we can't build the ctx since we don't know the individual polys
-            witness_ctx: None,
+            // witness_ctx: None,
+            new_commit_prover,
             witness_prover: precommit::CommitProver::new(),
             lookup_witness: Vec::default(),
             table_witness: Vec::default(),
@@ -74,12 +81,12 @@ where
         }
     }
 
-    pub(crate) fn next_lookup_witness(&mut self) -> anyhow::Result<LogUpInput<E>> {
+    pub(crate) fn next_lookup_witness(&mut self) -> anyhow::Result<LogUpWitness<E, PCS>> {
         self.lookup_witness
             .pop()
             .ok_or(anyhow!("No more lookup witness!"))
     }
-    pub(crate) fn push_proof(&mut self, proof: LayerProof<E>) {
+    pub(crate) fn push_proof(&mut self, proof: LayerProof<E, PCS>) {
         self.proofs.push(proof);
     }
     //#[instrument(name="prove step",skip_all,fields(step = step.layer.describe()),level = "debug")]
@@ -137,26 +144,32 @@ where
     fn prove_tables(&mut self) -> anyhow::Result<()> {
         let mut poly_id = TABLE_POLY_ID_OFFSET;
 
-        self.table_witness
-            .iter()
-            .zip(self.ctx.lookup.iter())
-            .try_for_each(|(table_witness, _table_type)| {
-                // Make the proof for the table
-                let table_proof = logup_batch_prove(&table_witness, self.transcript)?;
+        self.table_witness.iter().try_for_each(|table_witness| {
+            let logup_input = table_witness.get_logup_input(&self.challenge_storage)?;
+            let comm_with_wit = table_witness
+                .get_commitments()
+                .first()
+                .ok_or(anyhow!("Table witness should have one commitment"))?
+                .clone();
+            let multiplicity_commit = PCS::get_pure_commitment(&comm_with_wit.0);
 
-                // Add the multiplicity poly claim
-                self.witness_prover.add_claim(
-                    poly_id,
-                    table_proof.output_claims().first().unwrap().clone(),
-                )?;
+            // Make the proof for the table
+            let table_proof = logup_batch_prove(&logup_input, self.transcript)?;
 
-                self.table_proofs.push(TableProof {
-                    lookup: table_proof,
-                });
+            // Add the multiplicity poly claim
+            self.new_commit_prover.add_witness_claim(
+                comm_with_wit,
+                table_proof.output_claims().first().unwrap().clone(),
+            )?;
 
-                poly_id += 1;
-                Ok(())
-            })
+            self.table_proofs.push(TableProof {
+                multiplicity_commit,
+                lookup: table_proof,
+            });
+
+            poly_id += 1;
+            Ok(())
+        })
     }
 
     // Protocol for proving the correct computation of the FFT/iFFT matrix.
@@ -419,7 +432,10 @@ where
         // return Proof;
     }
 
-    pub fn prove<'b>(mut self, trace: InferenceTrace<'b, Element, E>) -> anyhow::Result<Proof<E>> {
+    pub fn prove<'b>(
+        mut self,
+        trace: InferenceTrace<'b, Element, E>,
+    ) -> anyhow::Result<Proof<E, PCS>> {
         // let trace = full_trace.provable_steps();
         // write commitments and polynomials info to transcript
         self.ctx.write_to_transcript(self.transcript)?;
@@ -460,19 +476,19 @@ where
         self.prove_tables()?;
 
         // now provide opening proofs for all claims accumulated during the proving steps
-        let commit_proof = self
-            .commit_prover
-            .prove(&self.ctx.weights, self.transcript)?;
-        let mut output_proof = Proof {
+        // let commit_proof = self
+        //     .commit_prover
+        //     .prove(&self.ctx.weights, self.transcript)?;
+
+        let opening_proof = self
+            .new_commit_prover
+            .prove(&self.ctx.new_weights, self.transcript)?;
+        let output_proof = Proof {
             steps: self.proofs,
             table_proofs: self.table_proofs,
-            commit: commit_proof,
-            witness: None,
+            opening_proof,
         };
-        if let Some(witness_ctx) = self.witness_ctx {
-            let witness_proof = self.witness_prover.prove(&witness_ctx, self.transcript)?;
-            output_proof.witness = Some((witness_proof, witness_ctx));
-        }
+
         Ok(output_proof)
     }
 
@@ -482,12 +498,14 @@ where
         &mut self,
         trace: &InferenceTrace<'b, Element, E>,
     ) -> anyhow::Result<()> {
-        let (witness_ctx, challenge_storage, lookup_witnesses, table_witnesses) =
-            generate_lookup_witnesses::<E, T>(trace, self.transcript)?;
+        let now = std::time::Instant::now();
+        let (challenge_storage, lookup_witnesses, table_witnesses) =
+            generate_lookup_witnesses::<E, T, PCS>(&self.ctx, trace, self.transcript)?;
+        println!("Time to generate lookup witness: {:?}", now.elapsed());
         // let (lookup_witness, polys) =
         //     lookup::WitnessContext::<E>::initialise_witness_ctx(&self.ctx.lookup, trace)?;
 
-        self.witness_ctx = witness_ctx;
+        // self.witness_ctx = witness_ctx;
         self.challenge_storage = challenge_storage;
         self.lookup_witness = lookup_witnesses;
         self.table_witness = table_witnesses;

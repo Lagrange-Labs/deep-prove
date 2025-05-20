@@ -15,6 +15,7 @@ use crate::{
 use anyhow::Context;
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
+use mpcs::PolynomialCommitmentScheme;
 // use itertools::assert_equal;
 use crate::{
     Element,
@@ -276,9 +277,13 @@ impl Convolution<Element> {
         2 * (*quantization::BIT_LEN - 1) + ceil_log2(k_h * k_w * k_c + 1)
     }
 
-    pub fn prove_batch_fft_weights<E: ExtensionField, T: Transcript<E>>(
+    pub fn prove_batch_fft_weights<
+        E: ExtensionField,
+        T: Transcript<E>,
+        PCS: PolynomialCommitmentScheme<E>,
+    >(
         &self,
-        prover: &mut Prover<E, T>,
+        prover: &mut Prover<E, T, PCS>,
         r: Vec<E>,
     ) -> (
         sumcheck::structs::IOPProof<E>,
@@ -370,15 +375,13 @@ impl Convolution<Element> {
     pub(crate) fn step_info<E: ExtensionField>(
         &self,
         id: PolyID,
-        mut aux: ContextAux,
-    ) -> (LayerCtx<E>, ContextAux)
+        mut aux: ContextAux<E>,
+    ) -> (LayerCtx<E>, ContextAux<E>)
     where
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
-        let mut filter_shape = self.filter.get_shape();
-        filter_shape.remove(1);
-        aux.last_output_shape = filter_shape;
+        aux.last_output_shape = self.output_shape(&aux.last_output_shape, PaddingMode::NoPadding);
 
         let mut delegation_fft: Vec<VPAuxInfo<E>> = Vec::new();
         let mut delegation_fft_weights: Vec<VPAuxInfo<E>> = Vec::new();
@@ -432,6 +435,25 @@ impl Convolution<Element> {
             unpadded_filter_shape: self.unpadded_shape.clone(),
             padded_filter_shape: self.filter.real_shape(),
         });
+
+        let weights_evals = self
+            .filter
+            .get_conv_weights::<E>()
+            .into_iter()
+            .map(|f| f.as_bases()[0])
+            .collect::<Vec<E::BaseField>>();
+        let bias_evals = self
+            .bias
+            .get_data()
+            .iter()
+            .map(|val| {
+                let f: E = val.to_field();
+                f.as_bases()[0]
+            })
+            .collect::<Vec<E::BaseField>>();
+        // Add model polys in order weights, bias
+        aux.model_polys = vec![weights_evals, bias_evals];
+
         (conv_info, aux)
     }
 
@@ -441,9 +463,13 @@ impl Convolution<Element> {
     #[instrument(name = "Prover::prove_convolution_step", skip_all, level = "debug")]
     #[timed::timed_instrument(level = "debug")]
 
-    pub fn prove_convolution_step<E: ExtensionField, T: Transcript<E>>(
+    pub fn prove_convolution_step<
+        E: ExtensionField,
+        T: Transcript<E>,
+        PCS: PolynomialCommitmentScheme<E>,
+    >(
         &self,
-        prover: &mut Prover<E, T>,
+        prover: &mut Prover<E, T, PCS>,
         // last random claim made
         last_claim: Claim<E>,
         // Struct containing all necessary information
@@ -722,24 +748,21 @@ impl Convolution<Element> {
         });
 
         prover
-            .commit_prover
-            .add_claim(
-                info.poly_id,
-                Claim::new(
-                    [
-                        weights_rand.clone(),
-                        point[(2 * self.filter.nw() * self.filter.nw()).ilog2() as usize..]
-                            .to_vec(),
-                    ]
-                    .concat(),
-                    partial_evals.clone().into_mle().evaluate(&weights_rand),
-                ),
-            )
-            .context("unable to add convolution claim")?;
-        prover
-            .commit_prover
-            .add_claim(info.bias_poly_id, Claim::new(bias_point, bias_eval))
+            .new_commit_prover
+            .add_common_claim(Claim::new(bias_point, bias_eval))
             .context("unable to add bias claim in convolution")?;
+
+        prover
+            .new_commit_prover
+            .add_common_claim(Claim::new(
+                [
+                    weights_rand.clone(),
+                    point[(2 * self.filter.nw() * self.filter.nw()).ilog2() as usize..].to_vec(),
+                ]
+                .concat(),
+                partial_evals.clone().into_mle().evaluate(&weights_rand),
+            ))
+            .context("unable to add convolution claim")?;
 
         prover.push_proof(LayerProof::Convolution(ConvProof {
             fft_proof: fft_proof.clone(),
@@ -816,9 +839,9 @@ where
             PaddingMode::Padding => padded_conv2d_shape(input_shape, &self.padded_filter_shape),
         }
     }
-    pub(crate) fn verify_fft_delegation<T: Transcript<E>>(
+    pub(crate) fn verify_fft_delegation<T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
-        verifier: &mut Verifier<E, T>,
+        verifier: &mut Verifier<E, T, PCS>,
         mut claim: E,
         proof: &ConvProof<E>,
         delegation_proof: &Vec<IOPProof<E>>,
@@ -870,9 +893,9 @@ where
         );
     }
 
-    pub(crate) fn verify_convolution<T: Transcript<E>>(
+    pub(crate) fn verify_convolution<T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
-        verifier: &mut Verifier<E, T>,
+        verifier: &mut Verifier<E, T, PCS>,
         last_claim: Claim<E>,
         proof: &ConvProof<E>,
         shape_step: &ShapeStep,
@@ -1050,29 +1073,22 @@ where
         ]
         .concat();
 
-        verifier.commit_verifier.add_claim(
-            self.poly_id,
-            Claim::new(
-                [
-                    weights_rand.clone(),
-                    point[(2 * self.nw * self.nw).ilog2() as usize..].to_vec(),
-                ]
-                .concat(),
-                proof
-                    .partial_evals
-                    .clone()
-                    .into_mle()
-                    .evaluate(&weights_rand),
-            ),
-        )?;
-
-        verifier.commit_verifier.add_claim(
-            self.bias_poly_id,
-            Claim::new(
-                last_claim.point[(proof.ifft_delegation_proof.len())..].to_vec(),
-                proof.bias_claim,
-            ),
-        )?;
+        verifier.new_commit_verifier.add_common_claim(Claim::new(
+            last_claim.point[(proof.ifft_delegation_proof.len())..].to_vec(),
+            proof.bias_claim,
+        ))?;
+        verifier.new_commit_verifier.add_common_claim(Claim::new(
+            [
+                weights_rand.clone(),
+                point[(2 * self.nw * self.nw).ilog2() as usize..].to_vec(),
+            ]
+            .concat(),
+            proof
+                .partial_evals
+                .clone()
+                .into_mle()
+                .evaluate(&weights_rand),
+        ))?;
 
         let mut input_point = proof.fft_proof.point.clone();
         v = input_point.pop().unwrap();
@@ -1099,8 +1115,8 @@ impl SchoolBookConvCtx {
     pub(crate) fn step_info<E: ExtensionField>(
         &self,
         _id: PolyID,
-        aux: ContextAux,
-    ) -> (LayerCtx<E>, ContextAux)
+        aux: ContextAux<E>,
+    ) -> (LayerCtx<E>, ContextAux<E>)
     where
         E::BaseField: Serialize + DeserializeOwned,
         E: ExtensionField + Serialize + DeserializeOwned,

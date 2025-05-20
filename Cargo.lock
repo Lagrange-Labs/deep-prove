@@ -3125,6 +3125,7 @@ dependencies = [
  "num-traits",
  "once_cell",
  "poseidon",
+ "rand_chacha",
  "rayon",
  "rmp-serde",
  "serde",
