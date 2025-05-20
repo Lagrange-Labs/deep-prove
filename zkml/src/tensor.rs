@@ -771,6 +771,23 @@ where
             data,
         }
     }
+    /// Add a vector to each sub-tensor of the second dimension of the tensor
+    /// If self is 2d, then add a vector to each row of self.
+    pub fn add_dim2(&self, other: &Tensor<T>) -> Tensor<T> {
+        assert!(self.shape.len() == 2, "Tensor is not a matrix");
+        assert!(other.shape.len() == 1, "Tensor is not a matrix");
+        assert!(self.shape[1] == other.shape[0], "Shape mismatch for addition.");
+        let data = self.data.par_chunks(self.shape[1]).flat_map_iter(|chunk| {
+            chunk.into_iter().zip(other.data.iter()).map(|(a, b)| {
+                *a + *b
+            })
+        }).collect::<Vec<_>>();
+        Tensor {
+            shape: self.shape.clone(),
+            og_shape: self.og_shape.clone(),
+            data,
+        }
+    }
     /// Element-wise subtraction
     pub fn sub(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(self.shape == other.shape, "Shape mismatch for subtraction.");
@@ -1558,15 +1575,16 @@ impl<T: Number> Tensor<T> {
             og_shape: vec![0],
         }
     }
-    pub fn concat(self, other: Self) -> Self {
-        assert_eq!(self.shape.len(), other.shape.len());
-        let new_shape = self.shape.iter().zip(other.shape.iter()).map(|(a, b)| a + b).collect_vec();
-        let data = self.data.into_iter().chain(other.data.into_iter()).collect_vec();
-        Self {
-            data,
-            shape: new_shape,
-            og_shape: vec![0],
-        }
+    pub fn concat(&mut self, other: Self) {
+        let len = self.shape.last().unwrap();
+        // make sure that the all dimension but the highest one are the same
+        let common_shape = self.shape.len().min(other.shape.len());
+        assert_eq!(common_shape + 1, self.shape.len());
+        assert!(self.shape.iter().rev().zip(other.shape.iter().rev()).take(common_shape).all(|(a, b)| a == b));
+        // then the new shape has this higher dimension + 1 simply     
+        // common_shape since 0-based indexing
+        *self.shape.get_mut(0).unwrap() += 1;
+        self.data.extend(other.data);
     }
 }
 
@@ -1949,5 +1967,24 @@ mod test {
         let sliced = tensor.slice_2d(2,3);
         assert_eq!(sliced.get_shape(), vec![1, 3]);
         assert_eq!(sliced.get_data(), vec![7, 8, 9]);
+    }
+
+    #[test]
+    fn test_tensor_add_dim2() {
+        let tensor = Tensor::<Element>::new(vec![2, 3], vec![1, 2, 3, 4, 5, 6]);
+        let vector = Tensor::<Element>::new(vec![3], vec![10, 20, 30]);
+        let result = tensor.add_dim2(&vector);
+        assert_eq!(result.get_shape(), vec![2, 3]);
+        assert_eq!(result.get_data(), vec![11, 22, 33, 14, 25, 36]);
+    }
+
+    #[test]
+    fn test_tensor_concat() {
+        let mut tensor = Tensor::<Element>::new(vec![2, 3], vec![1, 2, 3, 4, 5, 6]);
+        let vector = Tensor::<Element>::new(vec![3], vec![10, 20, 30]);
+        tensor.concat(vector);
+
+        assert_eq!(tensor.get_shape(), vec![3, 3]);
+        assert_eq!(tensor.get_data(), vec![1, 2, 3, 4, 5, 6, 10, 20, 30]);
     }
 }
