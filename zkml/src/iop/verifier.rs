@@ -1,12 +1,19 @@
+use std::collections::HashMap;
+
 use crate::{
     Claim, VectorTranscript,
     commit::{self, precommit},
-    iop::ChallengeStorage,
-    layers::{LayerCtx, LayerProof},
+    iop::{ChallengeStorage, context::ShapeStep},
+    layers::{
+        LayerProof,
+        provable::{NodeCtx, NodeId, ProvableOpError, VerifiableCtx},
+    },
     lookup::{context::TableType, logup_gkr::verifier::verify_logup_proof},
+    model::ToIterator,
     tensor::Tensor,
+    try_unzip,
 };
-use anyhow::{anyhow, bail, ensure};
+use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
 
 use itertools::Itertools;
@@ -20,21 +27,22 @@ use super::{Context, Proof, TableProof};
 /// What the verifier must have besides the proof
 pub struct IO<E> {
     /// Input of the inference given to the model
-    input: Tensor<E>,
+    input: Vec<Tensor<E>>,
     /// Output of the inference
-    output: Tensor<E>,
+    output: Vec<Tensor<E>>,
 }
 
 impl<E> IO<E> {
-    pub fn new(input: Tensor<E>, output: Tensor<E>) -> Self {
+    pub fn new(input: Vec<Tensor<E>>, output: Vec<Tensor<E>>) -> Self {
         Self { input, output }
     }
 }
 
-pub(crate) struct Verifier<'a, E: ExtensionField, T: Transcript<E>> {
+pub struct Verifier<'a, E: ExtensionField, T: Transcript<E>> {
     pub(crate) commit_verifier: precommit::CommitVerifier<E>,
     pub(crate) witness_verifier: precommit::CommitVerifier<E>,
     pub(crate) transcript: &'a mut T,
+    pub(crate) challenge_storage: Option<ChallengeStorage<E>>,
 }
 
 impl<'a, E: ExtensionField, T: Transcript<E>> Verifier<'a, E, T>
@@ -47,6 +55,7 @@ where
             commit_verifier: precommit::CommitVerifier::new(),
             witness_verifier: precommit::CommitVerifier::new(),
             transcript,
+            challenge_storage: None,
         }
     }
 
@@ -56,11 +65,6 @@ where
         proof: Proof<E>,
         io: IO<E>,
     ) -> anyhow::Result<()> {
-        // Ordering of proofs.
-        println!(
-            "VERIFIER: Proof Order: {:?}",
-            proof.steps.iter().map(|p| p.variant_name()).collect_vec()
-        );
         // 1. Instatiate everything and append relevant info to the transcript
         let mut numerators = Vec::<E>::new();
         let mut denominators = Vec::<E>::new();
@@ -69,111 +73,129 @@ where
 
         // Here we generate and store all lookup related challenges
         // TODO: make this part of verifier struct
-        let challenge_storage = if let Some((_, witness_context)) = proof.witness {
+        self.challenge_storage = Some(if let Some((_, witness_context)) = proof.witness {
             witness_context.write_to_transcript(self.transcript)?;
             ChallengeStorage::<E>::initialise(&ctx, self.transcript)
         } else {
             ChallengeStorage::default()
-        };
+        });
 
-        proof.steps.iter().rev().for_each(|proof| {
-            if let Some((num, denom)) = proof.get_lookup_data() {
+        // iterate over the step proofs in inference order
+        for (node_id, node) in ctx.steps_info.to_forward_iterator() {
+            if !node.ctx.has_proof() {
+                // if the current node is not provable, there is no proof, so we can skip it
+                continue;
+            }
+            let node_proof = proof
+                .steps
+                .get(&node_id)
+                .ok_or(anyhow!("Proof for node {} not found", node_id))?;
+            if let Some((num, denom)) = node_proof.get_lookup_data() {
                 numerators.extend(num.into_iter());
                 denominators.extend(denom.into_iter());
             }
-        });
+        }
 
         proof.table_proofs.iter().for_each(|proof| {
             let (nums, denoms) = proof.lookup.fractional_outputs();
             numerators.extend(nums.into_iter());
             denominators.extend(denoms.into_iter());
         });
+        // 2. Derive output claims
+        let out_claims = io
+            .output
+            .iter()
+            .map(|out| {
+                // Derive the first randomness
+                let first_randomness = self
+                    .transcript
+                    .read_challenges(out.get_data().len().ilog2() as usize);
+                // For the output, we manually evaluate the MLE and check if it's the same as what prover
+                // gave. Note prover could ellude that but it's simpler to avoid that special check right
+                // now.
+                let output_mle = out.get_data().to_vec().into_mle();
+                let computed_sum = output_mle.evaluate(&first_randomness);
 
-        // 2. Derive the first randomness
-        let first_randomness = self
-            .transcript
-            .read_challenges(io.output.get_data().len().ilog2() as usize);
-        // 3. For the output, we manually evaluate the MLE and check if it's the same as what prover
-        //    gave. Note prover could ellude that but it's simpler to avoid that special check right
-        //    now.
-        let output_mle = io.output.get_data().to_vec().into_mle();
-        let computed_sum = output_mle.evaluate(&first_randomness);
+                Claim {
+                    point: first_randomness,
+                    eval: computed_sum,
+                }
+            })
+            .collect_vec();
 
-        let mut output_claim = Claim {
-            point: first_randomness,
-            eval: computed_sum,
-        };
+        let mut shape_steps: HashMap<NodeId, ShapeStep> = HashMap::new();
+        for (node_id, node_ctx) in ctx.steps_info.to_forward_iterator() {
+            let (unpadded_input_shapes, padded_input_shapes): (Vec<_>, Vec<_>) =
+                try_unzip(node_ctx.inputs.iter().map(|edge| {
+                    if let Some(n) = edge.node {
+                        let step = shape_steps
+                            .get(&n)
+                            .ok_or(anyhow!("Shapes for node {n} not found"))?;
+                        ensure!(
+                            edge.index < step.unpadded_output_shape.len(),
+                            "Required input {} for node {n}, but there are only {} inputs shapes",
+                            edge.index,
+                            step.unpadded_output_shape.len(),
+                        );
+                        Ok((
+                            step.unpadded_output_shape[edge.index].clone(),
+                            step.padded_output_shape[edge.index].clone(),
+                        ))
+                    } else {
+                        ensure!(
+                            edge.index < ctx.unpadded_input_shapes.len(),
+                            "Required input {} of model, but there are only {} inputs shapes",
+                            edge.index,
+                            ctx.unpadded_input_shapes.len(),
+                        );
+                        Ok((
+                            ctx.unpadded_input_shapes[edge.index].clone(),
+                            io.input[edge.index].get_shape(),
+                        ))
+                    }
+                }))?;
+            let shape_step = node_ctx
+                .ctx
+                .shape_step(&unpadded_input_shapes, &padded_input_shapes);
+            shape_steps.insert(node_id, shape_step);
+        }
 
         // 4. Verify each proof sequentially, Always make sure the proof corresponds to the expected type of proof in the context.
         // We have two `HashSet`s, one for the type of table used and one for the lookup challenges used
-        for proof_and_step in proof.steps.iter().zip(ctx.steps_info.iter()) {
-            output_claim = match proof_and_step {
-                (LayerProof::<E>::Activation(proof), LayerCtx::Activation(info)) => {
-                    let (constant_challenge, column_separation_challenge) = challenge_storage
-                        .get_challenges_by_name(&TableType::Relu.name())
-                        .ok_or(anyhow!(
-                            "Couldn't get challenges at Step: {}, LookupType was: {}",
-                            proof_and_step.1.variant_name(),
-                            TableType::Relu.name()
-                        ))?;
-                    info.verify_activation(
-                        &mut self,
-                        output_claim,
-                        proof,
-                        constant_challenge,
-                        column_separation_challenge,
-                    )?
+        let mut claims_by_layer: HashMap<NodeId, Vec<Claim<E>>> = HashMap::new();
+        for (node_id, step) in ctx.steps_info.to_backward_iterator() {
+            let node_proof = if step.ctx.has_proof() {
+                proof
+                    .steps
+                    .get(&node_id)
+                    .ok_or(anyhow!("Proof for node {} not found", node_id))?
+            } else {
+                &LayerProof::Dummy
+            };
+            let shape_step = shape_steps
+                .get(&node_id)
+                .ok_or(anyhow!("Shape for node {node_id} not found"))?;
+            println!(
+                "VERIFIER: Verifying proof {} for node {node_id}",
+                node_proof.variant_name(),
+            );
+            let claims_for_verify = step.claims_for_node(&claims_by_layer, &out_claims)?;
+            let claims = {
+                let res = step
+                    .ctx
+                    .verify(node_proof, &claims_for_verify, &mut self, shape_step);
+                if let Err(ProvableOpError::NotProvableLayer(_)) = res {
+                    // we only propagate the claims, without changing them, as a non-provable layer
+                    // shouldn't change the input values
+                    claims_for_verify.into_iter().cloned().collect()
+                } else {
+                    res?
                 }
-                (LayerProof::<E>::Dense(proof), LayerCtx::Dense(info)) => {
-                    info.verify_dense(&mut self, output_claim, &proof)?
-                }
-                (LayerProof::<E>::MatMul(proof), LayerCtx::MatMul(info)) => {
-                    // ToDo: for now we discard the sub-sequent claims since we don't support multiple claims
-                    // being produced by a verification step
-                    info.verify_matmul(&mut self, output_claim, &proof)?[0].clone()
-                }
-                (LayerProof::<E>::Requant(proof), LayerCtx::Requant(info)) => {
-                    let (constant_challenge, column_separation_challenge) = challenge_storage
-                        .get_challenges_by_name(&TableType::Range.name())
-                        .ok_or(anyhow!(
-                            "Couldn't get challenges at Step: {}, LookupType was: {}",
-                            proof_and_step.1.variant_name(),
-                            TableType::Range.name()
-                        ))?;
-                    info.verify_requant(
-                        &mut self,
-                        output_claim,
-                        &proof,
-                        constant_challenge,
-                        column_separation_challenge,
-                    )?
-                }
-                (LayerProof::Pooling(proof), LayerCtx::Pooling(info)) => {
-                    let (constant_challenge, column_separation_challenge) = challenge_storage
-                        .get_challenges_by_name(&TableType::Range.name())
-                        .ok_or(anyhow!(
-                            "Couldn't get challenges at Step: {}, LookupType was: {}",
-                            proof_and_step.1.variant_name(),
-                            TableType::Range.name()
-                        ))?;
-                    info.verify_pooling(
-                        &mut self,
-                        output_claim,
-                        &proof,
-                        constant_challenge,
-                        column_separation_challenge,
-                    )?
-                }
-                (LayerProof::<E>::Convolution(proof), LayerCtx::<E>::Convolution(info)) => {
-                    info.verify_convolution(&mut self, output_claim, &proof)?
-                }
-                _ => bail!(
-                    "Step proof: {} and step info: {} did not match",
-                    proof_and_step.0.variant_name(),
-                    proof_and_step.1.variant_name()
-                ),
-            }
+            };
+            claims_by_layer.insert(node_id, claims);
         }
+
+        let input_claims = NodeCtx::input_claims(ctx.steps_info.nodes.iter(), &claims_by_layer)?;
 
         // 5. Verify the lookup table proofs
         let mut table_poly_id = proof.steps.len();
@@ -182,7 +204,10 @@ where
             .iter()
             .zip(ctx.lookup.iter())
             .try_for_each(|(table_proof, table_type)| {
-                let (constant_challenge, column_separation_challenge) = challenge_storage
+                let (constant_challenge, column_separation_challenge) = self
+                    .challenge_storage
+                    .as_ref()
+                    .unwrap()
                     .get_challenges_by_name(&table_type.name())
                     .ok_or(anyhow!(
                         "No challenges found for table of type: {:?} during verification",
@@ -204,13 +229,23 @@ where
             })?;
 
         // 6. input verification: evaluating the input at the random evaluation point from the sumcheck
-        let input_mle = io.input.get_data().to_vec().into_mle();
-        let computed_randomized_input = input_mle.evaluate(&output_claim.point);
-        let given_randomized_input = output_claim.eval;
-        ensure!(
-            computed_randomized_input == given_randomized_input,
-            "input not valid from proof"
-        );
+        io.input
+            .iter()
+            .zip(input_claims)
+            .enumerate()
+            .map(|(i, (input, claim))| {
+                let input_mle = input.get_data().to_vec().into_mle();
+                let computed_randomized_input = input_mle.evaluate(&claim.point);
+                let given_randomized_input = claim.eval;
+                ensure!(
+                    computed_randomized_input == given_randomized_input,
+                    "input {} not valid from proof",
+                    i
+                );
+                Ok(())
+            })
+            .fold_ok((), |_, _| ())?;
+
         // 7. verify the opening of the accumulation of claims
         self.commit_verifier
             .verify(&ctx.weights, proof.commit, self.transcript)?;

@@ -1,19 +1,23 @@
+use std::collections::HashMap;
+
 use crate::{
     Claim, Element, Prover,
     commit::{compute_betas_eval, identity_eval, precommit::PolyID, same_poly},
-    iop::verifier::Verifier,
+    iop::{context::ShapeStep, verifier::Verifier},
     layers::{ContextAux, LayerProof},
     lookup::{
-        context::TableType,
+        context::{LookupWitnessGen, TableType},
         logup_gkr::{
             prover::batch_prove as logup_batch_prove, structs::LogUpProof,
             verifier::verify_logup_proof,
         },
     },
+    model::StepData,
+    padding::{PaddingError, PaddingMode, ShapeInfo, pooling},
     quantization::{Fieldizer, IntoElement},
-    tensor::Tensor,
+    tensor::{Number, Tensor},
 };
-use anyhow::{Context, ensure};
+use anyhow::{Context, anyhow, ensure};
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
 use itertools::{Itertools, izip};
@@ -29,7 +33,13 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sumcheck::structs::IOPProverState;
 
-use super::LayerCtx;
+use super::{
+    LayerCtx,
+    provable::{
+        Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProvableOp, ProvableOpError, ProveInfo,
+        VerifiableCtx,
+    },
+};
 
 pub const MAXPOOL2D_KERNEL_SIZE: usize = 2;
 
@@ -65,46 +75,232 @@ where
     pub(crate) variable_gap: usize,
 }
 
+impl OpInfo for Pooling {
+    fn output_shapes(
+        &self,
+        input_shapes: &[Vec<usize>],
+        _padding_mode: PaddingMode,
+    ) -> Vec<Vec<usize>> {
+        match self {
+            Pooling::Maxpool2D(maxpool2_d) => input_shapes
+                .into_iter()
+                .map(|shape| maxpool2_d.output_shape(shape))
+                .collect(),
+        }
+    }
+
+    fn num_outputs(&self, num_inputs: usize) -> usize {
+        num_inputs
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            Pooling::Maxpool2D(maxpool2d) => format!(
+                "MaxPool2D{{ kernel size: {}, stride: {} }}",
+                maxpool2d.kernel_size, maxpool2d.stride
+            ),
+        }
+    }
+
+    fn is_provable(&self) -> bool {
+        true
+    }
+}
+
+impl<N: Number> Evaluate<N> for Pooling {
+    fn evaluate<E: ExtensionField>(
+        &self,
+        inputs: &[&Tensor<N>],
+        _unpadded_input_shapes: Vec<Vec<usize>>,
+    ) -> Result<LayerOut<N, E>, super::provable::ProvableOpError> {
+        if inputs.len() != 1 {
+            return Err(super::provable::ProvableOpError::ParameterError(
+                "Pooling layer expects one input".to_string(),
+            ));
+        }
+        let input = inputs[0];
+        let output = match self {
+            Pooling::Maxpool2D(maxpool2d) => maxpool2d.op(input),
+        };
+        Ok(LayerOut::from_vec(vec![output]))
+    }
+}
+
+impl<E> ProveInfo<E> for Pooling
+where
+    E: ExtensionField + DeserializeOwned,
+    E::BaseField: Serialize + DeserializeOwned,
+{
+    fn step_info(
+        &self,
+        id: PolyID,
+        mut aux: ContextAux,
+    ) -> Result<(LayerCtx<E>, ContextAux), ProvableOpError> {
+        let info = match self {
+            Pooling::Maxpool2D(info) => {
+                aux.tables.insert(TableType::Range);
+                let num_vars = aux.last_output_shape.iter_mut().fold(Ok(None), |expected_num_vars, shape| {
+                    // Pooling only affects the last two dimensions
+                    let total_number_dims = shape.len();
+
+                    shape.iter_mut()
+                        .skip(total_number_dims - 2)
+                        .for_each(|dim| *dim = (*dim - info.kernel_size) / info.stride + 1);
+
+                    let num_vars = shape.iter()
+                        .map(|dim| ceil_log2(*dim))
+                        .sum::<usize>();
+                    if let Some(vars) = expected_num_vars? {
+                        ensure!(vars == num_vars,
+                        "All input shapes for convolution must have the same number of variables");
+                    }
+                    Ok(Some(num_vars))
+                })?.expect("No input shape found for convolution layer?");
+
+                LayerCtx::Pooling(PoolingCtx {
+                    poolinfo: *info,
+                    poly_id: id,
+                    num_vars,
+                })
+            }
+        };
+        Ok((info, aux))
+    }
+}
+
+impl PadOp for Pooling {
+    fn pad_node(self, si: &mut ShapeInfo) -> Result<Self, PaddingError>
+    where
+        Self: Sized,
+    {
+        pooling(self, si)
+    }
+}
+
+impl<E> ProvableOp<E> for Pooling
+where
+    E: ExtensionField,
+    E::BaseField: Serialize + DeserializeOwned,
+    E: Serialize + DeserializeOwned,
+{
+    type Ctx = PoolingCtx;
+
+    fn prove<T: Transcript<E>>(
+        &self,
+        id: NodeId,
+        ctx: &Self::Ctx,
+        last_claims: Vec<&Claim<E>>,
+        step_data: &StepData<E, E>,
+        prover: &mut Prover<E, T>,
+    ) -> Result<Vec<Claim<E>>, super::provable::ProvableOpError> {
+        Ok(vec![self.prove_pooling(
+            prover,
+            last_claims[0],
+            &step_data.inputs[0],
+            &step_data.outputs.outputs()[0],
+            ctx,
+            id,
+        )?])
+    }
+
+    fn gen_lookup_witness(
+        &self,
+        id: NodeId,
+        gen: &mut LookupWitnessGen<E>,
+        step_data: &StepData<Element, E>,
+    ) -> Result<(), ProvableOpError> {
+        if step_data.inputs.len() != 1 {
+            return Err(ProvableOpError::ParameterError(
+                "Requant layer expects exactly one input tensor".to_string(),
+            ));
+        }
+
+        if step_data.outputs.outputs().len() != 1 {
+            return Err(ProvableOpError::ParameterError(
+                "Requant layer expects exactly one output tensor".to_string(),
+            ));
+        }
+
+        gen.tables.insert(TableType::Range);
+        let table_lookup_map = gen
+            .lookups
+            .entry(TableType::Range)
+            .or_insert_with(|| HashMap::default());
+
+        let (merged_lookups, column_evals) = self.lookup_witness::<E>(&step_data.inputs[0]);
+
+        merged_lookups
+            .into_iter()
+            .for_each(|val| *table_lookup_map.entry(val).or_insert(0u64) += 1);
+
+        gen.polys_with_id.push((
+            id as PolyID,
+            step_data.outputs.outputs()[0]
+                .get_data()
+                .iter()
+                .map(Fieldizer::<E>::to_field)
+                .collect(),
+        ));
+        gen.lookups_no_challenges
+            .insert(id, (column_evals, 1, TableType::Range));
+
+        Ok(())
+    }
+}
+
+impl<E> VerifiableCtx<E> for PoolingCtx
+where
+    E: ExtensionField,
+    E::BaseField: Serialize + DeserializeOwned,
+    E: Serialize + DeserializeOwned,
+{
+    type Proof = PoolingProof<E>;
+
+    fn verify<T: Transcript<E>>(
+        &self,
+        proof: &Self::Proof,
+        last_claims: &[&Claim<E>],
+        verifier: &mut Verifier<E, T>,
+        _shape_step: &ShapeStep,
+    ) -> Result<Vec<Claim<E>>, ProvableOpError> {
+        let (constant_challenge, column_separation_challenge) = verifier
+            .challenge_storage
+            .as_ref()
+            .unwrap()
+            .get_challenges_by_name(&TableType::Range.name())
+            .ok_or(anyhow!(
+                "Couldn't get challenges for LookupType: {}",
+                TableType::Range.name()
+            ))?;
+        Ok(vec![self.verify_pooling(
+            verifier,
+            last_claims[0],
+            proof,
+            constant_challenge,
+            column_separation_challenge,
+        )?])
+    }
+
+    fn output_shapes(
+        &self,
+        input_shapes: &[Vec<usize>],
+        _padding_mode: PaddingMode,
+    ) -> Vec<Vec<usize>> {
+        input_shapes
+            .into_iter()
+            .map(|shape| self.poolinfo.output_shape(&shape))
+            .collect()
+    }
+}
+
 impl Pooling {
-    pub fn op(&self, input: &Tensor<Element>) -> Tensor<Element> {
+    pub fn op<T: Number>(&self, input: &Tensor<T>) -> Tensor<T> {
         match self {
             Pooling::Maxpool2D(maxpool2d) => maxpool2d.op(input),
         }
     }
 
-    pub(crate) fn step_info<E: ExtensionField>(
-        &self,
-        id: PolyID,
-        mut aux: ContextAux,
-    ) -> (LayerCtx<E>, ContextAux)
-    where
-        E: ExtensionField + DeserializeOwned,
-        E::BaseField: Serialize + DeserializeOwned,
-    {
-        let info = match self {
-            Pooling::Maxpool2D(info) => {
-                aux.tables.insert(TableType::Range);
-                // Pooling only affects the last two dimensions
-                let total_number_dims = aux.last_output_shape.len();
-
-                aux.last_output_shape
-                    .iter_mut()
-                    .skip(total_number_dims - 2)
-                    .for_each(|dim| *dim = (*dim - info.kernel_size) / info.stride + 1);
-                LayerCtx::Pooling(PoolingCtx {
-                    poolinfo: *info,
-                    poly_id: id,
-                    num_vars: aux
-                        .last_output_shape
-                        .iter()
-                        .map(|dim| ceil_log2(*dim))
-                        .sum::<usize>(),
-                })
-            }
-        };
-        (info, aux)
-    }
-    pub fn gen_lookup_witness<E: ExtensionField>(
+    pub fn lookup_witness<E: ExtensionField>(
         &self,
         input: &Tensor<Element>,
     ) -> (Vec<Element>, Vec<Vec<E::BaseField>>) {
@@ -126,17 +322,18 @@ impl Pooling {
             }
         }
     }
-    #[timed::timed_instrument(level = "debug")]
+    #[timed::timed_instrument(name = "Prover::prove_pooling_step")]
     pub fn prove_pooling<E: ExtensionField, T: Transcript<E>>(
         &self,
         prover: &mut Prover<E, T>,
         // last random claim made
-        last_claim: Claim<E>,
+        last_claim: &Claim<E>,
         // input to the dense layer
         input: &Tensor<E>,
         // output of dense layer evaluation
         output: &Tensor<E>,
         info: &PoolingCtx,
+        id: NodeId,
     ) -> anyhow::Result<Claim<E>>
     where
         E::BaseField: Serialize + DeserializeOwned,
@@ -144,7 +341,7 @@ impl Pooling {
     {
         assert_eq!(input.get_shape().len(), 3, "Maxpool needs 3D inputs.");
         // Create the range check proof for the diff
-        let prover_info = prover.next_lookup_witness()?;
+        let prover_info = prover.lookup_witness(id)?;
 
         let logup_proof = logup_batch_prove(&prover_info, prover.transcript)?;
 
@@ -269,23 +466,29 @@ impl Pooling {
 
         let zerocheck_evals = sumcheck_state.get_mle_final_evaluations()[..4].to_vec();
         // Push the step proof to the list
-        prover.push_proof(LayerProof::Pooling(PoolingProof {
-            sumcheck: proof,
-            lookup: logup_proof,
-            io_accumulation: claim_acc_proof,
-            output_claims,
-            zerocheck_evals,
-            variable_gap: padded_input_row_length_log - 1,
-        }));
+        prover.push_proof(
+            id,
+            LayerProof::Pooling(PoolingProof {
+                sumcheck: proof,
+                lookup: logup_proof,
+                io_accumulation: claim_acc_proof,
+                output_claims,
+                zerocheck_evals,
+                variable_gap: padded_input_row_length_log - 1,
+            }),
+        );
         Ok(next_claim)
     }
 }
 
 impl PoolingCtx {
+    pub fn output_shape(&self, input_shape: &[usize]) -> Vec<usize> {
+        maxpool2d_shape(input_shape)
+    }
     pub(crate) fn verify_pooling<E: ExtensionField, T: Transcript<E>>(
         &self,
         verifier: &mut Verifier<E, T>,
-        last_claim: Claim<E>,
+        last_claim: &Claim<E>,
         proof: &PoolingProof<E>,
         constant_challenge: E,
         column_separation_challenge: E,
@@ -327,7 +530,7 @@ impl PoolingCtx {
         let sp_ctx = same_poly::Context::<E>::new(self.num_vars);
         let mut sp_verifier = same_poly::Verifier::<E>::new(&sp_ctx);
 
-        sp_verifier.add_claim(last_claim)?;
+        sp_verifier.add_claim(last_claim.clone())?;
 
         let output_claims = &proof.output_claims;
         output_claims
@@ -422,7 +625,7 @@ impl Default for Maxpool2D {
 }
 
 impl Maxpool2D {
-    pub fn op(&self, input: &Tensor<Element>) -> Tensor<Element> {
+    pub fn op<T: Number>(&self, input: &Tensor<T>) -> Tensor<T> {
         assert!(
             self.kernel_size == MAXPOOL2D_KERNEL_SIZE,
             "Maxpool2D works only for kernel size {}",
@@ -434,6 +637,10 @@ impl Maxpool2D {
             MAXPOOL2D_KERNEL_SIZE
         );
         input.maxpool2d(self.kernel_size, self.stride)
+    }
+
+    pub fn output_shape(&self, input_shape: &[usize]) -> Vec<usize> {
+        maxpool2d_shape(input_shape)
     }
 
     /// Computes MLE evaluations related to proving Maxpool function.
@@ -524,6 +731,19 @@ impl Maxpool2D {
     }
 }
 
+/// Assumes kernel=2, stride=2, padding=0, and dilation=1
+/// https://pytorch.org/docs/stable/generated/torch.nn.MaxPool2d.html
+pub fn maxpool2d_shape(input_shape: &[usize]) -> Vec<usize> {
+    let stride = 2usize;
+    let padding = 0usize;
+    let kernel = 2usize;
+    let dilation = 1usize;
+
+    let d1 = input_shape[0];
+    let d2 = (input_shape[1] + 2 * padding - dilation * (kernel - 1) - 1) / stride + 1;
+
+    vec![d1, d2, d2]
+}
 #[cfg(test)]
 mod tests {
     use crate::{commit::compute_betas_eval, default_transcript};
@@ -709,7 +929,7 @@ mod tests {
             vp.add_mle_list(diff_mles, F::ONE);
 
             let random_point = (0..output_num_vars)
-                .map(|_| F::random(&mut rng))
+                .map(|_| <F as Field>::random(&mut rng))
                 .collect::<Vec<F>>();
 
             let beta_evals = compute_betas_eval(&random_point);
@@ -773,7 +993,8 @@ mod tests {
             // in order output - 00, output - 10, output - 01, output - 11, eq I believe
             let final_mle_evals = state.get_mle_final_evaluations();
 
-            let [r1, r2] = [F::random(&mut rng); 2];
+            // let (r1, r2) = (<F as Field>::random(&mut rng), <F as Field>::random(&mut rng));
+            let [r1, r2] = [<F as Field>::random(&mut rng); 2];
             let one_minus_r1 = F::ONE - r1;
             let one_minus_r2 = F::ONE - r2;
 

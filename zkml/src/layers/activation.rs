@@ -1,15 +1,24 @@
+use std::collections::HashMap;
+
 use crate::{
-    Claim, Prover,
+    Claim, Element, Prover,
     commit::same_poly,
-    iop::{context::ContextAux, verifier::Verifier},
+    iop::{
+        context::{ContextAux, ShapeStep},
+        verifier::Verifier,
+    },
     layers::{LayerCtx, LayerProof, PolyID},
     lookup::{
-        context::TableType,
+        context::{COLUMN_SEPARATOR, LookupWitnessGen, TableType},
         logup_gkr::{
             prover::batch_prove as logup_batch_prove, structs::LogUpProof,
             verifier::verify_logup_proof,
         },
     },
+    model::StepData,
+    padding::PaddingMode,
+    quantization::Fieldizer,
+    tensor::Number,
 };
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
@@ -18,11 +27,14 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use transcript::Transcript;
 
-use crate::{
-    Element,
-    quantization::{self, BIT_LEN, Fieldizer},
-    tensor::Tensor,
+use crate::{quantization::BIT_LEN, tensor::Tensor};
+
+use super::provable::{
+    Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProvableOp, ProvableOpError, ProveInfo,
+    VerifiableCtx,
 };
+
+use anyhow::{anyhow, ensure};
 
 #[derive(Clone, Debug, Serialize, Deserialize, Copy)]
 pub enum Activation {
@@ -49,48 +61,228 @@ where
     pub(crate) lookup: LogUpProof<E>,
 }
 
-impl Activation {
-    pub fn op(&self, input: &Tensor<Element>) -> Tensor<Element> {
-        match self {
-            Activation::Relu(relu) => relu.op(input),
-        }
+impl OpInfo for Activation {
+    fn num_outputs(&self, num_inputs: usize) -> usize {
+        num_inputs
     }
-    pub(crate) fn step_info<E: ExtensionField>(
+
+    fn describe(&self) -> String {
+        format!("RELU: {}", 1 << Relu::num_vars())
+    }
+
+    fn output_shapes(
+        &self,
+        input_shapes: &[Vec<usize>],
+        _padding_mode: PaddingMode,
+    ) -> Vec<Vec<usize>> {
+        input_shapes.to_vec() // same as input shapes
+    }
+
+    fn is_provable(&self) -> bool {
+        true
+    }
+}
+
+impl<N: Number> Evaluate<N> for Activation {
+    fn evaluate<E: ExtensionField>(
+        &self,
+        inputs: &[&Tensor<N>],
+        _unpadded_input_shapes: Vec<Vec<usize>>,
+    ) -> Result<LayerOut<N, E>, super::provable::ProvableOpError> {
+        if inputs.len() != 1 {
+            return Err(ProvableOpError::ParameterError(
+                "Activation layer expects one input".to_string(),
+            ));
+        }
+        let input = inputs[0];
+        let output = match self {
+            Activation::Relu(relu) => relu.op(input),
+        };
+        Ok(LayerOut::from_vec(vec![output]))
+    }
+}
+
+impl<E> ProveInfo<E> for Activation
+where
+    E: ExtensionField + DeserializeOwned,
+    E::BaseField: Serialize + DeserializeOwned,
+{
+    fn step_info(
         &self,
         id: PolyID,
         mut aux: ContextAux,
-    ) -> (LayerCtx<E>, ContextAux)
-    where
-        E: ExtensionField + DeserializeOwned,
-        E::BaseField: Serialize + DeserializeOwned,
-    {
+    ) -> Result<(LayerCtx<E>, ContextAux), ProvableOpError> {
         aux.tables.insert(TableType::Relu);
+        let num_vars = aux
+            .last_output_shape
+            .iter_mut()
+            .fold(Ok(None), |expected_num_vars, shape| {
+                let num_vars = shape.iter().map(|dim| ceil_log2(*dim)).sum::<usize>();
+                if let Some(vars) = expected_num_vars? {
+                    ensure!(
+                        vars == num_vars,
+                        "All input shapes for activation must have the same number of variables"
+                    );
+                }
+                Ok(Some(num_vars))
+            })?
+            .expect("No input shape found for activation layer?");
         let info = match self {
             Activation::Relu(relu) => LayerCtx::Activation(ActivationCtx {
                 op: Activation::Relu(*relu),
                 poly_id: id,
-                num_vars: aux
-                    .last_output_shape
-                    .iter()
-                    .map(|dim| ceil_log2(*dim))
-                    .sum::<usize>(),
+                num_vars,
             }),
         };
-        (info, aux)
+        Ok((info, aux))
+    }
+}
+
+impl PadOp for Activation {}
+
+impl<E> ProvableOp<E> for Activation
+where
+    E: ExtensionField,
+    E::BaseField: Serialize + DeserializeOwned,
+    E: Serialize + DeserializeOwned,
+{
+    type Ctx = ActivationCtx;
+
+    fn prove<T: Transcript<E>>(
+        &self,
+        id: NodeId,
+        ctx: &Self::Ctx,
+        last_claims: Vec<&Claim<E>>,
+        step_data: &StepData<E, E>,
+        prover: &mut Prover<E, T>,
+    ) -> Result<Vec<Claim<E>>, ProvableOpError> {
+        Ok(vec![self.prove_step(
+            prover,
+            last_claims[0],
+            step_data.outputs.outputs()[0].get_data(),
+            ctx,
+            id,
+        )?])
     }
 
+    fn gen_lookup_witness(
+        &self,
+        id: NodeId,
+        gen: &mut LookupWitnessGen<E>,
+        step_data: &StepData<Element, E>,
+    ) -> Result<(), ProvableOpError> {
+        gen.tables.insert(TableType::Relu);
+
+        if step_data.inputs.len() != 1 {
+            return Err(ProvableOpError::ParameterError(
+                "Activation layer expects exactly one input tensor".to_string(),
+            ));
+        }
+
+        if step_data.outputs.outputs().len() != 1 {
+            return Err(ProvableOpError::ParameterError(
+                "Activation layer expects exactly one output tensor".to_string(),
+            ));
+        }
+
+        // Calculate the column_evals and also the merged lookups
+        let (merged_lookups, field): (Vec<Element>, Vec<(E::BaseField, E::BaseField)>) = step_data
+            .inputs[0]
+            .get_data()
+            .iter()
+            .zip(step_data.outputs.outputs()[0].get_data().iter())
+            .map(|(a, b)| {
+                let a_field: E = a.to_field();
+                let b_field: E = b.to_field();
+                (
+                    a + COLUMN_SEPARATOR * b,
+                    (a_field.as_bases()[0], b_field.as_bases()[0]),
+                )
+            })
+            .unzip();
+
+        let (col_one, col_two): (Vec<E::BaseField>, Vec<E::BaseField>) = field.into_iter().unzip();
+        let table_lookup_map = gen
+            .lookups
+            .entry(TableType::Relu)
+            .or_insert_with(|| HashMap::default());
+
+        merged_lookups
+            .into_iter()
+            .for_each(|lookup| *table_lookup_map.entry(lookup).or_insert(0u64) += 1);
+
+        gen.polys_with_id.push((
+            id as PolyID,
+            step_data.outputs.outputs()[0]
+                .get_data()
+                .iter()
+                .map(Fieldizer::<E>::to_field)
+                .collect(),
+        ));
+        gen.lookups_no_challenges
+            .insert(id, (vec![col_one, col_two], 2, TableType::Relu));
+
+        Ok(())
+    }
+}
+
+impl<E> VerifiableCtx<E> for ActivationCtx
+where
+    E: ExtensionField,
+    E::BaseField: Serialize + DeserializeOwned,
+    E: Serialize + DeserializeOwned,
+{
+    type Proof = ActivationProof<E>;
+
+    fn verify<T: Transcript<E>>(
+        &self,
+        proof: &Self::Proof,
+        last_claims: &[&Claim<E>],
+        verifier: &mut Verifier<E, T>,
+        _shape_step: &ShapeStep,
+    ) -> Result<Vec<Claim<E>>, ProvableOpError> {
+        let (constant_challenge, column_separation_challenge) = verifier
+            .challenge_storage
+            .as_ref()
+            .unwrap()
+            .get_challenges_by_name(&TableType::Relu.name())
+            .ok_or(anyhow!(
+                "Couldn't get challenges for LookupType: {}",
+                TableType::Relu.name()
+            ))?;
+        Ok(vec![self.verify_activation(
+            verifier,
+            last_claims[0],
+            proof,
+            constant_challenge,
+            column_separation_challenge,
+        )?])
+    }
+
+    fn output_shapes(
+        &self,
+        input_shapes: &[Vec<usize>],
+        _padding_mode: PaddingMode,
+    ) -> Vec<Vec<usize>> {
+        input_shapes.to_vec()
+    }
+}
+
+impl Activation {
+    #[timed::timed_instrument(name = "Prover::prove_activation_step")]
     pub(crate) fn prove_step<E: ExtensionField, T: Transcript<E>>(
         &self,
         prover: &mut Prover<E, T>,
         last_claim: &Claim<E>,
         output: &[E],
         step: &ActivationCtx,
+        node_id: NodeId,
     ) -> anyhow::Result<Claim<E>>
     where
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
-        let prover_info = prover.next_lookup_witness()?;
+        let prover_info = prover.lookup_witness(node_id)?;
 
         // Run the lookup protocol and return the lookup proof
         let logup_proof = logup_batch_prove(&prover_info, prover.transcript)?;
@@ -111,10 +303,13 @@ impl Activation {
             .add_claim(step.poly_id, claim_acc_proof.extract_claim())?;
 
         // Add the proof in
-        prover.push_proof(LayerProof::Activation(ActivationProof {
-            io_accumulation: claim_acc_proof,
-            lookup: logup_proof,
-        }));
+        prover.push_proof(
+            node_id,
+            LayerProof::Activation(ActivationProof {
+                io_accumulation: claim_acc_proof,
+                lookup: logup_proof,
+            }),
+        );
         Ok(input_claim)
     }
 }
@@ -123,7 +318,7 @@ impl ActivationCtx {
     pub(crate) fn verify_activation<E: ExtensionField, T: Transcript<E>>(
         &self,
         verifier: &mut Verifier<E, T>,
-        last_claim: Claim<E>,
+        last_claim: &Claim<E>,
         proof: &ActivationProof<E>,
         constant_challenge: E,
         column_separation_challenge: E,
@@ -144,7 +339,7 @@ impl ActivationCtx {
         // 2. Verify the accumulation proof from last_claim + lookup claim into the new claim
         let sp_ctx = same_poly::Context::<E>::new(self.num_vars);
         let mut sp_verifier = same_poly::Verifier::<E>::new(&sp_ctx);
-        sp_verifier.add_claim(last_claim)?;
+        sp_verifier.add_claim(last_claim.clone())?;
         verifier_claims.claims()[1..]
             .iter()
             .try_for_each(|claim| sp_verifier.add_claim(claim.clone()))?;
@@ -176,20 +371,8 @@ impl Relu {
     pub fn shape() -> Vec<usize> {
         vec![2, Self::poly_len()]
     }
-    /// to_mle returns two polynomials:
-    /// f_i: one containing the input column values
-    /// f_o: one containing the output column values
-    pub fn to_mle<E: ExtensionField>() -> (Vec<E::BaseField>, Vec<E::BaseField>) {
-        (*quantization::MIN..=*quantization::MAX)
-            .map(|i| {
-                let val: E = i.to_field();
-                let op_val: E = Relu::apply(i as i128).to_field();
-                (val.as_bases()[0], op_val.as_bases()[0])
-            })
-            .unzip()
-    }
 
-    pub fn op(&self, input: &Tensor<Element>) -> Tensor<Element> {
+    pub fn op<T: Number>(&self, input: &Tensor<T>) -> Tensor<T> {
         Tensor::new(
             input.get_shape(),
             input
@@ -201,21 +384,16 @@ impl Relu {
     }
 
     #[inline(always)]
-    pub fn apply(e: Element) -> Element {
-        if e.is_negative() { 0 } else { e }
+    pub fn apply<T: Number>(e: T) -> T {
+        if e.is_negative() { T::default() } else { e }
     }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::to_bit_sequence_le;
-    use goldilocks::GoldilocksExt2;
-    use itertools::Itertools;
-    use multilinear_extensions::mle::{DenseMultilinearExtension, MultilinearExtension};
+    use crate::Element;
 
     use super::*;
-
-    type F = GoldilocksExt2;
 
     #[test]
     fn test_activation_relu_apply() {
@@ -233,45 +411,9 @@ mod test {
             TestCase::from(-24, 0),
             TestCase::from(0, 0),
             TestCase::from(124, 124),
+            TestCase::from(-127, 0),
         ] {
             assert_eq!(Relu::apply(case.input), case.output);
         }
-    }
-
-    #[test]
-    fn test_activation_relu_mle() {
-        let relu = Relu::new();
-        let (input_poly, output_poly) = Relu::to_mle::<F>();
-
-        assert_eq!(input_poly.len(), output_poly.len());
-        let (input_mle, output_mle) = (
-            DenseMultilinearExtension::from_evaluation_vec_smart(
-                Relu::num_vars(),
-                input_poly.to_vec(),
-            ),
-            DenseMultilinearExtension::from_evaluation_vec_smart(
-                Relu::num_vars(),
-                output_poly.to_vec(),
-            ),
-        );
-        assert_eq!(input_mle.num_vars(), output_mle.num_vars());
-        assert_eq!(input_mle.num_vars(), Relu::num_vars());
-        let inputs = Tensor::random(vec![10]);
-        let outputs = relu.op(&inputs);
-        assert_eq!(inputs.get_shape(), outputs.get_shape());
-        for (input, output) in inputs.get_data().iter().zip(outputs.get_data().iter()) {
-            // here putting input works because every random input is a u8, so it's already within [0;256] so
-            // its value "is" the index. Normally if this is not true, we should get the index of the row corresponding to that input
-            let idx_vars = to_bit_sequence_le((input + 128) as usize, Relu::num_vars())
-                .map(|b| F::from(b as u64))
-                .collect_vec();
-            let input_field = input_mle.evaluate(&idx_vars);
-            let expected_ified: F = input.to_field();
-            assert_eq!(input_field, expected_ified);
-            let output_field = output_mle.evaluate(&idx_vars);
-            let expected_ofield: F = output.to_field();
-            assert_eq!(output_field, expected_ofield);
-        }
-        // assert_eq!(expected,given);
     }
 }

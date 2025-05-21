@@ -3,6 +3,7 @@
 //! a_i = randomness() for i:0 -> |r_i|
 //! for r_i, compute Beta_{r_i} = [beta_{r_i}(0),(1),...(2^|r_i|)]
 //! then Beta_j = SUM_j a_i * Beta_{r_i}
+//! final_y = SUM a_i * y_i
 //!
 //! Note the output of the verifier is a claim that needs to be verified outside of this protocol.
 //! It could be via an opening directly OR via an accumulation scheme.

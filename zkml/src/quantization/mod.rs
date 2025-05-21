@@ -1,0 +1,295 @@
+//! Module that takes care of (re)quantizing
+mod metadata;
+mod strategy;
+use derive_more::From;
+use ff_ext::ExtensionField;
+use goldilocks::SmallField;
+use itertools::Itertools;
+use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
+use std::env;
+use tracing::warn;
+
+use crate::{
+    Element,
+    tensor::{Number, Tensor},
+};
+pub use metadata::ModelMetadata;
+pub(crate) use strategy::InferenceTracker;
+pub use strategy::{AbsoluteMax, InferenceObserver, ScalingStrategy};
+
+// Get BIT_LEN from environment variable or use default value
+pub static BIT_LEN: Lazy<usize> = Lazy::new(|| {
+    env::var("ZKML_BIT_LEN")
+        .ok()
+        .and_then(|val| val.parse::<usize>().ok())
+        .unwrap_or(8) // Default value if env var is not set or invalid
+});
+
+/// symmetric quantization range
+pub static MIN: Lazy<Element> = Lazy::new(|| -(1 << (*BIT_LEN - 1)) + 1);
+pub static MAX: Lazy<Element> = Lazy::new(|| (1 << (*BIT_LEN - 1)) - 1);
+pub static RANGE: Lazy<Element> = Lazy::new(|| *MAX - *MIN);
+pub static ZERO: Lazy<Element> = Lazy::new(|| 0);
+pub const MIN_FLOAT: f32 = -1.0;
+pub const MAX_FLOAT: f32 = 1.0;
+
+/// Symmetric quantization scaling
+/// go from float [-a;a] to int [-2^BIT_LEN;2^BIT_LEN]
+/// S = (a - (-a)) / (2^{BIT_LEN-1}- (-2^{BIT_LEN-1})) = 2a / 2^BIT_LEN
+#[derive(Debug, Clone, From, Copy, Serialize, Deserialize)]
+pub struct ScalingFactor {
+    min: f32,
+    max: f32,
+    quantized_domain: (Element, Element),
+}
+
+impl ScalingFactor {
+    pub fn from_absolute_max(abs_max: f32, quantized_domain: Option<(Element, Element)>) -> Self {
+        Self::from_span(-(abs_max.abs()), abs_max.abs(), quantized_domain)
+    }
+    pub fn from_tensor<T: MinMax>(
+        t: &Tensor<T>,
+        quantized_domain: Option<(Element, Element)>,
+    ) -> Self {
+        let max_abs = t
+            .get_data()
+            .iter()
+            .fold(T::zero(), |a, b| a.cmp_max(b.absolute_value()));
+        Self::from_absolute_max(max_abs.to_f32(), quantized_domain)
+    }
+
+    pub fn from_span(min: f32, max: f32, quantized_domain: Option<(Element, Element)>) -> Self {
+        Self {
+            min: min,
+            max: max,
+            quantized_domain: quantized_domain.unwrap_or((*MIN, *MAX)),
+        }
+    }
+    /// Initialize a scaling factor in such a way that `self.scale()` is equal to the `scale` value
+    /// provided as input.
+    pub(crate) fn from_scale(scale: f32, quantized_domain: Option<(Element, Element)>) -> Self {
+        let (min_quantized, max_quantized) = quantized_domain.unwrap_or((*MIN, *MAX));
+        let max = scale / 2.0 * (max_quantized - min_quantized) as f32;
+        Self::from_absolute_max(max, quantized_domain)
+    }
+
+    pub fn min(&self) -> f32 {
+        self.min
+    }
+
+    pub fn max(&self) -> f32 {
+        self.max
+    }
+
+    pub fn scale(&self) -> f32 {
+        (self.max - self.min) / (self.quantized_domain.1 - self.quantized_domain.0) as f32
+    }
+    /// M = S1 * S2 / S3
+    pub fn m(&self, s2: &Self, s3: &Self) -> f32 {
+        self.scale() * s2.scale() / s3.scale()
+    }
+
+    /// Derives the right shift to apply to values to requantize them
+    /// M = S1 * S2 / S3 = 2^-n * eps
+    /// n is the number of bits to shift right
+    pub fn shift(&self, s2: &Self, s3: &Self) -> usize {
+        (-self.m(s2, s3).log2()).ceil() as usize
+    }
+
+    /// Take a floating point number and quantize it to an BIT_LEN-bit integer
+    /// S = (a - (-a)) / (2^{BIT_LEN-1}- (-2^{BIT_LEN-1})) = 2a / 2^BIT_LEN
+    pub fn quantize(&self, value: &f32) -> Element {
+        const ZERO_POINT: Element = 0;
+
+        // formula is q = round(r/S) + z
+        // let scaled =((value.clamp(self.min,self.max) - self.min) / self.scale()).round() * self.scale() + self.min;
+        let scaled = (*value / self.scale()).round() as Element + ZERO_POINT;
+        if scaled < self.quantized_domain.0 || scaled > self.quantized_domain.1 {
+            warn!(
+                "Quantized value {} from {} is out of range [{}, {}]",
+                scaled, value, self.quantized_domain.0, self.quantized_domain.1
+            );
+        }
+        scaled.clamp(self.quantized_domain.0, self.quantized_domain.1)
+    }
+
+    pub fn dequantize(&self, value: &Element) -> f32 {
+        *value as f32 * self.scale()
+    }
+}
+
+impl Default for ScalingFactor {
+    fn default() -> Self {
+        Self {
+            min: -1.0,
+            max: 1.0,
+            quantized_domain: (*MIN, *MAX),
+        }
+    }
+}
+
+pub trait Fieldizer<F> {
+    fn to_field(&self) -> F;
+}
+
+impl<F: ExtensionField> Fieldizer<F> for Element {
+    fn to_field(&self) -> F {
+        if self.is_negative() {
+            // Doing wrapped arithmetic : p-128 ... p-1 means negative number
+            F::from(<F::BaseField as SmallField>::MODULUS_U64 - self.unsigned_abs() as u64)
+        } else {
+            // for positive and zero, it's just the number
+            F::from(*self as u64)
+        }
+    }
+}
+pub(crate) trait IntoElement {
+    fn into_element(&self) -> Element;
+}
+
+impl<F: ExtensionField> IntoElement for F {
+    fn into_element(&self) -> Element {
+        let e = self.to_canonical_u64_vec()[0] as Element;
+        let modulus_half = <F::BaseField as SmallField>::MODULUS_U64 >> 1;
+        // That means he's a positive number
+        if *self == F::ZERO {
+            0
+        // we dont assume any bounds on the field elements, requant might happen at a later stage
+        // so we assume the worst case
+        } else if e <= modulus_half as Element {
+            e
+        } else {
+            // That means he's a negative number - so take the diff with the modulus and recenter around 0
+            let diff = <F::BaseField as SmallField>::MODULUS_U64 - e as u64;
+            -(diff as Element)
+        }
+    }
+}
+
+pub trait TensorFielder<F> {
+    fn to_fields(self) -> Tensor<F>;
+}
+
+impl<F: ExtensionField, T> TensorFielder<F> for &Tensor<T>
+where
+    T: Fieldizer<F>,
+{
+    fn to_fields(self) -> Tensor<F> {
+        Tensor::new(
+            self.get_shape(),
+            self.get_data()
+                .into_iter()
+                .map(|i| i.to_field())
+                .collect_vec(),
+        )
+    }
+}
+
+pub fn max_range_from_weight<T: Number>(weight: &T, min_input: &T, max_input: &T) -> (T, T) {
+    let min = if weight.is_negative() {
+        *weight * *max_input
+    } else {
+        *weight * *min_input
+    };
+    let max = if weight.is_negative() {
+        *weight * *min_input
+    } else {
+        *weight * *max_input
+    };
+    (min, max)
+}
+
+pub trait MinMax {
+    fn zero() -> Self;
+    fn absolute_value(&self) -> Self;
+    fn cmp_max(&self, other: Self) -> Self;
+    fn to_f32(&self) -> f32;
+}
+
+impl MinMax for f32 {
+    fn absolute_value(&self) -> Self {
+        self.abs()
+    }
+    fn zero() -> Self {
+        0.0
+    }
+    fn cmp_max(&self, other: Self) -> Self {
+        self.max(other)
+    }
+    fn to_f32(&self) -> f32 {
+        *self
+    }
+}
+
+impl MinMax for Element {
+    fn absolute_value(&self) -> Self {
+        self.abs()
+    }
+    fn cmp_max(&self, other: Self) -> Self {
+        std::cmp::max(*self, other)
+    }
+    fn zero() -> Self {
+        0
+    }
+    fn to_f32(&self) -> f32 {
+        *self as f32
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::quantization::{Fieldizer, IntoElement};
+
+    use crate::Element;
+
+    use super::{MAX, MIN};
+    type F = goldilocks::GoldilocksExt2;
+
+    #[test]
+    fn test_wrapped_arithmetic() {
+        #[derive(Clone, Debug)]
+        struct TestCase {
+            a: Element,
+            b: Element,
+            res: Element,
+        }
+
+        let cases = vec![
+            TestCase {
+                a: -53,
+                b: 10,
+                res: -53 * 10,
+            },
+            TestCase {
+                a: -45,
+                b: -56,
+                res: 45 * 56,
+            },
+        ];
+        for (i, case) in cases.iter().enumerate() {
+            // cast them to handle overflow
+            let ap: F = case.a.to_field();
+            let bp: F = case.b.to_field();
+            let res = ap * bp;
+            let expected = case.res.to_field();
+            assert_eq!(res, expected, "test case {}: {:?}", i, case);
+        }
+    }
+
+    #[test]
+    fn test_element_field_roundtrip() {
+        // Also test a few specific values explicitly
+        let test_values = [*MIN, -100, -50, -1, 0, 1, 50, 100, *MAX];
+        for &val in &test_values {
+            let field_val: F = val.to_field();
+            let roundtrip = field_val.into_element();
+
+            assert_eq!(
+                val, roundtrip,
+                "Element {} did not roundtrip correctly (got {})",
+                val, roundtrip
+            );
+        }
+    }
+}

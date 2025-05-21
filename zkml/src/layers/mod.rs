@@ -1,45 +1,65 @@
 pub mod activation;
 pub mod convolution;
 pub mod dense;
+pub mod flatten;
+pub mod hadamard;
+pub mod matvec;
 pub mod matrix_mul;
 pub mod pooling;
+pub mod provable;
 pub mod requant;
 
+use std::fmt::Debug;
+
+use anyhow::Result;
+use ff_ext::ExtensionField;
+use flatten::Flatten;
+use pooling::{PoolingCtx, PoolingProof};
+use provable::{
+    quantize_op, Evaluate, LayerOut, Node, OpInfo, PadOp, ProvableOp, ProvableOpError, ProveInfo, QuantizeOp, QuantizeOutput, VerifiableCtx
+};
+use requant::RequantCtx;
+use transcript::Transcript;
+
 use crate::{
-    Element,
+    Element, ScalingStrategy,
     commit::precommit::PolyID,
-    iop::context::{ContextAux, TableCtx},
+    iop::context::{ContextAux, ShapeStep, TableCtx},
     layers::{
-        activation::{Activation, ActivationProof, Relu},
+        activation::{Activation, ActivationProof},
         convolution::Convolution,
         dense::Dense,
         pooling::Pooling,
         requant::{Requant, RequantProof},
     },
-    tensor::{ConvData, Tensor},
+    lookup::context::LookupWitnessGen,
+    model::StepData,
+    padding::{PaddingError, PaddingMode, ShapeInfo},
+    quantization::ScalingFactor,
+    tensor::{Number, Tensor},
 };
 use activation::ActivationCtx;
-use convolution::{ConvCtx, ConvProof, SchoolBookConvCtx};
+use convolution::{ConvCtx, ConvProof, SchoolBookConv, SchoolBookConvCtx};
 use dense::{DenseCtx, DenseProof};
-use ff_ext::ExtensionField;
 use matrix_mul::{MatMul, MatMulCtx, MatMulProof};
-use pooling::{PoolingCtx, PoolingProof};
-use requant::RequantCtx;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+
 #[derive(Clone, Debug)]
-pub enum Layer {
-    Dense(Dense),
-    MatMul(MatMul),
+pub enum Layer<T> {
+    Dense(Dense<T>),
+    MatMul(MatMul<T>),
     // TODO: replace this with a Tensor based implementation
-    Convolution(Convolution),
+    Convolution(Convolution<T>),
     // Traditional convolution is used for debug purposes. That is because the actual convolution
     // we use relies on the FFT algorithm. This convolution does not have a snark implementation.
-    SchoolBookConvolution(Convolution),
+    SchoolBookConvolution(SchoolBookConv<T>),
     Activation(Activation),
     // this is the output quant info. Since we always do a requant layer after each dense,
     // then we assume the inputs requant info are default()
     Requant(Requant),
     Pooling(Pooling),
+    // TODO: so far it's only flattening the input tensor, e.g. new_shape = vec![shape.iter().product()]
+    Flatten(Flatten),
 }
 
 /// Describes a steps wrt the polynomial to be proven/looked at. Verifier needs to know
@@ -61,6 +81,7 @@ where
     Requant(RequantCtx),
     Pooling(PoolingCtx),
     Table(TableCtx<E>),
+    Flatten,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -74,13 +95,7 @@ where
     Activation(ActivationProof<E>),
     Requant(RequantProof<E>),
     Pooling(PoolingProof<E>),
-}
-pub enum LayerOutput<F>
-where
-    F: ExtensionField,
-{
-    NormalOut(Tensor<Element>),
-    ConvOut((Tensor<Element>, ConvData<F>)),
+    Dummy, // To be used for non-provable layers
 }
 
 impl<E> LayerCtx<E>
@@ -98,93 +113,413 @@ where
             Self::Requant(_) => "Requant".to_string(),
             Self::Pooling(_) => "Pooling".to_string(),
             Self::Table(..) => "Table".to_string(),
+            Self::Flatten => "Reshape".to_string(),
         }
     }
 
-    pub fn requires_lookup(&self) -> bool {
+    pub fn has_proof(&self) -> bool {
         match self {
-            Self::Dense(..) => false,
+            Self::Flatten | Self::Table(_) | Self::SchoolBookConvolution(_) => false,
             _ => true,
         }
     }
+
+    pub fn next_shape_step(&self, last_step: &ShapeStep) -> ShapeStep {
+        let unpadded_output = self.output_shapes(&last_step.unpadded_output_shape, PaddingMode::NoPadding);
+        let padded_output = self.output_shapes(&last_step.padded_output_shape, PaddingMode::Padding);
+        ShapeStep::next_step(last_step, unpadded_output, padded_output)
+    }
+    pub fn shape_step(
+        &self,
+        unpadded_input: &[Vec<usize>],
+        padded_input: &[Vec<usize>],
+    ) -> ShapeStep {
+        let unpadded_output = self.output_shapes(unpadded_input, PaddingMode::NoPadding);
+        let padded_output = self.output_shapes(padded_input, PaddingMode::Padding);
+        ShapeStep::new(
+            unpadded_input.to_vec(),
+            padded_input.to_vec(),
+            unpadded_output,
+            padded_output,
+        )
+    }
 }
-impl Layer {
-    pub(crate) fn step_info<E>(&self, id: PolyID, aux: ContextAux) -> (LayerCtx<E>, ContextAux)
+
+impl<N> Node<N>
+where
+    N: Number,
+{
+    pub fn describe(&self) -> String {
+        self.operation.describe()
+    }
+
+    pub fn is_provable(&self) -> bool {
+        self.operation.is_provable()
+    }
+
+    pub(crate) fn run<E: ExtensionField>(
+        &self,
+        inputs: &[&Tensor<N>],
+        unpadded_input_shapes: Vec<Vec<usize>>,
+    ) -> Result<LayerOut<N, E>, ProvableOpError>
+    where
+        N: Number,
+        Layer<N>: Evaluate<N>,
+    {
+        self.operation.evaluate(inputs, unpadded_input_shapes)
+    }
+
+    pub(crate) fn step_info<E>(
+        &self,
+        id: PolyID,
+        aux: ContextAux,
+    ) -> Result<(LayerCtx<E>, ContextAux), ProvableOpError>
     where
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
+        Layer<N>: ProveInfo<E>,
     {
+        self.operation.step_info(id, aux)
+    }
+}
+
+impl Node<Element> {
+    pub(crate) fn pad_node(self, si: &mut ShapeInfo) -> Result<Self, PaddingError> {
+        Ok(Self {
+            inputs: self.inputs,
+            outputs: self.outputs,
+            operation: self.operation.pad_node(si)?,
+        })
+    }
+}
+
+impl<N: Number> OpInfo for Layer<N> {
+    fn output_shapes(
+        &self,
+        input_shapes: &[Vec<usize>],
+        padding_mode: PaddingMode,
+    ) -> Vec<Vec<usize>> {
+        match self {
+            Layer::Dense(dense) => dense.output_shapes(input_shapes, padding_mode),
+            Layer::Convolution(convolution) => {
+                convolution.output_shapes(input_shapes, padding_mode)
+            }
+            Layer::MatMul(mat) => mat.output_shapes(input_shapes, padding_mode),
+            Layer::SchoolBookConvolution(convolution) => {
+                convolution.output_shapes(input_shapes, padding_mode)
+            }
+            Layer::Activation(activation) => activation.output_shapes(input_shapes, padding_mode),
+            Layer::Requant(requant) => requant.output_shapes(input_shapes, padding_mode),
+            Layer::Pooling(pooling) => pooling.output_shapes(input_shapes, padding_mode),
+            Layer::Flatten(reshape) => reshape.output_shapes(input_shapes, padding_mode),
+        }
+    }
+
+    fn num_outputs(&self, num_inputs: usize) -> usize {
+        match self {
+            Layer::Dense(dense) => dense.num_outputs(num_inputs),
+            Layer::Convolution(convolution) => convolution.num_outputs(num_inputs),
+            Layer::MatMul(mat) => mat.num_outputs(num_inputs),
+            Layer::SchoolBookConvolution(convolution) => convolution.num_outputs(num_inputs),
+            Layer::Activation(activation) => activation.num_outputs(num_inputs),
+            Layer::Requant(requant) => requant.num_outputs(num_inputs),
+            Layer::Pooling(pooling) => pooling.num_outputs(num_inputs),
+            Layer::Flatten(reshape) => reshape.num_outputs(num_inputs),
+        }
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            Layer::Dense(dense) => dense.describe(),
+            Layer::Convolution(convolution) => convolution.describe(),
+            Layer::MatMul(mat) => mat.describe(),
+            Layer::SchoolBookConvolution(convolution) => convolution.describe(),
+            Layer::Activation(activation) => activation.describe(),
+            Layer::Requant(requant) => requant.describe(),
+            Layer::Pooling(pooling) => pooling.describe(),
+            Layer::Flatten(reshape) => reshape.describe(),
+        }
+    }
+
+    fn is_provable(&self) -> bool {
+        match self {
+            Layer::Dense(dense) => dense.is_provable(),
+            Layer::Convolution(convolution) => convolution.is_provable(),
+            Layer::MatMul(mat) => mat.is_provable(),
+            Layer::SchoolBookConvolution(school_book_conv) => school_book_conv.is_provable(),
+            Layer::Activation(activation) => activation.is_provable(),
+            Layer::Requant(requant) => requant.is_provable(),
+            Layer::Pooling(pooling) => pooling.is_provable(),
+            Layer::Flatten(reshape) => reshape.is_provable(),
+        }
+    }
+}
+
+impl Evaluate<f32> for Layer<f32> {
+    fn evaluate<E: ExtensionField>(
+        &self,
+        inputs: &[&Tensor<f32>],
+        unpadded_input_shapes: Vec<Vec<usize>>,
+    ) -> Result<LayerOut<f32, E>, ProvableOpError> {
+        match self {
+            Layer::Dense(dense) => dense.evaluate(inputs, unpadded_input_shapes),
+            Layer::Convolution(convolution) => convolution.evaluate(inputs, unpadded_input_shapes),
+            Layer::MatMul(mat) => mat.evaluate(inputs, unpadded_input_shapes),
+            Layer::SchoolBookConvolution(school_book_conv) => {
+                school_book_conv.evaluate(inputs, unpadded_input_shapes)
+            }
+            Layer::Activation(activation) => activation.evaluate(inputs, unpadded_input_shapes),
+            Layer::Requant(_) => unreachable!("Requant layer found when evaluating over float"),
+            Layer::Pooling(pooling) => pooling.evaluate(inputs, unpadded_input_shapes),
+            Layer::Flatten(reshape) => reshape.evaluate(inputs, unpadded_input_shapes),
+        }
+    }
+}
+
+impl Evaluate<Element> for Layer<Element> {
+    fn evaluate<E: ExtensionField>(
+        &self,
+        inputs: &[&Tensor<Element>],
+        unpadded_input_shapes: Vec<Vec<usize>>,
+    ) -> Result<LayerOut<Element, E>, ProvableOpError> {
+        match self {
+            Layer::Dense(dense) => dense.evaluate(inputs, unpadded_input_shapes),
+            Layer::Convolution(convolution) => convolution.evaluate(inputs, unpadded_input_shapes),
+            Layer::MatMul(mat) => mat.evaluate(inputs, unpadded_input_shapes),
+            Layer::SchoolBookConvolution(school_book_conv) => {
+                school_book_conv.evaluate(inputs, unpadded_input_shapes)
+            }
+            Layer::Activation(activation) => activation.evaluate(inputs, unpadded_input_shapes),
+            Layer::Requant(requant) => requant.evaluate(inputs, unpadded_input_shapes),
+            Layer::Pooling(pooling) => pooling.evaluate(inputs, unpadded_input_shapes),
+            Layer::Flatten(reshape) => reshape.evaluate(inputs, unpadded_input_shapes),
+        }
+    }
+}
+
+impl<E: ExtensionField> ProveInfo<E> for Layer<Element>
+where
+    E: ExtensionField + DeserializeOwned,
+    E::BaseField: Serialize + DeserializeOwned,
+{
+    fn step_info(
+        &self,
+        id: PolyID,
+        aux: ContextAux,
+    ) -> Result<(LayerCtx<E>, ContextAux), ProvableOpError> {
         match self {
             Layer::Dense(dense) => dense.step_info(id, aux),
             Layer::MatMul(mat) => mat.step_info(id, aux),
             Layer::Convolution(conv) => conv.step_info(id, aux),
-            Layer::SchoolBookConvolution(_conv) => SchoolBookConvCtx.step_info(id, aux),
+            Layer::SchoolBookConvolution(conv) => conv.step_info(id, aux),
             Layer::Activation(activation) => activation.step_info(id, aux),
             Layer::Requant(requant) => requant.step_info(id, aux),
             Layer::Pooling(pooling) => pooling.step_info(id, aux),
+            Layer::Flatten(reshape) => reshape.step_info(id, aux),
         }
     }
-    /// Run the operation associated with that layer with the given input
-    // TODO: move to tensor library : right now it works because we assume there is only Dense
-    // layer which is matmul
-    pub fn op<F: ExtensionField>(&self, input: &Tensor<Element>) -> anyhow::Result<LayerOutput<F>> {
-        Ok(match &self {
-            Layer::Dense(ref dense) => LayerOutput::NormalOut(dense.op(input)),
-            Layer::MatMul(mat) => LayerOutput::NormalOut(mat.op(vec![input])?),
-            Layer::Activation(activation) => LayerOutput::NormalOut(activation.op(input)),
 
-            Layer::Convolution(ref filter) => LayerOutput::ConvOut(filter.op(input)),
-            // Traditional convolution is used for debug purposes. That is because the actual convolution
-            // we use relies on the FFT algorithm. This convolution does not have a snark implementation.
-            Layer::SchoolBookConvolution(ref conv_pair) => {
-                // LayerOutput::NormalOut(filter.cnn_naive_convolution(input))
-                LayerOutput::NormalOut(input.conv2d(&conv_pair.filter, &conv_pair.bias, 1))
-            }
+    fn commit_info(&self, id: provable::NodeId) -> Vec<Option<(PolyID, Vec<E>)>> {
+        match self {
+            Layer::Dense(dense) => dense.commit_info(id),
+            Layer::Convolution(convolution) => convolution.commit_info(id),
+            Layer::MatMul(mat) => mat.commit_info(id),
+            Layer::SchoolBookConvolution(school_book_conv) => school_book_conv.commit_info(id),
+            Layer::Activation(activation) => activation.commit_info(id),
+            Layer::Requant(requant) => requant.commit_info(id),
+            Layer::Pooling(pooling) => pooling.commit_info(id),
+            Layer::Flatten(reshape) => reshape.commit_info(id),
+        }
+    }
+}
 
-            Layer::Requant(info) => {
-                // NOTE: we assume we have default quant structure as input
-                LayerOutput::NormalOut(info.op(input))
+impl PadOp for Layer<Element> {
+    fn pad_node(self, si: &mut ShapeInfo) -> Result<Self, PaddingError>
+    where
+        Self: Sized,
+    {
+        Ok(match self {
+            Layer::Dense(dense) => Layer::Dense(dense.pad_node(si)?),
+            Layer::Convolution(convolution) => Layer::Convolution(convolution.pad_node(si)?),
+            Layer::MatMul(mat) => Layer::MatMul(mat.pad_node(si)?),
+            Layer::SchoolBookConvolution(school_book_conv) => {
+                Layer::SchoolBookConvolution(school_book_conv.pad_node(si)?)
             }
-            Layer::Pooling(info) => LayerOutput::NormalOut(info.op(input)),
+            Layer::Activation(activation) => Layer::Activation(activation.pad_node(si)?),
+            Layer::Requant(requant) => Layer::Requant(requant.pad_node(si)?),
+            Layer::Pooling(pooling) => Layer::Pooling(pooling.pad_node(si)?),
+            Layer::Flatten(flatten) => Layer::Flatten(flatten.pad_node(si)?),
         })
     }
+}
 
-    pub fn describe(&self) -> String {
-        match &self {
-            Layer::Dense(ref dense) => {
-                format!(
-                    "Dense: ({},{})",
-                    dense.matrix.nrows_2d(),
-                    dense.matrix.ncols_2d(),
-                    // matrix.fmt_integer()
-                )
+impl<E: ExtensionField> ProvableOp<E> for Layer<Element>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+    E: Serialize + DeserializeOwned,
+{
+    type Ctx = LayerCtx<E>;
+
+    fn prove<T: Transcript<E>>(
+        &self,
+        node_id: provable::NodeId,
+        ctx: &Self::Ctx,
+        last_claims: Vec<&crate::Claim<E>>,
+        step_data: &StepData<E, E>,
+        prover: &mut crate::Prover<E, T>,
+    ) -> Result<Vec<crate::Claim<E>>, ProvableOpError> {
+        match self {
+            Layer::Dense(dense) => {
+                if let LayerCtx::Dense(info) = ctx {
+                    dense.prove(node_id, info, last_claims, step_data, prover)
+                } else {
+                    Err(ProvableOpError::ParameterError(
+                        "No dense ctx found for dense layer".to_string(),
+                    ))
+                }
             }
-            Layer::MatMul(ref mat) => mat.describe(),
-            Layer::Convolution(ref filter) => {
-                format!(
-                    "Conv: ({},{},{},{})",
-                    filter.kw(),
-                    filter.kx(),
-                    filter.nw(),
-                    filter.nw()
-                )
+            Layer::Convolution(convolution) => {
+                if let LayerCtx::Convolution(info) = ctx {
+                    convolution.prove(node_id, info, last_claims, step_data, prover)
+                } else {
+                    Err(ProvableOpError::ParameterError(
+                        "No convolution ctx found for convolution layer".to_string(),
+                    ))
+                }
             }
-            Layer::SchoolBookConvolution(ref _filter) => {
-                format!(
-                    "Conv: Traditional convolution for debug purposes" /* matrix.fmt_integer() */
-                )
+            Layer::MatMul(m) => {
+                if let LayerCtx::MatMul(info) = ctx {
+                    m.prove(node_id, info, last_claims, step_data, prover)
+                } else {
+                    Err(ProvableOpError::ParameterError(
+                        "No mat mul ctx found for MatMul layer".to_string(),
+                    ))
+                }
             }
-            Layer::Activation(Activation::Relu(_)) => {
-                format!("RELU: {}", 1 << Relu::num_vars())
+            Layer::SchoolBookConvolution(_) => {
+                unreachable!("prove cannot be called for school book convolution")
             }
-            Layer::Requant(info) => {
-                format!("Requant: {}", info.shape()[1])
+            Layer::Activation(activation) => {
+                if let LayerCtx::Activation(info) = ctx {
+                    activation.prove(node_id, info, last_claims, step_data, prover)
+                } else {
+                    Err(ProvableOpError::ParameterError(
+                        "No activation ctx found for activation layer".to_string(),
+                    ))
+                }
             }
-            Layer::Pooling(Pooling::Maxpool2D(info)) => format!(
-                "MaxPool2D{{ kernel size: {}, stride: {} }}",
-                info.kernel_size, info.stride
-            ),
+            Layer::Requant(requant) => {
+                if let LayerCtx::Requant(info) = ctx {
+                    requant.prove(node_id, info, last_claims, step_data, prover)
+                } else {
+                    Err(ProvableOpError::ParameterError(
+                        "No requant ctx found for requant layer".to_string(),
+                    ))
+                }
+            }
+            Layer::Pooling(pooling) => {
+                if let LayerCtx::Pooling(info) = ctx {
+                    pooling.prove(node_id, info, last_claims, step_data, prover)
+                } else {
+                    Err(ProvableOpError::ParameterError(
+                        "No pooling ctx found for pooling layer".to_string(),
+                    ))
+                }
+            }
+            Layer::Flatten(_) => unreachable!("prove cannot be called for reshape"),
         }
+    }
+
+    fn gen_lookup_witness(
+        &self,
+        id: provable::NodeId,
+        gen: &mut LookupWitnessGen<E>,
+        step_data: &StepData<Element, E>,
+    ) -> Result<(), ProvableOpError> {
+        match self {
+            Layer::Dense(dense) => dense.gen_lookup_witness(id, gen, step_data),
+            Layer::Convolution(convolution) => convolution.gen_lookup_witness(id, gen, step_data),
+            Layer::MatMul(m) => m.gen_lookup_witness(id, gen, step_data),
+            Layer::SchoolBookConvolution(school_book_conv) => {
+                school_book_conv.gen_lookup_witness(id, gen, step_data)
+            }
+            Layer::Activation(activation) => activation.gen_lookup_witness(id, gen, step_data),
+            Layer::Requant(requant) => requant.gen_lookup_witness(id, gen, step_data),
+            Layer::Pooling(pooling) => pooling.gen_lookup_witness(id, gen, step_data),
+            Layer::Flatten(reshape) => reshape.gen_lookup_witness(id, gen, step_data),
+        }
+    }
+}
+
+impl<S: ScalingStrategy> QuantizeOp<S> for Layer<f32>
+where
+    Dense<f32>: QuantizeOp<S, QuantizedOp = Dense<Element>>,
+    Convolution<f32>: QuantizeOp<S, QuantizedOp = Convolution<Element>>,
+    MatMul<f32>: QuantizeOp<S, QuantizedOp = MatMul<Element>>,    
+{
+    type QuantizedOp = Layer<Element>;
+
+    fn quantize_op(
+        self,
+        tracker: &S::AuxData,
+        node_id: provable::NodeId,
+        input_scaling: &[ScalingFactor],
+    ) -> anyhow::Result<QuantizeOutput<Self::QuantizedOp>> {
+        Ok(match self {
+            Layer::Dense(dense) => {
+                let output = quantize_op::<S, _>(dense, tracker, node_id, input_scaling)?;
+                QuantizeOutput {
+                    quanzited_op: Layer::Dense(output.quanzited_op),
+                    output_scalings: output.output_scalings,
+                    requant_layer: output.requant_layer,
+                }
+            }
+            Layer::Convolution(convolution) => {
+                let output = quantize_op::<S, _>(convolution, tracker, node_id, input_scaling)?;
+                QuantizeOutput {
+                    quanzited_op: Layer::Convolution(output.quanzited_op),
+                    output_scalings: output.output_scalings,
+                    requant_layer: output.requant_layer,
+                }
+            }
+            Layer::MatMul(mat) => {
+                let output = quantize_op::<S, _>(mat, tracker, node_id, input_scaling)?;
+                QuantizeOutput {
+                    quanzited_op: Layer::MatMul(output.quanzited_op),
+                    output_scalings: output.output_scalings,
+                    requant_layer: output.requant_layer,
+                }
+            }
+            Layer::SchoolBookConvolution(school_book_conv) => {
+                let output =
+                    quantize_op::<S, _>(school_book_conv, tracker, node_id, input_scaling)?;
+                QuantizeOutput {
+                    quanzited_op: Layer::SchoolBookConvolution(output.quanzited_op),
+                    output_scalings: output.output_scalings,
+                    requant_layer: output.requant_layer,
+                }
+            }
+            Layer::Activation(activation) => QuantizeOutput {
+                quanzited_op: Layer::Activation(activation),
+                output_scalings: input_scaling.to_vec(),
+                requant_layer: None,
+            },
+            Layer::Requant(requant) => QuantizeOutput {
+                quanzited_op: Layer::Requant(requant),
+                output_scalings: input_scaling.to_vec(),
+                requant_layer: None,
+            },
+            Layer::Pooling(pooling) => QuantizeOutput {
+                quanzited_op: Layer::Pooling(pooling),
+                output_scalings: input_scaling.to_vec(),
+                requant_layer: None,
+            },
+            Layer::Flatten(flatten) => QuantizeOutput {
+                quanzited_op: Layer::Flatten(flatten),
+                output_scalings: input_scaling.to_vec(),
+                requant_layer: None,
+            },
+        })
     }
 }
 
@@ -200,6 +535,7 @@ where
             Self::Activation(_) => "Activation".to_string(),
             Self::Requant(_) => "Requant".to_string(),
             Self::Pooling(_) => "Pooling".to_string(),
+            Self::Dummy => "Dummy".to_string(),
         }
     }
 
@@ -208,13 +544,14 @@ where
             LayerProof::Dense(..) => None,
             LayerProof::MatMul(..) => None,
             LayerProof::Convolution(..) => None,
+            LayerProof::Dummy => None,
             LayerProof::Activation(ActivationProof { lookup, .. })
             | LayerProof::Requant(RequantProof { lookup, .. })
             | LayerProof::Pooling(PoolingProof { lookup, .. }) => Some(lookup.fractional_outputs()),
         }
     }
 }
-impl std::fmt::Display for Layer {
+impl<T: Number> std::fmt::Display for Layer<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.describe())
     }

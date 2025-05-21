@@ -6,9 +6,9 @@
 use std::collections::HashMap;
 
 use crate::{
-    Claim, VectorTranscript,
+    Claim, Element, VectorTranscript,
     commit::{aggregated_rlc, compute_beta_eval_poly, compute_betas_eval},
-    layers::{Layer, convolution, dense},
+    layers::provable::ProveInfo,
     model::Model,
 };
 use anyhow::{Context as CC, ensure};
@@ -82,60 +82,10 @@ where
     E: Serialize + DeserializeOwned,
 {
     /// NOTE: it assumes the model's layers are already padded to power of two
-    pub fn generate_from_model(m: &Model) -> anyhow::Result<Self> {
+    pub fn generate_from_model(m: &Model<Element>) -> anyhow::Result<Self> {
         Self::generate(
-            m.layers()
-                .flat_map(|(id, l)| match l {
-                    Layer::Dense(dense) => {
-                        let evals = dense.matrix.evals_2d();
-                        let bias_evals = dense.bias.evals_flat();
-                        debug!(
-                            "Commitment : dense layer ID {}: size {}",
-                            id,
-                            evals.len().ilog2()
-                        );
-                        debug!(
-                            "Commitment : dense layer bias ID {}: size {}",
-                            dense::BIAS_POLY_ID + id,
-                            bias_evals.len().ilog2()
-                        );
-                        vec![
-                            Some((id, evals)),
-                            Some((dense::BIAS_POLY_ID + id, bias_evals)),
-                        ]
-                    }
-                    Layer::MatMul(m) => {
-                        if let Some(evals) = m.eval_constant_matrix() {
-                            debug!(
-                                "Commitment : mat mul layer ID {}: size {}",
-                                id,
-                                evals.len().ilog2()
-                            );
-                            vec![Some((id, evals))]
-                        } else {
-                            vec![None]
-                        }
-                    }
-                    Layer::Convolution(m) => {
-                        let filter_evals = m.filter.get_conv_weights();
-                        let bias_evals = m.bias.evals_flat();
-                        debug!(
-                            "Commitment : conv layer ID {}: size {}",
-                            id,
-                            filter_evals.len().ilog2()
-                        );
-                        debug!(
-                            "Commitment : conv layer bias ID {}: size {}",
-                            convolution::BIAS_POLY_ID + id,
-                            bias_evals.len().ilog2()
-                        );
-                        vec![
-                            Some((id, filter_evals)),
-                            Some((convolution::BIAS_POLY_ID + id, bias_evals)),
-                        ]
-                    }
-                    _ => vec![None],
-                })
+            m.provable_nodes()
+                .flat_map(|(id, l)| l.operation.commit_info(*id))
                 .flatten()
                 .collect_vec(),
         )
@@ -208,12 +158,13 @@ where
         &self,
         claims: Vec<IndividualClaim<E>>,
     ) -> anyhow::Result<Vec<IndividualClaim<E>>> {
-        assert_eq!(
+        ensure!(
+            claims.len() == self.poly_info.len(),
+            "claims.len() = {} vs poly.len() = {} -- {:?} vs polys {:?}",
             claims.len(),
             self.poly_info.len(),
-            "claims.len() = {} vs poly.len() = {}",
-            claims.len(),
-            self.poly_info.len()
+            claims.iter().map(|c| c.poly_id).collect_vec(),
+            self.poly_info.keys().collect_vec()
         );
         let mut sorted_claims = claims.clone();
         for (idx, claim) in claims.into_iter().enumerate() {
@@ -482,7 +433,7 @@ mod test {
         // let range = thread_rng().gen_range(3..15);
         let matrices = (0..n_poly)
             .map(|_| {
-                Tensor::random(vec![
+                Tensor::random(&vec![
                     rng.gen_range(3..24) as usize,
                     rng.gen_range(3..24) as usize,
                 ])

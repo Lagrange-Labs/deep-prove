@@ -1,6 +1,10 @@
 use std::collections::HashMap;
 
-use crate::{commit::precommit, layers::LayerProof, lookup::logup_gkr::structs::LogUpProof};
+use crate::{
+    commit::precommit,
+    layers::{LayerProof, provable::NodeId},
+    lookup::logup_gkr::structs::LogUpProof,
+};
 use ff_ext::ExtensionField;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 pub mod context;
@@ -19,7 +23,7 @@ where
     E: Serialize + DeserializeOwned,
 {
     /// The successive sumchecks proofs. From output layer to input.
-    steps: Vec<LayerProof<E>>,
+    steps: HashMap<NodeId, LayerProof<E>>,
     /// The proofs for any lookup tables used
     table_proofs: Vec<TableProof<E>>,
     /// the commitment proofs related to the weights
@@ -80,25 +84,20 @@ where
 mod test {
     use goldilocks::GoldilocksExt2;
 
-    use crate::{default_transcript, init_test_logging, model::Model, quantization::TensorFielder};
+    use crate::{default_transcript, init_test_logging, model::Model};
 
-    use super::{
-        Context,
-        prover::Prover,
-        verifier::{IO, verify},
-    };
+    use super::{Context, prover::Prover, verifier::verify};
 
     type F = GoldilocksExt2;
 
     #[test]
-    fn test_prover_steps() {
+    fn test_prover_steps_generic() {
         init_test_logging();
-        let (model, input) = Model::random(4);
+        let (model, input) = Model::random(4).unwrap();
         model.describe();
-        let trace = model.run(input.clone()).unwrap();
-        let output = trace.final_output();
+        let trace = model.run(&input).unwrap();
+        let io = trace.to_verifier_io();
         let ctx = Context::<F>::generate(&model, None).expect("unable to generate context");
-        let io = IO::new(input.to_fields(), output.clone().to_fields());
         let mut prover_transcript = default_transcript();
         let prover = Prover::<_, _>::new(&ctx, &mut prover_transcript);
         let proof = prover.prove(trace).expect("unable to generate proof");
@@ -109,13 +108,11 @@ mod test {
     #[test]
     fn test_prover_steps_pooling() {
         init_test_logging();
-        let (model, input) = Model::random_pooling(4);
+        let (model, input) = Model::random_pooling(4).unwrap();
         model.describe();
-        let trace = model.run(input.clone()).unwrap();
-        let output = trace.final_output();
-        let ctx = Context::<F>::generate(&model, Some(input.get_shape()))
-            .expect("unable to generate context");
-        let io = IO::new(input.to_fields(), output.clone().to_fields());
+        let trace = model.run(&input).unwrap();
+        let io = trace.to_verifier_io();
+        let ctx = Context::<F>::generate(&model, None).expect("unable to generate context");
         let mut prover_transcript = default_transcript();
         let prover = Prover::<_, _>::new(&ctx, &mut prover_transcript);
         let proof = prover.prove(trace).expect("unable to generate proof");

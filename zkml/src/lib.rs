@@ -1,4 +1,5 @@
 #![feature(iter_next_chunk)]
+#![feature(exact_size_is_empty)]
 
 use ff_ext::ExtensionField;
 use gkr::structs::PointAndEval;
@@ -13,13 +14,16 @@ pub use iop::{
     prover::Prover,
     verifier::{IO, verify},
 };
+pub use quantization::{ScalingFactor, ScalingStrategy};
 pub mod layers;
 pub mod lookup;
 pub mod model;
 mod onnx_parse;
-pub use onnx_parse::{ModelType, load_model};
-
+pub mod padding;
+mod parser;
+pub use onnx_parse::{FloatOnnxLoader, ModelType};
 pub mod tensor;
+pub use tensor::Tensor;
 #[cfg(test)]
 mod testing;
 
@@ -30,7 +34,7 @@ pub type Element = i128;
 
 /// Claim type to accumulate in this protocol, for a certain polynomial, known in the context.
 /// f(point) = eval
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct Claim<E> {
     point: Vec<E>,
     eval: E,
@@ -101,6 +105,17 @@ pub(crate) fn to_bit_sequence_le(
     (0..bit_length).map(move |i| ((num >> i) & 1) as usize)
 }
 
+pub(crate) fn try_unzip<I, C, T, E>(iter: I) -> Result<C, E>
+where
+    I: IntoIterator<Item = Result<T, E>>,
+    C: Extend<T> + Default,
+{
+    iter.into_iter().try_fold(C::default(), |mut c, r| {
+        c.extend([r?]);
+        Ok(c)
+    })
+}
+
 pub trait VectorTranscript<E: ExtensionField> {
     fn read_challenges(&mut self, n: usize) -> Vec<E>;
 }
@@ -120,10 +135,33 @@ impl<T: Transcript<E>, E: ExtensionField> VectorTranscript<E> for T {
 }
 
 pub fn argmax<T: PartialOrd>(v: &[T]) -> Option<usize> {
-    v.iter()
-        .enumerate()
-        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap()) // Unwrap is safe if T implements PartialOrd properly
-        .map(|(idx, _)| idx)
+    if v.is_empty() {
+        return None;
+    }
+
+    let mut max_index = 0;
+    let mut max_value = &v[0];
+
+    for (i, value) in v.iter().enumerate().skip(1) {
+        // Only update if strictly greater, ensuring we take the first maximum in ties
+        if value > max_value {
+            max_index = i;
+            max_value = value;
+        }
+    }
+
+    Some(max_index)
+}
+
+pub trait NextPowerOfTwo {
+    /// Returns a new vector where each element is the next power of two.
+    fn next_power_of_two(&self) -> Self;
+}
+// For unsigned integer vectors
+impl NextPowerOfTwo for Vec<usize> {
+    fn next_power_of_two(&self) -> Self {
+        self.iter().map(|&i| i.next_power_of_two()).collect()
+    }
 }
 
 #[cfg(test)]
@@ -134,15 +172,9 @@ mod test {
     use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 
     use crate::{
-        Element, default_transcript,
-        iop::{
-            Context,
-            prover::Prover,
-            verifier::{IO, verify},
-        },
-        load_model,
+        FloatOnnxLoader, default_transcript,
+        iop::{Context, prover::Prover, verifier::verify},
         onnx_parse::ModelType,
-        quantization::TensorFielder,
         tensor::Tensor,
         to_bit_sequence_le,
     };
@@ -165,30 +197,32 @@ mod test {
 
     fn test_model_run_helper() -> anyhow::Result<()> {
         let filepath = workspace_root().join("zkml/assets/model.onnx");
-        ModelType::MLP
-            .validate(&filepath.to_string_lossy())
-            .unwrap();
-        let model = load_model::<Element>(&filepath.to_string_lossy()).unwrap();
+        let (model, _md) = FloatOnnxLoader::new(&filepath.to_string_lossy())
+            .with_model_type(ModelType::MLP)
+            .build()?;
+
         println!("[+] Loaded onnx file");
         let ctx = Context::<E>::generate(&model, None).expect("unable to generate context");
         println!("[+] Setup parameters");
 
-        let shape = model.input_shape();
+        let shapes = model.input_shapes();
+        assert_eq!(shapes.len(), 1);
+        let shape = &shapes[0];
         assert_eq!(shape.len(), 1);
-        let input = Tensor::random(vec![shape[0] - 1]);
-        let input = model.prepare_input(input);
+        let input = Tensor::random(&vec![shape[0] - 1]);
+        let input = model.prepare_inputs(vec![input])?;
 
-        let trace = model.run(input.clone()).unwrap();
-        let output = trace.final_output().clone();
+        let trace = model.run(&input).unwrap();
+        let output = trace.outputs()?[0];
         println!("[+] Run inference. Result: {:?}", output);
 
+        let io = trace.to_verifier_io();
         let mut prover_transcript = default_transcript();
         let prover = Prover::<_, _>::new(&ctx, &mut prover_transcript);
         println!("[+] Run prover");
         let proof = prover.prove(trace).expect("unable to generate proof");
 
         let mut verifier_transcript = default_transcript();
-        let io = IO::new(input.to_fields(), output.to_fields());
         verify::<_, _>(ctx, proof, io, &mut verifier_transcript).expect("invalid proof");
         println!("[+] Verify proof: valid");
         Ok(())
@@ -218,8 +252,10 @@ static INIT: Once = Once::new();
 
 #[cfg(test)]
 pub fn init_test_logging() {
+    use tracing_subscriber::EnvFilter;
+
     INIT.call_once(|| {
-        // Initialize your logger only once
-        env_logger::try_init().ok(); // The .ok() ignores if it's already been initialized
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        tracing_subscriber::fmt().with_env_filter(filter).init();
     });
 }
