@@ -142,7 +142,14 @@ mod tests {
         let k_bias = Tensor::<f32>::random(&[hidden_size]);
         let v = Tensor::<f32>::random(&[emb_size, hidden_size]);
         let v_bias = Tensor::<f32>::random(&[hidden_size]);
-        let qkv = QKV::new(q.clone(), q_bias.clone(), k.clone(), k_bias.clone(), v.clone(), v_bias.clone());
+        let qkv = QKV::new(
+            q.clone(),
+            q_bias.clone(),
+            k.clone(),
+            k_bias.clone(),
+            v.clone(),
+            v_bias.clone(),
+        );
         let mut input = Tensor::<f32>::random(&[1, emb_size]);
         let mut cache = CacheQKV::new();
         let output = qkv
@@ -162,8 +169,9 @@ mod tests {
         let new_token_emb = Tensor::<f32>::random(&[1, emb_size]);
         input.concat(new_token_emb.clone());
         let output = qkv
-           .evaluate::<GoldilocksExt2>(&[&input], &mut cache)
-           .unwrap().outputs;
+            .evaluate::<GoldilocksExt2>(&[&input], &mut cache)
+            .unwrap()
+            .outputs;
         assert_eq!(output.len(), 3);
         assert_eq!(output[0].get_shape(), vec![1, hidden_size]);
         assert_eq!(output[1].get_shape(), vec![seq_len, hidden_size]);

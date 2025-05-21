@@ -21,6 +21,9 @@ pub enum ProvableOpError {
     /// Error returned when there is a problem with parsing the ONNX model
     #[error("Error parsing ONNX model: {0}")]
     OnnxParsingError(String),
+
+    #[error("Invalid input shape: {0}")]
+    InvalidInputShape(String),
 }
 
 impl From<anyhow::Error> for ProvableOpError {

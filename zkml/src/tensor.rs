@@ -1365,7 +1365,8 @@ where
                         for kw in 0..k_w {
                             let h = oh * stride + kh;
                             let w = ow * stride + kw;
-                            sum = sum + self.get_at_4d(n, c, h, w) * kernels.get_at_4d(o, c, kh, kw);
+                            sum =
+                                sum + self.get_at_4d(n, c, h, w) * kernels.get_at_4d(o, c, kh, kw);
                         }
                     }
                 }
@@ -1427,7 +1428,7 @@ where
         self.data[flat_index]
     }
 
-    // 0-based indexing for compatibility with other libraries 
+    // 0-based indexing for compatibility with other libraries
     // ex: accessors = [3,2,1] => will retrieve element at index 1 + 2 * shape[0] + 3 * shape[0] * shape[1]
     pub fn get(&self, accessors: Vec<usize>) -> T {
         assert!(self.shape.len() == accessors.len());
@@ -1435,11 +1436,24 @@ where
         let mut multiplier = *self.shape.last().unwrap();
         println!("flat_index: {}", flat_index);
         println!("multiplier: {}", multiplier);
-        for (a,s) in accessors.iter().rev().skip(1).zip(self.shape.iter().rev().skip(1)) {
-            assert!(*a < *s, "Index out of bounds: {} >= {} - 0-based indexing forbids", a, s);
+        for (a, s) in accessors
+            .iter()
+            .rev()
+            .skip(1)
+            .zip(self.shape.iter().rev().skip(1))
+        {
+            assert!(
+                *a < *s,
+                "Index out of bounds: {} >= {} - 0-based indexing forbids",
+                a,
+                s
+            );
             flat_index += *a * multiplier;
             multiplier *= *s;
-            println!("After (a,s): ({}, {}) flat_index: {} & multiplier: {}", a,s, flat_index, multiplier);
+            println!(
+                "After (a,s): ({}, {}) flat_index: {} & multiplier: {}",
+                a, s, flat_index, multiplier
+            );
         }
         self.data[flat_index]
     }
@@ -1638,8 +1652,8 @@ impl<T: Number> Tensor<T> {
     pub fn permute3d(&self, order: &[usize]) -> Self {
         assert!(self.shape.len() == 3 && order.len() == 3);
         assert!(order.iter().all(|x| *x < 3));
-        let (a,b,c) = (self.shape[0],self.shape[1],self.shape[2]);
-        let new_a= self.shape[order[0]];
+        let (a, b, c) = (self.shape[0], self.shape[1], self.shape[2]);
+        let new_a = self.shape[order[0]];
         let new_b = self.shape[order[1]];
         let new_c = self.shape[order[2]];
         let new_shape = vec![new_a, new_b, new_c];
@@ -2077,29 +2091,33 @@ mod test {
 
     #[test]
     fn test_tensor_get() {
-        let tensor = Tensor::<Element>::new(vec![2, 3, 3], vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17,18]);
+        let tensor = Tensor::<Element>::new(vec![2, 3, 3], vec![
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+        ]);
         // 2 + 2 * 3 + 1 * 3 * 3 = 17
         assert_eq!(tensor.get(vec![1, 2, 2]), tensor.data[17]);
     }
 
     #[test]
     fn test_tensor_permute3d() {
-        let tensor = Tensor::<Element>::new(vec![2, 3, 3], vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
+        let tensor = Tensor::<Element>::new(vec![2, 3, 3], vec![
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+        ]);
         // i,j,k --> j,i,k -> new shape = 3,2,3
-        let permuted = tensor.permute3d(&[1,0,2]);
+        let permuted = tensor.permute3d(&[1, 0, 2]);
         assert_eq!(permuted.get_shape(), vec![3, 2, 3]);
         for i in 0..2 {
             for j in 0..3 {
                 for k in 0..3 {
-                    let [new_i,new_j,new_k] = [j,i,k];
-                    let expected = tensor.get(vec![i,j,k]);
-                    let given = permuted.get(vec![new_i,new_j,new_k]);
-                    assert_eq!(expected,given);
+                    let [new_i, new_j, new_k] = [j, i, k];
+                    let expected = tensor.get(vec![i, j, k]);
+                    let given = permuted.get(vec![new_i, new_j, new_k]);
+                    assert_eq!(expected, given);
                 }
             }
         }
-        //let expected = tensor.get(vec![1,0,1]);
-        //let given = permuted.get(vec![0,1,1]);
-        //assert_eq!(expected,given);
+        // let expected = tensor.get(vec![1,0,1]);
+        // let given = permuted.get(vec![0,1,1]);
+        // assert_eq!(expected,given);
     }
 }
