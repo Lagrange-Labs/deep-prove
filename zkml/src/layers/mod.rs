@@ -3,11 +3,11 @@ pub mod convolution;
 pub mod dense;
 pub mod flatten;
 pub mod hadamard;
-pub mod transformer;
 pub mod matvec;
 pub mod pooling;
 pub mod provable;
 pub mod requant;
+pub mod transformer;
 
 use std::fmt::Debug;
 
