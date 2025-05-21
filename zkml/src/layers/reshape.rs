@@ -27,13 +27,16 @@ impl ProvableOp for Reshape {
     fn step_info<E: ExtensionField>(
         &self,
         _id: PolyID,
-        mut aux: ContextAux,
-    ) -> (LayerCtx<E>, ContextAux)
+        mut aux: ContextAux<E>,
+    ) -> (LayerCtx<E>, ContextAux<E>)
     where
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
         aux.last_output_shape = aux.last_output_shape.next_power_of_two();
+        // No model polys for reshape
+        aux.model_polys = vec![];
+
         (LayerCtx::Reshape, aux)
     }
 }

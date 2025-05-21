@@ -18,8 +18,8 @@ pub(crate) trait ProvableOp: Op<Element> {
     fn step_info<E: ExtensionField>(
         &self,
         id: PolyID,
-        aux: ContextAux,
-    ) -> (LayerCtx<E>, ContextAux)
+        aux: ContextAux<E>,
+    ) -> (LayerCtx<E>, ContextAux<E>)
     where
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned;

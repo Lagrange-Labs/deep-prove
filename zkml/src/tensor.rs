@@ -421,13 +421,13 @@ impl Tensor<Element> {
         // TODO: remove the requirement to keep the output value intact
         let output = out;
         let conv_data = ConvData::new(real_input, input, x_vec, prod, output, n_x);
-        return (
+        (
             Tensor::new(
                 vec![self.shape[0], n_x, n_x],
                 conv_data.output_as_element.clone(),
             ),
             conv_data,
-        );
+        )
     }
 
     /// Convolution algorithm using FFTs.

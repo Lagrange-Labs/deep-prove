@@ -159,7 +159,9 @@ mod test {
     use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 
     use crate::{
-        FloatOnnxLoader, default_transcript,
+        FloatOnnxLoader,
+        commit::Pcs,
+        default_transcript,
         iop::{
             Context,
             prover::Prover,
@@ -194,7 +196,7 @@ mod test {
             .build()?;
 
         println!("[+] Loaded onnx file");
-        let ctx = Context::<E>::generate(&model, None).expect("unable to generate context");
+        let ctx = Context::<E, Pcs<E>>::generate(&model, None).expect("unable to generate context");
         println!("[+] Setup parameters");
 
         let shape = model.input_shape();
@@ -207,13 +209,13 @@ mod test {
         println!("[+] Run inference. Result: {:?}", output);
 
         let mut prover_transcript = default_transcript();
-        let prover = Prover::<_, _>::new(&ctx, &mut prover_transcript);
+        let prover = Prover::<_, _, _>::new(&ctx, &mut prover_transcript);
         println!("[+] Run prover");
         let proof = prover.prove(trace).expect("unable to generate proof");
 
         let mut verifier_transcript = default_transcript();
         let io = IO::new(input.to_fields(), output.to_fields());
-        verify::<_, _>(ctx, proof, io, &mut verifier_transcript).expect("invalid proof");
+        verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).expect("invalid proof");
         println!("[+] Verify proof: valid");
         Ok(())
     }

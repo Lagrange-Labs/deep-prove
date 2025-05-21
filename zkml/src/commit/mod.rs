@@ -4,8 +4,12 @@ use rayon::iter::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
 };
 
+pub mod context;
+mod error;
 pub mod precommit;
 pub mod same_poly;
+
+pub use error::PCSError;
 
 pub(crate) type Pcs<E> = Basefold<E, BasefoldRSParams>;
 /// Compute the vector (beta(r,1), ... ,beta(r,2^{|r|}))

@@ -7,6 +7,7 @@ use goldilocks::GoldilocksExt2;
 use multilinear_extensions::{
     mle::FieldType, util::largest_even_below, virtual_poly::VirtualPolynomial,
 };
+use rand::rngs::OsRng;
 use sumcheck::util::{AdditiveArray, ceil_log2};
 
 #[derive(Default)]
@@ -16,7 +17,7 @@ struct Container<'a, E: ExtensionField> {
 }
 
 fn main() {
-    let c = Container::<GoldilocksExt2>::default();
+    let c = Container::<GoldilocksExt2>::new();
     c.run();
 }
 
@@ -24,5 +25,12 @@ impl<E: ExtensionField> Container<'_, E> {
     pub fn run(&self) {
         let _result: AdditiveArray<_, 4> =
             sumcheck_macro::sumcheck_code_gen!(3, false, |_| &self.poly.flattened_ml_extensions[0]);
+    }
+
+    pub fn new() -> Self {
+        Self {
+            poly: VirtualPolynomial::random(3, (4, 5), 2, &mut OsRng).0,
+            round: 0,
+        }
     }
 }
