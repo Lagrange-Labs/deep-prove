@@ -71,7 +71,8 @@ where
             .ok_or(PCSError::ParameterError(
                 "No polynomials were provided".to_string(),
             ))?
-            .max(witness_poly_size);
+            .max(witness_poly_size)
+            .next_power_of_two();
 
         let param = PCS::setup(max_poly_size)?;
         let (prover_params, verifier_params) = PCS::trim(param, max_poly_size)?;

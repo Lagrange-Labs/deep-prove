@@ -135,7 +135,6 @@ where
             .zip(ctx.steps_info.iter())
             .zip(shape_steps)
         {
-            // println!("VERIFIER: layer {:?} -> output_shape step: {:?}", step.variant_name(), shape_step);
             output_claim = match (proof, step) {
                 (LayerProof::<E, PCS>::Activation(proof), LayerCtx::Activation(info)) => {
                     let (constant_challenge, column_separation_challenge) = challenge_storage

@@ -2299,6 +2299,7 @@ dependencies = [
  "multilinear_extensions",
  "proc-macro2",
  "quote",
+ "rand",
  "rayon",
  "sumcheck",
  "syn 2.0.98",

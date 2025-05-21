@@ -550,6 +550,10 @@ where
         transcript: &mut impl Transcript<E>,
     ) -> Result<Self::Proof, Error> {
         let timer = start_timer!(|| "Basefold::batch_open");
+        // If we aren't provided with any commitments, polynomials, points or evaluations just return an empty proof
+        if polys.is_empty() && comms.is_empty() && points.is_empty() && evals.is_empty() {
+            return Ok(Self::Proof::trivial(vec![]));
+        }
         let num_vars = polys.iter().map(|poly| poly.num_vars).max().unwrap();
         let min_num_vars = polys.iter().map(|p| p.num_vars).min().unwrap();
         assert!(
@@ -720,7 +724,7 @@ where
         // them to the transcript.
 
         let point = challenges;
-        let now = std::time::Instant::now();
+
         let (trees, commit_phase_proof) = batch_commit_phase::<E, Spec>(
             &pp.encoding_params,
             &point,
@@ -730,7 +734,7 @@ where
             num_vars - Spec::get_basecode_msg_size_log(),
             coeffs.as_slice(),
         );
-        println!("Batch commit phase time: {:?}", now.elapsed());
+
         let query_timer = start_timer!(|| "Basefold::batch_open query phase");
         let query_result = batch_prover_query_phase(
             transcript,
@@ -961,6 +965,14 @@ where
         proof: &Self::Proof,
         transcript: &mut impl Transcript<E>,
     ) -> Result<(), Error> {
+        // If we have no commitments, points, evalautions or proofs then just return an Ok(())
+        if comms.is_empty()
+            && points.is_empty()
+            && evals.is_empty()
+            && proof.trivial_proof.is_empty()
+        {
+            return Ok(());
+        }
         let timer = start_timer!(|| "Basefold::batch_verify");
         let comms = comms.iter().collect_vec();
         let num_vars = points.iter().map(|point| point.len()).max().unwrap();

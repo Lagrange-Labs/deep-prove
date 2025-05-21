@@ -90,21 +90,28 @@ where
         ctx: &Context<E, PCS>,
         transcript: &mut T,
     ) -> Self {
-        let constant_challenge = transcript
-            .get_and_append_challenge(b"table_constant")
-            .elements;
-        let challenge_map = ctx
-            .lookup
-            .iter()
-            .map(|table_type| {
-                let challenge = table_type.generate_challenge(transcript);
+        if ctx.lookup.is_empty() {
+            Self {
+                constant_challenge: E::default(),
+                challenge_map: HashMap::default(),
+            }
+        } else {
+            let constant_challenge = transcript
+                .get_and_append_challenge(b"table_constant")
+                .elements;
+            let challenge_map = ctx
+                .lookup
+                .iter()
+                .map(|table_type| {
+                    let challenge = table_type.generate_challenge(transcript);
 
-                (table_type.name(), challenge)
-            })
-            .collect::<HashMap<String, E>>();
-        Self {
-            constant_challenge,
-            challenge_map,
+                    (table_type.name(), challenge)
+                })
+                .collect::<HashMap<String, E>>();
+            Self {
+                constant_challenge,
+                challenge_map,
+            }
         }
     }
 

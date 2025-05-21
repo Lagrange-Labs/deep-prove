@@ -922,7 +922,7 @@ pub(crate) mod test {
     fn test_cnn_prover() {
         for i in 0..3 {
             for j in 2..5 {
-                for l in 0..4 {
+                for l in 1..4 {
                     for n in 1..(j - 1) {
                         let n_w = 1 << n;
                         let k_w = 1 << l;

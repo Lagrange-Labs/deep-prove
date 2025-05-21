@@ -165,8 +165,11 @@ where
             step_infos.iter().map(|x| x.variant_name()).join(", ")
         );
         debug!("Context : commitment generating ...");
-        // // We reverse the order of `model_polys` as we start proving at the last layer
-        // model_polys.reverse();
+        // Check to see if we use a lookup table alrger than any of the individual polynomials
+        ctx_aux.tables.iter().for_each(|table_type| {
+            let multiplicity_vars = table_type.multiplicity_poly_vars();
+            max_poly_len = max_poly_len.max(1 << multiplicity_vars)
+        });
 
         let commit_ctx = CommitmentContext::<E, PCS>::new(max_poly_len, model_polys.concat())?;
 

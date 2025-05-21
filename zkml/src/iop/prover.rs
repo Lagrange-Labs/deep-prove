@@ -466,10 +466,6 @@ where
         self.prove_tables()?;
 
         // now provide opening proofs for all claims accumulated during the proving steps
-        // let commit_proof = self
-        //     .commit_prover
-        //     .prove(&self.ctx.weights, self.transcript)?;
-
         let opening_proof = self
             .commit_prover
             .prove(&self.ctx.weights, self.transcript)?;
@@ -488,14 +484,11 @@ where
         &mut self,
         trace: &InferenceTrace<'b, Element, E>,
     ) -> anyhow::Result<()> {
-        let now = std::time::Instant::now();
-        let (challenge_storage, lookup_witnesses, table_witnesses) =
-            generate_lookup_witnesses::<E, T, PCS>(&self.ctx, trace, self.transcript)?;
-        println!("Time to generate lookup witness: {:?}", now.elapsed());
-
-        self.challenge_storage = challenge_storage;
-        self.lookup_witness = lookup_witnesses;
-        self.table_witness = table_witnesses;
+        (
+            self.challenge_storage,
+            self.lookup_witness,
+            self.table_witness,
+        ) = generate_lookup_witnesses::<E, T, PCS>(&self.ctx, trace, self.transcript)?;
 
         Ok(())
     }

@@ -17,10 +17,10 @@ use rayon::prelude::*;
 
 use crate::{
     Element,
-    commit::{PCSError},
+    commit::PCSError,
     iop::ChallengeStorage,
     layers::{Layer, activation::Relu, requant::RequantLookupWitness},
-    lookup::{witness::LogUpWitness},
+    lookup::witness::LogUpWitness,
     model::InferenceTrace,
     quantization::{self, Fieldizer},
 };
@@ -202,6 +202,14 @@ impl TableType {
             TableType::Clamping(_) => transcript.get_and_append_challenge(b"Clamping").elements,
         }
     }
+
+    /// Gets the number of variables that the multiplicity polynomial will have for this table
+    pub fn multiplicity_poly_vars(&self) -> usize {
+        match self {
+            TableType::Range | TableType::Relu => *quantization::BIT_LEN,
+            TableType::Clamping(bits) => *bits,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -217,9 +225,17 @@ impl LookupContext {
     pub fn iter(&self) -> impl Iterator<Item = &TableType> {
         self.tables.iter()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.tables.is_empty()
+    }
 }
 
-pub fn generate_lookup_witnesses<E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
+pub fn generate_lookup_witnesses<
+    E: ExtensionField,
+    T: Transcript<E>,
+    PCS: PolynomialCommitmentScheme<E>,
+>(
     ctx: &crate::iop::context::Context<E, PCS>,
     trace: &InferenceTrace<Element, E>,
     transcript: &mut T,
@@ -256,7 +272,6 @@ where
     // calculate all the values that will be looked up and then return a HashMap that stores all the lookups into each table
     // together with a vector of witnesses that should iterate in reverse trace order (i.e. the first element in the vector is the witness for the
     // last layer in the trace that requires a lookup).
-    let now = std::time::Instant::now();
     let (multiplicity_map, witnesses) = trace
         .iter()
         .map(|(step_input, step)| {
@@ -407,7 +422,6 @@ where
                     }
                     let (merged_lookups, column_evals) =
                         pooling.gen_lookup_witness::<E>(step_input);
-                    
                     // Commit to the witnes polys
                     let output_poly = step
                         .output
@@ -419,7 +433,6 @@ where
                         })
                         .collect::<Vec<E::BaseField>>();
                     let num_vars = ceil_log2(output_poly.len());
-                    
                     let commit_evals = column_evals.iter().chain(std::iter::once(&output_poly)).collect::<Vec<_>>();
                     let commits = commit_evals
                         .into_par_iter()
@@ -463,61 +476,50 @@ where
                 >::Ok((multiplicity_map, witnesses))
             },
         )?;
-        // .try_reduce(
-        //     || (BTreeMap::<TableType, Vec<Element>>::default(), vec![]),
-        //     |(mut hashmap_a, mut witness_a), (hashmap_b, witness_b)| {
-        //         hashmap_a.extend(hashmap_b);
-        //         witness_a.extend(witness_b);
-        //         Ok((hashmap_a, witness_a))
-        //     },
-        // )?;
-    println!("time to commit to witness: {:?}", now.elapsed());
-    debug!("Lookup witness generation: generating table multiplicities...");
-    let now = std::time::Instant::now();
-    let table_witnesses =
-        multiplicity_map
-            .par_iter()
-            .map(|(table_type, lookups)| {
-                let table_lookup_data =
-                    lookups
-                        .iter()
-                        .fold(HashMap::<Element, u64>::new(), |mut map, elem| {
-                            *map.entry(*elem).or_insert(0) += 1;
-                            map
-                        });
-                let (table_column, column_evals) =
-                    table_type.get_merged_table_column::<E>(column_separator);
 
-                let multiplicities = table_column
+    debug!("Lookup witness generation: generating table multiplicities...");
+    let table_witnesses = multiplicity_map
+        .par_iter()
+        .map(|(table_type, lookups)| {
+            let table_lookup_data =
+                lookups
                     .iter()
-                    .map(|table_val| {
-                        if let Some(lookup_count) = table_lookup_data.get(table_val) {
-                            E::BaseField::from(*lookup_count)
-                        } else {
-                            E::BaseField::ZERO
-                        }
-                    })
-                    .collect::<Vec<E::BaseField>>();
-                let num_vars = ceil_log2(multiplicities.len());
-                let mle = DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, &multiplicities);
-                let commit = ctx.weights.commit(
-                    &mle,
-                )?;
-                Ok(LogUpWitness::<E, PCS>::new_table(
-                    (commit, mle),
-                    multiplicities,
-                    column_evals,
-                    *table_type,
-                ))
-            })
-            .collect::<Result<Vec<LogUpWitness<E, PCS>>, PCSError>>()?;
-        println!("Time to commit to multiplicities: {:?}", now.elapsed());
+                    .fold(HashMap::<Element, u64>::new(), |mut map, elem| {
+                        *map.entry(*elem).or_insert(0) += 1;
+                        map
+                    });
+            let (table_column, column_evals) =
+                table_type.get_merged_table_column::<E>(column_separator);
+
+            let multiplicities = table_column
+                .iter()
+                .map(|table_val| {
+                    if let Some(lookup_count) = table_lookup_data.get(table_val) {
+                        E::BaseField::from(*lookup_count)
+                    } else {
+                        E::BaseField::ZERO
+                    }
+                })
+                .collect::<Vec<E::BaseField>>();
+            let num_vars = ceil_log2(multiplicities.len());
+            let mle =
+                DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, &multiplicities);
+            let commit = ctx.weights.commit(&mle)?;
+            Ok(LogUpWitness::<E, PCS>::new_table(
+                (commit, mle),
+                multiplicities,
+                column_evals,
+                *table_type,
+            ))
+        })
+        .collect::<Result<Vec<LogUpWitness<E, PCS>>, PCSError>>()?;
+
     // Write all the witness commitments to the transcript
     witnesses
         .iter()
         .chain(table_witnesses.iter())
         .try_for_each(|witness| witness.write_to_transcript(transcript))?;
-    
+
     debug!("Lookup witness generation: challenge storage...");
     let challenge_storage = initialise_from_table_set::<E, T>(&tables, transcript);
 

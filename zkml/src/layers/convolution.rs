@@ -381,7 +381,9 @@ impl Convolution<Element> {
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
-        aux.last_output_shape = self.output_shape(&aux.last_output_shape, PaddingMode::NoPadding);
+        let mut filter_shape = self.filter.get_shape();
+        filter_shape.remove(1);
+        aux.last_output_shape = filter_shape;
 
         let mut delegation_fft: Vec<VPAuxInfo<E>> = Vec::new();
         let mut delegation_fft_weights: Vec<VPAuxInfo<E>> = Vec::new();
@@ -907,7 +909,7 @@ where
         // the prover commits to the tensor product and we could skip this step.
         // OR find a closed formula
         //
-        // To recreat it, we need the unpadded output shape and the real output shape.
+        // To recreate it, we need the unpadded output shape and the real output shape.
         let unpadded_output_shape = conv2d_shape(
             &shape_step.unpadded_input_shape,
             &self.unpadded_filter_shape,
