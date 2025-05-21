@@ -2,7 +2,7 @@ use ff_ext::ExtensionField;
 
 use crate::{
     Tensor,
-    layers::provable::{Evaluate, LayerOut, ProvableOpError},
+    layers::provable::{Evaluate, LayerOut},
     tensor::Number,
 };
 
@@ -50,7 +50,7 @@ impl<N: Number> QKV<N> {
         &self,
         inputs: &[&Tensor<N>],
         cache: &mut CacheQKV<N>,
-    ) -> Result<LayerOut<N, E>, ProvableOpError> {
+    ) -> anyhow::Result<LayerOut<N, E>> {
         assert_eq!(inputs.len(), 1);
         let shape = inputs[0].get_shape();
         let [seq_len, emb_size] = [shape[0], shape[1]];

@@ -7,7 +7,7 @@ use crate::{
     tensor::Number,
 };
 
-use crate::layers::provable::{Evaluate, LayerOut, OpInfo, ProvableOpError};
+use crate::layers::provable::{Evaluate, LayerOut, OpInfo};
 use burn::{
     backend::Wgpu,
     module::Param,
@@ -81,7 +81,7 @@ impl Evaluate<f32> for LayerNorm<f32> {
         &self,
         inputs: &[&Tensor<f32>],
         _unpadded_input_shapes: Vec<Vec<usize>>,
-    ) -> anyhow::Result<LayerOut<f32, E>, ProvableOpError> {
+    ) -> anyhow::Result<LayerOut<f32, E>> {
         assert!(inputs.len() == 1);
         let input = inputs[0];
         assert!(input.get_shape().len() == 2);
@@ -107,9 +107,9 @@ impl Evaluate<f32> for LayerNorm<f32> {
         norm.gamma = Param::from_tensor(gamma);
         norm.beta = Param::from_tensor(beta);
         let output = norm.forward(input);
-        let data: Vec<f32> = output.to_data().into_vec().map_err(|e| {
-            ProvableOpError::ConversionError("failed to convert to f32".to_string())
-        })?;
+        let Ok(data) : Result<Vec<f32>, _> = output.to_data().into_vec() else {
+            anyhow::bail!("failed to convert to f32");
+        };
         let output_shape = output.shape().dims.to_vec();
         Ok(LayerOut::from_tensor(Tensor::<f32>::new(
             output_shape,
@@ -123,7 +123,7 @@ impl Evaluate<Element> for LayerNorm<Element> {
         &self,
         inputs: &[&Tensor<Element>],
         unpadded_input_shapes: Vec<Vec<usize>>,
-    ) -> anyhow::Result<LayerOut<Element, E>, ProvableOpError> {
+    ) -> anyhow::Result<LayerOut<Element, E>> {
         unimplemented!()
     }
 }
