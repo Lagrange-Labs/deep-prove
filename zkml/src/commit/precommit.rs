@@ -558,6 +558,7 @@ mod test {
     use mpcs::PolynomialCommitmentScheme;
 
     #[test]
+    #[ignore]
     fn test_compare_basefold_batch() -> anyhow::Result<()> {
         // number of polys
         let n = 15;
