@@ -1,7 +1,10 @@
-use candle_core::quantized::{gguf_file::{Value, ValueType}, QTensor};
-use std::any::TypeId;
+use candle_core::quantized::{
+    QTensor,
+    gguf_file::{Value, ValueType},
+};
 use candle_transformers::{models::deepseek2::SplitOp, quantized_var_builder::VarBuilder};
 use std::{
+    any::TypeId,
     fs::File,
     io::{BufReader, Read, Seek},
     ops::Deref,
@@ -207,12 +210,7 @@ impl GPT2Model {
         let positional = Positional::from_loader(loader, config)?;
         let num_layers = config.num_block;
         let blocks = (0..num_layers)
-            .map(|i| {
-                Attention::from_loader(
-                    &loader.pp(&format!("blk.{i}.")),
-                    &config,
-                )
-            })
+            .map(|i| Attention::from_loader(&loader.pp(&format!("blk.{i}.")), &config))
             .collect::<anyhow::Result<Vec<Attention<f32>>>>()?;
         Ok(Self {
             embeddings,
@@ -234,10 +232,7 @@ struct FeedForward<N: Number> {
 impl FeedForward<f32> {
     // Replaces from_var_builder and from_tensor_loader
     // 'loader' is expected to be the block-level loader (e.g., scoped to "blk.N.")
-    pub fn from_loader(
-        loader: &FileTensorLoader,
-        c: &LLMConfig,
-    ) -> anyhow::Result<Self> {
+    pub fn from_loader(loader: &FileTensorLoader, c: &LLMConfig) -> anyhow::Result<Self> {
         // Create a sub-scope for the feed-forward network's LayerNorm
         let ffn_norm_loader = loader.pp("ffn_");
         // Use the new LayerNorm::from_loader
@@ -282,10 +277,7 @@ struct Attention<N: Number> {
 impl Attention<f32> {
     // Replaces from_var_builder and from_tensor_loader
     // 'loader' is expected to be the block-level loader (e.g., scoped to "blk.N.")
-    pub fn from_loader(
-        loader: &FileTensorLoader,
-        c: &LLMConfig,
-    ) -> anyhow::Result<Self> {
+    pub fn from_loader(loader: &FileTensorLoader, c: &LLMConfig) -> anyhow::Result<Self> {
         let embedding_size = c.embedding_size;
         let hidden_size = c.hidden_size;
         ensure!(
@@ -384,7 +376,6 @@ fn unfuse_tensors(fused: candle_core::Tensor, chunk_len: usize) -> anyhow::Resul
     );
     Ok(tensors)
 }
-
 
 trait FromValue<T> {
     fn from_value(v: &Value) -> T;
@@ -514,7 +505,10 @@ impl<R: Read + Seek + Send + 'static> TensorLoader<R> {
         dequantize(qtensor)
     }
 
-    pub fn metadata<T>(&self, key: &str) -> T where Value: FromValue<T> {
+    pub fn metadata<T>(&self, key: &str) -> T
+    where
+        Value: FromValue<T>,
+    {
         let v = &self.content.metadata[key];
         Value::from_value(v)
     }
@@ -568,8 +562,7 @@ mod tests {
         // println!("config: {:?}", config); // Keep original println if desired for debugging
         let block0_loader = loader.pp("blk.0.");
 
-        let _attention =
-            Attention::from_loader(&block0_loader, &config)?;
+        let _attention = Attention::from_loader(&block0_loader, &config)?;
         Ok(())
     }
 
@@ -621,7 +614,7 @@ mod tests {
                     CpuStorage::F16(d) => d.iter().map(|x| x.to_f32()).collect(),
                     _ => {
                         panic!("unsupported type of tensor: {:?}", s);
-                   }
+                    }
                 },
                 _ => {
                     panic!("only cpu storage type is supported");

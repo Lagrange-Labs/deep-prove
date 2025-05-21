@@ -20,7 +20,8 @@ use rayon::{
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::{Ordering, PartialEq},
-    fmt::{self, Debug}, ops::RangeBounds,
+    fmt::{self, Debug},
+    ops::RangeBounds,
 };
 
 use crate::{
@@ -588,7 +589,7 @@ impl<T> Tensor<T> {
 
     /// Is vector
     pub fn is_vector(&self) -> bool {
-        self.get_shape().len() == 1
+        self.get_shape().len() == 1 || (self.get_shape().len() == 2 && self.get_shape()[0] == 1)
     }
     /// Is matrix
     pub fn is_matrix(&self) -> bool {
@@ -759,7 +760,12 @@ where
 
     /// Element-wise addition
     pub fn add(&self, other: &Tensor<T>) -> Tensor<T> {
-        assert!(self.shape == other.shape, "Shape mismatch for addition.");
+        assert!(
+            self.shape == other.shape,
+            "Shape mismatch for addition {:?} != {:?}",
+            self.shape,
+            other.shape
+        );
         let mut data = vec![Default::default(); self.data.len()];
         data.par_iter_mut().enumerate().for_each(|(i, val)| {
             *val = self.data[i] + other.data[i];
@@ -776,12 +782,20 @@ where
     pub fn add_dim2(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(self.shape.len() == 2, "Tensor is not a matrix");
         assert!(other.shape.len() == 1, "Tensor is not a matrix");
-        assert!(self.shape[1] == other.shape[0], "Shape mismatch for addition.");
-        let data = self.data.par_chunks(self.shape[1]).flat_map_iter(|chunk| {
-            chunk.into_iter().zip(other.data.iter()).map(|(a, b)| {
-                *a + *b
+        assert!(
+            self.shape[1] == other.shape[0],
+            "Shape mismatch for addition."
+        );
+        let data = self
+            .data
+            .par_chunks(self.shape[1])
+            .flat_map_iter(|chunk| {
+                chunk
+                    .into_iter()
+                    .zip(other.data.iter())
+                    .map(|(a, b)| *a + *b)
             })
-        }).collect::<Vec<_>>();
+            .collect::<Vec<_>>();
         Tensor {
             shape: self.shape.clone(),
             og_shape: self.og_shape.clone(),
@@ -1575,13 +1589,31 @@ impl<T: Number> Tensor<T> {
             og_shape: vec![0],
         }
     }
+    // Concatenate the other tensor to the first one.
+    // RESTRICTIOn: self shape is [a1,a2...,an] we
+    // expect other shape to be [a2...,an] OR [1, a2...,an]
+    // The new shape of self will be [a1+1,...an]
+    // In other words, we only concatenate another vector if it's exactly size of the highest dimension
+    // If it's 2d, then we expect other to be a vector
     pub fn concat(&mut self, other: Self) {
         let len = self.shape.last().unwrap();
         // make sure that the all dimension but the highest one are the same
         let common_shape = self.shape.len().min(other.shape.len());
-        assert_eq!(common_shape + 1, self.shape.len());
-        assert!(self.shape.iter().rev().zip(other.shape.iter().rev()).take(common_shape).all(|(a, b)| a == b));
-        // then the new shape has this higher dimension + 1 simply     
+        if common_shape < self.shape.len() {
+            assert!(
+                self.shape
+                    .iter()
+                    .rev()
+                    .zip(other.shape.iter().rev())
+                    .take(common_shape)
+                    .all(|(a, b)| a == b)
+            );
+            assert_eq!(common_shape + 1, self.shape.len());
+        } else {
+            assert_eq!(common_shape, self.shape.len());
+            assert_eq!(other.shape.first().unwrap(), &1);
+        }
+        // then the new shape has this higher dimension + 1 simply
         // common_shape since 0-based indexing
         *self.shape.get_mut(0).unwrap() += 1;
         self.data.extend(other.data);
@@ -1961,10 +1993,10 @@ mod test {
     #[test]
     fn test_tensor_slice_2d() {
         let tensor = Tensor::<Element>::new(vec![3, 3], vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
-        let sliced = tensor.slice_2d(0,2);
+        let sliced = tensor.slice_2d(0, 2);
         assert_eq!(sliced.get_shape(), vec![2, 3]);
         assert_eq!(sliced.get_data(), vec![1, 2, 3, 4, 5, 6]);
-        let sliced = tensor.slice_2d(2,3);
+        let sliced = tensor.slice_2d(2, 3);
         assert_eq!(sliced.get_shape(), vec![1, 3]);
         assert_eq!(sliced.get_data(), vec![7, 8, 9]);
     }
@@ -1986,5 +2018,12 @@ mod test {
 
         assert_eq!(tensor.get_shape(), vec![3, 3]);
         assert_eq!(tensor.get_data(), vec![1, 2, 3, 4, 5, 6, 10, 20, 30]);
+
+        let vector = Tensor::<Element>::new(vec![1, 3], vec![66, 77, 88]);
+        tensor.concat(vector);
+        assert_eq!(tensor.get_shape(), vec![4, 3]);
+        assert_eq!(tensor.get_data(), vec![
+            1, 2, 3, 4, 5, 6, 10, 20, 30, 66, 77, 88
+        ]);
     }
 }
