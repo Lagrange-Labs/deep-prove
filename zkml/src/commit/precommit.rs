@@ -451,13 +451,12 @@ mod test {
     use ff::Field;
     use goldilocks::GoldilocksExt2;
     use itertools::Itertools;
+    use mpcs::{pcs_batch_open, pcs_batch_verify, pcs_commit, pcs_setup, Evaluation};
     use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 
     use super::compute_betas_eval;
     use crate::{
-        Claim, default_transcript, pad_vector,
-        tensor::Tensor,
-        testing::{random_bool_vector, random_field_vector},
+        commit::Pcs, default_transcript, pad_vector, tensor::Tensor, testing::{random_bool_vector, random_field_vector}, Claim
     };
 
     use super::{CommitProver, CommitVerifier, Context};
@@ -555,5 +554,74 @@ mod test {
         let r2 = random_bool_vector::<F>(n / 2);
         assert_ne!(beta_mle.evaluate(&r2), F::ONE);
         assert_eq!(beta_mle.evaluate(&r2), F::ZERO);
+    }
+    use mpcs::PolynomialCommitmentScheme;
+
+    #[test]
+    fn test_compare_basefold_batch() -> anyhow::Result<()> {
+        // number of polys
+        let n = 15;
+        let num_vars =  23..25;
+        let polys = (0..n)
+            .map(|i| {
+                let num_vars = thread_rng().gen_range(num_vars.clone());
+                let num_elements = 1 << num_vars;
+                (i, random_field_vector::<F>(num_elements))
+            })
+            .collect_vec();
+        let max_size = polys.iter().map(|(_,poly)| poly.len()).max().unwrap();
+        let ctx = Context::generate(polys.clone())?;
+        let mut claims = Vec::new();
+        let mut prover = CommitProver::new();
+        for (id, poly) in polys.iter() {
+            let p = random_bool_vector::<F>(poly.len().ilog2() as usize);
+            let eval = poly.clone().into_mle().evaluate(&p);
+            claims.push((*id, p.clone(), eval.clone()));
+            prover.add_claim(*id, Claim::new(p, eval))?;
+        }
+        let mut t = default_transcript();
+        let proof = prover.prove(&ctx, &mut t)?;
+
+        // VERIFIER
+        let mut verifier = CommitVerifier::new();
+        let mut t = default_transcript();
+        for (id, point, eval) in claims.iter() {
+            verifier.add_claim(*id, Claim::new(point.clone(), eval.clone()))?;
+        }
+        verifier.verify(&ctx, proof.clone(), &mut t)?;
+
+        // --- basefold ---
+        let setup = pcs_setup::<F,Pcs<F>>(1 << 25)?;
+        let (pp, vp) = Pcs::trim(setup, max_size).unwrap();
+        let mut ppolys = Vec::new();
+        let mut comms = Vec::new();
+        let mut points = Vec::new();
+        let mut evals = Vec::new();
+        let sizes = polys.iter().map(|(_,poly)| poly.len().ilog2()).collect_vec();
+        for ((id,poly),(id2,point,eval)) in polys.into_iter().zip(claims) {
+            assert_eq!(id, id2);
+            let mle = poly.into_mle();
+            let comm = pcs_commit::<F,Pcs<F>>(&pp, &mle).unwrap();
+            let eval = Evaluation::new(id,id,eval);
+            ppolys.push(mle);
+            comms.push(comm);
+            points.push(point);
+            evals.push(eval);
+        }
+        let batch_proof = pcs_batch_open::<F,Pcs<F>>(&pp, &ppolys, &comms, &points, &evals, &mut default_transcript())?;
+
+        let pure_comms = comms.iter().map(|c| Pcs::get_pure_commitment(c)).collect_vec();
+        pcs_batch_verify::<F,Pcs<F>>(&vp, &pure_comms, &points, &evals, &batch_proof, &mut default_transcript())?;
+
+       let precommit_proof = rmp_serde::to_vec(&proof)?;
+       let basefold_proof = rmp_serde::to_vec(&batch_proof)?;
+       let precommit_size_kb = precommit_proof.len() / 1024;
+       let basefold_size_kb = basefold_proof.len() / 1024;
+       println!("number of polys: {}", n);
+       println!("precommit size: {} kb", precommit_size_kb);
+       println!("basefold size: {} kb", basefold_size_kb);
+       println!("ratio: {}", precommit_size_kb as f64 / basefold_size_kb as f64);
+       println!("number of vars: {:?}", sizes);
+        Ok(())
     }
 }
