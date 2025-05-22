@@ -453,6 +453,7 @@ mod test {
     use itertools::Itertools;
     use mpcs::{pcs_batch_open, pcs_batch_verify, pcs_commit, pcs_setup, Evaluation};
     use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
+    use rayon::iter::IntoParallelIterator;
 
     use super::compute_betas_eval;
     use crate::{
@@ -556,9 +557,9 @@ mod test {
         assert_eq!(beta_mle.evaluate(&r2), F::ZERO);
     }
     use mpcs::PolynomialCommitmentScheme;
+    use rayon::prelude::*;
 
     #[test]
-    #[ignore]
     fn test_compare_basefold_batch() -> anyhow::Result<()> {
         // number of polys
         let n = 15;
@@ -571,7 +572,9 @@ mod test {
             })
             .collect_vec();
         let max_size = polys.iter().map(|(_,poly)| poly.len()).max().unwrap();
+        let now = std::time::Instant::now();
         let ctx = Context::generate(polys.clone())?;
+        println!("accumulation: time to generate context: {:?}ms", now.elapsed().as_millis());
         let mut claims = Vec::new();
         let mut prover = CommitProver::new();
         for (id, poly) in polys.iter() {
@@ -581,8 +584,9 @@ mod test {
             prover.add_claim(*id, Claim::new(p, eval))?;
         }
         let mut t = default_transcript();
+        let now = std::time::Instant::now();
         let proof = prover.prove(&ctx, &mut t)?;
-
+        println!("accumulation: time to generate proof: {:?}ms", now.elapsed().as_millis());
         // VERIFIER
         let mut verifier = CommitVerifier::new();
         let mut t = default_transcript();
@@ -594,22 +598,19 @@ mod test {
         // --- basefold ---
         let setup = pcs_setup::<F,Pcs<F>>(1 << 25)?;
         let (pp, vp) = Pcs::trim(setup, max_size).unwrap();
-        let mut ppolys = Vec::new();
-        let mut comms = Vec::new();
-        let mut points = Vec::new();
-        let mut evals = Vec::new();
         let sizes = polys.iter().map(|(_,poly)| poly.len().ilog2()).collect_vec();
-        for ((id,poly),(id2,point,eval)) in polys.into_iter().zip(claims) {
+        let now = std::time::Instant::now();
+        let (ppolys,(comms,(points,evals))): (Vec<_>,(Vec<_>,(Vec<_>,Vec<_>))) = polys.into_par_iter().zip(claims.into_par_iter()).map(|((id,poly),(id2,point,eval))| {
             assert_eq!(id, id2);
             let mle = poly.into_mle();
             let comm = pcs_commit::<F,Pcs<F>>(&pp, &mle).unwrap();
             let eval = Evaluation::new(id,id,eval);
-            ppolys.push(mle);
-            comms.push(comm);
-            points.push(point);
-            evals.push(eval);
-        }
+            (mle,(comm,(point,eval)))
+        }).unzip();
+        println!("basefold: time to generate basefold commitments: {:?}ms", now.elapsed().as_millis());
+        let now = std::time::Instant::now();
         let batch_proof = pcs_batch_open::<F,Pcs<F>>(&pp, &ppolys, &comms, &points, &evals, &mut default_transcript())?;
+        println!("basefold: time to generate basefold proof: {:?}ms", now.elapsed().as_millis());
 
         let pure_comms = comms.iter().map(|c| Pcs::get_pure_commitment(c)).collect_vec();
         pcs_batch_verify::<F,Pcs<F>>(&vp, &pure_comms, &points, &evals, &batch_proof, &mut default_transcript())?;
