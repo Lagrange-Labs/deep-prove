@@ -1414,14 +1414,10 @@ where
         self.data[flat_index]
     }
 
-    // 0-based indexing for compatibility with other libraries
-    // ex: accessors = [3,2,1] => will retrieve element at index 1 + 2 * shape[0] + 3 * shape[0] * shape[1]
-    pub fn get(&self, accessors: Vec<usize>) -> T {
+    fn get_idx(&self, accessors: Vec<usize>) -> usize {
         assert!(self.shape.len() == accessors.len());
         let mut flat_index = *accessors.last().unwrap();
         let mut multiplier = *self.shape.last().unwrap();
-        println!("flat_index: {}", flat_index);
-        println!("multiplier: {}", multiplier);
         for (a, s) in accessors
             .iter()
             .rev()
@@ -1436,11 +1432,14 @@ where
             );
             flat_index += *a * multiplier;
             multiplier *= *s;
-            println!(
-                "After (a,s): ({}, {}) flat_index: {} & multiplier: {}",
-                a, s, flat_index, multiplier
-            );
         }
+        flat_index
+    }
+
+    // 0-based indexing for compatibility with other libraries
+    // ex: accessors = [3,2,1] => will retrieve element at index 1 + 2 * shape[0] + 3 * shape[0] * shape[1]
+    pub fn get(&self, accessors: Vec<usize>) -> T {
+        let flat_index = self.get_idx(accessors);
         self.data[flat_index]
     }
 }
@@ -1583,6 +1582,21 @@ impl<T: Number> Tensor<T> {
         Self {
             data,
             shape: shape.to_vec(),
+            og_shape: vec![0],
+        }
+    }
+
+    // slice on the third dimension.
+    // start inclusive, end exclusive
+    pub fn slice_3d(&self, start: usize, end: usize) -> Self {
+        assert!(self.shape.len() == 3);
+        assert!(start < self.shape[0]);
+        assert!(end <= self.shape[0]);
+        let blocks = self.shape[1] * self.shape[2];
+        let sliced = self.data[blocks * start..blocks * end].to_vec();
+        Self {
+            data: sliced,
+            shape: vec![end - start, self.shape[1], self.shape[2]],
             og_shape: vec![0],
         }
     }
@@ -2122,8 +2136,15 @@ mod test {
                 }
             }
         }
-        // let expected = tensor.get(vec![1,0,1]);
-        // let given = permuted.get(vec![0,1,1]);
-        // assert_eq!(expected,given);
+    }
+
+    #[test]
+    fn test_tensor_slice_3d() {
+        let tensor = Tensor::<Element>::new(vec![3, 2, 2], vec![
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
+        ]);
+        let sliced = tensor.slice_3d(1, 3);
+        assert_eq!(sliced.get_data(), vec![5,6,7,8,9,10,11,12]);
+        assert_eq!(sliced.get_shape(), vec![2,2,2]);
     }
 }

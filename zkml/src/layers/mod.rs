@@ -8,6 +8,7 @@ pub mod pooling;
 pub mod provable;
 pub mod requant;
 pub mod transformer;
+pub mod add;
 pub mod reshape;
 
 use std::fmt::Debug;
