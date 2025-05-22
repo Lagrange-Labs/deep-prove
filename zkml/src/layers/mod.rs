@@ -7,6 +7,7 @@ pub mod matvec;
 pub mod pooling;
 pub mod requant;
 pub mod reshape;
+pub mod softmax;
 
 use anyhow::Result;
 use ff_ext::ExtensionField;

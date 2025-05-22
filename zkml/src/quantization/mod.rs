@@ -116,6 +116,10 @@ impl ScalingFactor {
     pub fn dequantize(&self, value: &Element) -> f32 {
         *value as f32 * self.scale()
     }
+    /// Getter for the maximum quantized value
+    pub fn quant_max(&self) -> Element {
+        self.quantized_domain.1
+    }
 }
 
 impl Default for ScalingFactor {
