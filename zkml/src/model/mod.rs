@@ -522,20 +522,9 @@ where
 #[cfg(test)]
 pub(crate) mod test {
     use crate::{
-        ScalingFactor, ScalingStrategy, init_test_logging,
-        layers::{
-            Layer,
-            activation::{Activation, Relu},
-            convolution::{Convolution, SchoolBookConv},
-            dense::Dense,
-            pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
-            provable::{Edge, Node, OpInfo, evaluate_layer},
-            requant::Requant,
-        },
-        padding::{PaddingMode, pad_model},
-        quantization::{self, InferenceObserver},
-        tensor::Number,
-        testing::{random_bool_vector, random_vector},
+        init_test_logging, layers::{
+            activation::{Activation, Relu}, convolution::{Convolution, SchoolBookConv}, dense::Dense, matrix_mul::{MatMul, OperandMatrix}, pooling::{Maxpool2D, Pooling, MAXPOOL2D_KERNEL_SIZE}, provable::{evaluate_layer, Edge, Node, OpInfo}, requant::Requant, Layer
+        }, padding::{pad_model, PaddingMode}, quantization::{self, InferenceObserver}, tensor::Number, testing::{random_bool_vector, random_vector}, ScalingFactor, ScalingStrategy
     };
     use anyhow::Result;
     use ark_std::rand::{Rng, RngCore, thread_rng};
@@ -915,7 +904,7 @@ pub(crate) mod test {
             .collect_vec();
         let matrices_mle = dense_layers
             .iter()
-            .map(|(id, d)| (*id, d.matrix.to_mle_2d::<F>()))
+            .map(|(id, d)| (*id, d.matrix.to_2d_mle::<F>()))
             .collect_vec();
         assert_eq!(dense_layers.len(), 1);
         let point1 = random_bool_vector(dense_layers[0].1.matrix.nrows_2d().ilog2() as usize);
@@ -994,6 +983,59 @@ pub(crate) mod test {
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
         verify::<_, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
+    }
+
+    #[test]
+    fn test_single_matmul_prover() {
+        // layer matrix shape
+        let m_shape = vec![1000, 2000];
+        let m = random_vector_quant(m_shape[0] * m_shape[1]);
+        let tensor_m = Tensor::new(m_shape, m);
+        let input_shape = vec![768, tensor_m.nrows_2d()];
+        let mut model = Model::new_from_input_shapes(vec![input_shape.clone()], PaddingMode::Padding);
+        let matmul_layer = MatMul::new(
+            OperandMatrix::Input,
+            OperandMatrix::new_weight_matrix(tensor_m),
+        )
+        .unwrap();
+        let padded_layer = matmul_layer.pad_next_power_of_two().unwrap();
+        model.add_consecutive_layer(Layer::MatMul(padded_layer), None).unwrap();
+        model.route_output(None).unwrap();
+        model.describe();
+
+        let input = random_vector_quant(input_shape[0] * input_shape[1]);
+        let input_tensor = model.prepare_inputs(vec![Tensor::new(input_shape, input)]).unwrap();
+
+        let trace = model.run::<F>(&input_tensor).unwrap();
+        let mut tr = BasicTranscript::<F>::new(b"matmul");
+        let ctx = Context::<F>::generate(&model, None).expect("Unable to generate context");
+        let io = trace.to_verifier_io();
+        let prover = Prover::new(&ctx, &mut tr);
+        let proof = prover.prove(trace).expect("unable to generate proof");
+        let mut verifier_transcript = BasicTranscript::<F>::new(b"matmul");
+        verify::<_, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
+    }
+
+    #[test]
+    fn test_matmul_with_two_input_matrices() {
+        let first_input_shape = vec![100, 200];
+        let second_input_shape = vec![200, 300];
+        let matrix_shape = vec![300, 100];
+        let mut model = Model::new_from_input_shapes(vec![first_input_shape, second_input_shape], PaddingMode::NoPadding);
+        
+        let matmul = MatMul::new(
+            OperandMatrix::Input,
+            OperandMatrix::Input,
+        ).unwrap();
+        let first_matmul_id = model.add_consecutive_layer(Layer::MatMul(matmul), None).unwrap();
+        let matmul = MatMul::new(
+            OperandMatrix::new_weight_matrix(Tensor::random(&matrix_shape)),
+            OperandMatrix::Input,
+        ).unwrap();
+        model.add_consecutive_layer(Layer::MatMul(matmul), Some(first_matmul_id)).unwrap();
+        model.route_output(None).unwrap();
+        model.describe();
+        prove_model(model).unwrap();
     }
 
     #[test]

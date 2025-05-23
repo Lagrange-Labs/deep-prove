@@ -78,7 +78,7 @@ impl MatVec<Element> {
             ncols,
             input.get_data().len()
         );
-        let mut mat_mle = self.matrix.to_mle_2d();
+        let mut mat_mle = self.matrix.to_2d_mle();
         mat_mle.fix_high_variables_in_place(&last_claim.point);
         let input_mle = input.get_data().to_vec().into_mle();
         assert_eq!(mat_mle.num_vars(), input_mle.num_vars());
@@ -113,7 +113,7 @@ impl MatVec<Element> {
     }
 
     pub fn evaluate_matrix_at<E: ExtensionField>(&self, point: &[E]) -> E {
-        self.matrix.to_mle_2d().evaluate(point)
+        self.matrix.to_2d_mle().evaluate(point)
     }
 }
 

@@ -444,7 +444,7 @@ mod test {
         let claims = (0..n_poly)
             .map(|i| {
                 let point = matrices[i].1.random_eval_point();
-                let eval = matrices[i].1.to_mle_2d().evaluate(&point);
+                let eval = matrices[i].1.to_2d_mle().evaluate(&point);
                 (matrices[i].0, point, eval)
             })
             .collect_vec();

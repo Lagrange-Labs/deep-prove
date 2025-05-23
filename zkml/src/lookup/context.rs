@@ -198,7 +198,7 @@ where
         step.op
             .gen_lookup_witness(node_id, &mut witness_gen, &step.step_data)
             .map_err(|e| {
-                LogUpError::ParamterError(format!(
+                LogUpError::ParameterError(format!(
                     "Error generating lookup witness for node {} with error: {}",
                     node_id,
                     e.to_string()
@@ -224,7 +224,7 @@ where
     let tables_no_challenges = witness_gen.tables.iter().enumerate().map(|(i,table_type)| {
         let (table_column, column_evals) = table_type.get_merged_table_column::<E>(COLUMN_SEPARATOR);
 
-        let table_lookup_data = witness_gen.lookups.get(table_type).ok_or(LogUpError::ParamterError(format!("Tried to retrieve lookups for a table of type: {:?}, but no table of that type exists", table_type)))?;
+        let table_lookup_data = witness_gen.lookups.get(table_type).ok_or(LogUpError::ParameterError(format!("Tried to retrieve lookups for a table of type: {:?}, but no table of that type exists", table_type)))?;
 
         let (multiplicities, mults_ext)  = table_column.iter().map(|table_val| {
             if let Some(lookup_count) = table_lookup_data.get(table_val) {
@@ -240,14 +240,14 @@ where
 
     debug!("Lookup witness generation: commit context generation...");
     let ctx = Context::generate(witness_gen.polys_with_id).map_err(|e| {
-        LogUpError::ParamterError(format!(
+        LogUpError::ParameterError(format!(
             "Could not generate Lookup witness commit context {{ inner: {:?}}}",
             e
         ))
     })?;
 
     ctx.write_to_transcript(transcript).map_err(|e| {
-        LogUpError::ParamterError(format!(
+        LogUpError::ParameterError(format!(
             "Unable to write lookup witness commit context to transcript, {{ inner: {:?}}}",
             e
         ))
@@ -263,7 +263,7 @@ where
             |(node_id, (column_evals, columns_per_instance, table_type))| {
                 let (constant_challenge, column_challenge) = challenge_storage
                     .get_challenges_by_name(&table_type.name())
-                    .ok_or(LogUpError::ParamterError(format!(
+                    .ok_or(LogUpError::ParameterError(format!(
                         "No challegnes found for table type: {} when generating lookup witness",
                         table_type.name()
                     )))?;
@@ -286,7 +286,7 @@ where
         .map(|(column_evals, multiplicities, table_type)| {
             let (constant_challenge, column_challenge) = challenge_storage
                 .get_challenges_by_name(&table_type.name())
-                .ok_or(LogUpError::ParamterError(format!(
+                .ok_or(LogUpError::ParameterError(format!(
                     "No challegnes found for table type: {} when generating table witness",
                     table_type.name()
                 )))?;

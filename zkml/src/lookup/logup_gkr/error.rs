@@ -7,7 +7,7 @@ pub enum LogUpError {
     PolynomialError(String),
     ProvingError(String),
     VerifierError(String),
-    ParamterError(String),
+    ParameterError(String),
 }
 
 impl std::fmt::Display for LogUpError {
@@ -16,7 +16,7 @@ impl std::fmt::Display for LogUpError {
             LogUpError::PolynomialError(s) => write!(f, "Polynomial related error: {}", s),
             LogUpError::ProvingError(s) => write!(f, "Error during LogUp proving: {}", s),
             LogUpError::VerifierError(s) => write!(f, "Error while verifying LogUp proof: {}", s),
-            LogUpError::ParamterError(s) => write!(f, "Parameters were incorrect: {}", s),
+            LogUpError::ParameterError(s) => write!(f, "Parameters were incorrect: {}", s),
         }
     }
 }
