@@ -35,10 +35,7 @@ use crate::{
 
 use super::{
     LayerCtx,
-    provable::{
-        Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProvableOp, ProvableOpError, ProveInfo,
-        VerifiableCtx,
-    },
+    provable::{Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, VerifiableCtx},
 };
 
 enum RequantResult {
@@ -86,6 +83,8 @@ where
     pub(crate) lookup: LogUpProof<E>,
 }
 
+const IS_PROVABLE: bool = true;
+
 impl OpInfo for Requant {
     fn output_shapes(
         &self,
@@ -108,7 +107,7 @@ impl OpInfo for Requant {
     }
 
     fn is_provable(&self) -> bool {
-        true
+        IS_PROVABLE
     }
 }
 
@@ -117,12 +116,11 @@ impl Evaluate<Element> for Requant {
         &self,
         inputs: &[&Tensor<Element>],
         _unpadded_input_shapes: Vec<Vec<usize>>,
-    ) -> Result<LayerOut<Element, E>, ProvableOpError> {
-        if inputs.len() != 1 {
-            return Err(ProvableOpError::ParameterError(
-                "Requant layer expects one input".to_string(),
-            ));
-        }
+    ) -> Result<LayerOut<Element, E>> {
+        ensure!(
+            inputs.len() == 1,
+            "Found more than 1 input when evaluating requant layer"
+        );
         let input = inputs[0];
         Ok(LayerOut::from_vec(vec![self.op(input)?]))
     }
@@ -133,11 +131,7 @@ where
     E: ExtensionField + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
 {
-    fn step_info(
-        &self,
-        id: PolyID,
-        mut aux: ContextAux,
-    ) -> Result<(LayerCtx<E>, ContextAux), ProvableOpError> {
+    fn step_info(&self, id: PolyID, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         aux.tables.insert(TableType::Range);
         let num_vars = aux
             .last_output_shape
@@ -181,7 +175,7 @@ where
         last_claims: Vec<&Claim<E>>,
         step_data: &StepData<E, E>,
         prover: &mut Prover<E, T>,
-    ) -> std::result::Result<Vec<Claim<E>>, ProvableOpError> {
+    ) -> Result<Vec<Claim<E>>> {
         Ok(vec![self.prove_step(
             prover,
             last_claims[0],
@@ -196,18 +190,15 @@ where
         id: NodeId,
         gen: &mut LookupWitnessGen<E>,
         step_data: &StepData<Element, E>,
-    ) -> Result<(), ProvableOpError> {
-        if step_data.inputs.len() != 1 {
-            return Err(ProvableOpError::ParameterError(
-                "Requant layer expects exactly one input tensor".to_string(),
-            ));
-        }
-
-        if step_data.outputs.outputs().len() != 1 {
-            return Err(ProvableOpError::ParameterError(
-                "Requant layer expects exactly one output tensor".to_string(),
-            ));
-        }
+    ) -> Result<()> {
+        ensure!(
+            step_data.inputs.len() == 1,
+            "Found more than 1 input in inference step of requant layer"
+        );
+        ensure!(
+            step_data.outputs.outputs().len() == 1,
+            "Found more than 1 output in inference step of requant layer"
+        );
 
         gen.tables.insert(TableType::Range);
         let table_lookup_map = gen
@@ -237,6 +228,32 @@ where
     }
 }
 
+impl OpInfo for RequantCtx {
+    fn output_shapes(
+        &self,
+        input_shapes: &[Vec<usize>],
+        _padding_mode: PaddingMode,
+    ) -> Vec<Vec<usize>> {
+        input_shapes.to_vec()
+    }
+
+    fn num_outputs(&self, num_inputs: usize) -> usize {
+        Requant::num_outputs(num_inputs)
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "Requant ctx: shift: {}, offset: 2^{}",
+            self.requant.right_shift,
+            (self.requant.range << 1).ilog2() as usize,
+        )
+    }
+
+    fn is_provable(&self) -> bool {
+        IS_PROVABLE
+    }
+}
+
 impl<E> VerifiableCtx<E> for RequantCtx
 where
     E: ExtensionField,
@@ -251,7 +268,7 @@ where
         last_claims: &[&Claim<E>],
         verifier: &mut Verifier<E, T>,
         _shape_step: &ShapeStep,
-    ) -> std::result::Result<Vec<Claim<E>>, ProvableOpError> {
+    ) -> Result<Vec<Claim<E>>> {
         let (constant_challenge, column_separation_challenge) = verifier
             .challenge_storage
             .as_ref()
@@ -269,17 +286,13 @@ where
             column_separation_challenge,
         )?])
     }
-
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        _padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
-        input_shapes.to_vec()
-    }
 }
 
 impl Requant {
+    fn num_outputs(num_inputs: usize) -> usize {
+        num_inputs
+    }
+
     pub fn new(min_value: usize, right_shift: usize) -> Self {
         Self {
             right_shift,

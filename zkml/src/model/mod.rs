@@ -75,13 +75,13 @@ where
         }
     }
 
-    pub(crate) fn new<I: Iterator<Item = (NodeId, Node<N>)>>(
+    pub(crate) fn new(
         unpadded_input_shapes: Vec<Vec<usize>>,
         padding: PaddingMode,
-        nodes: I,
+        nodes: HashMap<NodeId, Node<N>>,
     ) -> Self {
         let mut model = Self::new_from_input_shapes(unpadded_input_shapes, padding);
-        model.nodes = nodes.collect();
+        model.nodes = nodes;
 
         model
     }
@@ -91,15 +91,15 @@ where
     /// tensors for the model; therefore, `actual_input_shapes` can be the same
     /// as `unpadded_input_shapes` if the input tensors of the model are
     /// not expected to be padded
-    pub fn new_from_shapes<I: Iterator<Item = (NodeId, Node<N>)>>(
+    pub fn new_from_shapes(
         unpadded_input_shapes: Vec<Vec<usize>>,
         actual_input_shapes: Vec<Vec<usize>>,
-        nodes: I,
+        nodes: HashMap<NodeId, Node<N>>,
     ) -> Self {
         Self {
             unpadded_input_shapes,
             input_shapes: actual_input_shapes,
-            nodes: nodes.collect(),
+            nodes,
         }
     }
 

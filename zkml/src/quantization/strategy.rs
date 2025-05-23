@@ -1,7 +1,5 @@
 use crate::{
-    layers::{
-        convolution::Convolution, dense::Dense, matrix_mul::MatMul, provable::{quantize_op, Node, NodeId, QuantizeOp}
-    },
+    layers::provable::{Node, NodeId, QuantizeOp},
     model::{Model, ToIterator},
     quantization::metadata::{MetadataBuilder, ModelMetadata},
     tensor::Number,
@@ -25,6 +23,15 @@ pub trait ScalingStrategy: std::fmt::Debug {
     type AuxData: Sized;
 
     fn quantize(&self, model: Model<f32>) -> Result<(Model<Element>, ModelMetadata)>;
+
+    /// Returns the scaling factors for the outputs of the node with the given ID. The number of
+    /// outputs is given by the `num_outputs` parameter. The scaling factors are computed based on
+    /// the auxiliary data provided.
+    fn scaling_factors_for_node(
+        data: &Self::AuxData,
+        node_id: NodeId,
+        num_outputs: usize,
+    ) -> Vec<ScalingFactor>;
 
     fn name(&self) -> String;
 }
@@ -106,6 +113,19 @@ impl ScalingStrategy for InferenceObserver {
             })
             .collect_vec();
         quantize_model::<InferenceObserver>(model, tracker, input_scaling)
+    }
+
+    fn scaling_factors_for_node(
+        tracker: &InferenceTracker,
+        node_id: NodeId,
+        num_outputs: usize,
+    ) -> Vec<ScalingFactor> {
+        (0..num_outputs)
+            .map(|i| {
+                let (min, max) = tracker.distribution_info(node_id, i);
+                ScalingFactor::from_absolute_max(min.abs().max(max.abs()), None)
+            })
+            .collect()
     }
 }
 
@@ -196,30 +216,33 @@ impl ScalingStrategy for AbsoluteMax {
         };
         quantize_model::<AbsoluteMax>(model, (), input_scaling_factor)
     }
+
+    fn scaling_factors_for_node(
+        _data: &Self::AuxData,
+        _node_id: NodeId,
+        num_outputs: usize,
+    ) -> Vec<ScalingFactor> {
+        vec![ScalingFactor::default(); num_outputs]
+    }
 }
 
 fn quantize_model<S: ScalingStrategy>(
     model: Model<f32>,
     data: S::AuxData,
     input_scaling: Vec<ScalingFactor>,
-) -> anyhow::Result<(Model<Element>, ModelMetadata)>
-where
-    Dense<f32>: QuantizeOp<S, QuantizedOp = Dense<Element>>,
-    Convolution<f32>: QuantizeOp<S, QuantizedOp = Convolution<Element>>,
-    MatMul<f32>: QuantizeOp<S, QuantizedOp = MatMul<Element>>,  
-{
+) -> anyhow::Result<(Model<Element>, ModelMetadata)> {
     let input_shapes = model.input_shapes();
     let input_not_padded_shapes = model.unpadded_input_shapes();
     let mut md = MetadataBuilder::new(input_scaling);
     // 2. Create the requant layers from the infered data
     let mut requant_layers = vec![];
-    let mut catch_err: Result<()> = Ok(());
     let nodes = model
         .into_forward_iterator()
         .map(|(node_id, node)| {
             let input_scaling = md.compute_input_scaling(&node.inputs)?;
-            let quantized_out =
-                quantize_op::<S, _>(node.operation, &data, node_id, &input_scaling)?;
+            let quantized_out = node
+                .operation
+                .quantize_op::<S>(&data, node_id, &input_scaling)?;
             md.set_layers_scaling(node_id, quantized_out.output_scalings, input_scaling);
             if let Some(requant) = quantized_out.requant_layer {
                 requant_layers.push((node_id, requant));
@@ -228,16 +251,8 @@ where
                 Node::new_with_outputs(node.inputs, quantized_out.quanzited_op, node.outputs);
             Ok((node_id, quantized_node))
         })
-        .map_while(|n| {
-            if n.is_err() {
-                catch_err = Err(n.unwrap_err());
-                None
-            } else {
-                Some(n.unwrap())
-            }
-        });
+        .collect::<Result<_>>()?;
     let mut model = Model::new_from_shapes(input_not_padded_shapes, input_shapes, nodes);
-    catch_err?;
     for (input_node_id, requant) in requant_layers {
         let node_id = model.add_requant_node(requant, input_node_id)?;
         // add scaling factor to `md` for requant layers: the scaling factors of the inputs correspond to

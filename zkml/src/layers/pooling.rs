@@ -13,11 +13,11 @@ use crate::{
         },
     },
     model::StepData,
-    padding::{PaddingError, PaddingMode, ShapeInfo, pooling},
+    padding::{PaddingMode, ShapeInfo, pooling},
     quantization::{Fieldizer, IntoElement},
     tensor::{Number, Tensor},
 };
-use anyhow::{Context, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
 use itertools::{Itertools, izip};
@@ -35,10 +35,7 @@ use sumcheck::structs::IOPProverState;
 
 use super::{
     LayerCtx,
-    provable::{
-        Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProvableOp, ProvableOpError, ProveInfo,
-        VerifiableCtx,
-    },
+    provable::{Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, VerifiableCtx},
 };
 
 pub const MAXPOOL2D_KERNEL_SIZE: usize = 2;
@@ -75,6 +72,8 @@ where
     pub(crate) variable_gap: usize,
 }
 
+const IS_PROVABLE: bool = true;
+
 impl OpInfo for Pooling {
     fn output_shapes(
         &self,
@@ -103,7 +102,7 @@ impl OpInfo for Pooling {
     }
 
     fn is_provable(&self) -> bool {
-        true
+        IS_PROVABLE
     }
 }
 
@@ -112,12 +111,11 @@ impl<N: Number> Evaluate<N> for Pooling {
         &self,
         inputs: &[&Tensor<N>],
         _unpadded_input_shapes: Vec<Vec<usize>>,
-    ) -> Result<LayerOut<N, E>, super::provable::ProvableOpError> {
-        if inputs.len() != 1 {
-            return Err(super::provable::ProvableOpError::ParameterError(
-                "Pooling layer expects one input".to_string(),
-            ));
-        }
+    ) -> Result<LayerOut<N, E>> {
+        ensure!(
+            inputs.len() == 1,
+            "Found more than 1 input when evaluating pooling layer"
+        );
         let input = inputs[0];
         let output = match self {
             Pooling::Maxpool2D(maxpool2d) => maxpool2d.op(input),
@@ -131,11 +129,7 @@ where
     E: ExtensionField + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
 {
-    fn step_info(
-        &self,
-        id: PolyID,
-        mut aux: ContextAux,
-    ) -> Result<(LayerCtx<E>, ContextAux), ProvableOpError> {
+    fn step_info(&self, id: PolyID, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         let info = match self {
             Pooling::Maxpool2D(info) => {
                 aux.tables.insert(TableType::Range);
@@ -169,7 +163,7 @@ where
 }
 
 impl PadOp for Pooling {
-    fn pad_node(self, si: &mut ShapeInfo) -> Result<Self, PaddingError>
+    fn pad_node(self, si: &mut ShapeInfo) -> Result<Self>
     where
         Self: Sized,
     {
@@ -192,7 +186,7 @@ where
         last_claims: Vec<&Claim<E>>,
         step_data: &StepData<E, E>,
         prover: &mut Prover<E, T>,
-    ) -> Result<Vec<Claim<E>>, super::provable::ProvableOpError> {
+    ) -> Result<Vec<Claim<E>>> {
         Ok(vec![self.prove_pooling(
             prover,
             last_claims[0],
@@ -208,18 +202,15 @@ where
         id: NodeId,
         gen: &mut LookupWitnessGen<E>,
         step_data: &StepData<Element, E>,
-    ) -> Result<(), ProvableOpError> {
-        if step_data.inputs.len() != 1 {
-            return Err(ProvableOpError::ParameterError(
-                "Requant layer expects exactly one input tensor".to_string(),
-            ));
-        }
-
-        if step_data.outputs.outputs().len() != 1 {
-            return Err(ProvableOpError::ParameterError(
-                "Requant layer expects exactly one output tensor".to_string(),
-            ));
-        }
+    ) -> Result<()> {
+        ensure!(
+            step_data.inputs.len() == 1,
+            "Found more than 1 input in inference step of pooling layer"
+        );
+        ensure!(
+            step_data.outputs.outputs().len() == 1,
+            "Found more than 1 output in inference step of pooling layer"
+        );
 
         gen.tables.insert(TableType::Range);
         let table_lookup_map = gen
@@ -248,6 +239,34 @@ where
     }
 }
 
+impl OpInfo for PoolingCtx {
+    fn output_shapes(
+        &self,
+        input_shapes: &[Vec<usize>],
+        _padding_mode: PaddingMode,
+    ) -> Vec<Vec<usize>> {
+        input_shapes
+            .into_iter()
+            .map(|shape| self.poolinfo.output_shape(&shape))
+            .collect()
+    }
+
+    fn num_outputs(&self, num_inputs: usize) -> usize {
+        Pooling::num_outputs(num_inputs)
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "MaxPool2D ctx{{ kernel size: {}, stride: {} }}",
+            self.poolinfo.kernel_size, self.poolinfo.stride
+        )
+    }
+
+    fn is_provable(&self) -> bool {
+        IS_PROVABLE
+    }
+}
+
 impl<E> VerifiableCtx<E> for PoolingCtx
 where
     E: ExtensionField,
@@ -262,7 +281,7 @@ where
         last_claims: &[&Claim<E>],
         verifier: &mut Verifier<E, T>,
         _shape_step: &ShapeStep,
-    ) -> Result<Vec<Claim<E>>, ProvableOpError> {
+    ) -> Result<Vec<Claim<E>>> {
         let (constant_challenge, column_separation_challenge) = verifier
             .challenge_storage
             .as_ref()
@@ -280,20 +299,13 @@ where
             column_separation_challenge,
         )?])
     }
-
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        _padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
-        input_shapes
-            .into_iter()
-            .map(|shape| self.poolinfo.output_shape(&shape))
-            .collect()
-    }
 }
 
 impl Pooling {
+    fn num_outputs(num_inputs: usize) -> usize {
+        num_inputs
+    }
+
     pub fn op<T: Number>(&self, input: &Tensor<T>) -> Tensor<T> {
         match self {
             Pooling::Maxpool2D(maxpool2d) => maxpool2d.op(input),

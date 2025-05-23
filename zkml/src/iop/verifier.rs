@@ -6,7 +6,7 @@ use crate::{
     iop::{ChallengeStorage, context::ShapeStep},
     layers::{
         LayerProof,
-        provable::{NodeCtx, NodeId, ProvableOpError, VerifiableCtx},
+        provable::{NodeCtx, NodeId, OpInfo, VerifiableCtx},
     },
     lookup::{context::TableType, logup_gkr::verifier::verify_logup_proof},
     model::ToIterator,
@@ -181,15 +181,14 @@ where
             );
             let claims_for_verify = step.claims_for_node(&claims_by_layer, &out_claims)?;
             let claims = {
-                let res = step
-                    .ctx
-                    .verify(node_proof, &claims_for_verify, &mut self, shape_step);
-                if let Err(ProvableOpError::NotProvableLayer(_)) = res {
+                if step.ctx.is_provable() {
+                    // we verify the proof
+                    step.ctx
+                        .verify(node_proof, &claims_for_verify, &mut self, shape_step)?
+                } else {
                     // we only propagate the claims, without changing them, as a non-provable layer
                     // shouldn't change the input values
                     claims_for_verify.into_iter().cloned().collect()
-                } else {
-                    res?
                 }
             };
             claims_by_layer.insert(node_id, claims);

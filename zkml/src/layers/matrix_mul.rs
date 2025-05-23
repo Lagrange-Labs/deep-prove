@@ -11,10 +11,10 @@ use tracing::debug;
 use transcript::Transcript;
 
 use crate::{
-    commit::precommit::{CommitProver, CommitVerifier, PolyID}, iop::{context::ContextAux, verifier::Verifier}, layers::LayerProof, model::StepData, padding::{pad_matmul, PaddingMode, ShapeInfo}, quantization::{self, AbsoluteMax, InferenceObserver, InferenceTracker}, tensor::{Number, Tensor}, Claim, Element, Prover, ScalingFactor
+    commit::precommit::{CommitProver, CommitVerifier, PolyID}, iop::{context::ContextAux, verifier::Verifier}, layers::LayerProof, model::StepData, padding::{pad_matmul, PaddingMode, ShapeInfo}, quantization, tensor::{Number, Tensor}, Claim, Element, Prover, ScalingFactor, ScalingStrategy
 };
 
-use super::{provable::{Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProvableOp, ProvableOpError, ProveInfo, QuantizeOp, QuantizeOutput, VerifiableCtx}, requant::Requant, LayerCtx};
+use super::{provable::{Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, QuantizeOp, QuantizeOutput, VerifiableCtx}, requant::Requant, LayerCtx};
 
 #[derive(Clone, Debug)]
 pub struct WeightMatrix<T> {
@@ -228,51 +228,6 @@ impl<T> MatMul<T> {
         }
     }
 
-    /*pub fn requant_info(&self) -> Requant {
-        let matrix = match (&self.left_matrix, &self.right_matrix) {
-            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => panic!(
-                "Found layer with 2 constant matrices, which is useless as the 
-                product can be directly used instead"
-            ),
-            (OperandMatrix::Weigth(tensor), OperandMatrix::Input(_)) => Some(tensor),
-            (OperandMatrix::Input(_), OperandMatrix::Weigth(tensor)) => Some(tensor),
-            (OperandMatrix::Input(_), OperandMatrix::Input(_)) => None,
-        };
-        if let Some(matrix) = matrix {
-            let ncols = matrix.ncols_2d();
-            let max_output_range = matrix
-                .get_data()
-                .iter()
-                .chunks(ncols)
-                .into_iter()
-                .map(|row| {
-                    let row_range = row
-                        .map(|w| quantization::range_from_weight(w))
-                        .fold((0, 0), |(min, max), (wmin, wmax)| (min + wmin, max + wmax));
-                    // weight * MIN can be positive and higher then MAX*weight if weight's negative
-                    // so we take the absolute value of the difference
-                    (row_range.1 - row_range.0).unsigned_abs() as usize
-                })
-                .max()
-                .expect("No max range found")
-                .next_power_of_two();
-            let shift = max_output_range.ilog2() as usize - *quantization::BIT_LEN;
-            Requant {
-                range: max_output_range,
-                right_shift: shift,
-                after_range: 1 << *quantization::BIT_LEN,
-            }
-        } else {
-            // use a default value
-            let max_output_range = 2usize; // assume range [-1, 1]
-            Requant {
-                range: 2, // assume range [-1, 1]
-                right_shift: max_output_range.ilog2() as usize - *quantization::BIT_LEN,
-                after_range: 1 << *quantization::BIT_LEN,
-            }
-        }
-    }*/
-
     /// Method to split the point of a claim computed for the output matrix MLE among the coordinates
     /// for the left matrix and for the right matrix, which are returned as output.
     /// `output_num_vars` specifies the number of variables for each dimension of the output matrix
@@ -311,6 +266,11 @@ impl<T> MatMul<T> {
         let point_for_left = [proof_point, claim_point_for_left].concat();
         (point_for_left, point_for_right)
     }
+
+    fn num_outputs(num_inputs: usize) -> usize {
+        assert!(num_inputs < 3, "MatMul layer should have at most 2 inputs");
+        1
+    }
 }
 
 /// Helper method to compute output shapes for MatMul layer. It requires as input:
@@ -346,6 +306,7 @@ fn compute_output_shapes(
         );
         vec![vec![left_shape[0], right_shape[1]]]
 }
+const IS_PROVABLE: bool = true;
 
 impl<N: Number> OpInfo for MatMul<N> {
     fn output_shapes(
@@ -359,8 +320,7 @@ impl<N: Number> OpInfo for MatMul<N> {
     }
 
     fn num_outputs(&self, num_inputs: usize) -> usize {
-        assert!(num_inputs < 3, "MatMul layer should have at most 2 inputs");
-        1
+        Self::num_outputs(num_inputs)
     }
 
     fn describe(&self) -> String {
@@ -372,7 +332,7 @@ impl<N: Number> OpInfo for MatMul<N> {
     }
 
     fn is_provable(&self) -> bool {
-        true
+        IS_PROVABLE
     }
 }
 
@@ -381,7 +341,7 @@ impl<N: Number> Evaluate<N> for MatMul<N> {
         &self,
         inputs: &[&Tensor<N>],
         _unpadded_input_shapes: Vec<Vec<usize>>,
-    ) -> Result<LayerOut<N, E>, ProvableOpError> {
+    ) -> Result<LayerOut<N, E>> {
         let output = self.op(inputs.to_vec())?;
         Ok(LayerOut::from_vec(vec![output]))
     }
@@ -397,7 +357,7 @@ where
         &self,
         id: PolyID,
         mut ctx_aux: ContextAux,
-    ) -> Result<(LayerCtx<E>, ContextAux), ProvableOpError> {
+    ) -> Result<(LayerCtx<E>, ContextAux)> {
         let info = self.ctx(id, &mut ctx_aux)?;
 
         // there is only one product (i.e. quadratic sumcheck)
@@ -499,37 +459,28 @@ impl MatMul<f32> {
     }
 }
 
-impl QuantizeOp<InferenceObserver> for MatMul<f32> {
+impl QuantizeOp for MatMul<f32> {
     type QuantizedOp = MatMul<Element>;
 
-    fn quantize_op(
+    fn quantize_op<S: ScalingStrategy>(
         self,
-        tracker: &InferenceTracker,
+        data: &S::AuxData,
         node_id: NodeId,
         input_scaling: &[ScalingFactor],
     ) -> anyhow::Result<QuantizeOutput<Self::QuantizedOp>> {
-        let (min, max) = tracker.distribution_info(node_id, 0);
-        let output_scaling = ScalingFactor::from_absolute_max(min.abs().max(max.abs()), None);
-        self.quantize_from_scalings(input_scaling, output_scaling)
-    }
-}
-
-impl QuantizeOp<AbsoluteMax> for MatMul<f32> {
-    type QuantizedOp  = MatMul<Element>;
-
-    fn quantize_op(
-        self,
-        _data: &(),
-        _node_id: NodeId,
-        input_scaling: &[ScalingFactor],
-    ) -> anyhow::Result<QuantizeOutput<Self::QuantizedOp>> {
-        let output_scaling = ScalingFactor::default();
+        let num_outputs = self.num_outputs(input_scaling.len());
+        let mut output_scalings = S::scaling_factors_for_node(data, node_id, num_outputs);
+        ensure!(
+            output_scalings.len() == 1,
+            "Output scaling for convolution layer different from 1"
+        );
+        let output_scaling = output_scalings.pop().unwrap();
         self.quantize_from_scalings(input_scaling, output_scaling)
     }
 }
 
 impl PadOp for MatMul<Element> {
-    fn pad_node(self, si: &mut ShapeInfo) -> Result<Self, crate::padding::PaddingError>
+    fn pad_node(self, si: &mut ShapeInfo) -> Result<Self>
     where
         Self: Sized,
     {
@@ -552,7 +503,7 @@ where
             last_claims: Vec<&Claim<E>>,
             step_data: &StepData<E, E>,
             prover: &mut Prover<E, T>,
-        ) -> Result<Vec<Claim<E>>, ProvableOpError> {
+        ) -> Result<Vec<Claim<E>>> {
         Ok(self.prove_step(
             node_id, 
             prover, 
@@ -832,28 +783,8 @@ impl MatMul<Element> {
     }
 }
 
-impl<E> VerifiableCtx<E> for MatMulCtx<E>
-where
-    E: ExtensionField,
-    E::BaseField: Serialize + DeserializeOwned,
-    E: Serialize + DeserializeOwned,
+impl<E: ExtensionField> OpInfo for MatMulCtx<E> 
 {
-    type Proof = MatMulProof<E>;
-
-    fn verify<T: Transcript<E>>(
-        &self,
-        proof: &Self::Proof,
-        last_claims: &[&Claim<E>],
-        verifier: &mut Verifier<E, T>,
-        _shape_step: &crate::iop::context::ShapeStep,
-    ) -> Result<Vec<Claim<E>>, ProvableOpError> {
-        Ok(self.verify_matmul(
-            verifier, 
-            last_claims[0], 
-            proof
-        )?)
-    }
-
     fn output_shapes(
         &self,
         input_shapes: &[Vec<usize>],
@@ -872,6 +803,45 @@ where
             }
         );
         compute_output_shapes(input_shapes, left_matrix_shape, right_matrix_shape)
+    }
+
+    fn num_outputs(&self, num_inputs: usize) -> usize {
+        MatMul::<Element>::num_outputs(num_inputs)
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "Matrix multiplication ctx: left = {:?}, right = {:?}",
+            self.left_matrix_shapes.as_ref().map(|s| s.1.clone()),
+            self.right_matrix_shapes.as_ref().map(|s| s.1.clone()),
+        )
+    }
+
+    fn is_provable(&self) -> bool {
+        IS_PROVABLE
+    }
+}
+
+impl<E> VerifiableCtx<E> for MatMulCtx<E>
+where
+    E: ExtensionField,
+    E::BaseField: Serialize + DeserializeOwned,
+    E: Serialize + DeserializeOwned,
+{
+    type Proof = MatMulProof<E>;
+
+    fn verify<T: Transcript<E>>(
+        &self,
+        proof: &Self::Proof,
+        last_claims: &[&Claim<E>],
+        verifier: &mut Verifier<E, T>,
+        _shape_step: &crate::iop::context::ShapeStep,
+    ) -> Result<Vec<Claim<E>>> {
+        Ok(self.verify_matmul(
+            verifier, 
+            last_claims[0], 
+            proof
+        )?)
     }
 }
 

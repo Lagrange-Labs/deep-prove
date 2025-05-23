@@ -11,12 +11,12 @@ pub mod requant;
 
 use std::fmt::Debug;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use ff_ext::ExtensionField;
 use flatten::Flatten;
 use pooling::{PoolingCtx, PoolingProof};
 use provable::{
-    quantize_op, Evaluate, LayerOut, Node, OpInfo, PadOp, ProvableOp, ProvableOpError, ProveInfo, QuantizeOp, QuantizeOutput, VerifiableCtx
+    Evaluate, LayerOut, Node, OpInfo, PadOp, ProvableOp, ProveInfo, QuantizeOp, QuantizeOutput,
 };
 use requant::RequantCtx;
 use transcript::Transcript;
@@ -34,7 +34,7 @@ use crate::{
     },
     lookup::context::LookupWitnessGen,
     model::StepData,
-    padding::{PaddingError, PaddingMode, ShapeInfo},
+    padding::{PaddingMode, ShapeInfo},
     quantization::ScalingFactor,
     tensor::{Number, Tensor},
 };
@@ -161,7 +161,7 @@ where
         &self,
         inputs: &[&Tensor<N>],
         unpadded_input_shapes: Vec<Vec<usize>>,
-    ) -> Result<LayerOut<N, E>, ProvableOpError>
+    ) -> Result<LayerOut<N, E>>
     where
         N: Number,
         Layer<N>: Evaluate<N>,
@@ -173,7 +173,7 @@ where
         &self,
         id: PolyID,
         aux: ContextAux,
-    ) -> Result<(LayerCtx<E>, ContextAux), ProvableOpError>
+    ) -> Result<(LayerCtx<E>, ContextAux)>
     where
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
@@ -184,7 +184,7 @@ where
 }
 
 impl Node<Element> {
-    pub(crate) fn pad_node(self, si: &mut ShapeInfo) -> Result<Self, PaddingError> {
+    pub(crate) fn pad_node(self, si: &mut ShapeInfo) -> Result<Self> {
         Ok(Self {
             inputs: self.inputs,
             outputs: self.outputs,
@@ -260,7 +260,7 @@ impl Evaluate<f32> for Layer<f32> {
         &self,
         inputs: &[&Tensor<f32>],
         unpadded_input_shapes: Vec<Vec<usize>>,
-    ) -> Result<LayerOut<f32, E>, ProvableOpError> {
+    ) -> Result<LayerOut<f32, E>> {
         match self {
             Layer::Dense(dense) => dense.evaluate(inputs, unpadded_input_shapes),
             Layer::Convolution(convolution) => convolution.evaluate(inputs, unpadded_input_shapes),
@@ -281,7 +281,7 @@ impl Evaluate<Element> for Layer<Element> {
         &self,
         inputs: &[&Tensor<Element>],
         unpadded_input_shapes: Vec<Vec<usize>>,
-    ) -> Result<LayerOut<Element, E>, ProvableOpError> {
+    ) -> Result<LayerOut<Element, E>> {
         match self {
             Layer::Dense(dense) => dense.evaluate(inputs, unpadded_input_shapes),
             Layer::Convolution(convolution) => convolution.evaluate(inputs, unpadded_input_shapes),
@@ -302,11 +302,7 @@ where
     E: ExtensionField + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
 {
-    fn step_info(
-        &self,
-        id: PolyID,
-        aux: ContextAux,
-    ) -> Result<(LayerCtx<E>, ContextAux), ProvableOpError> {
+    fn step_info(&self, id: PolyID, aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         match self {
             Layer::Dense(dense) => dense.step_info(id, aux),
             Layer::MatMul(mat) => mat.step_info(id, aux),
@@ -334,7 +330,7 @@ where
 }
 
 impl PadOp for Layer<Element> {
-    fn pad_node(self, si: &mut ShapeInfo) -> Result<Self, PaddingError>
+    fn pad_node(self, si: &mut ShapeInfo) -> Result<Self>
     where
         Self: Sized,
     {
@@ -367,33 +363,29 @@ where
         last_claims: Vec<&crate::Claim<E>>,
         step_data: &StepData<E, E>,
         prover: &mut crate::Prover<E, T>,
-    ) -> Result<Vec<crate::Claim<E>>, ProvableOpError> {
+    ) -> Result<Vec<crate::Claim<E>>> {
         match self {
             Layer::Dense(dense) => {
                 if let LayerCtx::Dense(info) = ctx {
                     dense.prove(node_id, info, last_claims, step_data, prover)
                 } else {
-                    Err(ProvableOpError::ParameterError(
-                        "No dense ctx found for dense layer".to_string(),
-                    ))
+                    bail!("No dense ctx found when proving dense layer")
                 }
             }
             Layer::Convolution(convolution) => {
                 if let LayerCtx::Convolution(info) = ctx {
                     convolution.prove(node_id, info, last_claims, step_data, prover)
                 } else {
-                    Err(ProvableOpError::ParameterError(
-                        "No convolution ctx found for convolution layer".to_string(),
-                    ))
+                    bail!("No convolution ctx found when proving convolution layer")
                 }
             }
             Layer::MatMul(m) => {
                 if let LayerCtx::MatMul(info) = ctx {
                     m.prove(node_id, info, last_claims, step_data, prover)
                 } else {
-                    Err(ProvableOpError::ParameterError(
-                        "No mat mul ctx found for MatMul layer".to_string(),
-                    ))
+                    bail!(
+                        "No mat mul ctx found for when proving MatMul layer".to_string(),
+                    )
                 }
             }
             Layer::SchoolBookConvolution(_) => {
@@ -403,27 +395,21 @@ where
                 if let LayerCtx::Activation(info) = ctx {
                     activation.prove(node_id, info, last_claims, step_data, prover)
                 } else {
-                    Err(ProvableOpError::ParameterError(
-                        "No activation ctx found for activation layer".to_string(),
-                    ))
+                    bail!("No activation ctx found when proving activation layer")
                 }
             }
             Layer::Requant(requant) => {
                 if let LayerCtx::Requant(info) = ctx {
                     requant.prove(node_id, info, last_claims, step_data, prover)
                 } else {
-                    Err(ProvableOpError::ParameterError(
-                        "No requant ctx found for requant layer".to_string(),
-                    ))
+                    bail!("No requant ctx found when proving requant layer")
                 }
             }
             Layer::Pooling(pooling) => {
                 if let LayerCtx::Pooling(info) = ctx {
                     pooling.prove(node_id, info, last_claims, step_data, prover)
                 } else {
-                    Err(ProvableOpError::ParameterError(
-                        "No pooling ctx found for pooling layer".to_string(),
-                    ))
+                    bail!("No pooling ctx found when proving pooling layer")
                 }
             }
             Layer::Flatten(_) => unreachable!("prove cannot be called for reshape"),
@@ -435,39 +421,40 @@ where
         id: provable::NodeId,
         gen: &mut LookupWitnessGen<E>,
         step_data: &StepData<Element, E>,
-    ) -> Result<(), ProvableOpError> {
+    ) -> Result<()> {
         match self {
             Layer::Dense(dense) => dense.gen_lookup_witness(id, gen, step_data),
             Layer::Convolution(convolution) => convolution.gen_lookup_witness(id, gen, step_data),
             Layer::MatMul(m) => m.gen_lookup_witness(id, gen, step_data),
             Layer::SchoolBookConvolution(school_book_conv) => {
-                school_book_conv.gen_lookup_witness(id, gen, step_data)
+                // check that the layer is not provable, so we don't need to call the method
+                assert!(!school_book_conv.is_provable());
+                Ok(())
             }
             Layer::Activation(activation) => activation.gen_lookup_witness(id, gen, step_data),
             Layer::Requant(requant) => requant.gen_lookup_witness(id, gen, step_data),
             Layer::Pooling(pooling) => pooling.gen_lookup_witness(id, gen, step_data),
-            Layer::Flatten(reshape) => reshape.gen_lookup_witness(id, gen, step_data),
+            Layer::Flatten(reshape) => {
+                // check that the layer is not provable, so we don't need to call the method
+                assert!(!reshape.is_provable());
+                Ok(())
+            }
         }
     }
 }
 
-impl<S: ScalingStrategy> QuantizeOp<S> for Layer<f32>
-where
-    Dense<f32>: QuantizeOp<S, QuantizedOp = Dense<Element>>,
-    Convolution<f32>: QuantizeOp<S, QuantizedOp = Convolution<Element>>,
-    MatMul<f32>: QuantizeOp<S, QuantizedOp = MatMul<Element>>,    
-{
+impl QuantizeOp for Layer<f32> {
     type QuantizedOp = Layer<Element>;
 
-    fn quantize_op(
+    fn quantize_op<S: ScalingStrategy>(
         self,
-        tracker: &S::AuxData,
+        data: &S::AuxData,
         node_id: provable::NodeId,
         input_scaling: &[ScalingFactor],
     ) -> anyhow::Result<QuantizeOutput<Self::QuantizedOp>> {
         Ok(match self {
             Layer::Dense(dense) => {
-                let output = quantize_op::<S, _>(dense, tracker, node_id, input_scaling)?;
+                let output = dense.quantize_op::<S>(data, node_id, input_scaling)?;
                 QuantizeOutput {
                     quanzited_op: Layer::Dense(output.quanzited_op),
                     output_scalings: output.output_scalings,
@@ -475,7 +462,7 @@ where
                 }
             }
             Layer::Convolution(convolution) => {
-                let output = quantize_op::<S, _>(convolution, tracker, node_id, input_scaling)?;
+                let output = convolution.quantize_op::<S>(data, node_id, input_scaling)?;
                 QuantizeOutput {
                     quanzited_op: Layer::Convolution(output.quanzited_op),
                     output_scalings: output.output_scalings,
@@ -483,7 +470,7 @@ where
                 }
             }
             Layer::MatMul(mat) => {
-                let output = quantize_op::<S, _>(mat, tracker, node_id, input_scaling)?;
+                let output = mat.quantize_op::<S>(data, node_id, input_scaling)?;
                 QuantizeOutput {
                     quanzited_op: Layer::MatMul(output.quanzited_op),
                     output_scalings: output.output_scalings,
@@ -491,8 +478,7 @@ where
                 }
             }
             Layer::SchoolBookConvolution(school_book_conv) => {
-                let output =
-                    quantize_op::<S, _>(school_book_conv, tracker, node_id, input_scaling)?;
+                let output = school_book_conv.quantize_op::<S>(data, node_id, input_scaling)?;
                 QuantizeOutput {
                     quanzited_op: Layer::SchoolBookConvolution(output.quanzited_op),
                     output_scalings: output.output_scalings,

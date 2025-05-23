@@ -1,6 +1,4 @@
-mod error;
-
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Result, anyhow, bail, ensure};
 use ff_ext::ExtensionField;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
@@ -18,15 +16,13 @@ use crate::{
     },
     lookup::context::LookupWitnessGen,
     model::trace::StepData,
-    padding::{PaddingError, PaddingMode, ShapeInfo},
+    padding::{PaddingMode, ShapeInfo},
     tensor::{ConvData, Number},
 };
 
 use super::{Layer, LayerCtx, LayerProof, flatten::Flatten, requant::Requant};
 
 pub(crate) type NodeId = usize;
-
-pub use error::ProvableOpError;
 
 /// Represents a link between an input/output wire of a node with an input/output wire of
 /// another node.
@@ -256,7 +252,7 @@ pub trait Evaluate<T: Number> {
         &self,
         inputs: &[&Tensor<T>],
         unpadded_input_shapes: Vec<Vec<usize>>,
-    ) -> Result<LayerOut<T, E>, ProvableOpError>;
+    ) -> Result<LayerOut<T, E>>;
 }
 
 /// Helper method employed to call `Evaluate::evaluate` when there are no `unpadded_input_shapes`
@@ -265,7 +261,7 @@ pub fn evaluate_layer<E: ExtensionField, T: Number, O: Evaluate<T>>(
     layer: &O,
     inputs: &[&Tensor<T>],
     unpadded_input_shapes: Option<Vec<Vec<usize>>>,
-) -> Result<LayerOut<T, E>, ProvableOpError> {
+) -> Result<LayerOut<T, E>> {
     layer.evaluate(inputs, unpadded_input_shapes.unwrap_or_default())
 }
 
@@ -275,11 +271,7 @@ where
     E::BaseField: Serialize + DeserializeOwned,
 {
     /// Compute the proving context for the operation
-    fn step_info(
-        &self,
-        id: PolyID,
-        aux: ContextAux,
-    ) -> Result<(LayerCtx<E>, ContextAux), ProvableOpError>;
+    fn step_info(&self, id: PolyID, aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)>;
 
     /// Compute the data necessary to commit to the constant polynomials
     /// associated to the operation. Returns `None` if there are no
@@ -299,11 +291,11 @@ pub struct QuantizeOutput<Op> {
     pub(crate) requant_layer: Option<Requant>,
 }
 
-pub trait QuantizeOp<S: ScalingStrategy> {
+pub trait QuantizeOp {
     type QuantizedOp: Sized;
 
     /// Convert an operation into its quantized version
-    fn quantize_op(
+    fn quantize_op<S: ScalingStrategy>(
         self,
         data: &S::AuxData,
         node_id: NodeId,
@@ -311,21 +303,10 @@ pub trait QuantizeOp<S: ScalingStrategy> {
     ) -> anyhow::Result<QuantizeOutput<Self::QuantizedOp>>;
 }
 
-/// Helper method employed to call `QuantizeOp::quantize_op` when the `QuantizationStrategy` type
-/// canno be inferred automatically
-pub fn quantize_op<S: ScalingStrategy, O: QuantizeOp<S>>(
-    op: O,
-    data: &S::AuxData,
-    node_id: NodeId,
-    input_scaling: &[ScalingFactor],
-) -> anyhow::Result<QuantizeOutput<O::QuantizedOp>> {
-    op.quantize_op(data, node_id, input_scaling)
-}
-
 pub trait PadOp {
     // Pad the dimensions of the tensors in node `self`, updating the `ShapeInfo` with the output shapes
     // of the node
-    fn pad_node(self, _si: &mut ShapeInfo) -> Result<Self, PaddingError>
+    fn pad_node(self, _si: &mut ShapeInfo) -> Result<Self>
     where
         Self: Sized,
     {
@@ -333,7 +314,7 @@ pub trait PadOp {
     }
 }
 
-pub trait ProvableOp<E>: OpInfo + PadOp
+pub trait ProvableOp<E>: OpInfo + PadOp + ProveInfo<E>
 where
     E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
@@ -349,7 +330,7 @@ where
         _last_claims: Vec<&Claim<E>>,
         _step_data: &StepData<E, E>,
         _prover: &mut Prover<E, T>,
-    ) -> Result<Vec<Claim<E>>, ProvableOpError> {
+    ) -> Result<Vec<Claim<E>>> {
         // Default implementation, to avoid having to implement this method in case `is_provable` is false
         assert!(
             !self.is_provable(),
@@ -364,13 +345,13 @@ where
         _id: NodeId,
         _gen: &mut LookupWitnessGen<E>,
         _step_data: &StepData<Element, E>,
-    ) -> Result<(), ProvableOpError> {
+    ) -> Result<()> {
         // Default implementation for nodes that don't employ a lookup table
         Ok(())
     }
 }
 
-pub trait VerifiableCtx<E>: Debug
+pub trait VerifiableCtx<E>: Debug + OpInfo
 where
     E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
@@ -385,29 +366,73 @@ where
         last_claims: &[&Claim<E>],
         verifier: &mut Verifier<E, T>,
         shape_step: &ShapeStep,
-    ) -> Result<Vec<Claim<E>>, ProvableOpError>;
-
-    /// Compute the shapes of the output tensors, given the shapes of the input tensors
-    /// and the padding mode
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>>;
+    ) -> Result<Vec<Claim<E>>>;
 }
 
-// Helper method to call `VerifiableCtx::output_shapes` when the type `E`
-// cannot be inferred automatically by the compiler
-pub(crate) fn output_shapes<E: ExtensionField, C: VerifiableCtx<E>>(
-    ctx: &C,
-    input_shapes: &[Vec<usize>],
-    padding_mode: PaddingMode,
-) -> Vec<Vec<usize>>
+impl<E: ExtensionField> OpInfo for LayerCtx<E>
 where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    ctx.output_shapes(input_shapes, padding_mode)
+    fn output_shapes(
+        &self,
+        input_shapes: &[Vec<usize>],
+        padding_mode: PaddingMode,
+    ) -> Vec<Vec<usize>> {
+        match self {
+            LayerCtx::Dense(dense_ctx) => dense_ctx.output_shapes(input_shapes, padding_mode),
+            LayerCtx::Convolution(conv_ctx) => conv_ctx.output_shapes(input_shapes, padding_mode),
+            LayerCtx::MatMul(mat_ctx) => mat_ctx.output_shapes(input_shapes, padding_mode),
+            LayerCtx::Activation(activation_ctx) => {
+                activation_ctx.output_shapes(input_shapes, padding_mode)
+            }
+            LayerCtx::Requant(requant_ctx) => requant_ctx.output_shapes(input_shapes, padding_mode),
+            LayerCtx::Pooling(pooling_ctx) => pooling_ctx.output_shapes(input_shapes, padding_mode),
+            LayerCtx::Flatten => {
+                <Flatten as OpInfo>::output_shapes(&Flatten, input_shapes, padding_mode)
+            }
+            LayerCtx::SchoolBookConvolution(_) | LayerCtx::Table(_) => unreachable!(),
+        }
+    }
+
+    fn num_outputs(&self, num_inputs: usize) -> usize {
+        match self {
+            LayerCtx::Dense(dense_ctx) => dense_ctx.num_outputs(num_inputs),
+            LayerCtx::Convolution(conv_ctx) => conv_ctx.num_outputs(num_inputs),
+            LayerCtx::MatMul(mat_ctx) => mat_ctx.num_outputs(num_inputs),
+            LayerCtx::Activation(activation_ctx) => activation_ctx.num_outputs(num_inputs),
+            LayerCtx::Requant(requant_ctx) => requant_ctx.num_outputs(num_inputs),
+            LayerCtx::Pooling(pooling_ctx) => pooling_ctx.num_outputs(num_inputs),
+            LayerCtx::Flatten => <Flatten as OpInfo>::num_outputs(&Flatten, num_inputs),
+            LayerCtx::SchoolBookConvolution(_) | LayerCtx::Table(_) => unreachable!(),
+        }
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            LayerCtx::Dense(dense_ctx) => dense_ctx.describe(),
+            LayerCtx::Convolution(conv_ctx) => conv_ctx.describe(),
+            LayerCtx::MatMul(mat_ctx) => mat_ctx.describe(),
+            LayerCtx::Activation(activation_ctx) => activation_ctx.describe(),
+            LayerCtx::Requant(requant_ctx) => requant_ctx.describe(),
+            LayerCtx::Pooling(pooling_ctx) => pooling_ctx.describe(),
+            LayerCtx::Flatten => Flatten.describe(),
+            LayerCtx::SchoolBookConvolution(_) | LayerCtx::Table(_) => unreachable!(),
+        }
+    }
+
+    fn is_provable(&self) -> bool {
+        match self {
+            LayerCtx::Dense(dense_ctx) => dense_ctx.is_provable(),
+            LayerCtx::Convolution(conv_ctx) => conv_ctx.is_provable(),
+            LayerCtx::MatMul(mat_ctx) => mat_ctx.is_provable(),
+            LayerCtx::Activation(activation_ctx) => activation_ctx.is_provable(),
+            LayerCtx::Requant(requant_ctx) => requant_ctx.is_provable(),
+            LayerCtx::Pooling(pooling_ctx) => pooling_ctx.is_provable(),
+            LayerCtx::Flatten => Flatten.is_provable(),
+            LayerCtx::SchoolBookConvolution(_) | LayerCtx::Table(_) => unreachable!(),
+        }
+    }
 }
 
 impl<E: ExtensionField> VerifiableCtx<E> for LayerCtx<E>
@@ -423,88 +448,53 @@ where
         last_claims: &[&Claim<E>],
         verifier: &mut Verifier<E, T>,
         shape_step: &ShapeStep,
-    ) -> Result<Vec<Claim<E>>, ProvableOpError> {
+    ) -> Result<Vec<Claim<E>>> {
         match self {
             LayerCtx::Dense(dense_ctx) => {
                 if let LayerProof::Dense(proof) = proof {
                     dense_ctx.verify(proof, last_claims, verifier, shape_step)
                 } else {
-                    Err(ProvableOpError::ParameterError(
-                        "dense proof not found for dense layer".to_string(),
-                    ))
+                    bail!("dense proof not found when verifying dense layer")
                 }
             }
             LayerCtx::Convolution(conv_ctx) => {
                 if let LayerProof::Convolution(proof) = proof {
                     conv_ctx.verify(proof, last_claims, verifier, shape_step)
                 } else {
-                    Err(ProvableOpError::ParameterError(
-                        "conv proof not found for convolution layer".to_string(),
-                    ))
+                    bail!("conv proof not found when verifying convolution layer")
                 }
             }
             LayerCtx::MatMul(matmul_ctx) => {
                 if let LayerProof::MatMul(proof) = proof {
                     matmul_ctx.verify(proof, last_claims, verifier, shape_step)
                 } else {
-                    Err(ProvableOpError::ParameterError(
-                        "MatMul proof not found for matrix multiplication layer".to_string(),
-                    ))
+                    bail!(
+                        "MatMul proof not found when verifying matrix multiplication layer".to_string(),
+                    )
                 }
             }
             LayerCtx::Activation(activation_ctx) => {
                 if let LayerProof::Activation(proof) = proof {
                     activation_ctx.verify(proof, last_claims, verifier, shape_step)
                 } else {
-                    Err(ProvableOpError::ParameterError(
-                        "activation proof not found for activation layer".to_string(),
-                    ))
+                    bail!("activation proof not found when verifying activation layer")
                 }
             }
             LayerCtx::Requant(requant_ctx) => {
                 if let LayerProof::Requant(proof) = proof {
                     requant_ctx.verify(proof, last_claims, verifier, shape_step)
                 } else {
-                    Err(ProvableOpError::ParameterError(
-                        "requant proof not found for requant layer".to_string(),
-                    ))
+                    bail!("requant proof not found when verifying requantization layer")
                 }
             }
             LayerCtx::Pooling(pooling_ctx) => {
                 if let LayerProof::Pooling(proof) = proof {
                     pooling_ctx.verify(proof, last_claims, verifier, shape_step)
                 } else {
-                    Err(ProvableOpError::ParameterError(
-                        "pooling proof not found for pooling layer".to_string(),
-                    ))
+                    bail!("pooling proof not found when verifying pooling layer")
                 }
             }
-            _ => Err(ProvableOpError::NotProvableLayer(format!("{:?}", self))),
-        }
-    }
-
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
-        match self {
-            LayerCtx::Dense(dense_ctx) => dense_ctx.output_shapes(input_shapes, padding_mode),
-            LayerCtx::MatMul(matmul_ctx) => matmul_ctx.output_shapes(input_shapes, padding_mode),
-            LayerCtx::Convolution(conv_ctx) => conv_ctx.output_shapes(input_shapes, padding_mode),
-            LayerCtx::Activation(activation_ctx) => {
-                output_shapes::<E, _>(activation_ctx, input_shapes, padding_mode)
-            }
-            LayerCtx::Requant(requant_ctx) => {
-                output_shapes::<E, _>(requant_ctx, input_shapes, padding_mode)
-            }
-            LayerCtx::Pooling(pooling_ctx) => {
-                output_shapes::<E, _>(pooling_ctx, input_shapes, padding_mode)
-            }
-            LayerCtx::Flatten => {
-                <Flatten as OpInfo>::output_shapes(&Flatten, input_shapes, padding_mode)
-            }
-            _ => unreachable!(),
+            LayerCtx::SchoolBookConvolution(_) | LayerCtx::Table(_) | LayerCtx::Flatten => unreachable!("Trying to verify a non-provable layer"),
         }
     }
 }

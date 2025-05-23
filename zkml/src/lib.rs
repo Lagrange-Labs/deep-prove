@@ -18,10 +18,9 @@ pub use quantization::{ScalingFactor, ScalingStrategy};
 pub mod layers;
 pub mod lookup;
 pub mod model;
-mod onnx_parse;
 pub mod padding;
 mod parser;
-pub use onnx_parse::{FloatOnnxLoader, ModelType};
+pub use parser::{FloatOnnxLoader, ModelType};
 pub mod tensor;
 pub use tensor::Tensor;
 #[cfg(test)]
@@ -174,7 +173,7 @@ mod test {
     use crate::{
         FloatOnnxLoader, default_transcript,
         iop::{Context, prover::Prover, verifier::verify},
-        onnx_parse::ModelType,
+        parser::ModelType,
         tensor::Tensor,
         to_bit_sequence_le,
     };

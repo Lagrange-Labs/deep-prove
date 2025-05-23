@@ -5,12 +5,12 @@ use crate::{
         activation::Activation,
         convolution::Convolution,
         pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
-        provable::{Edge, Node as ProvableNode, NodeId, OpInfo, ProvableOpError},
+        provable::{Edge, Node as ProvableNode, NodeId, OpInfo},
     },
     model::Model,
     padding::PaddingMode,
 };
-use anyhow::Context;
+use anyhow::{Context, Result, bail, ensure};
 use std::{collections::HashMap, iter::Peekable};
 use tracing::debug;
 use tract_onnx::{
@@ -34,19 +34,21 @@ type CustomNode = crate::layers::provable::Node<f32>;
 macro_rules! ensure_onnx {
         // Match with format args
         ($cond:expr, $err_fmt:literal, $($args:expr),+ $(,)?) => {
-            if !$cond {
-                return Err(ProvableOpError::OnnxParsingError(format!($err_fmt, $($args),+)).into());
-            }
+            ensure!($cond,
+                "when parsing onnx model: {}",
+                format!($err_fmt, $($args),+),
+            );
         };
         // Match with plain string (no args)
         ($cond:expr, $err_msg:literal $(,)?) => {
-            if !$cond {
-                return Err(ProvableOpError::OnnxParsingError($err_msg.to_string()).into());
-            }
+            ensure!($cond,
+                "when parsing onnx model: {}",
+                $err_msg,
+            );
         };
     }
 
-pub fn from_path(path: &str) -> Result<Model<f32>, ProvableOpError> {
+pub fn from_path(path: &str) -> Result<Model<f32>> {
     let model_type = ModelType::from_onnx(path).context("can't prove unknown model:")?;
     let model = {
         let pmodel = tract_onnx::onnx()
@@ -99,19 +101,12 @@ pub fn from_path(path: &str) -> Result<Model<f32>, ProvableOpError> {
     while !it.is_empty() {
         let (id, zkml_node) = parser
             .parse_node(onnx_model, &mut it, first_node)
-            .map_err(|e| {
-                ProvableOpError::OnnxParsingError(format!(
-                    "Error parsing node: {:?}",
-                    e.to_string()
-                ))
-            })?;
+            .context("Error parsing node")?;
         // let (id, zkml_node) = parse_node(onnx_model, &mut it, first_node)?;
         let desc = zkml_node.operation.describe();
-        pmodel.add_node_with_id(id, zkml_node).map_err(|e| {
-            ProvableOpError::OnnxParsingError(
-                format!("adding node {} -> {:?}", desc, e.to_string()).into(),
-            )
-        })?;
+        pmodel
+            .add_node_with_id(id, zkml_node)
+            .context(format!("adding node {}:", desc))?;
         first_node = false;
         last_node_id = id;
     }
@@ -134,7 +129,7 @@ type LoadFn<'a, I> = fn(
     node_id: NodeId,
     node: &OnnxNode,
     iter: &mut Peekable<I>,
-) -> Result<(NodeId, CustomNode), ProvableOpError>;
+) -> Result<(NodeId, CustomNode)>;
 
 // static PARSER_FACTORY: Lazy<HashMap<&'static str, LoadFn>> = Lazy::new(|| {
 // let mut m = HashMap::new();
@@ -169,7 +164,7 @@ impl<'a, I: Iterator<Item = &'a usize> + Sized> ParserFactory<'a, I> {
         model: &OnnxModel,
         iter: &mut Peekable<I>,
         first_node: bool,
-    ) -> Result<(NodeId, CustomNode), ProvableOpError> {
+    ) -> Result<(NodeId, CustomNode)> {
         let curr_node_id = iter.next().ok_or(anyhow::anyhow!("No nodes left"))?;
         let curr_node = model.node(*curr_node_id);
         debug!(
@@ -211,7 +206,7 @@ fn load_flatten<'a, I: Iterator<Item = &'a usize> + Sized>(
     node_id: NodeId,
     node: &OnnxNode,
     _iter: &mut Peekable<I>,
-) -> Result<(NodeId, CustomNode), ProvableOpError> {
+) -> Result<(NodeId, CustomNode)> {
     ensure_onnx!(
         node.inputs.len() == 1,
         "Flatten {} must have 1 input",
@@ -229,7 +224,7 @@ fn load_maxpool<'a, I: Iterator<Item = &'a usize> + Sized>(
     node_id: NodeId,
     node: &OnnxNode,
     _iter: &mut Peekable<I>,
-) -> Result<(NodeId, CustomNode), ProvableOpError> {
+) -> Result<(NodeId, CustomNode)> {
     ensure_onnx!(
         node.inputs.len() == 1,
         "MaxPool {} must have 1 input",
@@ -290,7 +285,7 @@ fn load_relu<'a, I: Iterator<Item = &'a usize> + Sized>(
     node_id: NodeId,
     node: &OnnxNode,
     _iter: &mut Peekable<I>,
-) -> Result<(NodeId, CustomNode), ProvableOpError> {
+) -> Result<(NodeId, CustomNode)> {
     let relu = crate::layers::activation::Relu::new();
     // find the input node that corresponds to the const input of Relu - since tract_onnx transforms
     // a relu operation into Max(input, Const(0))
@@ -323,7 +318,7 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
     node_id: NodeId,
     node: &OnnxNode,
     iter: &mut Peekable<I>,
-) -> Result<(NodeId, CustomNode), ProvableOpError> {
+) -> Result<(NodeId, CustomNode)> {
     let _matrix = downcast_to::<EinSum>(node)?;
     // TODO: we only support matvec for now for onnx models
     // Fetch the input which is constant (e.g. the weights)
@@ -459,7 +454,7 @@ fn load_conv<'a, I: Iterator<Item = &'a usize> + Sized>(
     node_id: NodeId,
     node: &OnnxNode,
     _iter: &mut Peekable<I>,
-) -> Result<(NodeId, CustomNode), ProvableOpError> {
+) -> Result<(NodeId, CustomNode)> {
     let conv_node = downcast_to::<Conv>(node)?;
     // TODO: once we support different padding and strides, extract the data in this function
     check_conv2d_attributes(conv_node)?;
@@ -494,7 +489,7 @@ fn is_const(node: &OnnxNode) -> bool {
     downcast_to::<Const>(node).is_ok()
 }
 
-fn extract_const_tensor(node: &OnnxNode) -> Result<crate::Tensor<f32>, ProvableOpError> {
+fn extract_const_tensor(node: &OnnxNode) -> Result<crate::Tensor<f32>> {
     let tensor = downcast_to::<Const>(node)?;
     let slice = tensor.0.as_slice::<f32>()?;
     ensure_onnx!(node.outputs.len() == 1, "constant output shape len == 1");
@@ -504,10 +499,7 @@ fn extract_const_tensor(node: &OnnxNode) -> Result<crate::Tensor<f32>, ProvableO
     Ok(crate::Tensor::new(shape.to_vec(), slice.to_vec()))
 }
 
-fn get_node_output_shape(
-    node: &OnnxNode,
-    output_idx: usize,
-) -> Result<Vec<usize>, ProvableOpError> {
+fn get_node_output_shape(node: &OnnxNode, output_idx: usize) -> Result<Vec<usize>> {
     ensure_onnx!(
         output_idx < node.outputs.len(),
         "Trying to get output {} of node {}, but there are only {} outputs",
@@ -522,7 +514,7 @@ fn get_node_output_shape(
 }
 
 /// Get the conv2d attributes and assert if supported by DeepProve
-fn check_conv2d_attributes(node: &Conv) -> Result<(), ProvableOpError> {
+fn check_conv2d_attributes(node: &Conv) -> Result<()> {
     let Some(ref strides) = node.pool_spec.strides else {
         return err(format!("Conv has no strides: {}", node.name()));
     };
@@ -544,11 +536,7 @@ fn check_conv2d_attributes(node: &Conv) -> Result<(), ProvableOpError> {
         pad1,
     );
     let Some(ref dilations) = node.pool_spec.dilations else {
-        return Err(ProvableOpError::OnnxParsingError(format!(
-            "Conv has no dilations: {}",
-            node.name()
-        ))
-        .into());
+        return err(format!("Conv has no dilations: {}", node.name()));
     };
     ensure_onnx!(
         dilations.iter().all(|&x| x == 1),
@@ -578,21 +566,18 @@ fn check_conv2d_attributes(node: &Conv) -> Result<(), ProvableOpError> {
     Ok(())
 }
 
-fn err<T>(msg: String) -> Result<T, ProvableOpError> {
-    Err(ProvableOpError::OnnxParsingError(msg).into())
+fn err<T>(msg: String) -> Result<T> {
+    bail!("Onnx parsing: {msg}")
 }
 
-fn downcast_to<T: Op>(node: &OnnxNode) -> Result<&T, ProvableOpError> {
+fn downcast_to<T: Op>(node: &OnnxNode) -> Result<&T> {
     match node.op_as::<T>() {
         Some(b) => Ok(b),
-        None => {
-            return Err(ProvableOpError::OnnxParsingError(format!(
-                "Node {} is not a {}",
-                node.name,
-                std::any::type_name::<T>()
-            ))
-            .into());
-        }
+        None => err(format!(
+            "Node {} is not a {}",
+            node.name,
+            std::any::type_name::<T>()
+        )),
     }
 }
 

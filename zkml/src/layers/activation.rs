@@ -30,11 +30,10 @@ use transcript::Transcript;
 use crate::{quantization::BIT_LEN, tensor::Tensor};
 
 use super::provable::{
-    Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProvableOp, ProvableOpError, ProveInfo,
-    VerifiableCtx,
+    Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, VerifiableCtx,
 };
 
-use anyhow::{anyhow, ensure};
+use anyhow::{Result, anyhow, ensure};
 
 #[derive(Clone, Debug, Serialize, Deserialize, Copy)]
 pub enum Activation {
@@ -88,12 +87,11 @@ impl<N: Number> Evaluate<N> for Activation {
         &self,
         inputs: &[&Tensor<N>],
         _unpadded_input_shapes: Vec<Vec<usize>>,
-    ) -> Result<LayerOut<N, E>, super::provable::ProvableOpError> {
-        if inputs.len() != 1 {
-            return Err(ProvableOpError::ParameterError(
-                "Activation layer expects one input".to_string(),
-            ));
-        }
+    ) -> Result<LayerOut<N, E>> {
+        ensure!(
+            inputs.len() == 1,
+            "Found more than 1 input when evaluating activation layer"
+        );
         let input = inputs[0];
         let output = match self {
             Activation::Relu(relu) => relu.op(input),
@@ -107,11 +105,7 @@ where
     E: ExtensionField + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
 {
-    fn step_info(
-        &self,
-        id: PolyID,
-        mut aux: ContextAux,
-    ) -> Result<(LayerCtx<E>, ContextAux), ProvableOpError> {
+    fn step_info(&self, id: PolyID, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         aux.tables.insert(TableType::Relu);
         let num_vars = aux
             .last_output_shape
@@ -155,7 +149,7 @@ where
         last_claims: Vec<&Claim<E>>,
         step_data: &StepData<E, E>,
         prover: &mut Prover<E, T>,
-    ) -> Result<Vec<Claim<E>>, ProvableOpError> {
+    ) -> Result<Vec<Claim<E>>> {
         Ok(vec![self.prove_step(
             prover,
             last_claims[0],
@@ -170,20 +164,17 @@ where
         id: NodeId,
         gen: &mut LookupWitnessGen<E>,
         step_data: &StepData<Element, E>,
-    ) -> Result<(), ProvableOpError> {
+    ) -> Result<()> {
         gen.tables.insert(TableType::Relu);
 
-        if step_data.inputs.len() != 1 {
-            return Err(ProvableOpError::ParameterError(
-                "Activation layer expects exactly one input tensor".to_string(),
-            ));
-        }
-
-        if step_data.outputs.outputs().len() != 1 {
-            return Err(ProvableOpError::ParameterError(
-                "Activation layer expects exactly one output tensor".to_string(),
-            ));
-        }
+        ensure!(
+            step_data.inputs.len() == 1,
+            "Found more than 1 input tensor in inference step of activation layer"
+        );
+        ensure!(
+            step_data.outputs.outputs().len() == 1,
+            "Found more than 1 output tensor in inference step of activation layer"
+        );
 
         // Calculate the column_evals and also the merged lookups
         let (merged_lookups, field): (Vec<Element>, Vec<(E::BaseField, E::BaseField)>) = step_data
@@ -226,6 +217,28 @@ where
     }
 }
 
+impl OpInfo for ActivationCtx {
+    fn output_shapes(
+        &self,
+        input_shapes: &[Vec<usize>],
+        padding_mode: PaddingMode,
+    ) -> Vec<Vec<usize>> {
+        Activation::Relu(Relu).output_shapes(input_shapes, padding_mode)
+    }
+
+    fn num_outputs(&self, num_inputs: usize) -> usize {
+        Activation::Relu(Relu).num_outputs(num_inputs)
+    }
+
+    fn describe(&self) -> String {
+        Activation::Relu(Relu).describe()
+    }
+
+    fn is_provable(&self) -> bool {
+        Activation::Relu(Relu).is_provable()
+    }
+}
+
 impl<E> VerifiableCtx<E> for ActivationCtx
 where
     E: ExtensionField,
@@ -240,7 +253,7 @@ where
         last_claims: &[&Claim<E>],
         verifier: &mut Verifier<E, T>,
         _shape_step: &ShapeStep,
-    ) -> Result<Vec<Claim<E>>, ProvableOpError> {
+    ) -> Result<Vec<Claim<E>>> {
         let (constant_challenge, column_separation_challenge) = verifier
             .challenge_storage
             .as_ref()
@@ -257,14 +270,6 @@ where
             constant_challenge,
             column_separation_challenge,
         )?])
-    }
-
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        _padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
-        input_shapes.to_vec()
     }
 }
 
