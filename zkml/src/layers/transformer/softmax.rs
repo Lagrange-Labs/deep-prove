@@ -1,1 +1,36 @@
+use crate::{layers::provable::{Evaluate, LayerOut, ProvableOpError}, Tensor};
+
+#[derive(Debug, Clone)]
 struct Softmax;
+
+impl Evaluate<f32> for Softmax {
+    fn evaluate<E: ff_ext::ExtensionField>(
+        &self,
+        inputs: &[&crate::Tensor<f32>],
+        _unpadded_input_shapes: Vec<Vec<usize>>,
+    ) -> anyhow::Result<LayerOut<f32, E>, ProvableOpError> {
+        let input = inputs[0];
+        let sum = input.get_data().iter().map(|x| x.exp()).sum::<f32>();
+        let output = input.get_data().iter().map(|x| x.exp() / sum).collect::<Vec<_>>();
+        let output_tensor = Tensor::new(input.get_shape(),output);
+        Ok(LayerOut::from_vec(vec![output_tensor]))
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use goldilocks::GoldilocksExt2;
+
+    use crate::Tensor;
+
+    use super::*;
+
+    #[test]
+    fn test_softmax() {
+        let softmax = Softmax;
+        let input = Tensor::new(vec![3],vec![0.0,0.0,0.0]);
+        let output = softmax.evaluate::<GoldilocksExt2>(&[&input], vec![vec![3]]).unwrap();
+        assert_eq!(output.outputs[0].get_data(), vec![1.0/3.0,1.0/3.0,1.0/3.0]);
+    }
+}

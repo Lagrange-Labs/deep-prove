@@ -4,3 +4,4 @@ pub mod positional;
 pub mod qkv;
 pub mod qkt;
 pub mod mha;
+pub mod softmax;

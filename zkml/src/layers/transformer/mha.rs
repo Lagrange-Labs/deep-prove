@@ -34,25 +34,42 @@ impl MHA_QK {
         ensure!(q.get_shape()[1] == head_prod, "q should have the same number of elements as the product of the number of heads and the head dimension");
         ensure!(k.get_shape()[1] == head_prod, "k should have the same number of elements as the product of the number of heads and the head dimension");
         ensure!(v.get_shape()[1] == head_prod, "v should have the same number of elements as the product of the number of heads and the head dimension");
-        let seq_len =k.get_shape()[0];
+        let seq_len = k.get_shape()[0];
         ensure!(v.get_shape()[0] == seq_len, "v should have the same sequence length as k");
         // reshape into (seq_len, num_head, head_dim)
         let q = q.reshape(vec![1,self.num_heads,self.head_dim]);
         let k = k.reshape(vec![seq_len,self.num_heads,self.head_dim]);
         let v = v.reshape(vec![seq_len,self.num_heads,self.head_dim]);
-        // permute into (num_head, seq_len, head_dim)
-        let q = q.permute3d(&vec![1,0,2]);
-        let k = k.permute3d(&vec![1,0,2]);
-        let v = v.permute3d(&vec![1,0,2]);
-        let qkt_heads = (0..self.num_heads).into_par_iter().map(|head| {
+        let q = q.permute3d(&vec![1,0,2]); // (num_head, 1, head_dim)
+        let k = k.permute3d(&vec![1,0,2]); // (num_head, seq_len, head_dim)
+        let v = v.permute3d(&vec![1,0,2]); // (num_head, seq_len, head_dim)
+        let mut qkt_heads = (0..self.num_heads).into_par_iter().map(|head| {
             // shape is now (1, seq_len, head_dim) == [seq_len, head_dim]
-            let mini_q = q.slice_3d(head,head+1).reshape(vec![1, self.head_dim]);
-            let mini_k = k.slice_3d(head,head+1).reshape(vec![seq_len, self.head_dim]);
-            let mini_v = v.slice_3d(head,head+1).reshape(vec![seq_len, self.head_dim]);
+            let mini_q = q.slice_3d(head,head+1).reshape(vec![1, self.head_dim]); // [1, head_dim]
+            let mini_k = k.slice_3d(head,head+1).reshape(vec![seq_len, self.head_dim]); // [seq_len, head_dim]
+            let mini_v = v.slice_3d(head,head+1).reshape(vec![seq_len, self.head_dim]); // [seq_len, head_dim]
+            // output Q @ K^T is of shape [1, seq_len], and v is of shape [seq_len, head_dim]
             Ok(vec![QKT::evaluate::<N,E>(&[&mini_q,&mini_k])?.outputs.remove(0),mini_v])
         }).collect::<anyhow::Result<Vec<_>>>()?;
-        let qkt_heads = qkt_heads.into_iter().flatten().collect::<Vec<_>>();
-        Ok(LayerOut::from_vec(qkt_heads))
+        // merge back the heads together - since proving is expecting one matrix, not a list of vectors
+        let mut first_tuple = qkt_heads.remove(0).into_iter();
+        // here we reshape to 3d [1, ...] such that concatenation works fine with current implementation
+        let first_qk = first_tuple.next().unwrap();
+        let first_v = first_tuple.next().unwrap().reshape(vec![1,seq_len,self.head_dim]);
+        let (qk,v) = qkt_heads.into_iter().fold((first_qk,first_v), |(mut acc_qk,mut acc_v), head| {
+            let mut head_it = head.into_iter();
+            acc_qk.concat(head_it.next().unwrap());
+            acc_v.concat(head_it.next().unwrap());
+            (acc_qk,acc_v)
+        });
+        // qk is now of shape [num_heads,seq_len]
+        assert_eq!(qk.get_shape(), vec![self.num_heads,seq_len]);
+        // v is of shape [num_heads, seq_len, head_dim]. 
+        assert_eq!(v.get_shape(), vec![self.num_heads,seq_len,self.head_dim]);
+        // The next operation in transformer is softmax row by row, and then qk @ v, row by row.
+        // So for the shapes, it's [1,seq_len] @ [seq_len, head_dim] = [1, head_dim] (1 because row by row for each head)
+        // This is done in separate layer in the framework since we first need to prove softmax which happens separatedly
+        Ok(LayerOut::from_vec(vec![qk,v]))
     }
 }
 
@@ -74,13 +91,12 @@ mod test {
         let q = Tensor::<Element>::random(&vec![1, hidden_size]);
         let k = Tensor::<Element>::random(&vec![seq_len, hidden_size]);
         let v = Tensor::<Element>::random(&vec![seq_len, hidden_size]);
-        let output = mha_qk.evaluate::<_,GoldilocksExt2>(&[&q, &k, &v]).expect("mha_qk should not fail");
-        assert_eq!(output.outputs.len(), num_heads * 2);
-        for i in 0..num_heads {
-            let qkt = output.outputs[i * 2].clone();
-            let v = output.outputs[i * 2 + 1].clone();
-            assert_eq!(qkt.get_shape(), vec![1, seq_len]);
-            assert_eq!(v.get_shape(), vec![seq_len, head_dim]);
-        }
+        let mut output = mha_qk.evaluate::<_,GoldilocksExt2>(&[&q, &k, &v]).expect("mha_qk should not fail");
+        assert_eq!(output.outputs.len(), 2);
+        let (qk,v) = (output.outputs.remove(0),output.outputs.remove(0));
+        // normally [1,seq_len] per head, so with all heads [num_heads, seq_len]
+        assert_eq!(qk.get_shape(), vec![num_heads, seq_len]);
+        // same, but on 3d
+        assert_eq!(v.get_shape(), vec![num_heads,seq_len, head_dim]);
     }
 }
