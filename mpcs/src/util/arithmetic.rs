@@ -26,14 +26,7 @@ pub fn horner_field_type<E: ExtensionField>(coeffs: &FieldType<E>, x: &E) -> E {
 
 /// Evaluate the given coeffs as a univariate polynomial at x
 pub fn horner<F: Field>(coeffs: &[F], x: &F) -> F {
-    let coeff_vec: Vec<&F> = coeffs.iter().rev().collect();
-    let mut acc = F::ZERO;
-    for c in coeff_vec {
-        acc = acc * x + c;
-    }
-    acc
-    // 2
-    //.fold(F::ZERO, |acc, coeff| acc * x + coeff)
+    coeffs.iter().rev().fold(F::ZERO, |acc, c| acc * x + c)
 }
 
 /// Evaluate the given coeffs as a univariate polynomial at x

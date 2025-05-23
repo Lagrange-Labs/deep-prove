@@ -8,7 +8,7 @@ use super::{
 };
 use crate::util::{
     arithmetic::{interpolate_over_boolean_hypercube, interpolate2_weights},
-    field_type_index_ext, field_type_iter_ext,
+    field_type_index_ext, field_type_iter_ext, field_type_par_iter_ext,
     hash::write_digest_to_transcript,
     log2_strict,
     merkle_tree::MerkleTree,
@@ -22,10 +22,7 @@ use transcript::Transcript;
 use multilinear_extensions::{mle::FieldType, virtual_poly::build_eq_x_r_vec};
 
 use crate::util::plonky2_util::reverse_index_bits_in_place;
-use rayon::prelude::{
-    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
-    ParallelSlice,
-};
+use rayon::prelude::*;
 
 use super::structure::BasefoldCommitmentWithWitness;
 
@@ -202,13 +199,13 @@ where
     let running_oracle_len = running_oracle.len();
     comms
         .iter()
-        .enumerate()
-        .filter(|(_, comm)| comm.codeword_size() == running_oracle_len)
-        .for_each(|(index, comm)| {
+        .zip(coeffs.iter())
+        .filter(|(comm, _)| comm.codeword_size() == running_oracle_len)
+        .for_each(|(comm, coeff)| {
             running_oracle
-                .iter_mut()
-                .zip_eq(field_type_iter_ext(&comm.get_codewords()[0]))
-                .for_each(|(r, a)| *r += a * coeffs[index]);
+                .par_iter_mut()
+                .zip_eq(field_type_par_iter_ext(&comm.get_codewords()[0]))
+                .for_each(|(r, a)| *r += a * coeff);
         });
     end_timer!(build_oracle_timer);
 
@@ -216,21 +213,13 @@ where
     // Unlike the FRI part, the sum-check part still follows the original procedure,
     // and linearly combine all the polynomials once for all
     let mut sum_of_all_evals_for_sumcheck = vec![E::ZERO; 1 << num_vars];
-    comms.iter().enumerate().for_each(|(index, comm)| {
+    comms.iter().zip(coeffs.iter()).for_each(|(comm, coeff)| {
         sum_of_all_evals_for_sumcheck
-            .par_iter_mut()
-            .enumerate()
-            .for_each(|(pos, r)| {
-                // Evaluating the multilinear polynomial outside of its interpolation hypercube
-                // is equivalent to repeating each element in place.
-                // Here is the tricky part: the bh_evals are stored in big endian, but we want
-                // to align the polynomials to the variable with index 0 before adding them
-                // together. So each element is repeated by
-                // sum_of_all_evals_for_sumcheck.len() / bh_evals.len() times
-                *r += field_type_index_ext(
-                    &comm.polynomials_bh_evals[0],
-                    pos >> (num_vars - log2_strict(comm.polynomials_bh_evals[0].len())),
-                ) * coeffs[index]
+            .par_chunks_mut(1 << (num_vars - log2_strict(comm.polynomials_bh_evals[0].len())))
+            .zip(field_type_par_iter_ext(&comm.polynomials_bh_evals[0]))
+            .for_each(|(rs, val)| {
+                let mul = val * coeff;
+                rs.iter_mut().for_each(|r| *r += mul);
             });
     });
     end_timer!(build_oracle_timer);
@@ -249,6 +238,7 @@ where
     let mut roots = Vec::with_capacity(num_rounds - 1);
     let mut final_message = Vec::new();
     let mut running_tree_inner = Vec::new();
+    let mut new_running_oracle: Vec<E> = Vec::new();
     for i in 0..num_rounds {
         let sumcheck_timer = start_timer!(|| format!("Batch basefold round {i}"));
         // For the first round, no need to send the running root, because this root is
@@ -260,44 +250,46 @@ where
             .get_and_append_challenge(b"commit round")
             .elements;
 
+        if i > 0 {
+            let running_tree = MerkleTree::<E>::from_inner_leaves(
+                running_tree_inner,
+                FieldType::Ext(new_running_oracle.clone()),
+            );
+            trees.push(running_tree);
+
+            // Then merge the rest polynomials whose sizes match the current running oracle
+            let running_oracle_len = new_running_oracle.len();
+            comms
+                .iter()
+                .zip(coeffs.iter())
+                .filter(|(comm, _)| comm.codeword_size() == running_oracle_len)
+                .for_each(|(comm, coeff)| {
+                    new_running_oracle
+                        .par_iter_mut()
+                        .zip_eq(field_type_par_iter_ext(&comm.get_codewords()[0]))
+                        .for_each(|(r, a)| *r += a * coeff);
+                });
+
+            running_oracle = new_running_oracle;
+        }
+
         // Fold the current oracle for FRI
-        let mut new_running_oracle = basefold_one_round_by_interpolation_weights::<E, Spec>(
+        new_running_oracle = basefold_one_round_by_interpolation_weights::<E, Spec>(
             pp,
             log2_strict(running_oracle.len()) - 1,
             &running_oracle,
             challenge,
         );
 
-        if i > 0 {
-            let running_tree = MerkleTree::<E>::from_inner_leaves(
-                running_tree_inner,
-                FieldType::Ext(running_oracle),
-            );
-            trees.push(running_tree);
-        }
-
         if i < num_rounds - 1 {
             last_sumcheck_message =
                 sum_check_challenge_round(&mut eq, &mut sum_of_all_evals_for_sumcheck, challenge);
             sumcheck_messages.push(last_sumcheck_message.clone());
+
             running_tree_inner = MerkleTree::<E>::compute_inner_ext(&new_running_oracle);
             let running_root = MerkleTree::<E>::root_from_inner(&running_tree_inner);
             write_digest_to_transcript(&running_root, transcript);
             roots.push(running_root);
-
-            // Then merge the rest polynomials whose sizes match the current running oracle
-            let running_oracle_len = new_running_oracle.len();
-            comms
-                .iter()
-                .enumerate()
-                .filter(|(_, comm)| comm.codeword_size() == running_oracle_len)
-                .for_each(|(index, comm)| {
-                    new_running_oracle
-                        .iter_mut()
-                        .zip_eq(field_type_iter_ext(&comm.get_codewords()[0]))
-                        .for_each(|(r, a)| *r += a * coeffs[index]);
-                });
-            running_oracle = new_running_oracle;
         } else {
             // Clear the value so the compiler does not think they are moved
             running_oracle = Vec::new();
