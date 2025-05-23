@@ -6,6 +6,7 @@ use rayon::iter::{
 
 mod error;
 pub use error::PCSError;
+pub mod context;
 pub mod precommit;
 pub mod same_poly;
 
