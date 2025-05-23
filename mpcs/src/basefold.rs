@@ -47,10 +47,7 @@ use multilinear_extensions::{
     virtual_poly::build_eq_x_r_vec,
 };
 
-use rayon::{
-    iter::IntoParallelIterator,
-    prelude::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator},
-};
+use rayon::{iter::IntoParallelIterator, prelude::*};
 use std::borrow::Cow;
 pub use sumcheck::{one_level_eval_hc, one_level_interp_hc};
 
@@ -553,9 +550,18 @@ where
         transcript: &mut impl Transcript<E>,
     ) -> Result<Self::Proof, Error> {
         let timer = start_timer!(|| "Basefold::batch_open");
+        // If we aren't provided with any commitments, polynomials, points or evaluations just return an empty proof
+        if polys.is_empty() && comms.is_empty() && points.is_empty() && evals.is_empty() {
+            return Ok(Self::Proof::trivial(vec![]));
+        }
         let num_vars = polys.iter().map(|poly| poly.num_vars).max().unwrap();
         let min_num_vars = polys.iter().map(|p| p.num_vars).min().unwrap();
-        assert!(min_num_vars >= Spec::get_basecode_msg_size_log());
+        assert!(
+            min_num_vars > Spec::get_basecode_msg_size_log(),
+            "minimum number of variables was {} must be greater than {}",
+            min_num_vars,
+            Spec::get_basecode_msg_size_log()
+        );
 
         comms.iter().for_each(|comm| {
             assert!(comm.num_polys == 1);
@@ -866,7 +872,20 @@ where
             let trivial_proof = &proof.trivial_proof;
             let merkle_tree = MerkleTree::from_batch_leaves(trivial_proof.clone());
             if comm.root() == merkle_tree.root() {
-                return Ok(());
+                let computed_eval = DenseMultilinearExtension::<E> {
+                    evaluations: trivial_proof[0].clone(),
+                    num_vars: trivial_proof[0].len().ilog2() as usize,
+                }
+                .evaluate(point);
+
+                if *eval == computed_eval {
+                    return Ok(());
+                } else {
+                    return Err(Error::InvalidPcsOpen(format!(
+                        "Trivial proof did not evaluate to the correct value, expected: {:?}, calculated: {:?}",
+                        eval, computed_eval
+                    )));
+                }
             } else {
                 return Err(Error::MerkleRootMismatch);
             }
@@ -946,6 +965,14 @@ where
         proof: &Self::Proof,
         transcript: &mut impl Transcript<E>,
     ) -> Result<(), Error> {
+        // If we have no commitments, points, evalautions or proofs then just return an Ok(())
+        if comms.is_empty()
+            && points.is_empty()
+            && evals.is_empty()
+            && proof.trivial_proof.is_empty()
+        {
+            return Ok(());
+        }
         let timer = start_timer!(|| "Basefold::batch_verify");
         let comms = comms.iter().collect_vec();
         let num_vars = points.iter().map(|point| point.len()).max().unwrap();
@@ -995,13 +1022,14 @@ where
         // Now the goal is to use the BaseFold to check the new target sum. Note that this time
         // we only have one eq polynomial in the sum-check.
         let eq_xy_evals = points
-            .iter()
+            .par_iter()
             .map(|point| eq_xy_eval(&verify_point[..point.len()], point))
-            .collect_vec();
+            .collect::<Vec<E>>();
         let mut coeffs = vec![E::ZERO; comms.len()];
-        evals.iter().enumerate().for_each(|(i, eval)| {
-            coeffs[eval.poly()] += eq_xy_evals[eval.point()] * poly_index_ext(&eq_xt, i)
-        });
+        evals
+            .iter()
+            .zip(poly_iter_ext(&eq_xt))
+            .for_each(|(eval, eqxt)| coeffs[eval.poly()] += eq_xy_evals[eval.point()] * eqxt);
 
         let mut fold_challenges: Vec<E> = Vec::with_capacity(num_vars);
         let roots = &proof.roots;
@@ -1178,7 +1206,8 @@ mod test {
         basefold::Basefold,
         test_util::{
             gen_rand_poly_base, gen_rand_poly_ext, run_batch_commit_open_verify,
-            run_commit_open_verify, run_simple_batch_commit_open_verify,
+            run_batch_commit_open_verify_multiple_sizes, run_commit_open_verify,
+            run_simple_batch_commit_open_verify,
         },
     };
     use goldilocks::GoldilocksExt2;
@@ -1254,13 +1283,30 @@ mod test {
             // Both challenge and poly are over base field
             run_batch_commit_open_verify::<GoldilocksExt2, PcsGoldilocksBaseCode>(
                 gen_rand_poly,
-                10,
+                8,
                 11,
             );
             run_batch_commit_open_verify::<GoldilocksExt2, PcsGoldilocksRSCode>(
                 gen_rand_poly,
-                10,
+                8,
                 11,
+            );
+        }
+    }
+
+    #[test]
+    fn batch_commit_open_verify_multiple_sizes() {
+        for gen_rand_poly in [gen_rand_poly_base, gen_rand_poly_ext] {
+            // Both challenge and poly are over base field
+            run_batch_commit_open_verify_multiple_sizes::<GoldilocksExt2, PcsGoldilocksBaseCode>(
+                gen_rand_poly,
+                8,
+                21,
+            );
+            run_batch_commit_open_verify_multiple_sizes::<GoldilocksExt2, PcsGoldilocksRSCode>(
+                gen_rand_poly,
+                8,
+                21,
             );
         }
     }
