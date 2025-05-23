@@ -4,6 +4,8 @@ use rayon::iter::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
 };
 
+mod error;
+pub use error::PCSError;
 pub mod precommit;
 pub mod same_poly;
 
