@@ -137,7 +137,7 @@ where
         // endian, so the left half of the evaluation vector are evaluated
         // at 0 for the first variable, and the right half are evaluated at
         // 1 for the first variable.
-        // In each step of sum-check, we subsitute the first variable of the
+        // In each step of sum-check, we substitute the first variable of the
         // current polynomial with the random challenge, which is equivalent
         // to a left-right folding of the evaluation vector.
         // However, the algorithms that we will use are applying even-odd
