@@ -123,6 +123,10 @@ impl LLMConfig {
         })
     }
 
+    pub fn head_dim(&self) -> usize {
+        self.hidden_size / self.num_heads
+    }
+
     pub fn model(&self, l: &FileTensorLoader) -> anyhow::Result<LLMModel> {
         self.specific_config.model(l, &self)
     }
@@ -260,18 +264,17 @@ impl FeedForward<f32> {
 }
 
 #[derive(Debug, Clone)]
-struct Attention<N: Number> {
-    q: Tensor<N>,
-    q_bias: Tensor<N>,
-    k: Tensor<N>,
-    k_bias: Tensor<N>,
-    v: Tensor<N>,
-    v_bias: Tensor<N>,
-    out: Tensor<N>,
-    /// Bias for the output projection.
-    out_bias: Tensor<N>,
-    norm: LayerNorm<N>,
-    feedforward: FeedForward<N>,
+pub struct Attention<N: Number> {
+    pub q: Tensor<N>,
+    pub q_bias: Tensor<N>,
+    pub k: Tensor<N>,
+    pub k_bias: Tensor<N>,
+    pub v: Tensor<N>,
+    pub v_bias: Tensor<N>,
+    pub out: Tensor<N>,
+    pub out_bias: Tensor<N>,
+    pub norm: LayerNorm<N>,
+    pub feedforward: FeedForward<N>,
 }
 
 impl Attention<f32> {

@@ -12,7 +12,7 @@ use crate::{
 /// It also outputs only the "small" Q but with the help of caching, it outputs
 /// the full K and V matrices as if they were computed using the whole input tensor.
 #[derive(Debug, Clone)]
-struct QKV<N: Number> {
+pub struct QKV<N: Number> {
     q: Tensor<N>,
     q_bias: Tensor<N>,
     k: Tensor<N>,
