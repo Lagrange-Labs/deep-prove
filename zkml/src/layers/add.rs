@@ -7,7 +7,7 @@ use crate::{tensor::Number, Tensor};
 use super::provable::{Evaluate, LayerOut, ProvableOpError};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-struct Add<N> {
+pub struct Add<N> {
     operand: Option<Tensor<N>>,
 }
 

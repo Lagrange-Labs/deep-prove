@@ -17,9 +17,18 @@ use burn::{
 
 #[derive(Debug, Clone)]
 pub struct LayerNorm<N: Number> {
-    gamma: Tensor<N>,
-    beta: Tensor<N>,
-    eps: f64,
+    pub gamma: Tensor<N>,
+    pub beta: Tensor<N>,
+    pub eps: f64,
+}
+
+impl<N: Number> LayerNorm<N> {
+    pub fn new(gamma: Tensor<N>, beta: Tensor<N>, eps: f64) -> Self {
+        assert_eq!(gamma.get_shape(), beta.get_shape());
+        Self {
+            gamma, beta, eps
+        }
+    }
 }
 
 impl LayerNorm<f32> {
@@ -42,7 +51,7 @@ impl LayerNorm<f32> {
             beta.get_shape()
         );
         let eps = loader.metadata::<f64>(c.specific_config.norm_epsilon_key());
-        Ok(Self { gamma, beta, eps })
+        Ok(Self::new(gamma, beta, eps))
     }
 }
 
