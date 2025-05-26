@@ -1,3 +1,4 @@
+use anyhow::ensure;
 use ff_ext::ExtensionField;
 
 use crate::{
@@ -46,21 +47,24 @@ impl<N: Number> QKV<N> {
         }
     }
     /// Returns x[-1,..] * Q, X * K, X * V
-    fn evaluate<E: ExtensionField>(
+    pub fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
         cache: &mut CacheQKV<N>,
-    ) -> Result<LayerOut<N, E>, ProvableOpError> {
-        assert_eq!(inputs.len(), 1);
+    ) -> anyhow::Result<LayerOut<N, E>> {
+        ensure!(inputs.len() == 1, "QKV expects 1 input");
         let shape = inputs[0].get_shape();
         let [seq_len, emb_size] = [shape[0], shape[1]];
         let q_emb_size = self.q.get_shape()[0];
-        assert_eq!(q_emb_size, emb_size);
+        ensure!(q_emb_size == emb_size, "QKV: q_emb_size != emb_size");
         // make sure the size of the input match the size of the cache + 1
         // as we only want to do the the matmul for the new token, not for the previously generated ones
-        assert_eq!(seq_len, cache.k_shape()[0] + 1);
+        ensure!(
+            seq_len == cache.k_shape()[0] + 1,
+            "QKV: seq_len != cache.k_shape()[0] + 1"
+        );
         let input = inputs[0].slice_2d(seq_len - 1, seq_len);
-        /// add row by row
+        // add row by row
         let q = input.matmul(&self.q).add_dim2(&self.q_bias);
         let k = input.matmul(&self.k).add_dim2(&self.k_bias);
         let v = input.matmul(&self.v).add_dim2(&self.v_bias);
@@ -71,7 +75,7 @@ impl<N: Number> QKV<N> {
 }
 
 #[derive(Debug, Clone)]
-struct CacheQKV<N: Number> {
+pub struct CacheQKV<N: Number> {
     cache_k: Tensor<N>,
     cache_v: Tensor<N>,
     initialized: bool,

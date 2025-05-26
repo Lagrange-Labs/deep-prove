@@ -25,9 +25,7 @@ pub struct LayerNorm<N: Number> {
 impl<N: Number> LayerNorm<N> {
     pub fn new(gamma: Tensor<N>, beta: Tensor<N>, eps: f64) -> Self {
         assert_eq!(gamma.get_shape(), beta.get_shape());
-        Self {
-            gamma, beta, eps
-        }
+        Self { gamma, beta, eps }
     }
 }
 
