@@ -67,6 +67,7 @@ pub trait Number:
     fn compare(&self, other: &Self) -> Ordering;
     fn is_negative(&self) -> bool;
     fn to_f32(&self) -> anyhow::Result<f32>;
+    fn from_f32(f: f32) -> anyhow::Result<Self>;
 }
 
 impl Number for Element {
@@ -95,6 +96,9 @@ impl Number for Element {
         );
         Ok(*self as f32)
     }
+    fn from_f32(f: f32) -> anyhow::Result<Self> {
+        Ok(f as Element)
+    }
 }
 impl Number for f32 {
     const MIN: f32 = f32::MIN;
@@ -121,6 +125,9 @@ impl Number for f32 {
     fn to_f32(&self) -> anyhow::Result<f32> {
         Ok(*self)
     }
+    fn from_f32(f: f32) -> anyhow::Result<Self> {
+        Ok(f)
+    }
 }
 impl Number for GoldilocksExt2 {
     const MIN: GoldilocksExt2 = GoldilocksExt2::ZERO;
@@ -142,6 +149,9 @@ impl Number for GoldilocksExt2 {
 
     fn to_f32(&self) -> anyhow::Result<f32> {
         unreachable!("Called to_f32 for Goldilocks")
+    }
+    fn from_f32(f: f32) -> anyhow::Result<Self> {
+        unreachable!("Called from_f32 for Goldilocks")
     }
 }
 
@@ -839,6 +849,19 @@ where
             shape: self.shape.clone(),
             og_shape: vec![0],
             data: self.data.par_iter().map(|x| *x * *scalar).collect(),
+        }
+    }
+    pub fn scalar_mul_f32<N2: Number>(&self, scalar: N2) -> Tensor<T> {
+        let scaled = self
+            .data
+            .par_iter()
+            .map(|x| T::from_f32(x.to_f32()? * scalar.to_f32()?))
+            .collect::<anyhow::Result<Vec<_>>>()
+            .expect("Failed to scale tensor");
+        Tensor {
+            shape: self.shape.clone(),
+            og_shape: vec![0],
+            data: scaled,
         }
     }
     pub fn pad_1d(mut self, new_len: usize) -> Self {
@@ -1678,6 +1701,16 @@ impl<T: Number> Tensor<T> {
     }
 }
 
+impl<T> Tensor<T> {
+    /// Returns an iterator that yields slices of the last dimension.
+    /// For a tensor of shape [2,3,3], it will yield 6 slices (2*3) of 3 elements each.
+    pub fn slices_last_dim(&self) -> impl Iterator<Item = &[T]> {
+        let last_dim = *self.shape.last().unwrap();
+        let stride = last_dim;
+        self.data.chunks(stride)
+    }
+}
+
 #[cfg(test)]
 mod test {
 
@@ -2140,11 +2173,34 @@ mod test {
 
     #[test]
     fn test_tensor_slice_3d() {
-        let tensor = Tensor::<Element>::new(vec![3, 2, 2], vec![
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12,
-        ]);
+        let tensor =
+            Tensor::<Element>::new(vec![3, 2, 2], vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
         let sliced = tensor.slice_3d(1, 3);
-        assert_eq!(sliced.get_data(), vec![5,6,7,8,9,10,11,12]);
-        assert_eq!(sliced.get_shape(), vec![2,2,2]);
+        assert_eq!(sliced.get_data(), vec![5, 6, 7, 8, 9, 10, 11, 12]);
+        assert_eq!(sliced.get_shape(), vec![2, 2, 2]);
+    }
+
+    #[test]
+    fn test_tensor_slices_last_dim() {
+        let tensor = Tensor::<Element>::new(vec![2, 3, 3], vec![
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+        ]);
+
+        let mut slices = tensor.slices_last_dim();
+
+        // First slice
+        assert_eq!(slices.next().unwrap(), &[1, 2, 3]);
+        // Second slice
+        assert_eq!(slices.next().unwrap(), &[4, 5, 6]);
+        // Third slice
+        assert_eq!(slices.next().unwrap(), &[7, 8, 9]);
+        // Fourth slice
+        assert_eq!(slices.next().unwrap(), &[10, 11, 12]);
+        // Fifth slice
+        assert_eq!(slices.next().unwrap(), &[13, 14, 15]);
+        // Sixth slice
+        assert_eq!(slices.next().unwrap(), &[16, 17, 18]);
+        // No more slices
+        assert_eq!(slices.next(), None);
     }
 }

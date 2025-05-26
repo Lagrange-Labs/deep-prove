@@ -1,7 +1,11 @@
-use crate::{layers::provable::{Evaluate, LayerOut, ProvableOpError}, Tensor};
+//! This layer applies the softmax function to the last dimension of the input tensor
+use crate::{
+    Tensor,
+    layers::provable::{Evaluate, LayerOut, ProvableOpError},
+};
 
 #[derive(Debug, Clone)]
-struct Softmax;
+pub struct Softmax;
 
 impl Evaluate<f32> for Softmax {
     fn evaluate<E: ff_ext::ExtensionField>(
@@ -10,13 +14,18 @@ impl Evaluate<f32> for Softmax {
         _unpadded_input_shapes: Vec<Vec<usize>>,
     ) -> anyhow::Result<LayerOut<f32, E>, ProvableOpError> {
         let input = inputs[0];
-        let sum = input.get_data().iter().map(|x| x.exp()).sum::<f32>();
-        let output = input.get_data().iter().map(|x| x.exp() / sum).collect::<Vec<_>>();
-        let output_tensor = Tensor::new(input.get_shape(),output);
+        let output = input
+            .slices_last_dim()
+            .map(|vec| {
+                let sum = vec.iter().map(|x| x.exp()).sum::<f32>();
+                vec.iter().map(|x| x.exp() / sum).collect::<Vec<_>>()
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        let output_tensor = Tensor::new(input.get_shape(), output);
         Ok(LayerOut::from_vec(vec![output_tensor]))
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -29,8 +38,17 @@ mod tests {
     #[test]
     fn test_softmax() {
         let softmax = Softmax;
-        let input = Tensor::new(vec![3],vec![0.0,0.0,0.0]);
-        let output = softmax.evaluate::<GoldilocksExt2>(&[&input], vec![vec![3]]).unwrap();
-        assert_eq!(output.outputs[0].get_data(), vec![1.0/3.0,1.0/3.0,1.0/3.0]);
+        let input = Tensor::new(vec![2, 3], vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let output = softmax
+            .evaluate::<GoldilocksExt2>(&[&input], vec![vec![2, 3]])
+            .unwrap();
+        assert_eq!(output.outputs[0].get_data(), vec![
+            1.0 / 3.0,
+            1.0 / 3.0,
+            1.0 / 3.0,
+            1.0 / 3.0,
+            1.0 / 3.0,
+            1.0 / 3.0
+        ]);
     }
 }
