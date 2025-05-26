@@ -13,7 +13,7 @@ use crate::{
 /// It also outputs only the "small" Q but with the help of caching, it outputs
 /// the full K and V matrices as if they were computed using the whole input tensor.
 #[derive(Debug, Clone)]
-pub struct QKV<N: Number> {
+pub struct QKV<N> {
     q: Tensor<N>,
     q_bias: Tensor<N>,
     k: Tensor<N>,
@@ -75,7 +75,7 @@ impl<N: Number> QKV<N> {
 }
 
 #[derive(Debug, Clone)]
-pub struct CacheQKV<N: Number> {
+pub struct CacheQKV<N> {
     cache_k: Tensor<N>,
     cache_v: Tensor<N>,
     initialized: bool,
@@ -133,6 +133,18 @@ mod tests {
     use goldilocks::GoldilocksExt2;
 
     use super::*;
+
+    impl<N: Number> QKV<N> {
+        pub fn random(emb_size: usize, hidden_size: usize) -> Self {
+            let q = Tensor::<N>::random(&[emb_size, hidden_size]);
+            let q_bias = Tensor::<N>::random(&[hidden_size]);
+            let k = Tensor::<N>::random(&[emb_size, hidden_size]);
+            let k_bias = Tensor::<N>::random(&[hidden_size]);
+            let v = Tensor::<N>::random(&[emb_size, hidden_size]);
+            let v_bias = Tensor::<N>::random(&[hidden_size]);
+            Self::new(q, q_bias, k, k_bias, v, v_bias)
+        }
+    }
 
     #[test]
     fn test_qkv() {

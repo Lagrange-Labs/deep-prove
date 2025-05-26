@@ -16,7 +16,7 @@ use burn::{
 };
 
 #[derive(Debug, Clone)]
-pub struct LayerNorm<N: Number> {
+pub struct LayerNorm<N> {
     pub gamma: Tensor<N>,
     pub beta: Tensor<N>,
     pub eps: f64,
@@ -140,6 +140,15 @@ mod tests {
     use goldilocks::GoldilocksExt2;
 
     use super::*;
+
+    impl<N: Number> LayerNorm<N> {
+        pub fn random(size: usize) -> Self {
+            let gamma = Tensor::<N>::random(&[size]);
+            let beta = Tensor::<N>::random(&[size]);
+            let eps = 1e-5;
+            Self::new(gamma, beta, eps as f64)
+        }
+    }
 
     type E = GoldilocksExt2;
 

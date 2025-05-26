@@ -103,7 +103,7 @@ impl MHA_QK {
         assert_eq!(qk.get_shape(), vec![self.num_heads, seq_len]);
         // v is of shape [num_heads, seq_len, head_dim].
         assert_eq!(v.get_shape(), vec![self.num_heads, seq_len, self.head_dim]);
-        // The next operation in transformer is softmax row by row, and then qk @ v, "row by row" - but 
+        // The next operation in transformer is softmax row by row, and then qk @ v, "row by row" - but
         // it's actually "head by head" which is the highest dimension.
         // So for the shapes, it's [1,seq_len] @ [seq_len, head_dim] = [1, head_dim] (1 because row by row for each head)
         // This is done in separate layer in the framework since we first need to prove softmax which happens separatedly
