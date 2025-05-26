@@ -767,7 +767,7 @@ where
     /// Element-wise addition
     pub fn add(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(
-            self.shape == other.shape,
+            self.shape.iter().product::<usize>() == other.shape.iter().product::<usize>(),
             "Shape mismatch for addition {:?} != {:?}",
             self.shape,
             other.shape
