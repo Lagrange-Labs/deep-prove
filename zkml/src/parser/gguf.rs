@@ -202,10 +202,10 @@ pub enum LLMModel {
 }
 
 #[derive(Debug, Clone)]
-struct GPT2Model {
+pub struct GPT2Model {
     embeddings: Embeddings<f32>,
     positional: Positional<f32>,
-    blocks: Vec<Attention<f32>>,
+    pub blocks: Vec<Attention<f32>>,
 }
 
 impl GPT2Model {
@@ -534,7 +534,7 @@ impl TensorLoader<BufReader<File>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use candle_core::{CpuStorage, Device, Storage, Tensor, quantized::gguf_file::Content};
     use candle_transformers::quantized_var_builder::VarBuilder;
     use gguf_rs::get_gguf_container;
@@ -547,7 +547,7 @@ mod tests {
 
     use super::{Attention, TensorLoader};
     // download at https://huggingface.co/igorbkz/gpt2-Q8_0-GGUF
-    const GPT2_Q8_0_PATH: &str = "assets/scripts/llms/gpt2.q8_0.gguf";
+    pub const GPT2_Q8_0_PATH: &str = "assets/scripts/llms/gpt2.q8_0.gguf";
 
     #[test]
     fn test_gguf_load_model() -> anyhow::Result<()> {
