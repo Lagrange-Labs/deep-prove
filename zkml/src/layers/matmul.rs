@@ -3,7 +3,7 @@
 use anyhow::ensure;
 use ff_ext::ExtensionField;
 
-use crate::{tensor::Number, Tensor};
+use crate::{Tensor, tensor::Number};
 
 use super::provable::LayerOut;
 
@@ -36,7 +36,7 @@ mod test {
         let matmul = MatMul;
         let a = Tensor::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let b = Tensor::new(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        let result = matmul.evaluate::<_,GoldilocksExt2>(&[&a, &b]).unwrap();
-        assert_eq!(result.outputs[0].data, vec![22.0,28.0,49.0,64.0]);
+        let result = matmul.evaluate::<_, GoldilocksExt2>(&[&a, &b]).unwrap();
+        assert_eq!(result.outputs[0].data, vec![22.0, 28.0, 49.0, 64.0]);
     }
 }
