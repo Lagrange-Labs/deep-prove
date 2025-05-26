@@ -13,6 +13,7 @@ pub mod provable;
 pub mod requant;
 pub mod reshape;
 pub mod transformer;
+pub mod permute;
 
 use std::fmt::Debug;
 

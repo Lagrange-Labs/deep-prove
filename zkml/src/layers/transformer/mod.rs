@@ -14,7 +14,7 @@ mod test {
     use goldilocks::GoldilocksExt2;
 
     use crate::{
-        layers::{concat_matmul, mul, provable::Evaluate, reshape}, parser::gguf, tensor::Number, Element, Tensor
+        layers::{concat_matmul, dense::Dense, mul, provable::Evaluate, reshape}, parser::gguf, tensor::Number, Element, Tensor
     };
 
     use super::{layernorm, mha, qkv, softmax};
@@ -27,6 +27,7 @@ mod test {
     struct FlatAttention<N> {
         num_heads: usize,
         head_dim: usize,
+        hidden_size: usize,
         qkv: qkv::QKV<N>,
         scaler: mul::ScalarMul<f32>,
         reshape_q: reshape::Reshape,
@@ -34,6 +35,7 @@ mod test {
         layernorm: layernorm::LayerNorm<N>,
         mha: mha::MHA_QK,
         cache: qkv::CacheQKV<N>,
+        out: Dense<N>,
     }
 
     impl FlatAttention<f32> {
@@ -46,6 +48,8 @@ mod test {
             let mha = mha::MHA_QK::new(c.num_heads, c.head_dim());
             let scaler = mul::ScalarMul::new((1.0 / (c.head_dim() as f32)).sqrt());
             Self {
+                out: Dense::new(att.out, att.out_bias),
+                hidden_size: c.hidden_size,
                 num_heads: c.num_heads,
                 head_dim: c.head_dim(),
                 qkv,
@@ -59,15 +63,16 @@ mod test {
         }
 
         /// currently hardcoded for f32 - need to implement layernorm and softmax in quantized world to be generic over N
+        /// TODO: all explicit reshape/permute should be either embedded in the previous layer or explicited out as a layer
         pub fn forward(&mut self, input: &Tensor<f32>) -> anyhow::Result<Tensor<f32>> {
             assert_eq!(input.get_shape().len(), 2);
             let seq_len = input.get_shape()[0];
-            let input = self
+            let normed = self
                 .layernorm
                 .evaluate::<GoldilocksExt2>(&vec![input], vec![])?;
             let qkv = self
                 .qkv
-                .evaluate::<GoldilocksExt2>(&input.outputs(), &mut self.cache)?;
+                .evaluate::<GoldilocksExt2>(&normed.outputs(), &mut self.cache)?;
             let mha = self.mha.evaluate::<_, GoldilocksExt2>(&qkv.outputs())?;
             // apply softmax on the first output, Q @ K^T
             let qkt = vec![mha.outputs()[0]];
@@ -88,12 +93,21 @@ mod test {
             let op = concat_matmul::ConcatMatMul;
             let qkt_v = op
                 .evaluate::<f32, GoldilocksExt2>(&vec![&qkt_reshaped, mha.outputs()[1]])?;
-            Ok(qkt_v.outputs()[0].clone())
+            // now we some reshape/permute back 
+            // We go from [num_heads, 1, head_dim] → transpose back to [1, h, head_dim] → and reshape to [1, hidden_size]
+            let merged = qkt_v.outputs()[0].permute3d(&vec![1,0,2]).reshape(vec![1,self.hidden_size]);
+            // now we do the final projection
+            let projected = self.out.evaluate::<GoldilocksExt2>(&vec![&merged], vec![])?;
+            // and then residual connection
+            let out = input.add(&projected.outputs()[0]);
+            Ok(out)
         }
     }
 
     impl<N: Number> FlatAttention<N> {
-        pub fn random(emb_size: usize, num_heads: usize, hidden_size: usize) -> Self {
+        pub fn random(emb_size: usize, num_heads: usize) -> Self {
+            // Note in LLM, it's always the case that hidden_size = emb_size so we can apply residual 
+            let hidden_size = emb_size;
             let head_size = hidden_size / num_heads;
             let qkv = qkv::QKV::random(emb_size, hidden_size);
             let reshape_q = reshape::Reshape::new_fixed(vec![vec![emb_size]]);
@@ -101,7 +115,10 @@ mod test {
             let mha = mha::MHA_QK::new(num_heads, head_size);
             let scaler = mul::ScalarMul::new((1.0 / (head_size as f32)).sqrt());
             let layernorm = layernorm::LayerNorm::random(emb_size);
+            let out= Dense::random(vec![hidden_size, hidden_size]);
             Self {
+                out,
+                hidden_size,
                 num_heads,
                 head_dim: head_size,
                 qkv,
@@ -119,8 +136,7 @@ mod test {
     fn test_flat_attention() {
         let emb_size = 10;
         let num_heads = 2;
-        let hidden_size = 16;
-        let mut att = FlatAttention::random(emb_size, num_heads, hidden_size);
+        let mut att = FlatAttention::random(emb_size, num_heads);
         let input = Tensor::<f32>::random(&[1, emb_size]);
         let output = att.forward(&input).unwrap();
         println!("output shape: {:?}", output.get_shape());
