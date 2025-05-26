@@ -14,7 +14,7 @@ mod test {
     use goldilocks::GoldilocksExt2;
 
     use crate::{
-        layers::{concat_matmul, dense::Dense, mul, provable::Evaluate, reshape}, parser::gguf, tensor::Number, Element, Tensor
+        layers::{concat_matmul, dense::Dense, mul, provable::Evaluate, reshape}, parser::gguf::{self, tests::GPT2_Q8_0_PATH, FileTensorLoader, LLMConfig, LLMModel}, tensor::Number, Element, Tensor
     };
 
     use super::{layernorm, mha, qkv, softmax};
@@ -39,7 +39,7 @@ mod test {
     }
 
     impl FlatAttention<f32> {
-        pub fn new_from_gguf(c: gguf::LLMConfig, att: gguf::Attention<f32>) -> Self {
+        pub fn new_from_gguf(c: &gguf::LLMConfig, att: gguf::Attention<f32>) -> Self {
             let qkv = qkv::QKV::new(att.q, att.q_bias, att.k, att.k_bias, att.v, att.v_bias);
             // [1, d_model] → reshape → [1, h, head_dim]
             let reshape_q = reshape::Reshape::new_fixed(vec![vec![c.embedding_size]]);
@@ -140,6 +140,21 @@ mod test {
         let input = Tensor::<f32>::random(&[1, emb_size]);
         let output = att.forward(&input).unwrap();
         println!("output shape: {:?}", output.get_shape());
+    }
+
+    #[test]
+    fn test_flat_attention_from_gguf() -> anyhow::Result<()> {
+        let loader = FileTensorLoader::from_path(GPT2_Q8_0_PATH)?;
+        let config = LLMConfig::from_content(&loader)?;
+        let LLMModel::GPT2(mut model) = config.model(&loader)? else {
+            bail!("Model is not a GPT2 model");
+        };
+        println!("model: {:?}", config.specific_config);
+        let mut att = FlatAttention::new_from_gguf(&config, model.blocks.remove(0));
+        let input = Tensor::<f32>::random(&[1, config.embedding_size]);
+        let output = att.forward(&input).unwrap();
+        println!("output shape: {:?}",output.get_shape());
+        Ok(())
     }
 
     /// Test if the following two operations are equivalent:
