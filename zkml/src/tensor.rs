@@ -1642,6 +1642,25 @@ impl<T: Number> Tensor<T> {
         }
     }
 
+    pub fn slice_3d_2nd_column(&self, start: usize, end: usize) -> Self {
+        assert!(self.shape.len() == 3);
+        assert!(start < self.shape[1]);
+        assert!(end <= self.shape[1]);
+        let mut data = Vec::with_capacity((end - start) * self.shape[0] * self.shape[2]);
+        for j in start..end {
+            for i in 0..self.shape[0] {
+                for k in 0..self.shape[2] {
+                    data.push(self.data[i * self.shape[1] * self.shape[2] + j * self.shape[2] + k]);
+                }
+            }
+        }
+        Self {
+            data,
+            shape: vec![end - start, self.shape[0], self.shape[2]],
+            og_shape: vec![0],
+        }
+    }
+
     // slice the tensor on the second dimension
     // dim2_start inclusive
     // dim2_end exclusive

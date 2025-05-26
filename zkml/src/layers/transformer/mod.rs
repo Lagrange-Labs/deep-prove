@@ -12,6 +12,7 @@ pub mod softmax;
 mod test {
     use anyhow::bail;
     use goldilocks::GoldilocksExt2;
+    use itertools::Itertools;
 
     use crate::layers::mul;
     use crate::layers::provable::Evaluate;
@@ -127,32 +128,31 @@ mod test {
 
         let qkt_v_2 = {
                     // go from [1, emb_size] to to [num_heads, 1, head_dim]
-        let q_reshaped = q.reshape(vec![num_heads, 1, head_dim]);
+        let q_reshaped = q.reshape(vec![1, num_heads, head_dim]);
         // go from [seq_len, emb_size] to [num_heads, seq_len, head_dim]
-        let k_reshaped = k.reshape(vec![num_heads, seq_len, head_dim]);
-        let v_reshaped = v.reshape(vec![num_heads, seq_len, head_dim]);
+        let k_reshaped = k.reshape(vec![seq_len, num_heads, head_dim]);
+        let v_reshaped = v.reshape(vec![seq_len, num_heads, head_dim]);
+
         // now we split by heads and multiply each mini q with mini k transposed
-        let qkt_heads = (0..num_heads).map(|head| {
-            let mini_q = q_reshaped.slice_3d(head, head + 1).reshape(vec![1, head_dim]);
-            let mini_k = k_reshaped.slice_3d(head, head + 1).reshape(vec![seq_len, head_dim]).transpose();
+        let heads = (0..num_heads).map(|head| {
+            let mini_q = q_reshaped.slice_3d_2nd_column(head, head + 1).reshape(vec![1, head_dim]);
+            let mini_k = k_reshaped.slice_3d_2nd_column(head, head + 1).reshape(vec![seq_len, head_dim]).transpose();
             // [1, head_dim] @ [head_dim, seq_len] = [1, seq_len]
-            mini_q.matmul(&mini_k)
+            let qkt = mini_q.matmul(&mini_k);
+            let mini_v = v_reshaped.slice_3d_2nd_column(head, head + 1).reshape(vec![seq_len, head_dim]);
+            // [1, head_dim]
+            qkt.matmul(&mini_v)
         }).collect::<Vec<_>>();
-        let v_heads = (0..num_heads).map(|head| {
-            let mini_v = v_reshaped.slice_3d(head, head + 1).reshape(vec![seq_len, head_dim]);
-            // [seq_len, head_dim]
-            mini_v
-        }).collect::<Vec<_>>();
-        let mut qkt_it = qkt_heads.into_iter();
-        let mut v_it = v_heads.into_iter();
-        let qkt = qkt_it.next().unwrap().matmul(&v_it.next().unwrap());
-        // now we do the matmul with v, so each heads is now of [1, seq_len] @ [seq_len, head_dim] = [1, head_dim]
-        // we then concat the results together so the end results is [num_heads, 1, head_dim]
-        let qkt_v= qkt_it.zip(v_it).fold(qkt, |mut acc, (qkt,v)| { 
-            acc.concat(qkt.matmul(&v));
-            acc 
-        });
-        // transpose back to [1, num_heads, head_dim] and then reshape to [1, emb_size]
+        // vector in heads has shape [1, head_dim]. We now need to build a tensor with shape [1, num_heads, head_dim] by
+        // concatenating the heads together
+        assert_eq!(num_heads, heads.len());
+        let qkt_v = {
+            let data = heads.into_iter().flat_map(|h| 
+                h.data
+            ).collect_vec();
+            Tensor::new(vec![1, num_heads, head_dim], data)
+        };
+        // reshape to [1, emb_size]
         let qkt_v = qkt_v.reshape(vec![1, emb_size]);
             qkt_v
         };
