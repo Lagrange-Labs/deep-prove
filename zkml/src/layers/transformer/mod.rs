@@ -90,11 +90,11 @@ mod test {
             // We reshape to [num_heads, 1, seq_len] such concat_matmul can work, since it expects tensors of same shape
             let qkt_reshaped = softmaxed.outputs()[0].clone().reshape(vec![self.num_heads, 1, seq_len]);
             // now we can project back with V
-            let op = concat_matmul::ConcatMatMul;
+            // We go from [num_heads, 1, head_dim] → transpose back to [1, h, head_dim] 
+            let op = concat_matmul::ConcatMatMul::new_with_transpose(vec![1, 0, 2]);
             let qkt_v = op
                 .evaluate::<f32, GoldilocksExt2>(&vec![&qkt_reshaped, mha.outputs()[1]])?;
-            // now we some reshape/permute back 
-            // We go from [num_heads, 1, head_dim] → transpose back to [1, h, head_dim] → and reshape to [1, hidden_size]
+            // → and reshape to [1, hidden_size]
             let merged = qkt_v.outputs()[0].permute3d(&vec![1,0,2]).reshape(vec![1,self.hidden_size]);
             // now we do the final projection
             let projected = self.out.evaluate::<GoldilocksExt2>(&vec![&merged], vec![])?;
