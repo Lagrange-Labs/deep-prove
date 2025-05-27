@@ -175,7 +175,6 @@ where
 }
 
 // outputs (trees, sumcheck_oracles, oracles, bh_evals, eq, eval)
-#[allow(clippy::too_many_arguments)]
 pub fn batch_commit_phase<E: ExtensionField, Spec: BasefoldSpec<E>>(
     pp: &<Spec::EncodingScheme as EncodingScheme<E>>::ProverParameters,
     point: &[E],
@@ -345,7 +344,6 @@ where
 }
 
 // outputs (trees, sumcheck_oracles, oracles, bh_evals, eq, eval)
-#[allow(clippy::too_many_arguments)]
 pub fn simple_batch_commit_phase<E: ExtensionField, Spec: BasefoldSpec<E>>(
     pp: &<Spec::EncodingScheme as EncodingScheme<E>>::ProverParameters,
     point: &[E],
