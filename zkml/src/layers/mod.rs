@@ -8,12 +8,12 @@ pub mod hadamard;
 pub mod matmul;
 pub mod matvec;
 pub mod mul;
+pub mod permute;
 pub mod pooling;
 pub mod provable;
 pub mod requant;
 pub mod reshape;
 pub mod transformer;
-pub mod permute;
 
 use std::fmt::Debug;
 

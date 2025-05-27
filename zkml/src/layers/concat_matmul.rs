@@ -26,7 +26,9 @@ impl ConcatMatMul {
         Self { transpose: None }
     }
     pub fn new_with_transpose(transpose: Vec<usize>) -> Self {
-        Self { transpose: Some(transpose) }
+        Self {
+            transpose: Some(transpose),
+        }
     }
 
     pub fn evaluate<N: Number, E: ExtensionField>(
@@ -40,7 +42,9 @@ impl ConcatMatMul {
         let b_shape = b.get_shape();
         ensure!(
             a_shape.len() == b_shape.len(),
-            "ConcatMatMul expects inputs of the same shape: {:?} vs {:?}", a_shape, b_shape
+            "ConcatMatMul expects inputs of the same shape: {:?} vs {:?}",
+            a_shape,
+            b_shape
         );
         ensure!(
             a_shape.len() == 3,
@@ -105,10 +109,13 @@ mod test {
         let concat_matmul = ConcatMatMul::new_with_transpose(vec![1, 0, 2]);
         let a = Tensor::new(vec![2, 2, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
         let b = Tensor::new(vec![2, 2, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
-        let result = concat_matmul.evaluate::<_, GoldilocksExt2>(&[&a, &b]).unwrap();
-        let expected = Tensor::new(vec![2, 2,2], vec![7.0, 10.0, 15.0, 22.0, 67.0, 78.0, 91.0, 106.0]);
+        let result = concat_matmul
+            .evaluate::<_, GoldilocksExt2>(&[&a, &b])
+            .unwrap();
+        let expected = Tensor::new(vec![2, 2, 2], vec![
+            7.0, 10.0, 15.0, 22.0, 67.0, 78.0, 91.0, 106.0,
+        ]);
         let expected = expected.permute3d(&vec![1, 0, 2]);
         assert_eq!(result.outputs[0].data, expected.data);
-
     }
 }

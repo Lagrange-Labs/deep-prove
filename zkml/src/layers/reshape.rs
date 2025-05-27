@@ -138,11 +138,13 @@ mod tests {
 
     #[test]
     fn test_reshape_squeeze() {
-        let input = Tensor::<Element>::new(vec![2, 3], vec![ 0, 1, 2, 3, 4, 5]);
+        let input = Tensor::<Element>::new(vec![2, 3], vec![0, 1, 2, 3, 4, 5]);
         let reshape = Reshape::new_squeeze(1);
-        let output = reshape.evaluate::<_, GoldilocksExt2>(&[&input]).expect("reshape shouldn't fail");
+        let output = reshape
+            .evaluate::<_, GoldilocksExt2>(&[&input])
+            .expect("reshape shouldn't fail");
         assert_eq!(output.outputs[0].get_shape(), vec![2, 1, 3]);
-        assert_eq!(output.outputs[0].get_data(), vec![0,1,2,3,4,5]);
+        assert_eq!(output.outputs[0].get_data(), vec![0, 1, 2, 3, 4, 5]);
     }
 
     #[test]
