@@ -12,10 +12,11 @@ use crate::{
     quantization::{self, BIT_LEN, ScalingFactor},
     tensor::Number,
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{Result, ensure};
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
 use itertools::Itertools;
+use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::{
     mle::{IntoMLE, MultilinearExtension},
     virtual_poly::{VPAuxInfo, VirtualPolynomial},
@@ -32,11 +33,6 @@ use super::provable::{
     VerifiableCtx,
 };
 
-/// Bias to compute the bias ID polynomials. Since originally we take the index of each
-/// layer to be the index of the layer, we need to add a bias to avoid collision with other
-/// layers poly id.
-pub(crate) const BIAS_POLY_ID: PolyID = 100_000;
-
 /// Description of the layer
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Dense<T> {
@@ -49,9 +45,8 @@ pub struct Dense<T> {
 /// Information stored in the context (setup phase) for this layer.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DenseCtx<E> {
-    pub matrix_poly_id: PolyID,
+    pub node_id: PolyID,
     pub matrix_poly_aux: VPAuxInfo<E>,
-    pub bias_poly_id: PolyID,
     pub unpadded_matrix_shape: Vec<usize>,
     pub padded_matrix_shape: Vec<usize>,
 }
@@ -192,7 +187,7 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    fn step_info(&self, id: PolyID, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
+    fn step_info(&self, id: NodeId, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         // construct dimension of the polynomial given to the sumcheck
         let ncols = self.matrix.ncols_2d();
         aux.last_output_shape
@@ -205,15 +200,19 @@ where
         let vector_num_vars = matrix_num_vars;
         // there is only one product (i.e. quadratic sumcheck)
         let dense_info = LayerCtx::Dense(DenseCtx {
-            matrix_poly_id: id,
-            matrix_poly_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
+            node_id: id,
+            matrix_poly_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![
                 matrix_num_vars,
                 vector_num_vars,
             ]]),
-            bias_poly_id: BIAS_POLY_ID + id,
             unpadded_matrix_shape: self.unpadded_matrix_shape.clone(),
             padded_matrix_shape: self.matrix.get_shape().to_vec(),
         });
+
+        let weights_evals = self.matrix.pad_next_power_of_two().get_data().to_vec();
+        let bias_evals = self.bias.pad_next_power_of_two().get_data().to_vec();
+
+        aux.model_polys = vec![weights_evals, bias_evals];
         Ok((dense_info, aux))
     }
 
@@ -228,10 +227,10 @@ where
         );
         debug!(
             "Commitment : dense layer bias ID {}: size {}",
-            BIAS_POLY_ID + id,
+            id * 100,
             bias_evals.len().ilog2()
         );
-        vec![Some((id, evals)), Some((BIAS_POLY_ID + id, bias_evals))]
+        vec![Some((id, evals)), Some((id * 100, bias_evals))]
     }
 }
 
@@ -305,11 +304,12 @@ impl QuantizeOp for Dense<f32> {
     }
 }
 
-impl<E> ProvableOp<E> for Dense<Element>
+impl<E, PCS> ProvableOp<E, PCS> for Dense<Element>
 where
     E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
 {
     type Ctx = DenseCtx<E>;
 
@@ -319,7 +319,7 @@ where
         ctx: &Self::Ctx,
         last_claims: Vec<&Claim<E>>,
         step_data: &StepData<E, E>,
-        prover: &mut Prover<E, T>,
+        prover: &mut Prover<E, T, PCS>,
     ) -> Result<Vec<Claim<E>>> {
         Ok(vec![self.prove_step(
             prover,
@@ -365,11 +365,12 @@ where
     }
 }
 
-impl<E> VerifiableCtx<E> for DenseCtx<E>
+impl<E, PCS> VerifiableCtx<E, PCS> for DenseCtx<E>
 where
     E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
 {
     type Proof = DenseProof<E>;
 
@@ -377,7 +378,7 @@ where
         &self,
         proof: &Self::Proof,
         last_claims: &[&Claim<E>],
-        verifier: &mut Verifier<E, T>,
+        verifier: &mut Verifier<E, T, PCS>,
         _shape_step: &ShapeStep,
     ) -> Result<Vec<Claim<E>>> {
         Ok(vec![self.verify_dense(verifier, last_claims[0], proof)?])
@@ -442,19 +443,20 @@ impl Dense<Element> {
     }
 
     #[timed::timed_instrument(name = "Prover::prove_dense")]
-    pub fn prove_step<'b, E, T>(
+    pub fn prove_step<'b, E, T, PCS>(
         &self,
-        prover: &mut Prover<E, T>,
+        prover: &mut Prover<E, T, PCS>,
         last_claim: &Claim<E>,
         input: &Tensor<E>,
         output: &Tensor<E>,
-        info: &DenseCtx<E>,
+        _info: &DenseCtx<E>,
         id: NodeId,
     ) -> anyhow::Result<Claim<E>>
     where
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
         T: Transcript<E>,
+        PCS: PolynomialCommitmentScheme<E>,
     {
         let matrix = &self.matrix;
         let (nrows, ncols) = (matrix.nrows_2d(), matrix.ncols_2d());
@@ -550,19 +552,13 @@ impl Dense<Element> {
         // Note we need the _full_ input to the matrix since the matrix MLE has (row,column) vars space
         let point = [proof.point.as_slice(), last_claim.point.as_slice()].concat();
         let eval = state.get_mle_final_evaluations()[0];
-        prover
-            .commit_prover
-            .add_claim(info.matrix_poly_id, Claim::new(point, eval))
-            .context("unable to add matrix claim")?;
         // add the bias claim over the last claim input, since that is what is needed to "remove" the bias
         // to only verify the matrix2vec product via the sumcheck proof.
-        prover
-            .commit_prover
-            .add_claim(
-                info.bias_poly_id,
-                Claim::new(last_claim.point.clone(), bias_eval),
-            )
-            .context("unable to add bias claim")?;
+        let bias_claim = Claim::new(last_claim.point.clone(), bias_eval);
+        let weights_claim = Claim::new(point, eval);
+
+        // Add common commitment claims to be proven
+        prover.add_common_claims(id, vec![weights_claim, bias_claim])?;
 
         // the claim that this proving step outputs is the claim about not the matrix but the vector poly.
         // at next step, that claim will be proven over this vector poly (either by the next dense layer proving, or RELU etc).
@@ -594,9 +590,9 @@ where
         };
         output_shape(input_shape, mat_shape)
     }
-    pub(crate) fn verify_dense<T: Transcript<E>>(
+    pub(crate) fn verify_dense<T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
-        verifier: &mut Verifier<E, T>,
+        verifier: &mut Verifier<E, T, PCS>,
         last_claim: &Claim<E>,
         proof: &DenseProof<E>,
     ) -> anyhow::Result<Claim<E>> {
@@ -623,14 +619,12 @@ where
         // Note we don't care about verifying that for the vector since it's verified at the next
         // step.
         let pcs_eval_output = proof.individual_claims[0];
-        verifier.commit_verifier.add_claim(
-            info.matrix_poly_id,
-            Claim::new(pcs_eval_input, pcs_eval_output),
-        )?;
-        verifier.commit_verifier.add_claim(
-            info.bias_poly_id,
-            Claim::new(last_claim.point.clone(), proof.bias_eval),
-        )?;
+
+        let bias_claim = Claim::new(last_claim.point.clone(), proof.bias_eval);
+        let weights_claim = Claim::new(pcs_eval_input, pcs_eval_output);
+
+        // add the common commitment claims to be verified
+        verifier.add_common_claims(self.node_id, vec![weights_claim, bias_claim])?;
 
         // SUMCHECK verification part
         // Instead of computing the polynomial at the random point requested like this

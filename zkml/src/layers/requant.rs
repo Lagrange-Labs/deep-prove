@@ -1,8 +1,8 @@
 //! Module containign code for performing proving friendly requantisation. This is done via a [fixed point multiplication](https://en.wikipedia.org/wiki/Fixed-point_arithmetic#Binary_fixed-point_multiplication) and use of lookup arguments.
 
 use crate::{
-    Claim, Element, Prover, ScalingFactor, Tensor,
-    commit::{compute_betas_eval, precommit::PolyID},
+    Claim, Context, Element, Prover, ScalingFactor, Tensor,
+    commit::{PCSError, compute_betas_eval, precommit::PolyID},
     iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
@@ -14,6 +14,7 @@ use crate::{
             prover::batch_prove as logup_batch_prove, structs::LogUpProof,
             verifier::verify_logup_proof,
         },
+        witness::LogUpWitness,
     },
     model::StepData,
     padding::PaddingMode,
@@ -24,16 +25,15 @@ use anyhow::{Result, anyhow, ensure};
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
 
-use mpcs::sum_check::eq_xy_eval;
+use mpcs::{PolynomialCommitmentScheme, sum_check::eq_xy_eval};
 use multilinear_extensions::{
     mle::{DenseMultilinearExtension, IntoMLE},
     virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial},
 };
 
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::collections::HashMap;
 use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
-
 use transcript::Transcript;
 
 use super::{
@@ -70,14 +70,14 @@ pub struct Requant {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RequantCtx {
     pub requant: Requant,
-    pub poly_id: PolyID,
+    pub node_id: NodeId,
     pub num_vars: usize,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 /// Struct holding all the information needed to verify requantisation was performed correctly.
 /// This includes both lookup proofs and an additional sumcheck proof that we use so that all evaluations are at the same point.
-pub struct RequantProof<E: ExtensionField>
+pub struct RequantProof<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
@@ -90,6 +90,8 @@ where
     pub(crate) clamping_lookup: LogUpProof<E>,
     /// The range check lookup proof for the chunks that are shifted away
     pub(crate) shifted_lookup: LogUpProof<E>,
+    /// COmmitments to lookup polynomials, they are in the order clamping commitments -> shifted commitments
+    pub(crate) commitments: Vec<PCS::Commitment>,
 }
 
 const IS_PROVABLE: bool = true;
@@ -157,10 +159,12 @@ where
                 Ok(Some(num_vars))
             })?
             .expect("No input shape found for requant layer?");
+        // Set the model polys to be empty
+        aux.model_polys = vec![];
         Ok((
             LayerCtx::Requant(RequantCtx {
                 requant: *self,
-                poly_id: id,
+                node_id: id,
                 num_vars,
             }),
             aux,
@@ -170,11 +174,11 @@ where
 
 impl PadOp for Requant {}
 
-impl<E> ProvableOp<E> for Requant
+impl<E, PCS> ProvableOp<E, PCS> for Requant
 where
-    E: ExtensionField,
+    E: ExtensionField + Serialize + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
-    E: Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
 {
     type Ctx = RequantCtx;
 
@@ -184,7 +188,7 @@ where
         ctx: &Self::Ctx,
         last_claims: Vec<&Claim<E>>,
         _step_data: &StepData<E, E>,
-        prover: &mut Prover<E, T>,
+        prover: &mut Prover<E, T, PCS>,
     ) -> Result<Vec<Claim<E>>> {
         Ok(vec![self.prove_step(prover, last_claims[0], ctx, id)?])
     }
@@ -192,7 +196,8 @@ where
     fn gen_lookup_witness(
         &self,
         id: NodeId,
-        gen: &mut LookupWitnessGen<E>,
+        gen: &mut LookupWitnessGen<E, PCS>,
+        ctx: &Context<E, PCS>,
         step_data: &StepData<Element, E>,
     ) -> Result<()> {
         ensure!(
@@ -203,8 +208,6 @@ where
             step_data.outputs.outputs().len() == 1,
             "Found more than 1 output in inference step of requant layer"
         );
-        gen.tables.insert(TableType::Clamping(self.clamping_size()));
-        gen.tables.insert(TableType::Range);
 
         // We take the input, mutliply by the fixed point multiplier and add the rounding constant. Then we split the resulting values into
         // parts that are either shifted away (these get range checked) or passed to the clamping table.
@@ -225,81 +228,127 @@ where
 
         // Now we have to calculate the output for the clamped part and break the part that is shifted away into chunks to be range checked.
         // We do the clamping part first.
-        let clamping_table_lookup_map = gen
-            .lookups
-            .entry(TableType::Clamping(self.clamping_size()))
-            .or_insert_with(|| HashMap::default());
+        let (clamping_in, clamping_out): (Vec<Element>, Vec<Element>) = clamping
+            .into_par_iter()
+            .map(|elem| {
+                let clamp_out = if elem < *quantization::MIN {
+                    *quantization::MIN
+                } else if elem > *quantization::MAX {
+                    *quantization::MAX
+                } else {
+                    elem
+                };
 
-        let (clamping_in_field, clamping_out_field): (Vec<E::BaseField>, Vec<E::BaseField>) =
-            clamping
-                .into_iter()
-                .map(|elem| {
-                    let clamp_out = if elem < *quantization::MIN {
-                        *quantization::MIN
-                    } else if elem > *quantization::MAX {
-                        *quantization::MAX
-                    } else {
-                        elem
-                    };
-
-                    let in_field: E = elem.to_field();
-                    let out_field: E = clamp_out.to_field();
-                    let lookup = elem + COLUMN_SEPARATOR * clamp_out;
-                    *clamping_table_lookup_map.entry(lookup).or_insert(0u64) += 1;
-
-                    (in_field.as_bases()[0], out_field.as_bases()[0])
-                })
-                .unzip();
+                (elem, clamp_out)
+            })
+            .unzip();
 
         // Now we split the shifted part into pieces that fit into the range table
         let range_check_bit_size = *quantization::BIT_LEN;
         let range_mask = (1i128 << range_check_bit_size) - 1;
 
+        // We need to calculate how many cunks we are splitting into, there should never be any remainder from this division.
         let no_chunks = shift / range_check_bit_size;
 
-        let table_lookup_map = gen
-            .lookups
-            .entry(TableType::Range)
-            .or_insert_with(|| HashMap::default());
-
-        let shifted_chunks_field = (0..no_chunks)
+        let shifted_chunks = (0..no_chunks)
+            .into_par_iter()
             .map(|j| {
                 shifted
                     .iter()
                     .map(|&elem| {
                         let tmp = elem >> (j * range_check_bit_size);
-                        let chunk = tmp & range_mask;
-                        let chunk_field: E = chunk.to_field();
-                        *table_lookup_map.entry(chunk).or_insert(0u64) += 1;
-                        chunk_field.as_bases()[0]
+                        tmp & range_mask
                     })
-                    .collect::<Vec<E::BaseField>>()
+                    .collect::<Vec<Element>>()
             })
-            .collect::<Vec<Vec<E::BaseField>>>();
+            .collect::<Vec<Vec<Element>>>();
 
+        let merged_shifted = shifted_chunks
+            .iter()
+            .flatten()
+            .copied()
+            .collect::<Vec<Element>>();
+
+        let merged_clamping = clamping_in
+            .iter()
+            .zip(clamping_out.iter())
+            .map(|(&c_in, &c_out)| c_in + c_out * COLUMN_SEPARATOR)
+            .collect::<Vec<Element>>();
+        let num_vars = ceil_log2(clamping_in.len());
         // Add the witnesses to be committed
-        [&clamping_in_field, &clamping_out_field]
-            .into_iter()
-            .chain(shifted_chunks_field.iter())
-            .enumerate()
-            .for_each(|(i, poly)| {
-                gen.polys_with_id.push((
-                    id * 100 + i,
-                    poly.iter().map(|v| E::from(*v)).collect::<Vec<E>>(),
-                ));
-            });
 
-        gen.lookups_no_challenges.insert(
+        let (clamping_commits, clamping_evals): (
+            Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
+            Vec<Vec<E::BaseField>>,
+        ) = [clamping_in, clamping_out]
+            .into_par_iter()
+            .map(|vals| {
+                let evaluations = vals
+                    .into_iter()
+                    .map(|v| {
+                        let f: E = v.to_field();
+                        f.as_bases()[0]
+                    })
+                    .collect::<Vec<E::BaseField>>();
+                let mle =
+                    DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, &evaluations);
+                let commit = ctx.commitment_ctx.commit(&mle)?;
+                Ok(((commit, mle), evaluations))
+            })
+            .collect::<Result<Vec<_>, anyhow::Error>>()?
+            .into_iter()
+            .unzip();
+
+        let (shifted_chunk_commits, shifted_chunks_evals): (
+            Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
+            Vec<Vec<E::BaseField>>,
+        ) = shifted_chunks
+            .into_par_iter()
+            .map(|chunk| {
+                let evaluations = chunk
+                    .into_iter()
+                    .map(|v| {
+                        let f: E = v.to_field();
+                        f.as_bases()[0]
+                    })
+                    .collect::<Vec<E::BaseField>>();
+                let mle =
+                    DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, &evaluations);
+                let commit = ctx.commitment_ctx.commit(&mle)?;
+                Ok(((commit, mle), evaluations))
+            })
+            .collect::<Result<Vec<_>, anyhow::Error>>()?
+            .into_iter()
+            .unzip();
+        gen.logup_witnesses.insert(
             id,
             vec![
-                (
-                    vec![clamping_in_field, clamping_out_field],
+                LogUpWitness::<E, PCS>::new_lookup(
+                    clamping_commits,
+                    clamping_evals,
                     2,
                     TableType::Clamping(self.clamping_size()),
                 ),
-                (shifted_chunks_field, 1, TableType::Range),
+                LogUpWitness::<E, PCS>::new_lookup(
+                    shifted_chunk_commits,
+                    shifted_chunks_evals,
+                    1,
+                    TableType::Range,
+                ),
             ],
         );
+        let lookups = gen.new_lookups.get_mut(&TableType::Range).ok_or(anyhow!(
+            "No table of type Range was expected, error occured during requant step"
+        ))?;
+        lookups.extend(merged_shifted);
+        let lookups = gen
+            .new_lookups
+            .get_mut(&TableType::Clamping(self.clamping_size()))
+            .ok_or(anyhow!(
+                "No table of type {} was expected",
+                TableType::Clamping(self.clamping_size()).name()
+            ))?;
+        lookups.extend(merged_clamping);
 
         Ok(())
     }
@@ -331,25 +380,23 @@ impl OpInfo for RequantCtx {
     }
 }
 
-impl<E> VerifiableCtx<E> for RequantCtx
+impl<E, PCS> VerifiableCtx<E, PCS> for RequantCtx
 where
-    E: ExtensionField,
+    E: ExtensionField + Serialize + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
-    E: Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
 {
-    type Proof = RequantProof<E>;
+    type Proof = RequantProof<E, PCS>;
 
     fn verify<T: Transcript<E>>(
         &self,
         proof: &Self::Proof,
         last_claims: &[&Claim<E>],
-        verifier: &mut Verifier<E, T>,
+        verifier: &mut Verifier<E, T, PCS>,
         _shape_step: &ShapeStep,
     ) -> Result<Vec<Claim<E>>> {
         let (constant_challenge, column_separation_challenge) = verifier
             .challenge_storage
-            .as_ref()
-            .unwrap()
             .get_challenges_by_name(&TableType::Clamping(self.requant.clamping_size()).name())
             .ok_or(anyhow!(
                 "Couldn't get challenges for LookupType: {}",
@@ -480,9 +527,13 @@ impl Requant {
     /// Method that proves requantisation was performed correctly. First it runs the lookup argument for the clamping claim and batches all the range checks
     /// for the shifted polys together. Then it performs a sumcheck that takes the output claims from the two lookup arguments and produces a new claim where all of the polynomials are
     /// evaluated at the same point. This sumcheck also checks that the output column of the clamping lookup relates to the same polynomial as `last_claim`.
-    pub(crate) fn prove_step<E: ExtensionField, T: Transcript<E>>(
+    pub(crate) fn prove_step<
+        E: ExtensionField,
+        T: Transcript<E>,
+        PCS: PolynomialCommitmentScheme<E>,
+    >(
         &self,
-        prover: &mut Prover<E, T>,
+        prover: &mut Prover<E, T, PCS>,
         last_claim: &Claim<E>,
         requant_info: &RequantCtx,
         id: NodeId,
@@ -491,20 +542,27 @@ impl Requant {
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
-        let prover_info = prover.lookup_witness(id)?;
+        let logup_witnesses = prover.lookup_witness(id)?;
         // Check that we have two witnesses for requantisation
-        if prover_info.len() != 2 {
+        if logup_witnesses.len() != 2 {
             return Err(anyhow!(
                 "There should be two lookup witnesses during requantisation, node: {}, number of witnesses: {}",
                 id,
-                prover_info.len()
+                logup_witnesses.len()
             ));
         }
         // Run the lookup protocol and return the lookup proof
-        let clamping_prover_info = &prover_info[0];
-        let shifted_prover_info = &prover_info[1];
-        let clamping_logup_proof = logup_batch_prove(clamping_prover_info, prover.transcript)?;
-        let shifted_logup_proof = logup_batch_prove(shifted_prover_info, prover.transcript)?;
+        let clamping_logup_witness = &logup_witnesses[0];
+        let shifted_logup_witness = &logup_witnesses[1];
+        let shifted_commitments = shifted_logup_witness.get_commitments();
+        let clamping_commitments = clamping_logup_witness.get_commitments();
+        // Run the lookup protocol and return the lookup proof
+        let clamping_prover_info =
+            clamping_logup_witness.get_logup_input(&prover.challenge_storage)?;
+        let shifted_prover_info =
+            shifted_logup_witness.get_logup_input(&prover.challenge_storage)?;
+        let clamping_logup_proof = logup_batch_prove(&clamping_prover_info, prover.transcript)?;
+        let shifted_logup_proof = logup_batch_prove(&shifted_prover_info, prover.transcript)?;
         // We need to prove that the output of this step is the input to following activation function
         // this is done by showing that the `last_claim` and the output column of the clamping lookup both relate to the
         // same polynomial. In addition, we need all the shifted claims to be about the same point as the clamping input claim, so we include these in the sumcheck as well
@@ -591,17 +649,22 @@ impl Requant {
             .recombine_claims(clamping_in_eval, shifted_evals);
 
         // Add the points and evaluations to open commitments at
-        let accumulation_evals = [clamping_in_eval, clamping_out_eval]
-            .iter()
-            .chain(shifted_evals.iter())
-            .enumerate()
-            .map(|(i, &eval)| {
-                prover
-                    .witness_prover
-                    .add_claim(id * 100 + i, Claim::<E>::new(point.clone(), eval))?;
-                Result::<E, anyhow::Error>::Ok(eval)
-            })
-            .collect::<Result<Vec<E>, _>>()?;
+        let (accumulation_evals, commitments): (Vec<E>, Vec<PCS::Commitment>) =
+            [clamping_in_eval, clamping_out_eval]
+                .iter()
+                .chain(shifted_evals.iter())
+                .zip(clamping_commitments.into_iter().chain(shifted_commitments))
+                .map(|(&eval, comm_with_wit)| {
+                    let commitment = PCS::get_pure_commitment(&comm_with_wit.0);
+                    prover
+                        .commit_prover
+                        .add_witness_claim(comm_with_wit, Claim::<E>::new(point.clone(), eval))?;
+
+                    Result::<(E, PCS::Commitment), PCSError>::Ok((eval, commitment))
+                })
+                .collect::<Result<Vec<(E, PCS::Commitment)>, PCSError>>()?
+                .into_iter()
+                .unzip();
 
         // Add the layer proof to the list
         prover.push_proof(
@@ -611,6 +674,7 @@ impl Requant {
                 accumulation_evals,
                 clamping_lookup: clamping_logup_proof,
                 shifted_lookup: shifted_logup_proof,
+                commitments,
             }),
         );
 
@@ -626,16 +690,20 @@ impl RequantCtx {
     /// It verifies both lookup argument proofs, calculates the initial claim for the sumcheck proof using the lookup argument claims
     /// and then verifies the sumcheck using this initial claim. It then takes the output claims provided by the prover, checks they relate to the sumcheck
     /// subclaim, adds them to the list of claims of commitment openings and then calculates the next claim.
-    pub(crate) fn verify_requant<E, T: Transcript<E>>(
+    pub(crate) fn verify_requant<
+        E: ExtensionField,
+        T: Transcript<E>,
+        PCS: PolynomialCommitmentScheme<E>,
+    >(
         &self,
-        verifier: &mut Verifier<E, T>,
+        verifier: &mut Verifier<E, T, PCS>,
         last_claim: &Claim<E>,
-        proof: &RequantProof<E>,
+        proof: &RequantProof<E, PCS>,
         constant_challenge: E,
         column_separation_challenge: E,
     ) -> anyhow::Result<Claim<E>>
     where
-        E: ExtensionField + Serialize + DeserializeOwned,
+        E: Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
         // 1. Verify the lookup proofs
@@ -644,6 +712,7 @@ impl RequantCtx {
             accumulation_evals,
             clamping_lookup,
             shifted_lookup,
+            commitments,
         } = proof;
         // Work out how many instances of range check are batched into the shifted claims
         let shifted_instances = self.requant.shift() / *quantization::BIT_LEN;
@@ -744,12 +813,11 @@ impl RequantCtx {
         // 4. Add claims to commitment verifier
         accumulation_evals
             .iter()
-            .enumerate()
-            .try_for_each(|(i, &eval)| {
-                verifier.witness_verifier.add_claim(
-                    self.poly_id * 100 + i,
-                    Claim::<E>::new(acc_point.clone(), eval),
-                )
+            .zip(commitments)
+            .try_for_each(|(&eval, commit)| {
+                verifier
+                    .commit_verifier
+                    .add_witness_claim(commit.clone(), Claim::<E>::new(acc_point.clone(), eval))
             })?;
 
         Ok(Claim::<E>::new(acc_point, next_claim_eval))

@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use super::PCSError;
-use crate::{Claim, default_transcript};
+use crate::{Claim, default_transcript, layers::provable::NodeId};
 use ff_ext::ExtensionField;
 
 use mpcs::{Evaluation, PolynomialCommitmentScheme};
@@ -13,9 +13,6 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use transcript::Transcript;
-
-/// A polynomial has an unique ID associated to it.
-pub type PolyID = usize;
 
 /// Constant we use to determine when a BaseFold commitment is trivial
 const TRIVIAL_COMMIT_SIZE: usize = 7;
@@ -32,24 +29,11 @@ where
     prover_params: PCS::ProverParam,
     /// Verifier parameters for the [`PolynomialCommitmentScheme`]
     verifier_params: PCS::VerifierParam,
-    /// This field contains a [`HashMap`] where the key is a [`PolyID`] and the value is the [`PolynomialCommitmentScheme::CommitmentWithWitness`] corresponding to that ID.
-    /// We use an option because some commitments are generated at proving time.
-    model_comms: Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
-/// Struct that stores prover information about commitments used for proving inference in a [`Model`].
-pub struct VerifierContext<E, PCS>
-where
-    PCS: PolynomialCommitmentScheme<E>,
-    E::BaseField: Serialize + DeserializeOwned,
-    E: ExtensionField + Serialize + DeserializeOwned,
-{
-    /// Prover parameters for the [`PolynomialCommitmentScheme`]
-    params: PCS::VerifierParam,
-    /// The mapping between [`PolyID`] and [`PolynomialCommitmentScheme::Commitment`] used by the verifier.
-    poly_info: HashMap<PolyID, PCS::Commitment>,
+    /// This field contains a [`HashMap`] where the key is a [`NodeId`] and the value is a vector of tuples of [`PolynomialCommitmentScheme::CommitmentWithWitness`]  and [`DenseMultilinearExtension<E>`] corresponding to that ID.
+    model_comms_map:
+        HashMap<NodeId, Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>>,
+    /// The order that we append the common commitments to the transcript.
+    order: Vec<NodeId>,
 }
 
 impl<E, PCS> CommitmentContext<E, PCS>
@@ -61,35 +45,52 @@ where
     /// Make a new [`CommitmentContext`]
     pub fn new(
         witness_poly_size: usize,
-        polys: Vec<DenseMultilinearExtension<E>>,
+        polys: Vec<(NodeId, Vec<DenseMultilinearExtension<E>>)>,
     ) -> Result<CommitmentContext<E, PCS>, PCSError> {
         // Find the maximum size so we can generate params
         let max_poly_size = polys
             .iter()
-            .map(|poly| 1 << poly.num_vars())
-            .max()
-            .ok_or(PCSError::ParameterError(
-                "No polynomials were provided".to_string(),
-            ))?
-            .max(witness_poly_size)
+            .fold(witness_poly_size, |mut acc, (_, poly_vec)| {
+                poly_vec
+                    .iter()
+                    .for_each(|poly| acc = acc.max(1 << poly.num_vars()));
+                acc
+            })
             .next_power_of_two();
 
         let param = PCS::setup(max_poly_size)?;
         let (prover_params, verifier_params) = PCS::trim(param, max_poly_size)?;
 
-        let model_comms = polys
-            .into_par_iter()
-            .map(|poly| {
-                let commit = PCS::commit(&prover_params, &poly)?;
-                Result::<(_, _), PCSError>::Ok((commit, poly))
-            })
-            .collect::<Result<Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>, _>>(
-            )?;
+        let order = polys
+            .iter()
+            .map(|(node_id, _)| *node_id)
+            .collect::<Vec<NodeId>>();
 
+        let model_comms_map = polys
+            .into_par_iter()
+            .map(|(node_id, polys_vec)| {
+                let model_comms =
+                    polys_vec
+                        .into_iter()
+                        .map(|poly| {
+                            let commit = PCS::commit(&prover_params, &poly)?;
+                            Result::<(_, _), PCSError>::Ok((commit, poly))
+                        })
+                        .collect::<Result<
+                            Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
+                            _,
+                        >>()?;
+                Result::<(NodeId, Vec<(_, _)>), PCSError>::Ok((node_id, model_comms))
+            })
+            .collect::<Result<
+                HashMap<NodeId, Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>>,
+                _,
+            >>()?;
         Ok(CommitmentContext {
             prover_params,
             verifier_params,
-            model_comms,
+            model_comms_map,
+            order,
         })
     }
 
@@ -116,9 +117,13 @@ where
         &self,
         transcript: &mut T,
     ) -> Result<(), PCSError> {
-        self.model_comms.iter().try_for_each(|(comm, _)| {
-            let v_comm = PCS::get_pure_commitment(comm);
-            PCS::write_commitment(&v_comm, transcript).map_err(PCSError::from)
+        self.order.iter().try_for_each(|node_id| {
+            // Unwrap should never fail here
+            let comms_vec = self.model_comms_map.get(node_id).unwrap();
+            comms_vec.iter().try_for_each(|(comm, _)| {
+                let v_comm = PCS::get_pure_commitment(comm);
+                PCS::write_commitment(&v_comm, transcript).map_err(PCSError::from)
+            })
         })
     }
 }
@@ -197,8 +202,6 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: ExtensionField + Serialize + DeserializeOwned,
 {
-    /// Commitments to the model weights, ordered in inference order (so the last element of the vec is the first commitment used in proving).
-    model_commits: Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
     /// Claims that are made about non-trivial commitments
     claims: Vec<CommitmentClaim<E, PCS>>,
     /// Claims about trivial commitments (fewer than 8 variables, in this case its more efficient just to evaluate the polynomial)
@@ -212,11 +215,8 @@ where
     E: ExtensionField + Serialize + DeserializeOwned,
 {
     /// Create a new [`CommitmentProver`] from the [`CommitmentContext`] for the model.
-    pub fn new(ctx: &CommitmentContext<E, PCS>) -> CommitmentProver<E, PCS> {
-        let model_commits = ctx.model_comms.clone();
-
+    pub fn new() -> CommitmentProver<E, PCS> {
         CommitmentProver {
-            model_commits,
             claims: vec![],
             trivial_claims: vec![],
         }
@@ -242,26 +242,27 @@ where
         }
         Ok(())
     }
-    /// Add a claim about a model weight
-    pub fn add_common_claim(&mut self, claim: Claim<E>) -> Result<(), PCSError> {
-        let (commitment, mle) = self.model_commits.pop().ok_or(PCSError::ParameterError(
-            "Tried to commit to a model commitment but there were none left!".to_string(),
-        ))?;
-        if mle.num_vars() <= TRIVIAL_COMMIT_SIZE {
-            self.trivial_claims.push(CommitmentClaim {
-                commitment,
-                poly: mle,
-                claim,
-            });
-        } else {
-            self.claims.push(CommitmentClaim {
-                commitment,
-                poly: mle,
-                claim,
-            });
-        }
-        Ok(())
+    /// Add claims about model weights and biases for a certain node
+    pub fn add_common_claims(
+        &mut self,
+        ctx: &CommitmentContext<E, PCS>,
+        node_id: NodeId,
+        claims: Vec<Claim<E>>,
+    ) -> Result<(), PCSError> {
+        let node_commitments =
+            ctx.model_comms_map
+                .get(&node_id)
+                .cloned()
+                .ok_or(PCSError::ParameterError(format!(
+                    "No commitments stored for node with id: {}",
+                    node_id
+                )))?;
+        node_commitments
+            .into_iter()
+            .zip(claims.into_iter())
+            .try_for_each(|(comm_with_wit, claim)| self.add_witness_claim(comm_with_wit, claim))
     }
+
     /// Produce the [`ModelOpeningProof`] for this inference trace.
     pub fn prove<T: Transcript<E>>(
         &mut self,
@@ -336,7 +337,7 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: ExtensionField,
 {
-    model_commits: Vec<PCS::Commitment>,
+    model_comms_map: HashMap<NodeId, Vec<PCS::Commitment>>,
     claims: Vec<VerifierClaim<E, PCS>>,
     trivial_claims: Vec<VerifierClaim<E, PCS>>,
 }
@@ -349,13 +350,21 @@ where
 {
     /// Create a new [`CommitmentVerifier`] from the models [`CommitmentContext`].
     pub fn new(ctx: &CommitmentContext<E, PCS>) -> CommitmentVerifier<E, PCS> {
-        let model_commits = ctx
-            .model_comms
+        let model_comms_map = ctx
+            .model_comms_map
             .iter()
-            .map(|(comm, _)| PCS::get_pure_commitment(comm))
-            .collect::<Vec<PCS::Commitment>>();
+            .map(|(node_id, comms_vec)| {
+                (
+                    *node_id,
+                    comms_vec
+                        .iter()
+                        .map(|(comm, _)| PCS::get_pure_commitment(comm))
+                        .collect::<Vec<PCS::Commitment>>(),
+                )
+            })
+            .collect::<HashMap<NodeId, Vec<PCS::Commitment>>>();
         CommitmentVerifier {
-            model_commits,
+            model_comms_map,
             claims: vec![],
             trivial_claims: vec![],
         }
@@ -374,19 +383,27 @@ where
         }
         Ok(())
     }
-    /// Add a claim about a model weight to be verified.
-    pub fn add_common_claim(&mut self, claim: Claim<E>) -> Result<(), PCSError> {
-        let commitment = self.model_commits.pop().ok_or(PCSError::ParameterError(
-            "Tried to commit to a model commitment but there were none left!".to_string(),
-        ))?;
-        if claim.point.len() <= TRIVIAL_COMMIT_SIZE {
-            self.trivial_claims
-                .push(VerifierClaim { commitment, claim });
-        } else {
-            self.claims.push(VerifierClaim { commitment, claim });
-        }
-        Ok(())
+
+    /// Add claims about model weights and biases for a certain node
+    pub fn add_common_claims(
+        &mut self,
+        node_id: NodeId,
+        claims: Vec<Claim<E>>,
+    ) -> Result<(), PCSError> {
+        let node_commitments =
+            self.model_comms_map
+                .remove(&node_id)
+                .ok_or(PCSError::ParameterError(format!(
+                    "No commitments stored for node with id: {}",
+                    node_id
+                )))?;
+
+        node_commitments
+            .into_iter()
+            .zip(claims.into_iter())
+            .try_for_each(|(comm_with_wit, claim)| self.add_witness_claim(comm_with_wit, claim))
     }
+
     /// Verify the [`ModelOpeningProof`] for this inference trace.
     pub fn verify<T: Transcript<E>>(
         &mut self,
@@ -395,10 +412,10 @@ where
         transcript: &mut T,
     ) -> Result<(), PCSError> {
         // Check that all the model commitments have been used
-        if !self.model_commits.is_empty() {
+        if !self.model_comms_map.is_empty() {
             return Err(PCSError::ParameterError(format!(
                 "Not all mdoel commits have been used, had {} remaining",
-                self.model_commits.len()
+                self.model_comms_map.len()
             )));
         }
         // Prepare the parts that go into the batch proof

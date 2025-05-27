@@ -15,6 +15,7 @@ use anyhow::{Context as CC, Result, ensure};
 use clap::Parser;
 use csv::WriterBuilder;
 use goldilocks::GoldilocksExt2;
+use mpcs::{Basefold, BasefoldRSParams};
 use tracing::{debug, info};
 use tracing_subscriber::{EnvFilter, fmt};
 use zkml::FloatOnnxLoader;
@@ -25,6 +26,7 @@ use zkml::{Context, Element, Prover, argmax, default_transcript, verify};
 use rmp_serde::encode::to_vec_named;
 
 type F = GoldilocksExt2;
+type Pcs<E> = Basefold<E, BasefoldRSParams>;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -274,7 +276,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     let now = time::Instant::now();
     let ctx = if !args.skip_proving {
         info!("[+] Generating context for proving");
-        Some(Context::<F>::generate(&model, None).expect("unable to generate context"))
+        Some(Context::<F, Pcs<F>>::generate(&model, None).expect("unable to generate context"))
     } else {
         None
     };
@@ -354,7 +356,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         info!("[+] Running prover");
         let io = trace.to_verifier_io();
         let mut prover_transcript = default_transcript();
-        let prover = Prover::<_, _>::new(ctx.as_ref().unwrap(), &mut prover_transcript);
+        let prover = Prover::<_, _, _>::new(ctx.as_ref().unwrap(), &mut prover_transcript);
         let proof = bencher.r(CSV_PROVING, move || {
             prover.prove(trace).expect("unable to generate proof")
         });
@@ -367,7 +369,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         info!("[+] Running verifier");
         let mut verifier_transcript = default_transcript();
         bencher.r(CSV_VERIFYING, || {
-            verify::<_, _>(
+            verify::<_, _, _>(
                 ctx.as_ref().unwrap().clone(),
                 proof,
                 io,
