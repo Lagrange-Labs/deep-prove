@@ -261,7 +261,7 @@ where
     /// computed inside this method and returned as output
     pub fn add_node(&mut self, node: Node<N>) -> anyhow::Result<NodeId> {
         let node_id = (0..self.nodes.len() + 1)
-            .find(|i| self.nodes.contains_key(i))
+            .find(|i| !self.nodes.contains_key(i))
             .ok_or(anyhow!("No valid node id found for new node"))?;
         self.add_node_with_id(node_id, node)?;
         Ok(node_id)
@@ -467,7 +467,10 @@ impl<N: Number> Model<N> {
             }
         }
         // check that all outputs have been found
-        ensure!(!outputs.is_empty(), "No outputs found for the model");
+        ensure!(
+            !outputs.is_empty(),
+            "No outputs found for the model: {outputs:?}"
+        );
         ensure!(
             *outputs.first_key_value().unwrap().0 == 0
                 && *outputs.last_key_value().unwrap().0 == outputs.len() - 1
