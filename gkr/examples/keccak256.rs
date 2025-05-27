@@ -26,12 +26,6 @@ fn main() {
         .map(|v| str::parse::<usize>(&v).unwrap_or(1))
         .unwrap();
 
-    if !max_thread_id.is_power_of_two() {
-        use sumcheck::{local_thread_pool::create_local_pool_once, util::ceil_log2};
-        max_thread_id = 1 << ceil_log2(max_thread_id);
-        create_local_pool_once(max_thread_id, true);
-    }
-
     let circuit = keccak256_circuit::<GoldilocksExt2>();
     // Sanity-check
     {
