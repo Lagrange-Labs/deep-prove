@@ -21,11 +21,13 @@ impl<N: Number> Add<N> {
 }
 
 impl<N: Number> Add<N> {
-    fn evaluate<E: ExtensionField>(&self, inputs: &[&Tensor<N>]) -> anyhow::Result<LayerOut<N, E>> {
+    pub fn evaluate<E: ExtensionField>(&self, inputs: &[&Tensor<N>]) -> anyhow::Result<LayerOut<N, E>> {
         let result = if inputs.len() == 2 {
             ensure!(
-                inputs[0].get_shape() == inputs[1].get_shape(),
-                "Add layer expects inputs to have the same shape"
+                inputs[0].get_shape().iter().product::<usize>() == inputs[1].get_shape().iter().product::<usize>(),
+                "Add layer expects inputs to have the same shape: {:?} vs {:?}",
+                inputs[0].get_shape(),
+                inputs[1].get_shape()
             );
             inputs[0].add(inputs[1])
         } else if inputs.len() == 1 {
@@ -34,8 +36,10 @@ impl<N: Number> Add<N> {
                 "Add operand can't be None if there is only one input"
             );
             ensure!(
-                inputs[0].get_shape() == self.operand.as_ref().unwrap().get_shape(),
-                "Add layer expects input and operand to have the same shape"
+                inputs[0].get_shape().iter().product::<usize>() == self.operand.as_ref().unwrap().get_shape().iter().product::<usize>(),
+                "Add layer expects input and operand to have the same shape: {:?} vs {:?}",
+                inputs[0].get_shape(),
+                self.operand.as_ref().unwrap().get_shape()
             );
             inputs[0].add(self.operand.as_ref().unwrap())
         } else {

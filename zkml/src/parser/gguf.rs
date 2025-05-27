@@ -225,12 +225,12 @@ impl GPT2Model {
 }
 
 #[derive(Debug, Clone)]
-struct FeedForward<N: Number> {
-    norm: LayerNorm<N>,
-    up: Tensor<N>,
-    up_bias: Tensor<N>,
-    down: Tensor<N>,
-    down_bias: Tensor<N>,
+pub struct FeedForward<N: Number> {
+    pub norm: LayerNorm<N>,
+    pub up: Tensor<N>,
+    pub up_bias: Tensor<N>,
+    pub down: Tensor<N>,
+    pub down_bias: Tensor<N>,
 }
 
 impl FeedForward<f32> {

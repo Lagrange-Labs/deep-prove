@@ -18,6 +18,8 @@ pub enum Reshape {
     // e.g. if tensor is [a,b,c], and we give Subspace(1..=2,vec![b/6,c,6]) then the
     // output shape is [a,b/6,c,6]
     Subspace((Range<usize>, Vec<usize>)),
+    /// Adds a 1 at the given index in the shape.
+    Squeeze(usize),
 }
 
 impl Reshape {
@@ -27,8 +29,17 @@ impl Reshape {
     pub fn new_subspace(to_remove: Range<usize>, to_add: Vec<usize>) -> Self {
         Self::Subspace((to_remove, to_add))
     }
+    pub fn new_squeeze(index: usize) -> Self {
+        Self::Squeeze(index)
+    }
     fn internal_output(&self, input_shapes: &[Vec<usize>]) -> anyhow::Result<Vec<Vec<usize>>> {
         let new_dims = match self {
+            Reshape::Squeeze(index) => {
+                ensure!(*index < input_shapes[0].len(), "index out of bounds");
+                let mut new_dim = input_shapes[0].clone();
+                new_dim.insert(*index, 1);
+                vec![new_dim]
+            }
             Reshape::Full(ref new_dim) => new_dim.clone(),
             Reshape::Subspace((to_remove, to_add)) => input_shapes
                 .iter()
@@ -76,6 +87,7 @@ impl OpInfo for Reshape {
 
     fn describe(&self) -> String {
         match self {
+            Reshape::Squeeze(index) => format!("Reshape: squeeze({})", index),
             Reshape::Full(ref new_dim) => format!("Reshape: fixed {:?}", new_dim),
             Reshape::Subspace(_) => format!("Reshape: dynamic"),
         }
@@ -122,6 +134,15 @@ mod tests {
             .expect("reshape shouldn't fail");
         assert_eq!(output.outputs[0].get_shape(), vec![3, 2, 3]);
         assert_eq!(output.outputs[0].get_data(), input.get_data());
+    }
+
+    #[test]
+    fn test_reshape_squeeze() {
+        let input = Tensor::<Element>::new(vec![2, 3], vec![ 0, 1, 2, 3, 4, 5]);
+        let reshape = Reshape::new_squeeze(1);
+        let output = reshape.evaluate::<_, GoldilocksExt2>(&[&input]).expect("reshape shouldn't fail");
+        assert_eq!(output.outputs[0].get_shape(), vec![2, 1, 3]);
+        assert_eq!(output.outputs[0].get_data(), vec![0,1,2,3,4,5]);
     }
 
     #[test]
