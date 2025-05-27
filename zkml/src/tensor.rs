@@ -787,7 +787,7 @@ where
     /// If self is 2d, then add a vector to each row of self.
     pub fn add_dim2(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(self.shape.len() == 2, "Tensor is not a matrix");
-        assert!(other.shape.len() == 1, "Tensor is not a matrix");
+        assert!(other.shape.len() == 1, "Tensor is not a vector");
         assert!(
             self.shape[1] == other.shape[0],
             "Shape mismatch for addition."
