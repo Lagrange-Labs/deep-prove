@@ -43,18 +43,18 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 timed = { git = "https://github.com/nikkolasg/timed-rs" }
 timed-core = { git = "https://github.com/nikkolasg/timed-rs" }
 
-[profile.dev]
-lto = "thin"
-# We are running our tests with optimizations turned on to make them faster.
-# Please turn optimizations off, when you want accurate stack traces for debugging.
-opt-level = 2
+# Test must run fast, but still provides stacktraces.
+[profile.test]
+opt-level = 3
+debug = true
+debug-assertions = true
+overflow-checks = true
 
-[profile.dev.package."*"]
-# Set the default for dependencies in Development mode.
+[profile.test.package."*"]
 opt-level = 3
 
 [profile.release]
-lto = "thin"
+lto = "fat"
 
 #[patch."https://github.com/nikkolasg/timed-rs"]
 #timed = { path = "/Users/nalos/prog/timed/timed" }
