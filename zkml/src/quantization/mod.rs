@@ -61,8 +61,8 @@ impl ScalingFactor {
 
     pub fn from_span(min: f32, max: f32, quantized_domain: Option<(Element, Element)>) -> Self {
         Self {
-            min: min,
-            max: max,
+            min,
+            max,
             quantized_domain: quantized_domain.unwrap_or((*MIN, *MAX)),
         }
     }
@@ -179,7 +179,7 @@ where
         Tensor::new(
             self.get_shape(),
             self.get_data()
-                .into_iter()
+                .iter()
                 .map(|i| i.to_field())
                 .collect_vec(),
         )

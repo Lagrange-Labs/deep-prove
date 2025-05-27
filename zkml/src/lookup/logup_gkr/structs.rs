@@ -168,8 +168,7 @@ impl<E: ExtensionField> LogUpInput<E> {
 
         if !first_evals_len.is_power_of_two() {
             return Err(LogUpError::PolynomialError(format!(
-                "Need a power of two number of evaluations got: {}",
-                first_evals_len
+                "Need a power of two number of evaluations got: {first_evals_len}"
             )));
         }
 
@@ -208,8 +207,7 @@ impl<E: ExtensionField> LogUpInput<E> {
 
         if !first_evals_len.is_power_of_two() {
             return Err(LogUpError::PolynomialError(format!(
-                "Need a power of two number of evaluations got: {}",
-                first_evals_len
+                "Need a power of two number of evaluations got: {first_evals_len}"
             )));
         }
 

@@ -83,7 +83,7 @@ pub fn to_bits<E: ExtensionField>(mut num: usize, bitlen: usize) -> Vec<E> {
     let mut bits = vec![E::ZERO; bitlen];
     for i in 0..bitlen {
         bits[i] = E::from((num & 1) as u64);
-        num = num >> 1;
+        num >>= 1;
     }
     bits
 }
@@ -213,7 +213,7 @@ impl<T: Number> OpInfo for Convolution<T> {
         padding_mode: PaddingMode,
     ) -> Vec<Vec<usize>> {
         input_shapes
-            .into_iter()
+            .iter()
             .map(|shape| self.output_shape(shape.as_slice(), padding_mode))
             .collect()
     }
@@ -325,7 +325,7 @@ impl Convolution<Element> {
         input: &Tensor<Element>,
         unpadded_input_shape: &[usize],
     ) -> (Tensor<Element>, ConvData<E>) {
-        let (output, mut proving_data) = self.filter.fft_conv(&input);
+        let (output, mut proving_data) = self.filter.fft_conv(input);
         let conv_output = self.add_bias(&output);
         // we record here the output _after_ the bias addition. During proving it's necessary since we're proving the clearing garbage
         // and that produces a new claim on this output.
@@ -334,11 +334,7 @@ impl Convolution<Element> {
         // since the garbage might be of any value and we need to restrict the range of the output due to requantization proving logic.
         let unpadded_output_shape = conv2d_shape(unpadded_input_shape, &self.unpadded_shape);
         debug_assert_eq!(
-            {
-                let fft_output_shape =
-                    padded_conv2d_shape(&input.get_shape(), &self.filter.real_shape());
-                fft_output_shape
-            },
+            { padded_conv2d_shape(&input.get_shape(), &self.filter.real_shape()) },
             conv_output.get_shape(),
             "FFT output shape not computable"
         );
@@ -359,7 +355,7 @@ impl Convolution<Element> {
     pub fn output_range(&self, _min_input: Element, _max_input: Element) -> (Element, Element) {
         // 2^{BIT_LEN + log2(k_h * k_w * k_c)}
         let (_k_n, k_c, k_h, k_w) = self.filter.get4d();
-        let exp = 2 * *quantization::BIT_LEN + ceil_log2(k_h * k_w * k_c + 1) as usize;
+        let exp = 2 * *quantization::BIT_LEN + ceil_log2(k_h * k_w * k_c + 1);
         let min = -(2u64.pow(exp as u32) as Element);
         let max = 2u64.pow(exp as u32) as Element;
         (min, max)
@@ -473,17 +469,17 @@ where
         let mut delegation_fft_weights: Vec<VPAuxInfo<E>> = Vec::new();
         let mut delegation_ifft: Vec<VPAuxInfo<E>> = Vec::new();
         for i in (0..(self.filter_size().ilog2() as usize)).rev() {
-            delegation_fft.push(VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![
+            delegation_fft.push(VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
                 i + 1,
                 i + 1,
                 i + 1,
             ]]));
-            delegation_fft_weights.push(VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![
+            delegation_fft_weights.push(VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
                 i + 1,
                 i + 1,
                 i + 1,
             ]]));
-            delegation_ifft.push(VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![
+            delegation_ifft.push(VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
                 i + 1,
                 i + 1,
                 i + 1,
@@ -493,19 +489,19 @@ where
         let conv_info = LayerCtx::Convolution(ConvCtx {
             poly_id: id,
             bias_poly_id: BIAS_POLY_ID + id,
-            ifft_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![
+            ifft_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
                 ((self.filter_size()).ilog2() as usize) + 1,
                 ((self.filter_size()).ilog2() as usize) + 1,
             ]]),
-            fft_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![
+            fft_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
                 ((self.filter_size()).ilog2() as usize) + 1,
                 ((self.filter_size()).ilog2() as usize) + 1,
             ]]),
-            fft_weights_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![
+            fft_weights_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
                 ((self.filter_size()).ilog2() as usize) + 1,
                 ((self.filter_size()).ilog2() as usize) + 1,
             ]]),
-            hadamard: VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![
+            hadamard: VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
                 ((self.kx() * self.filter_size()).ilog2() as usize) + 1,
                 ((self.kx() * self.filter_size()).ilog2() as usize) + 1,
                 ((self.kx() * self.filter_size()).ilog2() as usize) + 1,
@@ -571,7 +567,7 @@ impl Convolution<f32> {
         let shift = input_scaling.shift(&model_scaling, &output_scaling);
         let (quantized_min, _quantized_max) =
             quantized_conv.output_range(*quantization::MIN, *quantization::MAX);
-        let requant = Requant::new(quantized_min.abs() as usize, shift);
+        let requant = Requant::new(quantized_min.unsigned_abs() as usize, shift);
         Ok(QuantizeOutput {
             quanzited_op: quantized_conv,
             output_scalings: vec![output_scaling],
@@ -628,9 +624,9 @@ where
         Ok(vec![self.prove_convolution_step(
             prover,
             last_claims[0],
-            &step_data.outputs.outputs()[0],
+            step_data.outputs.outputs()[0],
             &step_data.unpadded_output_shapes[0],
-            &step_data.outputs.proving_data.as_ref().unwrap(),
+            step_data.outputs.proving_data.as_ref().unwrap(),
             ctx,
             id,
         )?])
@@ -648,8 +644,8 @@ where
         padding_mode: PaddingMode,
     ) -> Vec<Vec<usize>> {
         input_shapes
-            .into_iter()
-            .map(|shape| self.output_shape(&shape, padding_mode))
+            .iter()
+            .map(|shape| self.output_shape(shape, padding_mode))
             .collect()
     }
 
@@ -734,7 +730,7 @@ impl Convolution<Element> {
                 "PROVE: conv_after_bias.data(): {:?}",
                 &conv_after_bias.get_data()[..30]
             );
-            println!("PROVE: unpadded_output_shape: {:?}", unpadded_output_shape);
+            println!("PROVE: unpadded_output_shape: {unpadded_output_shape:?}");
             println!("PROVE: output.shape(): {:?}", output.get_shape());
             let cleared_out = conv_after_bias.flatten().mul(&clearing_tensor);
             let fielded: Tensor<E> = cleared_out.to_fields();
@@ -742,7 +738,7 @@ impl Convolution<Element> {
         });
         let clearing_proof = hadamard::prove(
             prover.transcript,
-            &last_claim,
+            last_claim,
             &conv_after_bias,
             &clearing_tensor,
         );
@@ -776,7 +772,7 @@ impl Convolution<Element> {
             bias_point[i] = last_claim.point[i + (filter.filter_size().ilog2() as usize)];
         }
         let mut bias_eval = E::ZERO;
-        if bias_point.len() != 0 {
+        if !bias_point.is_empty() {
             bias_eval = filter
                 .bias
                 .evals_flat::<E>()
@@ -816,7 +812,7 @@ impl Convolution<Element> {
                 &mut temp_t,
             );
             println!("iFFT Sumcheck Correct");
-            1 == 1
+            true
         });
 
         // After this point, the verifier holds an evaluation claim of proving_data.prod at P1.randomness[0][i]
@@ -956,7 +952,7 @@ impl Convolution<Element> {
                 partial_evals.clone().into_mle().evaluate(&weights_rand),
                 "Error in fft_weights eval"
             );
-            let mut indexes = vec![0 as usize; self.filter.real_nw() * self.filter.real_nw()];
+            let mut indexes = vec![0_usize; self.filter.real_nw() * self.filter.real_nw()];
             for i in 0..self.filter.real_nw() {
                 for j in 0..self.filter.real_nw() {
                     indexes[i * self.filter.real_nw() + j] = i * self.filter.nw() + j;
@@ -1103,8 +1099,7 @@ where
                     prev_r.clone().as_slice()
                 ),
                 delegation_claims[i][0],
-                "Error in identity evaluation fft delegation iter : {}",
-                i
+                "Error in identity evaluation fft delegation iter : {i}"
             );
 
             assert_eq!(
@@ -1116,8 +1111,7 @@ where
                     i == 0
                 ),
                 delegation_claims[i][1],
-                "Error in phi computation fft delegation iter : {}",
-                i
+                "Error in phi computation fft delegation iter : {i}"
             );
 
             claim = delegation_claims[i][2];
@@ -1165,13 +1159,13 @@ where
         let hctx = hadamard::HadamardCtx::from_len(real_output_shape.iter().product());
         let expected_v2_eval = clearing_tensor
             .to_mle_flat()
-            .evaluate(&proof.clearing_proof.random_point());
+            .evaluate(proof.clearing_proof.random_point());
         // also set the claim to be the non-cleared output of conv. The rest of the logic is about proving the bias + fft claims.
         let last_claim = hadamard::verify(
             &hctx,
             verifier.transcript,
             &proof.clearing_proof,
-            &last_claim,
+            last_claim,
             expected_v2_eval,
         )
         .context("failure for hadamard proof")?;
@@ -1207,8 +1201,7 @@ where
                     prev_r.clone().as_slice()
                 ),
                 proof.ifft_delegation_claims[i][0],
-                "Error in identity evaluation ifft delegation iter : {}",
-                i
+                "Error in identity evaluation ifft delegation iter : {i}"
             );
             assert_eq!(
                 phi_eval(
@@ -1219,8 +1212,7 @@ where
                     false
                 ),
                 proof.ifft_delegation_claims[i][1],
-                "Error in phi computation ifft delegation iter : {}",
-                i
+                "Error in phi computation ifft delegation iter : {i}"
             );
 
             prev_r = proof.ifft_delegation_proof[i].point.clone();
@@ -1346,8 +1338,8 @@ where
         let mut input_point = proof.fft_proof.point.clone();
         v = input_point.pop().unwrap();
         v = (E::ONE - v).invert().unwrap();
-        for i in 0..input_point.len() {
-            input_point[i] = E::ONE - input_point[i];
+        for point in &mut input_point {
+            *point = E::ONE - *point;
         }
         // the output claim for this step that is going to be verified at next step
         Ok(Claim {
@@ -1452,7 +1444,7 @@ pub fn pow_two_omegas<E: ExtensionField>(n: usize, is_fft: bool) -> Vec<E> {
     for i in 1..(n - 1) {
         pows[i] = pows[i - 1] * pows[i - 1];
     }
-    return pows;
+    pows
 }
 
 pub fn phi_eval<E: ExtensionField>(
@@ -1473,7 +1465,7 @@ pub fn phi_eval<E: ExtensionField>(
         eval = E::ONE - rand1 + (E::ONE - E::from(2) * rand2) * rand1 * eval;
     }
 
-    return eval;
+    eval
 }
 
 fn clear_garbage<T: Number>(
@@ -1909,10 +1901,11 @@ mod test {
             .outputs()[0]
             .clone();
 
-        let fft_weight =
-            weight.pad_matrix_to_ignore_garbage(&conv_shape_og, &conv_shape_pad, &vec![
-                new_rows, new_cols,
-            ]);
+        let fft_weight = weight.pad_matrix_to_ignore_garbage(
+            &conv_shape_og,
+            &conv_shape_pad,
+            &vec![new_rows, new_cols],
+        );
         let fft_bias = bias.clone().pad_1d(new_rows);
         let fft_dense = Dense::new(fft_weight.clone(), fft_bias.clone());
         println!("-- new_rows : {}, new_cols : {}", new_rows, new_cols);

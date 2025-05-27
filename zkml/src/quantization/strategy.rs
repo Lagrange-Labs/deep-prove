@@ -44,6 +44,12 @@ pub struct InferenceObserver {
     inputs: Vec<Vec<Vec<f32>>>,
 }
 
+impl Default for InferenceObserver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InferenceObserver {
     pub fn new_with_representative_input(inputs: Vec<Vec<Vec<f32>>>) -> Self {
         Self { inputs }
@@ -143,7 +149,7 @@ impl InferenceTracker {
     pub(crate) fn track(&mut self, node_id: NodeId, output_index: usize, output: Tensor<f32>) {
         self.data
             .entry((node_id, output_index))
-            .or_insert(Vec::new())
+            .or_default()
             .extend(output.get_data().iter().map(|x| *x as f64));
     }
 
@@ -152,9 +158,7 @@ impl InferenceTracker {
         let mut d: Data<Vec<f64>> = Data::new(
             self.data
                 .get(&(node_id, output_index))
-                .expect(&format!(
-                    "No data for output tensor {output_index} of node {node_id}"
-                ))
+                .unwrap_or_else(|| panic!("No data for output tensor {output_index} of node {node_id}"))
                 .clone(),
         );
         let min = d.percentile(5) as f32;
@@ -172,6 +176,12 @@ impl InferenceTracker {
 
 #[derive(Debug)]
 pub struct AbsoluteMax(Option<Vec<Vec<f32>>>);
+
+impl Default for AbsoluteMax {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl AbsoluteMax {
     pub fn new_with_representative_input(input: Vec<Vec<f32>>) -> Self {

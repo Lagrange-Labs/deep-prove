@@ -106,7 +106,7 @@ pub fn from_path(path: &str) -> Result<Model<f32>> {
         let desc = zkml_node.operation.describe();
         pmodel
             .add_node_with_id(id, zkml_node)
-            .context(format!("adding node {}:", desc))?;
+            .context(format!("adding node {desc}:"))?;
         first_node = false;
         last_node_id = id;
     }
@@ -196,7 +196,7 @@ impl<'a, I: Iterator<Item = &'a usize> + Sized> ParserFactory<'a, I> {
             );
             Ok((node_id, node))
         } else {
-            err(format!("Unknown node type: {}", op_name))
+            err(format!("Unknown node type: {op_name}"))
         }
     }
 }
@@ -351,7 +351,8 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
     input_shape.remove(0);
     ensure_onnx!(
         input_shape.len() == 1,
-        "Input shape for Gemm must be a vector"
+        "Input shape for Gemm must be a vector, found {:?}",
+        input_shape
     );
     ensure_onnx!(weight.is_matrix(), "Weight for Gemm must be a matrix");
     let mut weight_shape = weight.get_shape();

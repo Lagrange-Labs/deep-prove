@@ -80,7 +80,7 @@ where
     let mut final_message = Vec::new();
     let mut running_tree_inner = Vec::new();
     for i in 0..num_rounds {
-        let sumcheck_timer = start_timer!(|| format!("Basefold round {}", i));
+        let sumcheck_timer = start_timer!(|| format!("Basefold round {i}"));
         // For the first round, no need to send the running root, because this root is
         // committing to a vector that can be recovered from linearly combining other
         // already-committed vectors.
@@ -247,7 +247,7 @@ where
     let mut final_message = Vec::new();
     let mut running_tree_inner = Vec::new();
     for i in 0..num_rounds {
-        let sumcheck_timer = start_timer!(|| format!("Batch basefold round {}", i));
+        let sumcheck_timer = start_timer!(|| format!("Batch basefold round {i}"));
         // For the first round, no need to send the running root, because this root is
         // committing to a vector that can be recovered from linearly combining other
         // already-committed vectors.
@@ -396,7 +396,7 @@ where
     let mut final_message = Vec::new();
     let mut running_tree_inner = Vec::new();
     for i in 0..num_rounds {
-        let sumcheck_timer = start_timer!(|| format!("Basefold round {}", i));
+        let sumcheck_timer = start_timer!(|| format!("Basefold round {i}"));
         // For the first round, no need to send the running root, because this root is
         // committing to a vector that can be recovered from linearly combining other
         // already-committed vectors.

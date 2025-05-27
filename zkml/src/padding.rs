@@ -199,13 +199,13 @@ pub(crate) fn pad_dense(mut d: Dense<Element>, si: &mut ShapeInfo) -> Result<Den
     let ncols = pad_minimum(new_cols);
     let nrows = pad_minimum(d.matrix.nrows_2d());
 
-    if let Some(ref previous_shape) = sd.ignore_garbage_pad.as_ref() {
+    if let Some(previous_shape) = sd.ignore_garbage_pad.as_ref() {
         let previous_input_shape_og = previous_shape.0.clone();
         let previous_input_shape_padded = previous_shape.1.clone();
         d.matrix = d.matrix.pad_matrix_to_ignore_garbage(
             &previous_input_shape_og,
             &previous_input_shape_padded,
-            &vec![nrows, ncols],
+            &[nrows, ncols],
         );
         sd.ignore_garbage_pad = None;
     } else {

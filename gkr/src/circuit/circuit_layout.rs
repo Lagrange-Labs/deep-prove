@@ -465,19 +465,19 @@ impl<E: ExtensionField> fmt::Debug for Layer<E> {
         writeln!(f, "  max_previous_num_vars: {}", self.max_previous_num_vars)?;
         writeln!(f, "  add_consts: ")?;
         for add_const in self.add_consts.iter() {
-            writeln!(f, "    {:?}", add_const)?;
+            writeln!(f, "    {add_const:?}")?;
         }
         writeln!(f, "  adds: ")?;
         for add in self.adds.iter() {
-            writeln!(f, "    {:?}", add)?;
+            writeln!(f, "    {add:?}")?;
         }
         writeln!(f, "  mul2s: ")?;
         for mul2 in self.mul2s.iter() {
-            writeln!(f, "    {:?}", mul2)?;
+            writeln!(f, "    {mul2:?}")?;
         }
         writeln!(f, "  mul3s: ")?;
         for mul3 in self.mul3s.iter() {
-            writeln!(f, "    {:?}", mul3)?;
+            writeln!(f, "    {mul3:?}")?;
         }
         writeln!(f, "  copy_to: {:?}", self.copy_to)?;
         writeln!(f, "  paste_from: {:?}", self.paste_from)?;
@@ -490,7 +490,7 @@ impl<E: ExtensionField> fmt::Debug for Circuit<E> {
         writeln!(f, "Circuit {{")?;
         writeln!(f, "  layers: ")?;
         for layer in self.layers.iter() {
-            writeln!(f, "    {:?}", layer)?;
+            writeln!(f, "    {layer:?}")?;
         }
         writeln!(f, "  n_witness_in: {}", self.n_witness_in)?;
         writeln!(f, "  paste_from_wits_in: {:?}", self.paste_from_wits_in)?;

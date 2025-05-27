@@ -18,10 +18,7 @@ use gkr::util::ceil_log2;
 use itertools::Itertools;
 use multilinear_extensions::mle::IntoMLE;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{
-    collections::HashMap,
-    ops::{Add, Mul, Sub},
-};
+use std::ops::{Add, Mul, Sub};
 use tracing::warn;
 use transcript::Transcript;
 
@@ -179,7 +176,7 @@ where
         Ok(vec![self.prove_step(
             prover,
             last_claims[0],
-            &step_data.outputs.outputs()[0].get_data(),
+            step_data.outputs.outputs()[0].get_data(),
             ctx,
             id,
         )?])
@@ -204,7 +201,7 @@ where
         let table_lookup_map = gen
             .lookups
             .entry(TableType::Range)
-            .or_insert_with(|| HashMap::default());
+            .or_default();
 
         let (merged_lookups, column_evals) =
             self.lookup_witness::<E>(step_data.inputs[0].get_data());
@@ -281,7 +278,7 @@ where
         Ok(vec![self.verify_requant(
             verifier,
             last_claims[0],
-            &proof,
+            proof,
             constant_challenge,
             column_separation_challenge,
         )?])
@@ -447,7 +444,7 @@ impl Requant {
                 .rev()
                 .for_each(|discarded_chunk| {
                     let chunk = remainder_vals & bit_mask;
-                    let value = chunk as i128 - (self.after_range as i128 >> 1);
+                    let value = chunk - (self.after_range as i128 >> 1);
                     let field_elem: E = value.to_field();
                     discarded_chunk[index] = field_elem.as_bases()[0];
                     remainder_vals >>= self.after_range.ilog2();
@@ -511,7 +508,7 @@ impl Requant {
                 .rev()
                 .for_each(|(discarded_lookup_chunk, discarded_field_chunk)| {
                     let chunk = remainder_vals & bit_mask;
-                    let value = chunk as i128;
+                    let value = chunk;
                     let val_field: E = value.to_field();
                     discarded_lookup_chunk[index] = value;
                     discarded_field_chunk[index] = val_field.as_bases()[0];
@@ -629,7 +626,7 @@ impl Requant {
 }
 
 impl RequantCtx {
-    pub(crate) fn verify_requant<E: ExtensionField, T: Transcript<E>>(
+    pub(crate) fn verify_requant<E, T: Transcript<E>>(
         &self,
         verifier: &mut Verifier<E, T>,
         last_claim: &Claim<E>,
@@ -638,8 +635,8 @@ impl RequantCtx {
         column_separation_challenge: E,
     ) -> anyhow::Result<Claim<E>>
     where
+        E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
-        E: Serialize + DeserializeOwned,
     {
         // 1. Verify the lookup proof
         let num_instances =

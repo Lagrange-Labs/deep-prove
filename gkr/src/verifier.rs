@@ -46,7 +46,7 @@ impl<E: ExtensionField> IOPVerifierState<E> {
 
         let mut sumcheck_proofs_iter = proof.sumcheck_proofs.into_iter();
         for layer_id in 0..circuit.layers.len() {
-            let timer = start_timer!(|| format!("Verify layer {}", layer_id));
+            let timer = start_timer!(|| format!("Verify layer {layer_id}"));
             verifier_state.layer_id = layer_id as LayerId;
 
             let layer = &circuit.layers[layer_id];

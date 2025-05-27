@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use crate::{
     Claim, Element, Prover,
@@ -196,7 +195,7 @@ where
         let table_lookup_map = gen
             .lookups
             .entry(TableType::Relu)
-            .or_insert_with(|| HashMap::default());
+            .or_default();
 
         merged_lookups
             .into_iter()
@@ -362,6 +361,12 @@ impl ActivationCtx {
 
 #[derive(Clone, Debug, Copy, Serialize, Deserialize)]
 pub struct Relu;
+
+impl Default for Relu {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Relu {
     pub fn new() -> Relu {

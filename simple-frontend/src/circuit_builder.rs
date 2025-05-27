@@ -110,7 +110,7 @@ impl<Ext: ExtensionField> CircuitBuilder<Ext> {
         println!("The number of cells: {}", self.cells.len());
 
         for (i, cell) in self.cells.iter().enumerate() {
-            println!("Cell {}: {:?}", i, cell);
+            println!("Cell {i}: {cell:?}");
         }
     }
 }

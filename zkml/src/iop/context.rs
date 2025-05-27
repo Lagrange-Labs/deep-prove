@@ -226,7 +226,7 @@ where
                 }
                 LayerCtx::SchoolBookConvolution(_info) => {}
                 LayerCtx::Flatten => {
-                    t.append_field_element(&E::BaseField::from(RESHAPE_FS_ID as u64));
+                    t.append_field_element(&E::BaseField::from(RESHAPE_FS_ID));
                 }
             }
         }

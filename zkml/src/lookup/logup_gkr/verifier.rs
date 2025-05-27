@@ -152,8 +152,7 @@ pub fn verify_logup_proof<E: ExtensionField, T: Transcript<E>>(
 
     if calculated_eval != current_claim {
         return Err(LogUpError::VerifierError(format!(
-            "Calculated final value: {:?} does not match final sumcheck output: {:?}",
-            calculated_eval, current_claim
+            "Calculated final value: {calculated_eval:?} does not match final sumcheck output: {current_claim:?}"
         )));
     }
 

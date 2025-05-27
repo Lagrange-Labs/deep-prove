@@ -112,10 +112,7 @@ where
     }
 
     pub fn has_proof(&self) -> bool {
-        match self {
-            Self::Flatten | Self::Table(_) | Self::SchoolBookConvolution(_) => false,
-            _ => true,
-        }
+        !matches!(self, Self::Flatten | Self::Table(_) | Self::SchoolBookConvolution(_))
     }
 
     pub fn output_shape(&self, input_shape: &[usize], padding_mode: PaddingMode) -> Vec<usize> {
@@ -130,7 +127,7 @@ where
             Self::Pooling(ref pooling) => pooling.output_shape(input_shape),
             Self::Flatten => <Flatten as OpInfo>::output_shapes(
                 &Flatten,
-                &vec![input_shape.to_vec()],
+                &[input_shape.to_vec()],
                 padding_mode,
             )[0]
             .clone(),
@@ -141,12 +138,12 @@ where
         let unpadded_output = last_step
             .unpadded_output_shape
             .iter()
-            .map(|shape| self.output_shape(&shape, PaddingMode::NoPadding))
+            .map(|shape| self.output_shape(shape, PaddingMode::NoPadding))
             .collect();
         let padded_output = last_step
             .padded_output_shape
             .iter()
-            .map(|shape| self.output_shape(&shape, PaddingMode::Padding))
+            .map(|shape| self.output_shape(shape, PaddingMode::Padding))
             .collect();
         ShapeStep::next_step(last_step, unpadded_output, padded_output)
     }
@@ -157,11 +154,11 @@ where
     ) -> ShapeStep {
         let unpadded_output = unpadded_input
             .iter()
-            .map(|shape| self.output_shape(&shape, PaddingMode::NoPadding))
+            .map(|shape| self.output_shape(shape, PaddingMode::NoPadding))
             .collect();
         let padded_output = padded_input
             .iter()
-            .map(|shape| self.output_shape(&shape, PaddingMode::Padding))
+            .map(|shape| self.output_shape(shape, PaddingMode::Padding))
             .collect();
         ShapeStep::new(
             unpadded_input.to_vec(),
