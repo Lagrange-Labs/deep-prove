@@ -389,6 +389,8 @@ impl Requant {
         let fp_scale = next_multiple - int_part;
         let fixed_point_multiplier = (epsilon * (1u64 << fp_scale) as f32).round() as Element;
 
+        // Assertion to check that we can perform requantisation, we need intermediate_bit_size + fp_scale <= 63
+        assert!(intermediate_bit_size + fp_scale <= 63);
         Requant {
             right_shift: int_part,
             fixed_point_multiplier,
