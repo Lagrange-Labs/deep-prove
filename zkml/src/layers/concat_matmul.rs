@@ -7,7 +7,9 @@
 //! if A_i is of shape [1, r, s] then A = [A_1, A_2, ... , A_n] is of shape [n, r, s]
 //!
 //! This module currently only supports the case where A_i and B_i are witnesses values.
-
+//! Transpose: There is the option to transpose the output of the matmul. This is useful for proving to avoid
+//! having to prove explicitly the transpose operation with a separate layer, as sumcheck based proving can directly
+//! prove the transpose at the same time as the matmul.
 use anyhow::ensure;
 use ff_ext::ExtensionField;
 
@@ -15,9 +17,18 @@ use crate::{Tensor, tensor::Number};
 
 use super::provable::LayerOut;
 #[derive(Debug, Clone)]
-pub struct ConcatMatMul;
+pub struct ConcatMatMul {
+    transpose: Option<Vec<usize>>,
+}
 
 impl ConcatMatMul {
+    pub fn new() -> Self {
+        Self { transpose: None }
+    }
+    pub fn new_with_transpose(transpose: Vec<usize>) -> Self {
+        Self { transpose: Some(transpose) }
+    }
+
     pub fn evaluate<N: Number, E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
@@ -57,10 +68,13 @@ impl ConcatMatMul {
         let mut it = results.into_iter();
         // reshape because concat expects a 3d tensor so he can accumulate in the highest dimension.
         let concat = it.next().unwrap().reshape(vec![1, a_shape[1], b_shape[2]]);
-        let concat = it.fold(concat, |mut acc, x| {
+        let mut concat = it.fold(concat, |mut acc, x| {
             acc.concat(x);
             acc
         });
+        if let Some(ref transpose) = self.transpose {
+            concat = concat.permute3d(transpose);
+        }
         Ok(LayerOut::from_vec(vec![concat]))
     }
 }
@@ -75,7 +89,7 @@ mod test {
 
     #[test]
     fn test_concat_matmul() {
-        let concat_matmul = ConcatMatMul;
+        let concat_matmul = ConcatMatMul::new();
         let a = Tensor::new(vec![2, 2, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
         let b = Tensor::new(vec![2, 2, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
         let result = concat_matmul
@@ -84,5 +98,17 @@ mod test {
         assert_eq!(result.outputs[0].data, vec![
             7.0, 10.0, 15.0, 22.0, 67.0, 78.0, 91.0, 106.0
         ]);
+    }
+
+    #[test]
+    fn test_concat_matmul_with_transpose() {
+        let concat_matmul = ConcatMatMul::new_with_transpose(vec![1, 0, 2]);
+        let a = Tensor::new(vec![2, 2, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+        let b = Tensor::new(vec![2, 2, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+        let result = concat_matmul.evaluate::<_, GoldilocksExt2>(&[&a, &b]).unwrap();
+        let expected = Tensor::new(vec![2, 2,2], vec![7.0, 10.0, 15.0, 22.0, 67.0, 78.0, 91.0, 106.0]);
+        let expected = expected.permute3d(&vec![1, 0, 2]);
+        assert_eq!(result.outputs[0].data, expected.data);
+
     }
 }
