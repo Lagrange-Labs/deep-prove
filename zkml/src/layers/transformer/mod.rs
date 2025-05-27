@@ -10,11 +10,25 @@ pub mod softmax;
 
 #[cfg(test)]
 mod test {
+    use std::fs::File;
+
     use anyhow::bail;
     use goldilocks::GoldilocksExt2;
+    use serde::Deserialize;
 
     use crate::{
-        layers::{activation::{Activation, Relu}, add::{self, Add}, concat_matmul::{self, ConcatMatMul}, dense::Dense, mul, provable::Evaluate, reshape::{self, Reshape}}, parser::gguf::{self, tests::GPT2_Q8_0_PATH, FileTensorLoader, LLMConfig, LLMModel}, tensor::Number, Element, Tensor
+        Element, Tensor,
+        layers::{
+            activation::{Activation, Relu},
+            add::{self, Add},
+            concat_matmul::{self, ConcatMatMul},
+            dense::Dense,
+            mul,
+            provable::Evaluate,
+            reshape::{self, Reshape},
+        },
+        parser::gguf::{self, FileTensorLoader, LLMConfig, LLMModel, tests::GPT2_Q8_0_PATH},
+        tensor::Number,
     };
 
     use super::{layernorm, mha, qkv, softmax};
@@ -55,17 +69,27 @@ mod test {
         }
 
         pub fn evaluate(&mut self, input: &Tensor<f32>) -> anyhow::Result<Tensor<f32>> {
-            let normed = self.layernorm.evaluate::<GoldilocksExt2>(&vec![input], vec![])?;
-            let up = self.up.evaluate::<GoldilocksExt2>(&normed.outputs(), vec![])?;
-            let act = self.activation.evaluate::<GoldilocksExt2>(&up.outputs(), vec![])?;
-            let down = self.down.evaluate::<GoldilocksExt2>(&act.outputs(), vec![])?;
-            let out = self.add.evaluate::<GoldilocksExt2>(&vec![input, down.outputs()[0]])?;
+            let normed = self
+                .layernorm
+                .evaluate::<GoldilocksExt2>(&vec![input], vec![])?;
+            let up = self
+                .up
+                .evaluate::<GoldilocksExt2>(&normed.outputs(), vec![])?;
+            let act = self
+                .activation
+                .evaluate::<GoldilocksExt2>(&up.outputs(), vec![])?;
+            let down = self
+                .down
+                .evaluate::<GoldilocksExt2>(&act.outputs(), vec![])?;
+            let out = self
+                .add
+                .evaluate::<GoldilocksExt2>(&vec![input, down.outputs()[0]])?;
             Ok(out.outputs()[0].clone())
         }
     }
 
-    impl<N: Number>FlatFFN<N> {
-        pub fn random(hidden_size: usize,up_size: usize) -> Self {
+    impl<N: Number> FlatFFN<N> {
+        pub fn random(hidden_size: usize, up_size: usize) -> Self {
             let layernorm = layernorm::LayerNorm::random(hidden_size);
             let up = Dense::random(vec![up_size, hidden_size]);
             let activation = Activation::Relu(Relu);
@@ -152,20 +176,31 @@ mod test {
                 let v_shape = mha.outputs()[1].get_shape();
                 println!("qkt shape: {:?}, v shape: {:?}", qkt_shape, v_shape);
                 assert_eq!(v_shape, vec![self.num_heads, seq_len, self.head_dim]);
-                 // qk is now of shape [num_heads,seq_len]
+                // qk is now of shape [num_heads,seq_len]
                 assert_eq!(qkt_shape, vec![self.num_heads, seq_len]);
             }
             // We reshape to [num_heads, 1, seq_len] such concat_matmul can work, since it expects tensors of same shape
-            let qkt_reshaped = self.reshape_qkt.evaluate::<_,GoldilocksExt2>(&softmaxed.outputs())?;
+            let qkt_reshaped = self
+                .reshape_qkt
+                .evaluate::<_, GoldilocksExt2>(&softmaxed.outputs())?;
             // now we can project back with V
-            // We go from [num_heads, 1, head_dim] → transpose back to [1, h, head_dim] 
-            let qkt_v = self.qkt_v.evaluate::<_, GoldilocksExt2>(&vec![qkt_reshaped.outputs()[0], mha.outputs()[1]])?;
+            // We go from [num_heads, 1, head_dim] → transpose back to [1, h, head_dim]
+            let qkt_v = self.qkt_v.evaluate::<_, GoldilocksExt2>(&vec![
+                qkt_reshaped.outputs()[0],
+                mha.outputs()[1],
+            ])?;
             // → and reshape to [1, hidden_size]
-            let merged = self.reshape_merged.evaluate::<_,GoldilocksExt2>(&qkt_v.outputs())?;
+            let merged = self
+                .reshape_merged
+                .evaluate::<_, GoldilocksExt2>(&qkt_v.outputs())?;
             // now we do the final projection - still [1,hidden_size]
-            let projected = self.out.evaluate::<GoldilocksExt2>(&merged.outputs(), vec![])?;
+            let projected = self
+                .out
+                .evaluate::<GoldilocksExt2>(&merged.outputs(), vec![])?;
             // and then residual connection, [1, hidden_size]
-            let out = self.add.evaluate::<GoldilocksExt2>(&vec![input, &projected.outputs()[0]])?;
+            let out = self
+                .add
+                .evaluate::<GoldilocksExt2>(&vec![input, &projected.outputs()[0]])?;
             // and then FFN
             let ffn_out = self.ffn.evaluate(&out.outputs()[0])?;
             Ok(ffn_out)
@@ -174,14 +209,14 @@ mod test {
 
     impl<N: Number> FlatAttention<N> {
         pub fn random(emb_size: usize, num_heads: usize) -> Self {
-            // Note in LLM, it's always the case that hidden_size = emb_size so we can apply residual 
+            // Note in LLM, it's always the case that hidden_size = emb_size so we can apply residual
             let hidden_size = emb_size;
             let head_size = hidden_size / num_heads;
             let qkv = qkv::QKV::random(emb_size, hidden_size);
             let mha = mha::MHA_QK::new(num_heads, head_size);
             let scaler = mul::ScalarMul::new((1.0 / (head_size as f32)).sqrt());
             let layernorm = layernorm::LayerNorm::random(emb_size);
-            let out= Dense::random(vec![hidden_size, hidden_size]);
+            let out = Dense::random(vec![hidden_size, hidden_size]);
             let ffn = FlatFFN::random(hidden_size, hidden_size);
             Self {
                 out,
@@ -223,7 +258,96 @@ mod test {
         let mut att = FlatAttention::new_from_gguf(&config, model.blocks.remove(0));
         let input = Tensor::<f32>::random(&[1, config.embedding_size]);
         let output = att.forward(&input).unwrap();
-        println!("output shape: {:?}",output.get_shape());
+        println!("output shape: {:?}", output.get_shape());
+        Ok(())
+    }
+
+    /// # 1. Tokenization
+    /// input_ids               ← tokenizer.encode("Hello")
+
+    /// # 2. Embeddings
+    /// inputs_embeds           ← wte(input_ids) + wpe(positions)
+
+    /// # 3. LayerNorm before Attention
+    /// ln1_out                 ← LayerNorm(inputs_embeds)
+
+    /// # 4. QKV Projection
+    /// qkv                     ← c_attn(ln1_out)
+    /// q, k, v                 ← split(qkv)          # shape: [B, H, T, D]
+
+    /// # 5. Attention Scores
+    /// attn_scores             ← matmul(q, k.T) / sqrt(D)
+
+    /// # 6. Causal Mask + Softmax
+    /// attn_weights            ← softmax(masked(attn_scores))
+
+    /// # 7. Attention Output
+    /// attn_output             ← matmul(attn_weights, v)
+    /// attn_output_proj        ← c_proj(merge_heads(attn_output))
+
+    /// # 8. Add Attention Residual
+    /// residual_attn           ← inputs_embeds + attn_output_proj
+
+    /// # 9. LayerNorm before FFN
+    /// ln2_out                 ← LayerNorm(residual_attn)
+
+    /// # 10. Feedforward Network
+    /// ffn_intermediate        ← c_fc(ln2_out)       # Dense
+    /// ffn_activated           ← GELU(ffn_intermediate)
+    /// ffn_output_proj         ← c_proj(ffn_activated)
+
+    /// # 11. Final Residual Add
+    /// manual_output           ← residual_attn + ffn_output_proj
+
+    /// # 12. Reference Output
+    /// automated_output        ← model(...).hidden_states[1]
+    #[derive(Debug, Deserialize)]
+    struct GPT2Output {
+    token: String,
+    input_ids: u32,
+    inputs_embeds: Vec<f32>,
+    q: Vec<f32>,
+    k: Vec<f32>,
+    v: Vec<f32>,
+    attn_scores: Vec<f32>,
+    attn_weights: Vec<f32>,
+    attn_output_proj: Vec<f32>,
+    residual_attn: Vec<f32>,
+    ffn_intermediate: Vec<f32>,
+    ffn_activated: Vec<f32>,
+    ffn_output_proj: Vec<f32>,
+    manual_output: Vec<f32>,
+    automated_output: Vec<f32>,
+}
+
+
+        fn is_close(a: &[f32], b: &[f32], atol: f32, rtol: f32) -> bool {
+            if a.len() != b.len() {
+                return false;
+            }
+            a.iter().zip(b.iter()).all(|(x, y)| {
+                let diff = (x - y).abs();
+                diff <= atol + rtol * y.abs()
+            })
+        }
+    #[test]
+    fn test_read_gpt2_pytorch_output() -> anyhow::Result<()> {
+        let loader = FileTensorLoader::from_path(GPT2_Q8_0_PATH)?;
+        let config = LLMConfig::from_content(&loader)?;
+        let path = "assets/scripts/llms/gpt2_debug_output.json";
+        let gpt2_output = serde_json::from_reader::<_, GPT2Output>(File::open(path).unwrap()).unwrap();
+        let input = Tensor::new(vec![1, config.embedding_size], gpt2_output.inputs_embeds);
+        let LLMModel::GPT2(mut model) = config.model(&loader)? else {
+            bail!("Model is not a GPT2 model");
+        };
+        println!("model: {:?}", config.specific_config);
+        let mut att = FlatAttention::new_from_gguf(&config, model.blocks.remove(0));
+        let output = att.forward(&input).unwrap();
+        let expected_output = gpt2_output.manual_output;
+        // Usage with PyTorch defaults
+        let atol = 1e-8_f32;
+        let rtol = 1e-5_f32;
+        println!("is close? {}", is_close(&expected_output, &output.get_data(), atol, rtol));
         Ok(())
     }
 
