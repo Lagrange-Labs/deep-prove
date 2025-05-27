@@ -151,7 +151,7 @@ impl<'a, I: Iterator<Item = &'a usize> + Sized> ParserFactory<'a, I> {
         let mut m = HashMap::new();
         m.insert("Conv", load_conv as LoadFn<'a, I>);
         m.insert("Gemm.ab", load_gemm as LoadFn<'a, I>);
-        m.insert("MatMul", load_gemm as LoadFn<'a, I>); //ToDo: currently MatMul is only used for dense layers without bias; 
+        m.insert("MatMul", load_gemm as LoadFn<'a, I>); //ToDo: currently MatMul is only used for dense layers without bias;
         // we would probably need an ad-hoc method when introducing general purpose matrix multiplication layer
         m.insert("Relu", load_relu as LoadFn<'a, I>);
         m.insert("Flatten", load_flatten as LoadFn<'a, I>);
@@ -491,7 +491,7 @@ fn is_const(node: &OnnxNode) -> bool {
 
 fn extract_const_tensor(node: &OnnxNode) -> Result<crate::Tensor<f32>> {
     let tensor = downcast_to::<Const>(node)?;
-    let slice = tensor.0.as_slice::<f32>()?;
+    let slice = tensor.val().as_slice::<f32>()?;
     ensure_onnx!(node.outputs.len() == 1, "constant output shape len == 1");
     let Some(shape) = node.outputs[0].fact.shape.as_concrete() else {
         return err(format!("Filter shape {} is not concrete", node.name));
