@@ -153,7 +153,7 @@ mod test {
         }
 
         /// currently hardcoded for f32 - need to implement layernorm and softmax in quantized world to be generic over N
-        pub fn forward(&mut self, input: &Tensor<f32>) -> anyhow::Result<Tensor<f32>> {
+        pub fn forward(&mut self, input: &Tensor<f32>, gpt2_output: Option<&GPT2Output>) -> anyhow::Result<Tensor<f32>> {
             assert_eq!(input.get_shape().len(), 2);
             let seq_len = input.get_shape()[0];
             let normed = self
@@ -162,6 +162,9 @@ mod test {
             let qkv = self
                 .qkv
                 .evaluate::<GoldilocksExt2>(&normed.outputs(), &mut self.cache)?;
+            if let Some(gpt2_output) = gpt2_output {
+                gpt2_output.is_qkv_close(qkv.outputs());
+            }
             let mha = self.mha.evaluate::<_, GoldilocksExt2>(&qkv.outputs())?;
             // apply softmax on the first output, Q @ K^T
             let qkt = vec![mha.outputs()[0]];
@@ -243,7 +246,7 @@ mod test {
         let num_heads = 2;
         let mut att = FlatAttention::random(emb_size, num_heads);
         let input = Tensor::<f32>::random(&[1, emb_size]);
-        let output = att.forward(&input).unwrap();
+        let output = att.forward(&input,None).unwrap();
         println!("output shape: {:?}", output.get_shape());
     }
 
@@ -257,7 +260,7 @@ mod test {
         println!("model: {:?}", config.specific_config);
         let mut att = FlatAttention::new_from_gguf(&config, model.blocks.remove(0));
         let input = Tensor::<f32>::random(&[1, config.embedding_size]);
-        let output = att.forward(&input).unwrap();
+        let output = att.forward(&input,None).unwrap();
         println!("output shape: {:?}", output.get_shape());
         Ok(())
     }
@@ -303,51 +306,70 @@ mod test {
     /// automated_output        ← model(...).hidden_states[1]
     #[derive(Debug, Deserialize)]
     struct GPT2Output {
-    token: String,
-    input_ids: u32,
-    inputs_embeds: Vec<f32>,
-    q: Vec<f32>,
-    k: Vec<f32>,
-    v: Vec<f32>,
-    attn_scores: Vec<f32>,
-    attn_weights: Vec<f32>,
-    attn_output_proj: Vec<f32>,
-    residual_attn: Vec<f32>,
-    ffn_intermediate: Vec<f32>,
-    ffn_activated: Vec<f32>,
-    ffn_output_proj: Vec<f32>,
-    manual_output: Vec<f32>,
-    automated_output: Vec<f32>,
-}
+        token: String,
+        input_ids: u32,
+        inputs_embeds: Vec<f32>,
+        q: Vec<f32>,
+        k: Vec<f32>,
+        v: Vec<f32>,
+        attn_scores: Vec<f32>,
+        attn_weights: Vec<f32>,
+        attn_output_proj: Vec<f32>,
+        residual_attn: Vec<f32>,
+        ffn_intermediate: Vec<f32>,
+        ffn_activated: Vec<f32>,
+        ffn_output_proj: Vec<f32>,
+        manual_output: Vec<f32>,
+        automated_output: Vec<f32>,
+    }
 
-
-        fn is_close(a: &[f32], b: &[f32], atol: f32, rtol: f32) -> bool {
-            if a.len() != b.len() {
-                return false;
-            }
-            a.iter().zip(b.iter()).all(|(x, y)| {
-                let diff = (x - y).abs();
-                diff <= atol + rtol * y.abs()
-            })
+    impl GPT2Output {
+        pub fn is_qkv_close(&self, qkv: Vec<&Tensor<f32>>) {
+            let q = qkv[0];
+            let k = qkv[1];
+            let v = qkv[2];
+            let q_close = is_close(q.get_data(), &self.q);
+            let k_close = is_close(k.get_data(), &self.k);
+            let v_close = is_close(v.get_data(), &self.v);
+            println!("q close? {}", q_close);
+            println!("k close? {}", k_close);
+            println!("v close? {}", v_close);
         }
+    }
+
+
+
+    fn is_close(a: &[f32], b: &[f32]) -> bool {
+        let atol = 1e-8_f32;
+        let rtol = 1e-5_f32;
+        if a.len() != b.len() {
+            return false;
+        }
+        a.iter().zip(b.iter()).all(|(x, y)| {
+            let diff = (x - y).abs();
+            diff <= atol + rtol * y.abs()
+        })
+    }
     #[test]
     fn test_read_gpt2_pytorch_output() -> anyhow::Result<()> {
         let loader = FileTensorLoader::from_path(GPT2_Q8_0_PATH)?;
         let config = LLMConfig::from_content(&loader)?;
         let path = "assets/scripts/llms/gpt2_debug_output.json";
-        let gpt2_output = serde_json::from_reader::<_, GPT2Output>(File::open(path).unwrap()).unwrap();
-        let input = Tensor::new(vec![1, config.embedding_size], gpt2_output.inputs_embeds);
+        let gpt2_output =
+            serde_json::from_reader::<_, GPT2Output>(File::open(path).unwrap()).unwrap();
+        let input = Tensor::new(vec![1, config.embedding_size], gpt2_output.inputs_embeds.clone());
         let LLMModel::GPT2(mut model) = config.model(&loader)? else {
             bail!("Model is not a GPT2 model");
         };
         println!("model: {:?}", config.specific_config);
         let mut att = FlatAttention::new_from_gguf(&config, model.blocks.remove(0));
-        let output = att.forward(&input).unwrap();
+        let output = att.forward(&input,Some(&gpt2_output)).unwrap();
         let expected_output = gpt2_output.manual_output;
         // Usage with PyTorch defaults
-        let atol = 1e-8_f32;
-        let rtol = 1e-5_f32;
-        println!("is close? {}", is_close(&expected_output, &output.get_data(), atol, rtol));
+        println!(
+            "is close? {}",
+            is_close(&expected_output, &output.get_data())
+        );
         Ok(())
     }
 
