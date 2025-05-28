@@ -33,6 +33,7 @@
     scikit-learn
     tabulate
     torch
+    torchvision
     tqdm
     '';
   };
@@ -44,5 +45,9 @@
     check-merge-conflicts.enable = true;
     ripsecrets.enable = true;
     rustfmt.enable = true;
+    flake8 = {
+      enable = true;
+      settings.extendIgnore = [ "E501" ];
+    };
   };
 }

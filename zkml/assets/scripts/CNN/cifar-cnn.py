@@ -55,7 +55,6 @@ We will do the following steps in order:
 
 Using ``torchvision``, it's extremely easy to load CIFAR10.
 """
-import sys
 from torch.ao.quantization import MinMaxObserver
 from torch.ao.quantization import QuantStub, DeQuantStub
 import torch.optim as optim
@@ -66,7 +65,6 @@ import matplotlib.pyplot as plt
 import torch
 import torchvision
 import torchvision.transforms as transforms
-import os
 import json
 import argparse
 from pathlib import Path
@@ -133,7 +131,7 @@ classes = ('plane', 'car', 'bird', 'cat',
            'deer', 'dog', 'frog', 'horse', 'ship', 'truck')
 
 # Add after classes definition
-print(f"✅ Datasets loaded successfully")
+print("✅ Datasets loaded successfully")
 print(
     f"👉 CIFAR10 has {len(trainset)} training images and {len(testset)} test images")
 print(f"👉 {len(classes)} classes: {', '.join(classes)}\n")
@@ -235,9 +233,9 @@ class Net(nn.Module):
 #         self.conv1 = nn.Conv2d(3, 1, 5)
 #         #self.pool = nn.MaxPool2d(2, 2)
 #         self.fc1 = nn.Linear(784, 10)
-# 
+#
 #     def forward(self, x):
-# 
+#
 #         x = self.quant(x)
 #         #x = self.pool(F.relu(self.conv1(x)))
 #         x = self.conv1(x)
@@ -716,17 +714,17 @@ def compare_accuracy(model, criterion, json_path):
         model_accuracy = 100 * model_correct / total_samples
         stored_accuracy = 100 * stored_correct / total_samples
 
-        print(f"\n\nAccuracy Comparison:")
+        print("\n\nAccuracy Comparison:")
         print(f"Live model accuracy: {model_accuracy:.2f}%")
         print(f"Stored predictions accuracy: {stored_accuracy:.2f}%")
 
         # Allow for minor floating point differences
         if abs(model_accuracy - stored_accuracy) > 0.01:
-            print(f"\n⚠️  WARNING: Accuracy mismatch detected!")
+            print("\n⚠️  WARNING: Accuracy mismatch detected!")
             print(
                 f"    Difference: {abs(model_accuracy - stored_accuracy):.2f}%")
         else:
-            print(f"\n✅ Model consistency verified: accuracies match")
+            print("\n✅ Model consistency verified: accuracies match")
 
         return model_accuracy, stored_accuracy
 
@@ -750,7 +748,7 @@ def evaluate(model, criterion, data_loader, neval_batches):
     with torch.no_grad():
         for image, target in data_loader:
             output = model(image)
-            loss = criterion(output, target)
+            _ = criterion(output, target)
             cnt += 1
             acc1, acc5 = topk_accuracy(output, target, topk=(1, 5))
             print('.', end='')
@@ -858,8 +856,7 @@ print("model prepared", net)
 
 # Create a subset of test data with exactly the same samples used in the JSON
 json_sample_dataset = Subset(testset, sample_indices)
-json_sample_loader = torch.utils.data.DataLoader(
-json_sample_dataset, batch_size=batch_size, shuffle=False)
+json_sample_loader = torch.utils.data.DataLoader(json_sample_dataset, batch_size=batch_size, shuffle=False)
 # Calibrate first
 print('Post Training Quantization Prepare: Inserting Observers')
 num_calibration_batches = len(json_sample_loader)
@@ -909,7 +906,7 @@ json_accuracy = 100 * correct_json / total_json
 print(f'JSON file accuracy on {total_json} samples: {json_accuracy:.2f}%')
 
 # Compare the two
-print(f'\nComparison: Model evaluation vs JSON file accuracy')
+print('\nComparison: Model evaluation vs JSON file accuracy')
 print(
     f'Model evaluation: {json_model_top1.avg:.2f}% | JSON file: {json_accuracy:.2f}%')
 
@@ -935,8 +932,8 @@ for name, module in net.named_modules():
                     print(f"  Unpacked weight scale: {unpacked[2]}")
                     if len(unpacked) > 3:
                         print(f"  Unpacked zero point: {unpacked[3]}")
-            except:
-                print(f"  Unable to unpack parameters for {name}")
+            except Exception as e:
+                print(f"  Unable to unpack parameters for {name}: {e}")
 
     # Try to access quantization scheme and parameters
     if hasattr(module, 'qscheme'):
