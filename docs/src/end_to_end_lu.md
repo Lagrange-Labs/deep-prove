@@ -1,5 +1,5 @@
 # End-to-End Lookup Protocol
-Since a model will have many repeated layers to improve efficiency we aim to only produce one multiplicity polynomial per table type. An added bonus to this is that at each step we only have to do proving work proportional to the number of lookups (for lookup steps) or the table size (for mulitpilcity polynomials).
+Since a model will have many repeated layers to improve efficiency we aim to only produce one multiplicity polynomial per table type. An added bonus to this is that at each step we only have to do proving work proportional to the number of lookups (for lookup steps) or the table size (for multiplicity polynomials).
 
 ## Splitting Lookups and Tables
 As a quick recap the LogUp protocol works as follows. If we have a table $` T:=\{t_{i} \}_{i = 1}^{m} `$ and a set of values $` L:= \{lk_{i}\}_{i=1}^{n} `$ to be looked up then the LogUp protocol proves 
