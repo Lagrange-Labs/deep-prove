@@ -10,9 +10,9 @@ use crate::{
 };
 use aes::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
 use ark_std::{end_timer, start_timer};
-use ff::{BatchInvert, Field, PrimeField};
 use ff_ext::ExtensionField;
 use multilinear_extensions::mle::FieldType;
+use p3_field::{Field, FieldAlgebra, batch_multiplicative_inverse};
 use rand::SeedableRng;
 use rayon::prelude::{ParallelIterator, ParallelSlice, ParallelSliceMut};
 

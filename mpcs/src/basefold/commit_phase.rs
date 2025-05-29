@@ -205,7 +205,7 @@ where
             running_oracle
                 .par_iter_mut()
                 .zip_eq(field_type_par_iter_ext(&comm.get_codewords()[0]))
-                .for_each(|(r, a)| *r += a * coeff);
+                .for_each(|(r, a)| *r += a * *coeff);
         });
     end_timer!(build_oracle_timer);
 
@@ -218,7 +218,7 @@ where
             .par_chunks_mut(1 << (num_vars - log2_strict(comm.polynomials_bh_evals[0].len())))
             .zip(field_type_par_iter_ext(&comm.polynomials_bh_evals[0]))
             .for_each(|(rs, val)| {
-                let mul = val * coeff;
+                let mul = val * *coeff;
                 rs.iter_mut().for_each(|r| *r += mul);
             });
     });
@@ -267,7 +267,7 @@ where
                     new_running_oracle
                         .par_iter_mut()
                         .zip_eq(field_type_par_iter_ext(&comm.get_codewords()[0]))
-                        .for_each(|(r, a)| *r += a * coeff);
+                        .for_each(|(r, a)| *r += a * *coeff);
                 });
 
             running_oracle = new_running_oracle;

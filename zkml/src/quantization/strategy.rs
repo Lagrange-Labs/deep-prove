@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use crate::{Element, Tensor, quantization};
 use anyhow::{Result, anyhow, ensure};
 use ark_std::rand;
-use goldilocks::GoldilocksExt2;
+use ff_ext::GoldilocksExt2;
 use itertools::Itertools;
 use statrs::statistics::{Data, Max, Min, OrderStatistics};
 use tracing::{debug, info, warn};

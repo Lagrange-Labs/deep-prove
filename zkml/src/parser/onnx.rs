@@ -613,7 +613,7 @@ fn downcast_to<T: Op>(node: &OnnxNode) -> Result<&T> {
 #[cfg(test)]
 mod tests {
 
-    use goldilocks::GoldilocksExt2;
+    use ff_ext::GoldilocksExt2;
 
     use super::*;
 

@@ -33,7 +33,7 @@ pub fn aggregated_rlc<E: ExtensionField>(claims: &[E], challenges: &[E]) -> E {
     claims
         .par_iter()
         .zip(challenges)
-        .fold(|| E::ZERO, |acc, (claim, r)| acc + *claim * r)
+        .fold(|| E::ZERO, |acc, (claim, r)| acc + *claim * *r)
         .reduce(|| E::ZERO, |res, acc| res + acc)
 }
 
@@ -48,16 +48,19 @@ pub(crate) fn identity_eval<E: ExtensionField>(r1: &[E], r2: &[E]) -> E {
     let v2 = &r2[..max_elem];
     v1.iter().zip(v2).fold(E::ONE, |eval, (r1_i, r2_i)| {
         let one = E::ONE;
-        eval * (*r1_i * r2_i + (one - r1_i) * (one - r2_i))
+        eval * (*r1_i * *r2_i + (one - *r1_i) * (one - *r2_i))
     })
 }
 
 #[cfg(test)]
 mod test {
-    use goldilocks::GoldilocksExt2;
+    use ff_ext::GoldilocksExt2;
 
-    use crate::{commit::identity_eval, testing::random_bool_vector};
-    use ff::Field;
+    use crate::{
+        commit::identity_eval,
+        testing::random_bool_vector,
+    };
+    use p3_field::FieldAlgebra;
     type F = GoldilocksExt2;
 
     #[test]

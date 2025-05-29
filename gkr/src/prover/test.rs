@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 
 use ark_std::test_rng;
-use ff::Field;
-use ff_ext::ExtensionField;
-use goldilocks::GoldilocksExt2;
+use ff_ext::{ExtensionField, GoldilocksExt2};
 use itertools::{Itertools, izip};
 use multilinear_extensions::mle::DenseMultilinearExtension;
+use p3_field::FieldAlgebra;
 use simple_frontend::structs::{ChallengeConst, ChallengeId, CircuitBuilder, MixedCell};
 use transcript::BasicTranscript;
 
@@ -348,7 +347,7 @@ where
                             challenge: i as u8,
                             exp: j as u64,
                         },
-                        x.pow([j as u64]),
+                        x.exp_u64(j as u64),
                     )
                 })
                 .collect_vec()

@@ -337,12 +337,17 @@ impl<E: ExtensionField> DenseMultilinearExtension<E> {
     }
 
     pub fn to_ext_field(&self) -> Self {
-        op_mle!(self, |evaluations| {
-            DenseMultilinearExtension::from_evaluations_ext_vec(
+        match &self.evaluations {
+            FieldType::Base(evaluations) => DenseMultilinearExtension::from_evaluations_ext_vec(
                 self.num_vars(),
-                evaluations.iter().cloned().map(E::from).collect(),
-            )
-        })
+                evaluations.iter().map(|&x| E::from_base(x)).collect(),
+            ),
+            FieldType::Ext(evaluations) => DenseMultilinearExtension::from_evaluations_ext_vec(
+                self.num_vars(),
+                evaluations.clone(),
+            ),
+            FieldType::Unreachable => unreachable!(),
+        }
     }
 }
 

@@ -41,7 +41,7 @@ impl<E: ExtensionField> IOPVerifierState<E> {
         // sigma = \sum_j( \alpha^j * subset[i][j](rt_j || ry_j) )
         let mut sigma_1 = izip!(self.to_next_phase_point_and_evals.iter(), alpha_pows.iter())
             .fold(E::ZERO, |acc, (point_and_eval, alpha_pow)| {
-                acc + point_and_eval.eval * alpha_pow
+                acc + point_and_eval.eval * *alpha_pow
             });
         sigma_1 += izip!(
             self.subset_point_and_evals[self.layer_id as usize].iter(),
@@ -50,7 +50,7 @@ impl<E: ExtensionField> IOPVerifierState<E> {
                 .skip(self.to_next_phase_point_and_evals.len())
         )
         .fold(E::ZERO, |acc, ((_, point_and_eval), alpha_pow)| {
-            acc + point_and_eval.eval * alpha_pow
+            acc + point_and_eval.eval * *alpha_pow
         });
 
         // Sumcheck: sigma = \sum_{t || y}(f1({t || y}) * (\sum_j g1^{(j)}({t || y})))
@@ -87,7 +87,7 @@ impl<E: ExtensionField> IOPVerifierState<E> {
                         &point_and_eval.point[..point_lo_num_vars],
                         &claim1_point[..point_lo_num_vars],
                     );
-                    eq_t * eq_y * alpha_pow
+                    eq_t * eq_y * *alpha_pow
                 }
             ),
             izip!(
@@ -106,7 +106,7 @@ impl<E: ExtensionField> IOPVerifierState<E> {
                 eq_t * circuit.layers[self.layer_id as usize].copy_to[new_layer_id]
                     .as_slice()
                     .eval_row_first(&eq_yj_ryj, &eq_y_ry)
-                    * alpha_pow
+                    * *alpha_pow
             }),
         ]
         .sum();

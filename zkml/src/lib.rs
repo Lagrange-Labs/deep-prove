@@ -163,9 +163,10 @@ impl NextPowerOfTwo for Vec<usize> {
 #[cfg(test)]
 mod test {
     use ark_std::rand::{Rng, thread_rng};
-    use goldilocks::GoldilocksExt2;
+    use ff_ext::{FromUniformBytes, GoldilocksExt2};
     use itertools::Itertools;
     use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
+    use p3_field::FieldAlgebra;
 
     use crate::{
         FloatOnnxLoader, default_transcript,
@@ -175,7 +176,6 @@ mod test {
         testing::Pcs,
         to_bit_sequence_le,
     };
-    use ff_ext::ff::Field;
 
     type E = GoldilocksExt2;
 
@@ -230,11 +230,13 @@ mod test {
     #[test]
     fn test_vector_mle() {
         let n = (10 as usize).next_power_of_two();
-        let v = (0..n).map(|_| E::random(&mut thread_rng())).collect_vec();
+        let v = (0..n)
+            .map(|_| <E as FromUniformBytes>::random(&mut thread_rng()))
+            .collect_vec();
         let mle = v.clone().into_mle();
         let random_index = thread_rng().gen_range(0..v.len());
         let eval = to_bit_sequence_le(random_index, v.len().next_power_of_two().ilog2() as usize)
-            .map(|b| E::from(b as u64))
+            .map(|b| E::from_canonical_u64(b as u64))
             .collect_vec();
         let output = mle.evaluate(&eval);
         assert_eq!(output, v[random_index]);

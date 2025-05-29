@@ -289,8 +289,9 @@ impl<E: ExtensionField> LogUpCircuit<E> {
 #[cfg(test)]
 mod tests {
     use crate::testing::random_field_vector;
-    use ff::Field;
-    use goldilocks::{Goldilocks, GoldilocksExt2};
+    use ff_ext::GoldilocksExt2;
+    use p3_field::{Field, FieldAlgebra};
+    use p3_goldilocks::Goldilocks;
 
     use super::*;
 
@@ -312,13 +313,13 @@ mod tests {
         assert_eq!(out.len(), 4);
 
         let value = column.iter().fold(GoldilocksExt2::ZERO, |acc, val| {
-            let inv = val.invert().unwrap();
+            let inv = val.inverse();
             acc - GoldilocksExt2::from(inv)
         });
 
         let out_num = out[0] * out[3] + out[1] * out[2];
         let out_denom = out[2] * out[3];
-        let calculated = out_num * out_denom.invert().unwrap();
+        let calculated = out_num * out_denom.inverse();
 
         assert_eq!(value, calculated);
     }

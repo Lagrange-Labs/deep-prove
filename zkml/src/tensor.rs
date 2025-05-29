@@ -4,11 +4,10 @@ use crate::{
 };
 use anyhow::{bail, ensure};
 use ark_std::rand::{self, Rng, SeedableRng, rngs::StdRng};
-use ff::Field;
-use ff_ext::ExtensionField;
-use goldilocks::GoldilocksExt2;
+use ff_ext::{ExtensionField, GoldilocksExt2};
 use itertools::Itertools;
 use multilinear_extensions::mle::DenseMultilinearExtension;
+use p3_field::FieldAlgebra;
 use rayon::{
     iter::{
         IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
@@ -174,7 +173,7 @@ pub fn check_tensor_consistency(real_tensor: Tensor<Element>, padded_tensor: Ten
 ///
 /// The initial ROOT_OF_UNITY constant is verified to be a 32nd root of unity in the field implementation.
 pub fn get_root_of_unity<E: ExtensionField>(n: usize) -> E {
-    let mut rou = E::ROOT_OF_UNITY;
+    let mut rou = E::two_adic_generator(E::TWO_ADICITY);
 
     for _ in 0..(32 - n) {
         rou = rou * rou;
@@ -228,7 +227,7 @@ pub fn fft<E: ExtensionField + Send + Sync>(v: &mut Vec<E>, flag: bool) {
     w[1] = rou;
 
     if flag {
-        w[1] = w[1].invert().unwrap();
+        w[1] = w[1].inverse();
     }
 
     for i in 2..n {
@@ -262,9 +261,13 @@ pub fn fft<E: ExtensionField + Send + Sync>(v: &mut Vec<E>, flag: bool) {
     }
 
     if flag {
-        let mut ilen = E::from(n as u64);
-        ilen = ilen.invert().unwrap();
-        debug_assert_eq!(ilen * E::from(n as u64), E::ONE, "Error in inv");
+        let mut ilen = E::from_canonical_u64(n as u64);
+        ilen = ilen.inverse();
+        debug_assert_eq!(
+            ilen * E::from_canonical_u64(n as u64),
+            E::ONE,
+            "Error in inv"
+        );
         v.par_iter_mut().for_each(|val| {
             *val *= ilen;
         });
@@ -705,14 +708,14 @@ where
     pub fn row_to_boolean_2d<F: ExtensionField>(&self, row: usize) -> impl Iterator<Item = F> {
         assert!(self.is_matrix(), "Tensor is not a matrix");
         let (nvars_rows, _) = self.num_vars_2d();
-        to_bit_sequence_le(row, nvars_rows).map(|b| F::from(b as u64))
+        to_bit_sequence_le(row, nvars_rows).map(|b| F::from_canonical_u64(b as u64))
     }
     /// Returns the boolean iterator indicating the given row in the right endianness to be
     /// evaluated by an MLE
     pub fn col_to_boolean_2d<F: ExtensionField>(&self, col: usize) -> impl Iterator<Item = F> {
         assert!(self.is_matrix(), "Tensor is not a matrix");
         let (_, nvars_col) = self.num_vars_2d();
-        to_bit_sequence_le(col, nvars_col).map(|b| F::from(b as u64))
+        to_bit_sequence_le(col, nvars_col).map(|b| F::from_canonical_u64(b as u64))
     }
     /// From a given row and a given column, return the vector of field elements in the right
     /// format to evaluate the MLE.
@@ -1534,7 +1537,7 @@ impl<T: Number> Tensor<T> {
 mod test {
 
     use ark_std::rand::{Rng, thread_rng};
-    use goldilocks::GoldilocksExt2;
+    use ff_ext::GoldilocksExt2;
 
     use super::*;
     use multilinear_extensions::mle::MultilinearExtension;

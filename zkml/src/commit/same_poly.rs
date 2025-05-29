@@ -36,6 +36,7 @@ impl<E: ExtensionField> Context<E> {
     }
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct Proof<E: ExtensionField> {
     sumcheck: IOPProof<E>,
     // [0] about the betas, [1] about the poly
@@ -182,7 +183,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use goldilocks::GoldilocksExt2;
+    use ff_ext::GoldilocksExt2;
     use mpcs::PolynomialCommitmentScheme;
     use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 

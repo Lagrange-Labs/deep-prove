@@ -82,6 +82,7 @@ where
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub enum LayerProof<E, PCS>
 where
     E: ExtensionField,

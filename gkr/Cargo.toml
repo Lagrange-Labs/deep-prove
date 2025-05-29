@@ -16,6 +16,8 @@ goldilocks.workspace = true
 crossbeam-channel.workspace = true
 ff_ext = { path = "../ff_ext" }
 itertools.workspace = true
+p3-field.workspace = true
+p3-goldilocks.workspace = true
 multilinear_extensions = { path = "../multilinear_extensions" }
 rayon.workspace = true
 serde.workspace = true

@@ -48,14 +48,14 @@ fn test_fix_high_variables() {
     let poly: DenseMultilinearExtension<E> = DenseMultilinearExtension::from_evaluations_vec(
         3,
         vec![
-            Goldilocks::from_canonical_u64(13),
-            Goldilocks::from_canonical_u64(97),
-            Goldilocks::from_canonical_u64(11),
-            Goldilocks::from_canonical_u64(101),
-            Goldilocks::from_canonical_u64(7),
-            Goldilocks::from_canonical_u64(103),
-            Goldilocks::from_canonical_u64(5),
-            Goldilocks::from_canonical_u64(107),
+            F::from_canonical_u64(13),
+            F::from_canonical_u64(97),
+            F::from_canonical_u64(11),
+            F::from_canonical_u64(101),
+            F::from_canonical_u64(7),
+            F::from_canonical_u64(103),
+            F::from_canonical_u64(5),
+            F::from_canonical_u64(107),
         ],
     );
 
@@ -63,15 +63,20 @@ fn test_fix_high_variables() {
 
     let expected1 = DenseMultilinearExtension::from_evaluations_ext_vec(
         2,
-        vec![-E::from_canonical_u64(17), E::from_canonical_u64(127), -E::from_canonical_u64(19), E::from_canonical_u64(131)],
+        vec![
+            -E::from_canonical_u64(17),
+            E::from_canonical_u64(127),
+            -E::from_canonical_u64(19),
+            E::from_canonical_u64(131),
+        ],
     );
     let result1 = poly.fix_high_variables(&partial_point[1..]);
     assert_eq!(result1, expected1);
 
-    let expected2 = DenseMultilinearExtension::from_evaluations_ext_vec(1, vec![
-        -E::from_canonical_u64(23),
-        E::from_canonical_u64(139),
-    ]);
+    let expected2 = DenseMultilinearExtension::from_evaluations_ext_vec(
+        1,
+        vec![-E::from_canonical_u64(23), E::from_canonical_u64(139)],
+    );
     let result2 = poly.fix_high_variables(&partial_point);
     assert_eq!(result2, expected2);
 }

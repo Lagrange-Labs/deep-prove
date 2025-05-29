@@ -14,7 +14,7 @@ use zkml::{
 use anyhow::{Context as CC, Result, ensure};
 use clap::Parser;
 use csv::WriterBuilder;
-use goldilocks::GoldilocksExt2;
+use ff_ext::GoldilocksExt2;
 use mpcs::{Basefold, BasefoldRSParams};
 use tracing::{debug, info};
 use tracing_subscriber::{EnvFilter, fmt};

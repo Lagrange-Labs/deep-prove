@@ -11,8 +11,9 @@ version.workspace = true
 
 [dependencies]
 crossbeam-channel.workspace = true
-ff.workspace = true
 ff_ext = { path = "../ff_ext" }
-goldilocks.workspace = true
+p3-goldilocks.workspace = true
+p3-field.workspace = true
 poseidon.workspace = true
 serde.workspace = true
+p3-poseidon2 = { workspace = true }

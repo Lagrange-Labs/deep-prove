@@ -53,6 +53,7 @@ pub struct DenseCtx<E> {
 
 /// Proof of the layer.
 #[derive(Default, Clone, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct DenseProof<E: ExtensionField> {
     /// the actual sumcheck proof proving the mat2vec protocol
     pub(crate) sumcheck: IOPProof<E>,
@@ -661,13 +662,15 @@ impl<E: ExtensionField> DenseProof<E> {
     /// Returns the individual claims f_1(r) f_2(r)  f_3(r) ... at the end of a sumcheck multiplied
     /// together
     pub fn individual_to_virtual_claim(&self) -> E {
-        self.individual_claims.iter().fold(E::ONE, |acc, e| acc * e)
+        self.individual_claims
+            .iter()
+            .fold(E::ONE, |acc, e| acc * *e)
     }
 }
 
 #[cfg(test)]
 mod test {
-    use goldilocks::GoldilocksExt2;
+    use ff_ext::GoldilocksExt2;
 
     use crate::layers::provable::evaluate_layer;
 

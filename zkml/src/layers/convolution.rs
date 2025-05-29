@@ -81,7 +81,7 @@ pub struct ConvCtx<E> {
 pub fn to_bits<E: ExtensionField>(mut num: usize, bitlen: usize) -> Vec<E> {
     let mut bits = vec![E::ZERO; bitlen];
     for i in 0..bitlen {
-        bits[i] = E::from((num & 1) as u64);
+        bits[i] = E::from_canonical_u64((num & 1) as u64);
         num >>= 1;
     }
     bits
@@ -92,6 +92,7 @@ pub struct SchoolBookConv<T>(pub(crate) Convolution<T>);
 
 /// Contains proof material related to one step of the inference for a convolution layer
 #[derive(Default, Clone, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct ConvProof<E: ExtensionField> {
     // Sumcheck proof for the FFT layer
     fft_proof: IOPProof<E>,
@@ -406,7 +407,7 @@ impl Convolution<Element> {
             &mut w_red,
             &mut f_middle,
             r1.clone(),
-            E::from(1),
+            E::ONE,
             padded_rows.ilog2() as usize,
             false,
         );
@@ -949,7 +950,7 @@ impl Convolution<Element> {
         debug_assert!({
             let mut weights_point = fft_proof_weights.point.clone();
             let mut v_weights = weights_point.pop().unwrap();
-            v_weights = (E::ONE - v_weights).invert().unwrap();
+            v_weights = (E::ONE - v_weights).inverse();
 
             let mut r = [
                 weights_rand.clone(),
@@ -1029,7 +1030,7 @@ impl Convolution<Element> {
         );
         let mut input_point = fft_proof.point.clone();
         let mut v = input_point.pop().unwrap();
-        v = (E::ONE - v).invert().unwrap();
+        v = (E::ONE - v).inverse();
         debug_assert!({
             let mut p = [
                 input_point.clone(),
@@ -1129,7 +1130,8 @@ where
         }
         assert_eq!(
             claim,
-            (E::ONE - E::from(2) * proof.hadamard_proof.point[iter]) * prev_r[0] + E::ONE
+            (E::ONE - E::from_canonical_u64(2) * proof.hadamard_proof.point[iter]) * prev_r[0]
+                + E::ONE
                 - prev_r[0],
             "Error in final FFT delegation step"
         );
@@ -1228,7 +1230,7 @@ where
             prev_r = proof.ifft_delegation_proof[i].point.clone();
             claim = proof.ifft_delegation_claims[i][2];
         }
-        let scale = E::from(1 << (iter + 1)).invert().unwrap();
+        let scale = E::from_canonical_u64(1 << (iter + 1)).inverse();
 
         assert_eq!(
             claim,
@@ -1293,7 +1295,7 @@ where
         // using the partial_evals provided by the prover
         let mut weights_point = proof.fft_proof_weights.point.clone();
         let mut v = weights_point.pop().unwrap();
-        v = (E::ONE - v).invert().unwrap();
+        v = (E::ONE - v).inverse();
 
         let y_weights = (0..self.real_nw)
             .flat_map(|i| (0..self.real_nw).map(move |j| (i, j)))
@@ -1349,7 +1351,7 @@ where
 
         let mut input_point = proof.fft_proof.point.clone();
         v = input_point.pop().unwrap();
-        v = (E::ONE - v).invert().unwrap();
+        v = (E::ONE - v).inverse();
         for point in &mut input_point {
             *point = E::ONE - *point;
         }
@@ -1450,7 +1452,7 @@ pub fn pow_two_omegas<E: ExtensionField>(n: usize, is_fft: bool) -> Vec<E> {
     let mut pows = vec![E::ZERO; n - 1];
     let mut rou: E = get_root_of_unity(n);
     if is_fft {
-        rou = rou.invert().unwrap();
+        rou = rou.inverse();
     }
     pows[0] = rou;
     for i in 1..(n - 1) {
@@ -1474,7 +1476,7 @@ pub fn phi_eval<E: ExtensionField>(
     if first_iter {
         eval = (E::ONE - rand2) * (E::ONE - rand1 + rand1 * eval);
     } else {
-        eval = E::ONE - rand1 + (E::ONE - E::from(2) * rand2) * rand1 * eval;
+        eval = E::ONE - rand1 + (E::ONE - E::from_canonical_u64(2) * rand2) * rand1 * eval;
     }
 
     eval
@@ -1596,7 +1598,7 @@ mod test {
     };
 
     use super::*;
-    use goldilocks::GoldilocksExt2;
+    use ff_ext::GoldilocksExt2;
 
     fn split_garbage(
         fft_output: &Tensor<Element>,

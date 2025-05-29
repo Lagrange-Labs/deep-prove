@@ -289,10 +289,10 @@ impl<E: ExtensionField> CoefficientsProver<E> {
                             .for_each(|((lhs_0, lhs_1), (rhs_0, rhs_1))| {
                                 let coeff_0 = lhs_0 * rhs_0;
                                 let coeff_2 = (lhs_1 - lhs_0) * (rhs_1 - rhs_0);
-                                coeffs[0] += &coeff_0;
-                                coeffs[2] += &coeff_2;
+                                coeffs[0] += coeff_0;
+                                coeffs[2] += coeff_2;
                                 if !LAZY {
-                                    coeffs[1] += &(lhs_1 * rhs_1 - coeff_0 - coeff_2);
+                                    coeffs[1] += lhs_1 * rhs_1 - coeff_0 - coeff_2;
                                 }
                             });
                     };

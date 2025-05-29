@@ -24,6 +24,7 @@ use anyhow::{Result, anyhow, ensure};
 
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
+use p3_field::FieldAlgebra;
 
 use mpcs::{PolynomialCommitmentScheme, sum_check::eq_xy_eval};
 use multilinear_extensions::{
@@ -77,6 +78,7 @@ pub struct RequantCtx {
 #[derive(Clone, Serialize, Deserialize)]
 /// Struct holding all the information needed to verify requantisation was performed correctly.
 /// This includes both lookup proofs and an additional sumcheck proof that we use so that all evaluations are at the same point.
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct RequantProof<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>
 where
     E::BaseField: Serialize + DeserializeOwned,
@@ -489,8 +491,8 @@ impl Requant {
     }
 
     pub fn write_to_transcript<E: ExtensionField, T: Transcript<E>>(&self, t: &mut T) {
-        t.append_field_element(&E::BaseField::from(self.right_shift as u64));
-        t.append_field_element(&E::BaseField::from(self.fixed_point_multiplier as u64));
+        t.append_field_element(&E::BaseField::from_canonical_u64(self.right_shift as u64));
+        t.append_field_element(&E::BaseField::from_canonical_u64(self.fixed_point_multiplier as u64));
     }
 
     /// Function to recombine claims of constituent MLEs into a single value to be used as the initial sumcheck evaluation
@@ -502,23 +504,23 @@ impl Requant {
     ) -> E {
         // First we recombine the clamping claim with the shifted chunks
         // We want `clamping_claim * shift_field + SUM 2^{i}*shifted_claims[i]`
-        let shift_field = E::from(1u64 << self.shift());
+        let shift_field = E::from_canonical_u64(1u64 << self.shift());
         let (full_val, _) = shifted_claims.iter().fold(
             (shift_field * clamping_claim, E::ONE),
             |(acc, pow_two), &val| {
                 (
                     acc + val * pow_two,
-                    pow_two * E::from(1u64 << *quantization::BIT_LEN),
+                    pow_two * E::from_canonical_u64(1u64 << *quantization::BIT_LEN),
                 )
             },
         );
 
         // Now we subtract the rounding constant and then multiply by the inverse of the fixed point multiplier
         // We do this because `input = fpm^{-1}*(full_val - rounding_constant)`
-        let rounding_const_field = E::from(1u64 << (self.shift() - 1));
+        let rounding_const_field = E::from_canonical_u64(1u64 << (self.shift() - 1));
 
         let fpm_field: E = self.fixed_point_multiplier.to_field();
-        let fpm_inverse = fpm_field.invert().unwrap();
+        let fpm_inverse = fpm_field.inverse();
 
         (full_val - rounding_const_field) * fpm_inverse
     }

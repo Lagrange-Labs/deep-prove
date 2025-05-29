@@ -2,6 +2,7 @@
 
 use ff_ext::ExtensionField;
 use multilinear_extensions::virtual_poly::VPAuxInfo;
+use p3_field::FieldAlgebra;
 use sumcheck::structs::IOPVerifierState;
 use transcript::Transcript;
 
@@ -20,7 +21,7 @@ pub fn verify_logup_proof<E: ExtensionField, T: Transcript<E>>(
     transcript: &mut T,
 ) -> Result<LogUpVerifierClaim<E>, LogUpError> {
     // Append the number of instances along with their output evals to the transcript and then squeeze our first alpha and lambda
-    transcript.append_field_element(&E::BaseField::from(num_instances as u64));
+    transcript.append_field_element(&E::BaseField::from_canonical_u64(num_instances as u64));
     proof.append_to_transcript(transcript);
 
     let (numerators, denominators): (Vec<E>, Vec<E>) = proof.fractional_outputs();

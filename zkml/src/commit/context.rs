@@ -135,6 +135,7 @@ where
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 /// Claim about a commitment used by the verifier (so no witness is included).
 pub struct VerifierClaim<E, PCS>
 where
@@ -323,6 +324,7 @@ where
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 /// The struct used to verify all of the commitment openings in a model proof.
 pub struct CommitmentVerifier<E, PCS>
 where

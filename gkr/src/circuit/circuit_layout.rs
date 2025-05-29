@@ -332,12 +332,12 @@ impl<E: ExtensionField> Circuit<E> {
             ConstantType::Challenge(c, _) => {
                 challenge_exps
                     .entry(c)
-                    .or_insert(challenges[c.challenge as usize].pow([c.exp]));
+                    .or_insert(challenges[c.challenge as usize].exp_u64(c.exp));
             }
             ConstantType::ChallengeScaled(c, _, _) => {
                 challenge_exps
                     .entry(c)
-                    .or_insert(challenges[c.challenge as usize].pow([c.exp]));
+                    .or_insert(challenges[c.challenge as usize].exp_u64(c.exp));
             }
             _ => {}
         };
@@ -511,8 +511,9 @@ impl<E: ExtensionField> fmt::Debug for Circuit<E> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use ff::Field;
-    use goldilocks::{Goldilocks, GoldilocksExt2};
+    use ff_ext::GoldilocksExt2;
+    use p3_field::FieldAlgebra;
+    use p3_goldilocks::Goldilocks;
     use simple_frontend::structs::{ChallengeConst, ChallengeId, CircuitBuilder, ConstantType};
 
     use crate::structs::{Circuit, Gate, GateCIn, SumcheckStepType};
