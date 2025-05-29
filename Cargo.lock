@@ -1631,8 +1631,8 @@ checksum = "b15813163c1d831bf4a13c3610c05c0d03b39feb07f7e09fa234dac9b15aaf39"
 
 [[package]]
 name = "p3-challenger"
-version = "0.3.0"
-source = "git+https://github.com/Plonky3/Plonky3?tag=v0.3.0#8f27c3638a230eced31d3a4a7c25362220eab1ca"
+version = "0.1.0"
+source = "git+https://github.com/Plonky3/Plonky3?rev=f37dc2a59ad93fe6153091e11671d3d53708bcbb#f37dc2a59ad93fe6153091e11671d3d53708bcbb"
 dependencies = [
  "p3-field",
  "p3-maybe-rayon",
@@ -1643,8 +1643,8 @@ dependencies = [
 
 [[package]]
 name = "p3-dft"
-version = "0.3.0"
-source = "git+https://github.com/Plonky3/Plonky3?tag=v0.3.0#8f27c3638a230eced31d3a4a7c25362220eab1ca"
+version = "0.1.0"
+source = "git+https://github.com/Plonky3/Plonky3?rev=f37dc2a59ad93fe6153091e11671d3d53708bcbb#f37dc2a59ad93fe6153091e11671d3d53708bcbb"
 dependencies = [
  "itertools 0.13.0",
  "p3-field",
@@ -1656,8 +1656,8 @@ dependencies = [
 
 [[package]]
 name = "p3-field"
-version = "0.3.0"
-source = "git+https://github.com/Plonky3/Plonky3?tag=v0.3.0#8f27c3638a230eced31d3a4a7c25362220eab1ca"
+version = "0.1.0"
+source = "git+https://github.com/Plonky3/Plonky3?rev=f37dc2a59ad93fe6153091e11671d3d53708bcbb#f37dc2a59ad93fe6153091e11671d3d53708bcbb"
 dependencies = [
  "itertools 0.13.0",
  "num-bigint",
@@ -1673,8 +1673,8 @@ dependencies = [
 
 [[package]]
 name = "p3-goldilocks"
-version = "0.3.0"
-source = "git+https://github.com/Plonky3/Plonky3?tag=v0.3.0#8f27c3638a230eced31d3a4a7c25362220eab1ca"
+version = "0.1.0"
+source = "git+https://github.com/Plonky3/Plonky3?rev=f37dc2a59ad93fe6153091e11671d3d53708bcbb#f37dc2a59ad93fe6153091e11671d3d53708bcbb"
 dependencies = [
  "num-bigint",
  "p3-dft",
@@ -1689,8 +1689,8 @@ dependencies = [
 
 [[package]]
 name = "p3-matrix"
-version = "0.3.0"
-source = "git+https://github.com/Plonky3/Plonky3?tag=v0.3.0#8f27c3638a230eced31d3a4a7c25362220eab1ca"
+version = "0.1.0"
+source = "git+https://github.com/Plonky3/Plonky3?rev=f37dc2a59ad93fe6153091e11671d3d53708bcbb#f37dc2a59ad93fe6153091e11671d3d53708bcbb"
 dependencies = [
  "itertools 0.13.0",
  "p3-field",
@@ -1704,13 +1704,13 @@ dependencies = [
 
 [[package]]
 name = "p3-maybe-rayon"
-version = "0.3.0"
-source = "git+https://github.com/Plonky3/Plonky3?tag=v0.3.0#8f27c3638a230eced31d3a4a7c25362220eab1ca"
+version = "0.1.0"
+source = "git+https://github.com/Plonky3/Plonky3?rev=f37dc2a59ad93fe6153091e11671d3d53708bcbb#f37dc2a59ad93fe6153091e11671d3d53708bcbb"
 
 [[package]]
 name = "p3-mds"
-version = "0.3.0"
-source = "git+https://github.com/Plonky3/Plonky3?tag=v0.3.0#8f27c3638a230eced31d3a4a7c25362220eab1ca"
+version = "0.1.0"
+source = "git+https://github.com/Plonky3/Plonky3?rev=f37dc2a59ad93fe6153091e11671d3d53708bcbb#f37dc2a59ad93fe6153091e11671d3d53708bcbb"
 dependencies = [
  "itertools 0.13.0",
  "p3-dft",
@@ -1723,8 +1723,8 @@ dependencies = [
 
 [[package]]
 name = "p3-poseidon2"
-version = "0.3.0"
-source = "git+https://github.com/Plonky3/Plonky3?tag=v0.3.0#8f27c3638a230eced31d3a4a7c25362220eab1ca"
+version = "0.1.0"
+source = "git+https://github.com/Plonky3/Plonky3?rev=f37dc2a59ad93fe6153091e11671d3d53708bcbb#f37dc2a59ad93fe6153091e11671d3d53708bcbb"
 dependencies = [
  "gcd",
  "p3-field",
@@ -1735,8 +1735,8 @@ dependencies = [
 
 [[package]]
 name = "p3-symmetric"
-version = "0.3.0"
-source = "git+https://github.com/Plonky3/Plonky3?tag=v0.3.0#8f27c3638a230eced31d3a4a7c25362220eab1ca"
+version = "0.1.0"
+source = "git+https://github.com/Plonky3/Plonky3?rev=f37dc2a59ad93fe6153091e11671d3d53708bcbb#f37dc2a59ad93fe6153091e11671d3d53708bcbb"
 dependencies = [
  "itertools 0.13.0",
  "p3-field",
@@ -1745,8 +1745,8 @@ dependencies = [
 
 [[package]]
 name = "p3-util"
-version = "0.3.0"
-source = "git+https://github.com/Plonky3/Plonky3?tag=v0.3.0#8f27c3638a230eced31d3a4a7c25362220eab1ca"
+version = "0.1.0"
+source = "git+https://github.com/Plonky3/Plonky3?rev=f37dc2a59ad93fe6153091e11671d3d53708bcbb#f37dc2a59ad93fe6153091e11671d3d53708bcbb"
 dependencies = [
  "serde",
 ]
