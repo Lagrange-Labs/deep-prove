@@ -212,7 +212,7 @@ where
         let x0: E::BaseField = query_root_table_from_rng_aes::<E>(level, index, &mut cipher);
         let x1 = -x0;
 
-        let w = (x1 - x0).invert().unwrap();
+        let w = (x1 - x0).inverse();
 
         (E::from(x0), E::from(x1), E::from(w))
     }
@@ -344,13 +344,13 @@ pub fn get_table_aes<E: ExtensionField, Rng: RngCore + Clone>(
     assert_eq!(flat_table.len(), 1 << lg_n);
 
     // Multiply -2 to every element to get the weights. Now weights = { -2x }
-    let mut weights: Vec<E::BaseField> = flat_table
+    let weights: Vec<E::BaseField> = flat_table
         .par_iter()
         .map(|el| E::BaseField::ZERO - *el - *el)
         .collect();
 
     // Then invert all the elements. Now weights = { -1/2x }
-    BatchInvert::batch_invert(&mut weights);
+    let weights = batch_multiplicative_inverse(&weights);
 
     // Zip x and -1/2x together. The result is the list { (x, -1/2x) }
     // What is this -1/2x? It is used in linear interpolation over the domain (x, -x), which
@@ -392,13 +392,13 @@ pub fn query_root_table_from_rng_aes<E: ExtensionField>(
     }
 
     let pos = ((level_offset + (reverse_bits(index, level) as u128))
-        * ((E::BaseField::NUM_BITS as usize).next_power_of_two() as u128))
+        * (E::BaseField::bits().next_power_of_two() as u128))
         .checked_div(8)
         .unwrap();
 
     cipher.seek(pos);
 
-    let bytes = (E::BaseField::NUM_BITS as usize).next_power_of_two() / 8;
+    let bytes = (E::BaseField::bits()).next_power_of_two() / 8;
     let mut dest: Vec<u8> = vec![0u8; bytes];
     cipher.apply_keystream(&mut dest);
 
@@ -410,7 +410,7 @@ mod tests {
     use crate::basefold::encoding::test_util::test_codeword_folding;
 
     use super::*;
-    use goldilocks::GoldilocksExt2;
+    use ff_ext::GoldilocksExt2;
     use multilinear_extensions::mle::DenseMultilinearExtension;
 
     #[test]

@@ -9,10 +9,10 @@ use crate::{
 use std::{collections::HashMap, fmt::Debug};
 
 use classic::{ClassicSumCheckRoundMessage, SumcheckProof};
-use ff::PrimeField;
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use multilinear_extensions::mle::DenseMultilinearExtension;
+use p3_field::Field;
 use serde::{Serialize, de::DeserializeOwned};
 use transcript::Transcript;
 
@@ -113,27 +113,30 @@ pub fn evaluate<E: ExtensionField>(
     )
 }
 
-pub fn lagrange_eval<F: PrimeField>(x: &[F], b: usize) -> F {
+pub fn lagrange_eval<F: Field>(x: &[F], b: usize) -> F {
     assert!(!x.is_empty());
 
     product(x.iter().enumerate().map(
         |(idx, x_i)| {
-            if b.nth_bit(idx) { *x_i } else { F::ONE - x_i }
+            if b.nth_bit(idx) { *x_i } else { F::ONE - *x_i }
         },
     ))
 }
 
-pub fn eq_xy_eval<F: PrimeField>(x: &[F], y: &[F]) -> F {
+pub fn eq_xy_eval<F: Field>(x: &[F], y: &[F]) -> F {
     assert!(!x.is_empty());
     assert_eq!(x.len(), y.len());
 
     product(
         x.iter()
             .zip(y)
-            .map(|(x_i, y_i)| (*x_i * y_i).double() + F::ONE - x_i - y_i),
+            .map(|(x_i, y_i)| (*x_i * *y_i).double() + F::ONE - *x_i - *y_i),
     )
 }
 
-fn identity_eval<F: PrimeField>(x: &[F]) -> F {
-    inner_product(x, &powers(F::from(2)).take(x.len()).collect_vec())
+fn identity_eval<F: Field>(x: &[F]) -> F {
+    inner_product(
+        x,
+        &powers(F::from_canonical_u64(2)).take(x.len()).collect_vec(),
+    )
 }

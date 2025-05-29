@@ -1,13 +1,14 @@
 use std::time::Duration;
 
 use criterion::*;
-use ff::{Field, PrimeField};
-use goldilocks::{Goldilocks, GoldilocksExt2};
+use ff_ext::{FromUniformBytes, GoldilocksExt2};
 
 use itertools::Itertools;
 use mpcs::{coset_fft, fft_root_table};
 
 use multilinear_extensions::mle::DenseMultilinearExtension;
+use p3_field::Field;
+use p3_goldilocks::Goldilocks;
 use rand::{SeedableRng, rngs::OsRng};
 use rand_chacha::ChaCha8Rng;
 use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
@@ -51,7 +52,7 @@ fn bench_fft(c: &mut Criterion, is_base: bool) {
                         polys.par_iter_mut().for_each(|poly| {
                             coset_fft::<GoldilocksExt2>(
                                 &mut poly.evaluations,
-                                Goldilocks::MULTIPLICATIVE_GENERATOR,
+                                Goldilocks::GENERATOR,
                                 0,
                                 &root_table,
                             );

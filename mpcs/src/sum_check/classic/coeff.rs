@@ -12,7 +12,7 @@ use crate::{
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use multilinear_extensions::mle::{FieldType, MultilinearExtension};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{fmt::Debug, iter, ops::AddAssign};
 use transcript::Transcript;
 
@@ -32,6 +32,10 @@ macro_rules! zip_self {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "E::BaseField: Serialize",
+    deserialize = "E::BaseField: DeserializeOwned"
+))]
 pub struct Coefficients<E: ExtensionField>(FieldType<E>);
 
 impl<E: ExtensionField> ClassicSumCheckRoundMessage<E> for Coefficients<E> {
@@ -49,7 +53,7 @@ impl<E: ExtensionField> ClassicSumCheckRoundMessage<E> for Coefficients<E> {
     }
 
     fn sum(&self) -> E {
-        self[0] + self[..].iter().sum::<E>()
+        self[0] + self[..].iter().copied().sum::<E>()
     }
 
     fn evaluate(&self, _: &Self::Auxiliary, challenge: &E) -> E {
@@ -60,7 +64,7 @@ impl<E: ExtensionField> ClassicSumCheckRoundMessage<E> for Coefficients<E> {
 impl<'rhs, E: ExtensionField> AddAssign<&'rhs E> for Coefficients<E> {
     fn add_assign(&mut self, rhs: &'rhs E) {
         match &mut self.0 {
-            FieldType::Ext(coeffs) => coeffs[0] += rhs,
+            FieldType::Ext(coeffs) => coeffs[0] += *rhs,
             FieldType::Base(_) => panic!("Cannot add extension element to base coefficients"),
             FieldType::Unreachable => unreachable!(),
         }
@@ -74,11 +78,11 @@ impl<'rhs, E: ExtensionField> AddAssign<(&'rhs E, &'rhs Coefficients<E>)> for Co
                 if scalar == &E::ONE {
                     lhs.iter_mut()
                         .zip(rhs.iter())
-                        .for_each(|(lhs, rhs)| *lhs += rhs)
+                        .for_each(|(lhs, rhs)| *lhs += *rhs)
                 } else if scalar != &E::ZERO {
                     lhs.iter_mut()
                         .zip(rhs.iter())
-                        .for_each(|(lhs, rhs)| *lhs += &(*scalar * rhs))
+                        .for_each(|(lhs, rhs)| *lhs += *scalar * *rhs)
                 }
             }
             _ => panic!("Cannot add base coefficients to extension coefficients"),
@@ -116,7 +120,7 @@ impl<E: ExtensionField> CoefficientsProver<E> {
                         result.iter_mut().enumerate().for_each(|(i, v)| {
                             *v += poly_index_ext(lhs, i % lhs.evaluations.len())
                                 * poly_index_ext(rhs, i % rhs.evaluations.len())
-                                * scalar;
+                                * *scalar;
                         })
                     }
                     _ => unimplemented!(),
@@ -163,7 +167,7 @@ impl<E: ExtensionField> ClassicSumCheckProver<E> for CoefficientsProver<E> {
                         outputs.extend(
                             products
                                 .iter()
-                                .map(|(scalar, polys)| (constant * scalar, polys.clone())),
+                                .map(|(scalar, polys)| (constant * *scalar, polys.clone())),
                         )
                     }
                 }
@@ -171,7 +175,7 @@ impl<E: ExtensionField> ClassicSumCheckProver<E> for CoefficientsProver<E> {
                     lhs_products.iter().cartesian_product(rhs_products.iter())
                 {
                     outputs.push((
-                        *lhs_scalar * rhs_scalar,
+                        *lhs_scalar * *rhs_scalar,
                         iter::empty()
                             .chain(lhs_polys)
                             .chain(rhs_polys)
@@ -183,7 +187,7 @@ impl<E: ExtensionField> ClassicSumCheckProver<E> for CoefficientsProver<E> {
             },
             &|(constant, mut products), rhs| {
                 products.iter_mut().for_each(|(lhs, _)| {
-                    *lhs *= &rhs;
+                    *lhs *= rhs;
                 });
                 (constant * rhs, products)
             },
@@ -195,7 +199,7 @@ impl<E: ExtensionField> ClassicSumCheckProver<E> for CoefficientsProver<E> {
         // Initialize h(X) to zero
         let mut coeffs = Coefficients(FieldType::Ext(vec![E::ZERO; state.expression.degree() + 1]));
         // First, sum the constant over the hypercube and add to h(X)
-        coeffs += &(E::from(state.size() as u64) * self.0);
+        coeffs += &(E::from_canonical_u64(state.size() as u64) * self.0);
         // Next, for every product of polynomials, where each product is assumed to be exactly 2
         // put this into h(X).
         if self.1.iter().all(|(_, products)| products.len() == 2) {
@@ -221,7 +225,7 @@ impl<E: ExtensionField> ClassicSumCheckProver<E> for CoefficientsProver<E> {
     }
 
     fn sum(&self, state: &ProverState<E>) -> E {
-        self.evals(state).iter().sum()
+        self.evals(state).iter().copied().sum()
     }
 }
 
@@ -258,7 +262,7 @@ impl<E: ExtensionField> CoefficientsProver<E> {
                 let poly_len = 1usize << lhs.num_vars();
                 if poly_len == 1 {
                     let mul = state.size();
-                    let mul_field = E::from(mul as u64);
+                    let mul_field = E::from_canonical_u64(mul as u64);
                     let lhs_eval = poly_index_ext(lhs, 0);
                     let rhs_eval = poly_index_ext(rhs, 0);
                     coeffs[0] = lhs_eval * rhs_eval * mul_field;
@@ -294,7 +298,7 @@ impl<E: ExtensionField> CoefficientsProver<E> {
                     };
 
                     let num_threads = num_threads();
-                    let multiple_field = E::from(multiple as u64);
+                    let multiple_field = E::from_canonical_u64(multiple as u64);
                     if poly_size < num_threads {
                         evaluate_serial(&mut coeffs, 0, poly_size);
                         if multiple != 1 {

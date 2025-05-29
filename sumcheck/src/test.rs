@@ -170,7 +170,7 @@ fn test_extract_sum() {
 
 fn test_extract_sum_helper<E: ExtensionField>() {
     let mut rng = test_rng();
-    let mut transcript = BasicTranscript::<E>::new(b"test");
+    let mut transcript = BasicTranscript::new(b"test");
     let (poly, asserted_sum) = VirtualPolynomial::<E>::random(8, (2, 3), 3, &mut rng);
     #[allow(deprecated)]
     let (proof, _) = IOPProverState::<E>::prove_parallel(poly, &mut transcript);
@@ -206,7 +206,7 @@ fn test_interpolation() {
     // test a polynomial with 20 known points, i.e., with degree 19
     let poly = DensePolynomial::rand(20 - 1, &mut prng);
     let evals = (0..20)
-        .map(|i| poly.evaluate(&GoldilocksExt2::from(i)))
+        .map(|i| poly.evaluate(&GoldilocksExt2::from_canonical_u64(i as u64)))
         .collect::<Vec<GoldilocksExt2>>();
     let query = GoldilocksExt2::random(&mut prng);
 
@@ -215,7 +215,7 @@ fn test_interpolation() {
     // test a polynomial with 33 known points, i.e., with degree 32
     let poly = DensePolynomial::rand(33 - 1, &mut prng);
     let evals = (0..33)
-        .map(|i| poly.evaluate(&GoldilocksExt2::from(i)))
+        .map(|i| poly.evaluate(&GoldilocksExt2::from_canonical_u64(i as u64)))
         .collect::<Vec<GoldilocksExt2>>();
     let query = GoldilocksExt2::random(&mut prng);
 
@@ -224,7 +224,7 @@ fn test_interpolation() {
     // test a polynomial with 64 known points, i.e., with degree 63
     let poly = DensePolynomial::rand(64 - 1, &mut prng);
     let evals = (0..64)
-        .map(|i| poly.evaluate(&GoldilocksExt2::from(i)))
+        .map(|i| poly.evaluate(&GoldilocksExt2::from_canonical_u64(i as u64)))
         .collect::<Vec<GoldilocksExt2>>();
     let query = GoldilocksExt2::random(&mut prng);
 

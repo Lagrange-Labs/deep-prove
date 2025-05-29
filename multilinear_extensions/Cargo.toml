@@ -21,8 +21,8 @@ tracing.workspace = true
 transcript = { version = "0.1.0", path = "../transcript" }
 
 [dev-dependencies]
-env_logger = "0.11"
-log = "0.4"
+env_logger = { workspace = true }
+log = { workspace = true }
 
 [features]
 parallel = []

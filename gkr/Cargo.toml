@@ -20,18 +20,18 @@ multilinear_extensions = { path = "../multilinear_extensions" }
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-simple-frontend = { path = "../simple-frontend" }
+simple-frontend = { workspace = true }
 sumcheck = { path = "../sumcheck" }
 tracing.workspace = true
-tracing-flame = "0.2.0"
+tracing-flame = { workspace = true }
 tracing-subscriber.workspace = true
 transcript = { path = "../transcript" }
 
 [dev-dependencies]
 cfg-if.workspace = true
 criterion.workspace = true
-pprof = "0.14.0"
-tiny-keccak = { version = "2.0", features = ["keccak"] }
+pprof = { workspace = true }
+tiny-keccak = { workspace = true, features = ["keccak"] }
 
 [features]
 default = []
