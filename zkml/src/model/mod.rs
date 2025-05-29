@@ -1,8 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use anyhow::{Result, anyhow, ensure};
-use ff_ext::ExtensionField;
-use goldilocks::GoldilocksExt2;
+use ff_ext::{ExtensionField, GoldilocksExt2};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use trace::Trace;
 use tracing::info;
@@ -531,8 +530,7 @@ pub(crate) mod test {
     };
     use anyhow::Result;
     use ark_std::rand::{Rng, RngCore, thread_rng};
-    use ff_ext::ExtensionField;
-    use goldilocks::GoldilocksExt2;
+    use ff_ext::{ExtensionField, GoldilocksExt2};
     use itertools::Itertools;
     use multilinear_extensions::{
         mle::{IntoMLE, MultilinearExtension},
@@ -892,7 +890,7 @@ pub(crate) mod test {
         assert_eq!(final_output.get_data().len(), nrow);
     }
 
-    use ff::Field;
+    use p3_field::FieldAlgebra;
     #[test]
     fn test_model_sequential() {
         let (model, input) = Model::random(1).unwrap();

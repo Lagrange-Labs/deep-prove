@@ -1,7 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::circuit::EvaluateConstant;
-use ff::Field;
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use multilinear_extensions::{
@@ -11,6 +10,7 @@ use multilinear_extensions::{
     },
     virtual_poly::ArcMultilinearExtension,
 };
+use p3_field::FieldAlgebra;
 use simple_frontend::structs::{ChallengeConst, LayerId};
 use std::fmt::Debug;
 use sumcheck::util::ceil_log2;
@@ -87,7 +87,8 @@ impl<'a, E: ExtensionField> CircuitWitness<'a, E> {
                     layer_wit.into_instance_iter_mut(n_instances);
                 for (instance_id, layer_wit) in layer_wit_iter.enumerate() {
                     for (i, layer_wit_elem) in layer_wit[*l..*r].iter_mut().enumerate() {
-                        *layer_wit_elem = E::BaseField::from(((instance_id << num_vars) ^ i) as u64)
+                        *layer_wit_elem =
+                            E::BaseField::from_canonical_u64(((instance_id << num_vars) ^ i) as u64)
                     }
                 }
             }

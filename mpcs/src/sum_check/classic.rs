@@ -330,22 +330,28 @@ mod tests {
     #[test]
     fn test_sum_check_protocol() {
         let polys = [
-            DenseMultilinearExtension::<E>::from_evaluations_vec(2, vec![
-                Fr::from_canonical_u64(1),
-                Fr::from_canonical_u64(2),
-                Fr::from_canonical_u64(3),
-                Fr::from_canonical_u64(4),
-            ]),
-            DenseMultilinearExtension::from_evaluations_vec(2, vec![
-                Fr::from_canonical_u64(0),
-                Fr::from_canonical_u64(1),
-                Fr::from_canonical_u64(1),
-                Fr::from_canonical_u64(0),
-            ]),
-            DenseMultilinearExtension::from_evaluations_vec(1, vec![
-                Fr::from_canonical_u64(0),
-                Fr::from_canonical_u64(1),
-            ]),
+            DenseMultilinearExtension::<E>::from_evaluations_vec(
+                2,
+                vec![
+                    Fr::from_canonical_u64(1),
+                    Fr::from_canonical_u64(2),
+                    Fr::from_canonical_u64(3),
+                    Fr::from_canonical_u64(4),
+                ],
+            ),
+            DenseMultilinearExtension::from_evaluations_vec(
+                2,
+                vec![
+                    Fr::from_canonical_u64(0),
+                    Fr::from_canonical_u64(1),
+                    Fr::from_canonical_u64(1),
+                    Fr::from_canonical_u64(0),
+                ],
+            ),
+            DenseMultilinearExtension::from_evaluations_vec(
+                1,
+                vec![Fr::from_canonical_u64(0), Fr::from_canonical_u64(1)],
+            ),
         ];
         let points = vec![
             vec![E::from_canonical_u64(1), E::from_canonical_u64(2)],

@@ -33,6 +33,7 @@ where
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct TableProof<E: ExtensionField>
 where
     E::BaseField: Serialize + DeserializeOwned,
@@ -75,13 +76,14 @@ where
 
     pub fn get_challenges_by_name(&self, name: &String) -> Option<(E, E)> {
         self.challenge_map
-            .get(name).map(|challenges| (self.constant_challenge, *challenges))
+            .get(name)
+            .map(|challenges| (self.constant_challenge, *challenges))
     }
 }
 
 #[cfg(test)]
 mod test {
-    use goldilocks::GoldilocksExt2;
+    use ff_ext::GoldilocksExt2;
 
     use crate::{default_transcript, init_test_logging, model::Model};
 

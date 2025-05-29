@@ -396,7 +396,7 @@ fn beta_matrix_mle<E: ExtensionField>(ris: &[Vec<E>], ais: &[E]) -> DenseMultili
         .flat_map(|(ri, a_i)| {
             compute_betas_eval(ri.as_slice())
                 .into_iter()
-                .map(move |b_i| b_i * a_i)
+                .map(move |b_i| b_i * *a_i)
         })
         .chain(std::iter::repeat(E::ZERO))
         .take(padded_len)
@@ -407,10 +407,10 @@ fn beta_matrix_mle<E: ExtensionField>(ris: &[Vec<E>], ais: &[E]) -> DenseMultili
 #[cfg(test)]
 mod test {
     use ark_std::rand::{Rng, thread_rng};
-    use ff::Field;
-    use goldilocks::GoldilocksExt2;
+    use ff_ext::GoldilocksExt2;
     use itertools::Itertools;
     use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
+    use p3_field::FieldAlgebra;
 
     use super::compute_betas_eval;
     use crate::{

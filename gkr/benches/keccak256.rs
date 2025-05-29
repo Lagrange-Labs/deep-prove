@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use criterion::*;
 
+use ff_ext::GoldilocksExt2;
 use gkr::gadgets::keccak256::{keccak256_circuit, prove_keccak256, verify_keccak256};
-use goldilocks::GoldilocksExt2;
 use multilinear_extensions::util::max_usable_threads;
 
 cfg_if::cfg_if! {

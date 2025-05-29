@@ -7,7 +7,7 @@ use crate::{
 use ark_std::{end_timer, rand::Rng, start_timer};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use p3_field::Field;
+use p3_field::{Field, FieldAlgebra};
 use rayon::{
     iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator},
     slice::ParallelSliceMut,
@@ -71,8 +71,8 @@ pub struct VPAuxInfo<E> {
 impl<E: ExtensionField> VPAuxInfo<E> {
     pub fn write_to_transcript<T: Transcript<E>>(&self, t: &mut T) {
         t.append_field_elements(&[
-            E::BaseField::from(self.max_degree as u64),
-            E::BaseField::from(self.max_num_variables as u64),
+            E::BaseField::from_canonical_u64(self.max_degree as u64),
+            E::BaseField::from_canonical_u64(self.max_num_variables as u64),
         ]);
     }
 }

@@ -1,11 +1,10 @@
 use std::collections::HashMap;
 
 use ark_std::test_rng;
-use ff::Field;
-use ff_ext::ExtensionField;
-use goldilocks::GoldilocksExt2;
+use ff_ext::{ExtensionField, GoldilocksExt2};
 use itertools::{Itertools, izip};
 use multilinear_extensions::mle::DenseMultilinearExtension;
+use p3_field::FieldAlgebra;
 use simple_frontend::structs::{ChallengeConst, ChallengeId, CircuitBuilder, MixedCell};
 use transcript::BasicTranscript;
 
@@ -75,13 +74,16 @@ fn copy_and_paste_witness<'a, Ext: ExtensionField>()
     let outputs = vec![vec![i64_to_field(175175)]];
     let witness_out: Vec<DenseMultilinearExtension<Ext>> = vec![outputs.into()];
 
-    (witness_in.clone(), CircuitWitness {
-        layers: layers.into_iter().map(|w| w.into()).collect(),
-        witness_in: witness_in.into_iter().map(|w| w.into()).collect(),
-        witness_out: witness_out.into_iter().map(|w| w.into()).collect(),
-        n_instances: 1,
-        challenges: HashMap::new(),
-    })
+    (
+        witness_in.clone(),
+        CircuitWitness {
+            layers: layers.into_iter().map(|w| w.into()).collect(),
+            witness_in: witness_in.into_iter().map(|w| w.into()).collect(),
+            witness_out: witness_out.into_iter().map(|w| w.into()).collect(),
+            n_instances: 1,
+            challenges: HashMap::new(),
+        },
+    )
 }
 
 fn paste_from_wit_in_circuit<Ext: ExtensionField>() -> Circuit<Ext> {
@@ -151,13 +153,16 @@ fn paste_from_wit_in_witness<'a, Ext: ExtensionField>()
     let outputs2 = vec![vec![i64_to_field(5005)]];
     let witness_out: Vec<DenseMultilinearExtension<Ext>> = vec![outputs1.into(), outputs2.into()];
 
-    (witness_in.clone(), CircuitWitness {
-        layers: layers.into_iter().map(|w| w.into()).collect(),
-        witness_in: witness_in.into_iter().map(|w| w.into()).collect(),
-        witness_out: witness_out.into_iter().map(|w| w.into()).collect(),
-        n_instances: 1,
-        challenges: HashMap::new(),
-    })
+    (
+        witness_in.clone(),
+        CircuitWitness {
+            layers: layers.into_iter().map(|w| w.into()).collect(),
+            witness_in: witness_in.into_iter().map(|w| w.into()).collect(),
+            witness_out: witness_out.into_iter().map(|w| w.into()).collect(),
+            n_instances: 1,
+            challenges: HashMap::new(),
+        },
+    )
 }
 
 fn copy_to_wit_out_circuit<Ext: ExtensionField>() -> Circuit<Ext> {
@@ -213,13 +218,16 @@ fn copy_to_wit_out_witness<'a, Ext: ExtensionField>()
     let outputs = vec![vec![i64_to_field(35), i64_to_field(143)]];
     let witness_out: Vec<DenseMultilinearExtension<Ext>> = vec![outputs.into()];
 
-    (witness_in.clone(), CircuitWitness {
-        layers: layers.into_iter().map(|w| w.into()).collect(),
-        witness_in: witness_in.into_iter().map(|w| w.into()).collect(),
-        witness_out: witness_out.into_iter().map(|w| w.into()).collect(),
-        n_instances: 1,
-        challenges: HashMap::new(),
-    })
+    (
+        witness_in.clone(),
+        CircuitWitness {
+            layers: layers.into_iter().map(|w| w.into()).collect(),
+            witness_in: witness_in.into_iter().map(|w| w.into()).collect(),
+            witness_out: witness_out.into_iter().map(|w| w.into()).collect(),
+            n_instances: 1,
+            challenges: HashMap::new(),
+        },
+    )
 }
 
 fn copy_to_wit_out_witness_2<'a, Ext: ExtensionField>()
@@ -257,10 +265,10 @@ fn copy_to_wit_out_witness_2<'a, Ext: ExtensionField>()
             ],
         ]
         .into(),
-        vec![vec![i64_to_field(35), i64_to_field(143)], vec![
-            i64_to_field(65),
-            i64_to_field(77),
-        ]]
+        vec![
+            vec![i64_to_field(35), i64_to_field(143)],
+            vec![i64_to_field(65), i64_to_field(77)],
+        ]
         .into(),
         vec![
             vec![
@@ -279,19 +287,22 @@ fn copy_to_wit_out_witness_2<'a, Ext: ExtensionField>()
         .into(),
     ];
 
-    let outputs = vec![vec![i64_to_field(35), i64_to_field(143)], vec![
-        i64_to_field(65),
-        i64_to_field(77),
-    ]];
+    let outputs = vec![
+        vec![i64_to_field(35), i64_to_field(143)],
+        vec![i64_to_field(65), i64_to_field(77)],
+    ];
     let witness_out: Vec<DenseMultilinearExtension<Ext>> = vec![outputs.into()];
 
-    (witness_in.clone(), CircuitWitness {
-        layers: layers.into_iter().map(|w| w.into()).collect(),
-        witness_in: witness_in.into_iter().map(|w| w.into()).collect(),
-        witness_out: witness_out.into_iter().map(|w| w.into()).collect(),
-        n_instances: 2,
-        challenges: HashMap::new(),
-    })
+    (
+        witness_in.clone(),
+        CircuitWitness {
+            layers: layers.into_iter().map(|w| w.into()).collect(),
+            witness_in: witness_in.into_iter().map(|w| w.into()).collect(),
+            witness_out: witness_out.into_iter().map(|w| w.into()).collect(),
+            n_instances: 2,
+            challenges: HashMap::new(),
+        },
+    )
 }
 
 fn rlc_circuit<Ext: ExtensionField>() -> Circuit<Ext> {
@@ -336,7 +347,7 @@ where
                             challenge: i as u8,
                             exp: j as u64,
                         },
-                        x.pow([j as u64]),
+                        x.exp_u64(j as u64),
                     )
                 })
                 .collect_vec()

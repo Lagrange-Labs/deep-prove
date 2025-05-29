@@ -42,7 +42,7 @@ impl<E: ExtensionField> IOPVerifierState<E> {
         // sigma = \sum_j( \alpha^j * subset[i][j](rt_j || ry_j) )
         let mut sigma_1 = izip!(self.to_next_phase_point_and_evals.iter(), alpha_pows.iter())
             .fold(E::ZERO, |acc, (point_and_eval, alpha_pow)| {
-                acc + point_and_eval.eval * alpha_pow
+                acc + point_and_eval.eval * *alpha_pow
             });
         sigma_1 += izip!(
             self.subset_point_and_evals[self.layer_id as usize].iter(),
@@ -51,7 +51,7 @@ impl<E: ExtensionField> IOPVerifierState<E> {
                 .skip(self.to_next_phase_point_and_evals.len())
         )
         .fold(E::ZERO, |acc, ((_, point_and_eval), alpha_pow)| {
-            acc + point_and_eval.eval * alpha_pow
+            acc + point_and_eval.eval * *alpha_pow
         });
 
         let assert_eq_yj_ryj = build_eq_x_r_vec(&self.assert_point[..lo_num_vars]);
@@ -59,7 +59,7 @@ impl<E: ExtensionField> IOPVerifierState<E> {
             .assert_consts
             .as_slice()
             .eval(&assert_eq_yj_ryj, &self.challenges)
-            * alpha_pows.last().unwrap();
+            * *alpha_pows.last().unwrap();
 
         // Sumcheck: sigma = \sum_{t || y}( \sum_j f1^{(j)}( t || y) * g1^{(j)}(t || y) )
         // f1^{(j)}(y) = layers[i](t || y)
@@ -96,7 +96,7 @@ impl<E: ExtensionField> IOPVerifierState<E> {
                         &point_and_eval.point[..point_lo_num_vars],
                         &claim1_point[..point_lo_num_vars],
                     );
-                    eq_t * eq_y * alpha_pow
+                    eq_t * eq_y * *alpha_pow
                 }
             ),
             izip!(
@@ -113,7 +113,7 @@ impl<E: ExtensionField> IOPVerifierState<E> {
                     &claim1_point[(claim1_point.len() - hi_num_vars)..],
                 );
                 let eq_yj_ryj = build_eq_x_r_vec(&point_and_eval.point[..point_lo_num_vars]);
-                eq_t * copy_to.as_slice().eval_row_first(&eq_yj_ryj, &eq_y_ry) * alpha_pow
+                eq_t * copy_to.as_slice().eval_row_first(&eq_yj_ryj, &eq_y_ry) * *alpha_pow
             }),
             iter::once(
                 eq_eval(
@@ -123,7 +123,7 @@ impl<E: ExtensionField> IOPVerifierState<E> {
                     .assert_consts
                     .as_slice()
                     .eval_subset_eq(&assert_eq_yj_ryj, &eq_y_ry)
-                    * alpha_pows.last().unwrap()
+                    * *alpha_pows.last().unwrap()
             )
         ]
         .sum();

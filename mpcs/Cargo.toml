@@ -14,9 +14,7 @@ aes = { workspace = true }
 ark-std.workspace = true
 bitvec = { workspace = true }
 ctr = { workspace = true }
-ff.workspace = true
 ff_ext = { path = "../ff_ext" }
-goldilocks.workspace = true
 itertools.workspace = true
 multilinear_extensions = { path = "../multilinear_extensions" }
 num-bigint = { workspace = true }
@@ -29,6 +27,10 @@ rayon = { workspace = true, optional = true }
 serde.workspace = true
 thiserror = { workspace = true }
 transcript = { path = "../transcript" }
+p3-field = { workspace = true }
+p3-goldilocks = { workspace = true }
+p3-poseidon2 = { workspace = true }
+p3-symmetric = { workspace = true }
 
 [dev-dependencies]
 criterion.workspace = true

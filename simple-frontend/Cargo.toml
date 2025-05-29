@@ -9,8 +9,8 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
-ff.workspace = true
 ff_ext = { path = "../ff_ext" }
-goldilocks.workspace = true
 itertools.workspace = true
+p3-field.workspace = true
 serde.workspace = true
+p3-goldilocks = { workspace = true }

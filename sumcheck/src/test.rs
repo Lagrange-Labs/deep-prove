@@ -1,9 +1,7 @@
 use std::{array, sync::Arc};
 
 use ark_std::{rand::RngCore, test_rng};
-use ff::Field;
-use ff_ext::ExtensionField;
-use goldilocks::GoldilocksExt2;
+use ff_ext::{ExtensionField, FromUniformBytes, GoldilocksExt2};
 use itertools::Itertools;
 use multilinear_extensions::{
     mle::DenseMultilinearExtension,
@@ -11,6 +9,7 @@ use multilinear_extensions::{
     util::max_usable_threads,
     virtual_poly::{ArcMultilinearExtension, VirtualPolynomial},
 };
+use p3_field::FieldAlgebra;
 use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 use transcript::{BasicTranscript, Transcript};
 
@@ -336,7 +335,7 @@ fn prepare_input<'a, E: ExtensionField>(
                 acc
             })
         })
-        .iter()
+        .into_iter()
         .sum::<E>();
 
     (asserted_sum, virtual_poly_v1, virtual_poly_v2)

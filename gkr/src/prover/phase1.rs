@@ -1,11 +1,11 @@
 use ark_std::{end_timer, start_timer};
-use ff::Field;
 use ff_ext::ExtensionField;
 use itertools::{Itertools, izip};
 use multilinear_extensions::{
     mle::DenseMultilinearExtension,
     virtual_poly::{ArcMultilinearExtension, VirtualPolynomial, build_eq_x_r_vec_sequential},
 };
+use p3_field::FieldAlgebra;
 use simple_frontend::structs::LayerId;
 use std::sync::Arc;
 use sumcheck::{macros::entered_span, util::ceil_log2};

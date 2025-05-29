@@ -1,11 +1,11 @@
 use ark_std::{end_timer, start_timer};
-use ff::Field;
 use ff_ext::ExtensionField;
 use itertools::{Itertools, izip};
 use multilinear_extensions::{
     mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension, MultilinearExtension},
     virtual_poly::{VirtualPolynomial, build_eq_x_r_vec},
 };
+use p3_field::FieldAlgebra;
 #[cfg(feature = "parallel")]
 use rayon::iter::{IndexedParallelIterator, ParallelIterator};
 
@@ -56,7 +56,7 @@ impl<E: ExtensionField> IOPProverState<E> {
             .map(|(j, (l, r))| {
                 let wit_in = circuit_witness.witness_in_ref()[j].get_base_field_vec();
                 let per_instance_size = wit_in.len() / circuit_witness.n_instances();
-                let mut f = vec![0.into(); 1 << (max_lo_in_num_vars + hi_num_vars)];
+                let mut f = vec![E::BaseField::ZERO; 1 << (max_lo_in_num_vars + hi_num_vars)];
                 let mut g = vec![E::ZERO; 1 << max_lo_in_num_vars];
 
                 for (subset_wire_id, &eq_val) in eq_y_ry[*l..*r].iter().enumerate() {
@@ -89,13 +89,15 @@ impl<E: ExtensionField> IOPProverState<E> {
             Vec<ArcDenseMultilinearExtension<E>>,
         ) = izip_parallizable!(paste_from_counter_in)
             .map(|(num_vars, (l, r))| {
-                let mut f = vec![0.into(); 1 << (max_lo_in_num_vars + hi_num_vars)];
+                let mut f = vec![E::BaseField::ZERO; 1 << (max_lo_in_num_vars + hi_num_vars)];
                 let mut g = vec![E::ZERO; 1 << max_lo_in_num_vars];
 
                 for (subset_wire_id, &eq_val) in eq_y_ry[*l..*r].iter().enumerate() {
                     for s in 0..(1 << hi_num_vars) {
                         f[(s << max_lo_in_num_vars) ^ subset_wire_id] =
-                            E::BaseField::from(((s << num_vars) ^ subset_wire_id) as u64);
+                            E::BaseField::from_canonical_u64(
+                                ((s << num_vars) ^ subset_wire_id) as u64,
+                            );
                     }
                     g[subset_wire_id] = eq_val;
                 }
@@ -148,8 +150,7 @@ impl<E: ExtensionField> IOPProverState<E> {
                         .iter()
                         .map(|x| E::ONE - *x)
                         .product::<E>()
-                        .invert()
-                        .unwrap();
+                        .inverse();
                 PointAndEval::new_from_ref(&point, &wit_in_eval)
             })
             .collect_vec();

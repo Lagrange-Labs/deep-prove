@@ -1,4 +1,3 @@
-
 use crate::{
     Claim, Element, Prover,
     commit::{compute_betas_eval, identity_eval, precommit::PolyID, same_poly},
@@ -53,6 +52,7 @@ pub struct PoolingCtx {
 
 /// Contains proof material related to one step of the inference
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct PoolingProof<E: ExtensionField>
 where
     E::BaseField: Serialize + DeserializeOwned,
@@ -212,10 +212,7 @@ where
         );
 
         gen.tables.insert(TableType::Range);
-        let table_lookup_map = gen
-            .lookups
-            .entry(TableType::Range)
-            .or_default();
+        let table_lookup_map = gen.lookups.entry(TableType::Range).or_default();
 
         let (merged_lookups, column_evals) = self.lookup_witness::<E>(&step_data.inputs[0]);
 
@@ -600,7 +597,8 @@ impl PoolingCtx {
         let computed_zerocheck_claim = proof
             .zerocheck_evals
             .iter()
-            .chain(std::iter::once(&beta_eval))
+            .cloned()
+            .chain(std::iter::once(beta_eval))
             .product::<E>()
             + proof
                 .zerocheck_evals
@@ -760,14 +758,15 @@ mod tests {
     use super::*;
     use crate::quantization::Fieldizer;
     use ark_std::rand::{Rng, thread_rng};
-    use ff::Field;
+    use ff_ext::{FromUniformBytes, GoldilocksExt2};
     use gkr::util::ceil_log2;
-    use goldilocks::{Goldilocks, GoldilocksExt2};
     use itertools::Itertools;
     use multilinear_extensions::{
         mle::{DenseMultilinearExtension, MultilinearExtension},
         virtual_poly::{ArcMultilinearExtension, VirtualPolynomial},
     };
+    use p3_field::FieldAlgebra;
+    use p3_goldilocks::Goldilocks;
     use sumcheck::structs::{IOPProverState, IOPVerifierState};
 
     type F = GoldilocksExt2;
@@ -824,7 +823,7 @@ mod tests {
             let fixed_mles = (0..padded_input_shape[3] << 1)
                 .map(|i| {
                     let point = (0..ceil_log2(padded_input_shape[3]) + 1)
-                        .map(|n| F::from((i as u64 >> n) & 1))
+                        .map(|n| F::from_canonical_u64((i as u64 >> n) & 1))
                         .collect::<Vec<F>>();
 
                     mle.fix_variables(&point)
@@ -932,13 +931,13 @@ mod tests {
                     .iter()
                     .map(|mle| mle.get_ext_field_vec()[j])
                     .collect::<Vec<F>>();
-                assert_eq!(values.iter().product::<F>(), F::ZERO)
+                assert_eq!(values.into_iter().product::<F>(), F::ZERO)
             });
 
             vp.add_mle_list(diff_mles, F::ONE);
 
             let random_point = (0..output_num_vars)
-                .map(|_| <F as Field>::random(&mut rng))
+                .map(|_| <F as FromUniformBytes>::random(&mut rng))
                 .collect::<Vec<F>>();
 
             let beta_evals = compute_betas_eval(&random_point);
@@ -969,10 +968,12 @@ mod tests {
                 .map(|chal| chal.elements)
                 .collect::<Vec<F>>();
 
-            let fixed_points = [[F::ZERO, F::ZERO], [F::ZERO, F::ONE], [F::ONE, F::ZERO], [
-                F::ONE,
-                F::ONE,
-            ]]
+            let fixed_points = [
+                [F::ZERO, F::ZERO],
+                [F::ZERO, F::ONE],
+                [F::ONE, F::ZERO],
+                [F::ONE, F::ONE],
+            ]
             .map(|pair| {
                 [
                     &[pair[0]],
@@ -1003,7 +1004,7 @@ mod tests {
             let final_mle_evals = state.get_mle_final_evaluations();
 
             // let (r1, r2) = (<F as Field>::random(&mut rng), <F as Field>::random(&mut rng));
-            let [r1, r2] = [<F as Field>::random(&mut rng); 2];
+            let [r1, r2] = [<F as FromUniformBytes>::random(&mut rng); 2];
             let one_minus_r1 = F::ONE - r1;
             let one_minus_r2 = F::ONE - r2;
 

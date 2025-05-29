@@ -11,6 +11,7 @@ use crate::{
 use anyhow::{Context as CC, anyhow, ensure};
 use ff_ext::ExtensionField;
 use mpcs::BasefoldCommitment;
+use p3_field::FieldAlgebra;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeSet, HashMap};
 use tracing::{debug, trace};
@@ -140,7 +141,7 @@ where
                         ))?;
                         ensure!(
                             edge.index < node_shapes.len(),
-                            "Input for node {} is coming from output {} of node {}, 
+                            "Input for node {} is coming from output {} of node {},
                         but this node has only {} outputs",
                             id,
                             edge.index,
@@ -152,7 +153,7 @@ where
                         // input node
                         ensure!(
                             edge.index < input_shapes.len(),
-                            "Input for node {} is the input {} of the model, 
+                            "Input for node {} is the input {} of the model,
                         but the model has only {} inputs",
                             id,
                             edge.index,
@@ -164,11 +165,14 @@ where
                 .collect::<anyhow::Result<Vec<_>>>()?;
             ctx_aux.last_output_shape = node_input_shapes;
             let (info, new_aux) = node.step_info(id as PolyID, ctx_aux)?;
-            step_infos.insert(id, NodeCtx {
-                inputs: node.inputs.clone(),
-                outputs: node.outputs.clone(),
-                ctx: info,
-            });
+            step_infos.insert(
+                id,
+                NodeCtx {
+                    inputs: node.inputs.clone(),
+                    outputs: node.outputs.clone(),
+                    ctx: info,
+                },
+            );
             ctx_aux = new_aux;
             shapes.insert(id, ctx_aux.last_output_shape.clone());
         }
@@ -190,29 +194,37 @@ where
         for (_, step_ctx) in self.steps_info.to_backward_iterator() {
             match &step_ctx.ctx {
                 LayerCtx::Dense(info) => {
-                    t.append_field_element(&E::BaseField::from(info.matrix_poly_id as u64));
+                    t.append_field_element(&E::BaseField::from_canonical_u64(
+                        info.matrix_poly_id as u64,
+                    ));
                     info.matrix_poly_aux.write_to_transcript(t);
                 }
                 LayerCtx::Requant(info) => {
-                    t.append_field_element(&E::BaseField::from(info.poly_id as u64));
-                    t.append_field_element(&E::BaseField::from(info.num_vars as u64));
+                    t.append_field_element(&E::BaseField::from_canonical_u64(info.poly_id as u64));
+                    t.append_field_element(&E::BaseField::from_canonical_u64(info.num_vars as u64));
                 }
                 LayerCtx::Activation(info) => {
-                    t.append_field_element(&E::BaseField::from(info.poly_id as u64));
-                    t.append_field_element(&E::BaseField::from(info.num_vars as u64));
+                    t.append_field_element(&E::BaseField::from_canonical_u64(info.poly_id as u64));
+                    t.append_field_element(&E::BaseField::from_canonical_u64(info.num_vars as u64));
                 }
                 LayerCtx::Pooling(info) => {
-                    t.append_field_element(&E::BaseField::from(info.poolinfo.kernel_size as u64));
-                    t.append_field_element(&E::BaseField::from(info.poolinfo.stride as u64));
+                    t.append_field_element(&E::BaseField::from_canonical_u64(
+                        info.poolinfo.kernel_size as u64,
+                    ));
+                    t.append_field_element(&E::BaseField::from_canonical_u64(
+                        info.poolinfo.stride as u64,
+                    ));
                 }
                 LayerCtx::Table(info) => {
-                    t.append_field_element(&E::BaseField::from(info.poly_id as u64));
-                    t.append_field_element(&E::BaseField::from(info.num_vars as u64));
+                    t.append_field_element(&E::BaseField::from_canonical_u64(info.poly_id as u64));
+                    t.append_field_element(&E::BaseField::from_canonical_u64(info.num_vars as u64));
                     t.append_field_elements(info.table_commitment.root().0.as_slice());
                 }
                 LayerCtx::Convolution(info) => {
-                    t.append_field_element(&E::BaseField::from(info.poly_id as u64));
-                    t.append_field_element(&E::BaseField::from(info.bias_poly_id as u64));
+                    t.append_field_element(&E::BaseField::from_canonical_u64(info.poly_id as u64));
+                    t.append_field_element(&E::BaseField::from_canonical_u64(
+                        info.bias_poly_id as u64,
+                    ));
 
                     for i in 0..info.delegation_fft.len() {
                         info.delegation_fft[i].write_to_transcript(t);
@@ -226,7 +238,7 @@ where
                 }
                 LayerCtx::SchoolBookConvolution(_info) => {}
                 LayerCtx::Flatten => {
-                    t.append_field_element(&E::BaseField::from(RESHAPE_FS_ID));
+                    t.append_field_element(&E::BaseField::from_canonical_u64(RESHAPE_FS_ID));
                 }
             }
         }

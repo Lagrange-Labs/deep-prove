@@ -8,7 +8,7 @@ use std::{
 
 use ff_ext::ExtensionField;
 use multilinear_extensions::mle::DenseMultilinearExtension;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sumcheck::structs::IOPProof;
 use transcript::Transcript;
 
@@ -309,6 +309,7 @@ pub enum ProofType {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct LogUpProof<E: ExtensionField> {
     pub sumcheck_proofs: Vec<IOPProof<E>>,
     pub round_evaluations: Vec<Vec<E>>,

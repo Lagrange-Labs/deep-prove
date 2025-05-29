@@ -1,9 +1,9 @@
 use crate::structs::{Circuit, CircuitWitness, IOPProverState, IOPVerifierState, PointAndEval};
-use ff::Field;
-use ff_ext::ExtensionField;
-use goldilocks::{Goldilocks, GoldilocksExt2};
+use ff_ext::{ExtensionField, GoldilocksExt2};
 use itertools::Itertools;
 use multilinear_extensions::mle::{DenseMultilinearExtension, IntoMLE};
+use p3_field::{Field, FieldAlgebra};
+use p3_goldilocks::Goldilocks;
 use simple_frontend::structs::{CellId, CircuitBuilder};
 use std::{iter, time::Duration};
 use transcript::{BasicTranscript, Transcript};
@@ -43,9 +43,9 @@ pub fn is_zero_gadget<Ext: ExtensionField>(
 #[test]
 fn test_gkr_circuit_is_zero_gadget_simple() {
     // input and output
-    let in_value = vec![Goldilocks::from(5)];
-    let in_inv = vec![Goldilocks::from(5).invert().unwrap()];
-    let out_is_zero = Goldilocks::from(0);
+    let in_value = vec![Goldilocks::from_canonical_u64(5)];
+    let in_inv = vec![Goldilocks::from_canonical_u64(5).inverse()];
+    let out_is_zero = Goldilocks::from_canonical_u64(0);
 
     // build the circuit, only one cell for value, inv and value * inv etc
     let mut circuit_builder = CircuitBuilder::<GoldilocksExt2>::default();
@@ -67,7 +67,7 @@ fn test_gkr_circuit_is_zero_gadget_simple() {
     wit_in[value_wire_in_id as usize] = in_value.into_mle();
     wit_in[inv_wire_in_id as usize] = in_inv.into_mle();
     let circuit_witness = {
-        let challenges = vec![GoldilocksExt2::from(2)];
+        let challenges = vec![GoldilocksExt2::from_canonical_u64(2)];
         let mut circuit_witness = CircuitWitness::new(&circuit, challenges);
         circuit_witness.add_instance(&circuit, wit_in);
         circuit_witness
@@ -91,11 +91,11 @@ fn test_gkr_circuit_is_zero_gadget_simple() {
     // cond1 and cond2
     assert_eq!(
         cond_wire_out_ref.get_base_field_vec()[0],
-        Goldilocks::from(0)
+        Goldilocks::from_canonical_u64(0)
     );
     assert_eq!(
         cond_wire_out_ref.get_base_field_vec()[1],
-        Goldilocks::from(0)
+        Goldilocks::from_canonical_u64(0)
     );
     // is_zero
     assert_eq!(is_zero_wire_out_ref.get_base_field_vec()[0], out_is_zero);
@@ -172,11 +172,17 @@ fn test_gkr_circuit_is_zero_gadget_u256() {
     const UINT256_4_N_OPERAND_CELLS: usize = 64;
 
     // input and output
-    let mut in_value = vec![Goldilocks::from(0), Goldilocks::from(5)];
-    in_value.resize(UINT256_4_N_OPERAND_CELLS, Goldilocks::from(0));
-    let mut in_inv = vec![Goldilocks::from(0), Goldilocks::from(5).invert().unwrap()];
-    in_inv.resize(UINT256_4_N_OPERAND_CELLS, Goldilocks::from(0));
-    let out_is_zero = Goldilocks::from(0);
+    let mut in_value = vec![
+        Goldilocks::from_canonical_u64(0),
+        Goldilocks::from_canonical_u64(5),
+    ];
+    in_value.resize(UINT256_4_N_OPERAND_CELLS, Goldilocks::from_canonical_u64(0));
+    let mut in_inv = vec![
+        Goldilocks::from_canonical_u64(0),
+        Goldilocks::from_canonical_u64(5).inverse(),
+    ];
+    in_inv.resize(UINT256_4_N_OPERAND_CELLS, Goldilocks::from_canonical_u64(0));
+    let out_is_zero = Goldilocks::from_canonical_u64(0);
 
     // build the circuit, number of cells for value is UINT256_4_N_OPERAND_CELLS
     // inv is the inverse of each cell's value, if value = 0 then inv = 0
@@ -188,7 +194,7 @@ fn test_gkr_circuit_is_zero_gadget_u256() {
     let mut cond1: Vec<CellId> = vec![];
     let mut cond2: Vec<CellId> = vec![];
     let mut is_zero_prev_items = circuit_builder.create_cell();
-    circuit_builder.add_const(is_zero_prev_items, Goldilocks::from(1));
+    circuit_builder.add_const(is_zero_prev_items, Goldilocks::from_canonical_u64(1));
     for (value_item, inv_item) in value.into_iter().zip(inv) {
         let (is_zero_item, cond1_item, cond2_item) =
             is_zero_gadget(&mut circuit_builder, value_item, inv_item);
@@ -200,7 +206,7 @@ fn test_gkr_circuit_is_zero_gadget_u256() {
             is_zero,
             is_zero_prev_items,
             is_zero_item,
-            Goldilocks::from(1),
+            Goldilocks::from_canonical_u64(1),
         );
         is_zero_prev_items = is_zero;
     }
@@ -223,7 +229,7 @@ fn test_gkr_circuit_is_zero_gadget_u256() {
     wits_in[value_wire_in_id as usize] = in_value.into_mle();
     wits_in[inv_wire_in_id as usize] = in_inv.into_mle();
     let circuit_witness = {
-        let challenges = vec![GoldilocksExt2::from(2)];
+        let challenges = vec![GoldilocksExt2::from_canonical_u64(2)];
         let mut circuit_witness = CircuitWitness::new(&circuit, challenges);
         circuit_witness.add_instance(&circuit, wits_in);
         circuit_witness

@@ -7,11 +7,11 @@ pub mod verifier;
 #[cfg(test)]
 mod tests {
     use ark_std::rand::thread_rng;
-    use ff::Field;
-    use ff_ext::ExtensionField;
-    use goldilocks::{Goldilocks, GoldilocksExt2};
+    use ff_ext::{ExtensionField, FromUniformBytes, GoldilocksExt2};
     use itertools::izip;
     use multilinear_extensions::mle::{DenseMultilinearExtension, MultilinearExtension};
+    use p3_field::FieldAlgebra;
+    use p3_goldilocks::Goldilocks;
 
     use crate::{
         default_transcript,

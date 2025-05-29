@@ -3,15 +3,14 @@
 
 use std::env;
 
-use ff::Field;
-use ff_ext::ExtensionField;
+use ff_ext::{ExtensionField, GoldilocksExt2};
 use gkr::{
     gadgets::keccak256::{keccak256_circuit, prove_keccak256, verify_keccak256},
     structs::CircuitWitness,
 };
-use goldilocks::GoldilocksExt2;
 use itertools::{Itertools, izip};
 use multilinear_extensions::mle::IntoMLE;
+use p3_field::FieldAlgebra;
 use tracing_flame::FlameLayer;
 use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 

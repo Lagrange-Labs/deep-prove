@@ -1,19 +1,19 @@
-use ff::Field;
 use ff_ext::ExtensionField;
+use p3_field::{Field, FieldAlgebra};
 use sumcheck::util::ceil_log2;
 
 use std::{iter, sync::Arc};
 
 use ark_std::{end_timer, iterable::Iterable, start_timer};
-use goldilocks::SmallField;
+use ff_ext::SmallField;
 use itertools::Itertools;
 use multilinear_extensions::mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension};
 
 pub fn i64_to_field<F: SmallField>(x: i64) -> F {
     if x >= 0 {
-        F::from(x as u64)
+        F::from_canonical_u64(x as u64)
     } else {
-        -F::from((-x) as u64)
+        -F::from_canonical_u64((-x) as u64)
     }
 }
 
@@ -26,7 +26,7 @@ pub(crate) fn segment_eval_greater_than<E: ExtensionField>(min_idx: usize, a: &[
         let mut running_product = vec![E::ZERO; a.len() + 1];
         running_product[a.len()] = E::ONE;
         for i in (0..a.len()).rev() {
-            let bit = E::from(((min_idx >> i) & 1) as u64);
+            let bit = E::from_canonical_u64(((min_idx >> i) & 1) as u64);
             running_product[i] =
                 running_product[i + 1] * (a[i] * bit + (E::ONE - a[i]) * (E::ONE - bit));
         }
@@ -69,7 +69,7 @@ pub(crate) fn eq_eval_greater_than<F: SmallField>(min_idx: usize, a: &[F], b: &[
         let mut running_product = vec![F::ZERO; b.len() + 1];
         running_product[b.len()] = F::ONE;
         for i in (0..b.len()).rev() {
-            let bit = F::from(((min_idx >> i) & 1) as u64);
+            let bit = F::from_canonical_u64(((min_idx >> i) & 1) as u64);
             running_product[i] = running_product[i + 1]
                 * (a[i] * b[i] * bit + (F::ONE - a[i]) * (F::ONE - b[i]) * (F::ONE - bit));
         }
@@ -117,7 +117,7 @@ pub(crate) fn eq_eval_less_or_equal_than<E: ExtensionField>(max_idx: usize, a: &
         let mut running_product = vec![E::ZERO; b.len() + 1];
         running_product[b.len()] = E::ONE;
         for i in (0..b.len()).rev() {
-            let bit = E::from(((max_idx >> i) & 1) as u64);
+            let bit = E::from_canonical_u64(((max_idx >> i) & 1) as u64);
             running_product[i] = running_product[i + 1]
                 * (a[i] * b[i] * bit + (E::ONE - a[i]) * (E::ONE - b[i]) * (E::ONE - bit));
         }
@@ -147,7 +147,7 @@ pub fn counter_eval<E: ExtensionField>(num_vars: usize, x: &[E]) -> E {
     assert_eq!(x.len(), num_vars, "invalid size of x");
     let mut ans = E::ZERO;
     for (i, &xi) in x.iter().enumerate() {
-        ans += xi * E::from(1 << i)
+        ans += xi * E::from_canonical_u64(1 << i)
     }
     ans
 }
@@ -307,7 +307,7 @@ impl<E: ExtensionField> MatrixMLEColumnFirst<E> for &[usize] {
     ) -> Vec<E> {
         let mut ans = vec![E::ZERO; 1 << col_num_vars];
         for (col, &non_zero_row) in self.iter().enumerate() {
-            ans[col] = row_point_eq[non_zero_row] * scalar;
+            ans[col] = row_point_eq[non_zero_row] * *scalar;
         }
         ans
     }
@@ -349,7 +349,7 @@ impl<E: ExtensionField> MatrixMLERowFirst<E> for &[usize] {
     ) -> Vec<E> {
         let mut ans = vec![E::ZERO; 1 << col_num_vars];
         for (row, &non_zero_col) in self.iter().enumerate() {
-            ans[non_zero_col] = row_point_eq[row] * scalar;
+            ans[non_zero_col] = row_point_eq[row] * *scalar;
         }
         ans
     }
@@ -375,7 +375,7 @@ impl<F: SmallField> SubsetIndices<F> for &[usize] {
     fn subset_eq_with_scalar(&self, eq: &[F], scalar: &F) -> Vec<F> {
         let mut ans = vec![F::ZERO; eq.len()];
         for &non_zero_i in self.iter() {
-            ans[non_zero_i] = eq[non_zero_i] * scalar;
+            ans[non_zero_i] = eq[non_zero_i] * *scalar;
         }
         ans
     }
@@ -395,13 +395,13 @@ impl<F: SmallField> SubsetIndices<F> for &[usize] {
 mod test {
     use super::*;
     use ark_std::test_rng;
-    use ff::Field;
-    use goldilocks::GoldilocksExt2;
+    use ff_ext::{FromUniformBytes, GoldilocksExt2};
     use itertools::Itertools;
     use multilinear_extensions::{
         mle::{DenseMultilinearExtension, MultilinearExtension},
         virtual_poly::build_eq_x_r_vec,
     };
+    use p3_field::FieldAlgebra;
 
     #[test]
     fn test_ceil_log2() {
@@ -477,12 +477,14 @@ mod test {
 
     #[test]
     fn test_counter_eval() {
-        let vec = (0..(1 << 4)).map(GoldilocksExt2::from).collect_vec();
+        let vec = (0..(1 << 4))
+            .map(GoldilocksExt2::from_canonical_u64)
+            .collect_vec();
         let point = vec![
-            GoldilocksExt2::from(97),
-            GoldilocksExt2::from(101),
-            GoldilocksExt2::from(23),
-            GoldilocksExt2::from(29),
+            GoldilocksExt2::from_canonical_u64(97),
+            GoldilocksExt2::from_canonical_u64(101),
+            GoldilocksExt2::from_canonical_u64(23),
+            GoldilocksExt2::from_canonical_u64(29),
         ];
         let got_value = counter_eval(4, &point);
         let poly = DenseMultilinearExtension::from_evaluations_ext_vec(4, vec);

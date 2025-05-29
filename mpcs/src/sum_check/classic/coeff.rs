@@ -140,9 +140,10 @@ impl<E: ExtensionField> ClassicSumCheckProver<E> for CoefficientsProver<E> {
         let (constant, flattened) = state.expression.evaluate(
             &|constant| (constant, vec![]),
             &|poly| {
-                (E::ZERO, vec![(E::ONE, vec![Expression::CommonPolynomial(
-                    poly,
-                )])])
+                (
+                    E::ZERO,
+                    vec![(E::ONE, vec![Expression::CommonPolynomial(poly)])],
+                )
             },
             &|query| (E::ZERO, vec![(E::ONE, vec![Expression::Polynomial(query)])]),
             &|challenge| (state.challenges[challenge], vec![]),

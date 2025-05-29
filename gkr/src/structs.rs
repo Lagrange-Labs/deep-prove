@@ -6,7 +6,10 @@ use std::{
 use ff_ext::ExtensionField;
 use goldilocks::SmallField;
 use multilinear_extensions::virtual_poly::ArcMultilinearExtension;
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
+use serde::{
+    Deserialize, Deserializer, Serialize, Serializer,
+    de::{DeserializeOwned, Error},
+};
 use simple_frontend::structs::{CellId, ChallengeConst, ConstantType, LayerId};
 
 pub(crate) type SumcheckProof<F> = sumcheck::structs::IOPProof<F>;
@@ -98,6 +101,7 @@ pub struct IOPVerifierState<E: ExtensionField> {
 /// reducing the correctness of the output of the current layer to the input of
 /// the current layer.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct IOPProverStepMessage<E: ExtensionField> {
     /// Sumcheck proofs for each sumcheck protocol.
     pub sumcheck_proof: SumcheckProof<E>,
@@ -105,6 +109,7 @@ pub struct IOPProverStepMessage<E: ExtensionField> {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct IOPProof<E: ExtensionField> {
     pub sumcheck_proofs: Vec<IOPProverStepMessage<E>>,
 }
@@ -112,6 +117,7 @@ pub struct IOPProof<E: ExtensionField> {
 /// Represent the point at the final step and the evaluations of the subsets of
 /// the input layer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct GKRInputClaims<E: ExtensionField> {
     pub point_and_evals: Vec<PointAndEval<E>>,
 }
@@ -136,6 +142,7 @@ pub(crate) enum Step {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct Layer<E: ExtensionField> {
     pub(crate) layer_id: u32,
     pub(crate) sumcheck_steps: Vec<SumcheckStepType>,
@@ -185,6 +192,7 @@ impl<E: ExtensionField> Default for Layer<E> {
 }
 
 #[derive(Clone, Serialize, Default, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct Circuit<E: ExtensionField> {
     pub layers: Vec<Layer<E>>,
 

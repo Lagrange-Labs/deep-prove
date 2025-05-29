@@ -81,6 +81,7 @@ where
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub enum LayerProof<E: ExtensionField>
 where
     E::BaseField: Serialize + DeserializeOwned,
@@ -112,7 +113,10 @@ where
     }
 
     pub fn has_proof(&self) -> bool {
-        !matches!(self, Self::Flatten | Self::Table(_) | Self::SchoolBookConvolution(_))
+        !matches!(
+            self,
+            Self::Flatten | Self::Table(_) | Self::SchoolBookConvolution(_)
+        )
     }
 
     pub fn output_shape(&self, input_shape: &[usize], padding_mode: PaddingMode) -> Vec<usize> {
@@ -125,12 +129,11 @@ where
             Self::Activation(..) => input_shape.to_vec(),
             Self::Requant(..) => input_shape.to_vec(),
             Self::Pooling(ref pooling) => pooling.output_shape(input_shape),
-            Self::Flatten => <Flatten as OpInfo>::output_shapes(
-                &Flatten,
-                &[input_shape.to_vec()],
-                padding_mode,
-            )[0]
-            .clone(),
+            Self::Flatten => {
+                <Flatten as OpInfo>::output_shapes(&Flatten, &[input_shape.to_vec()], padding_mode)
+                    [0]
+                .clone()
+            }
             Self::Table(..) => panic!("Table should NOT be used in proving"),
         }
     }

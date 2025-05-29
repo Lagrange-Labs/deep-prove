@@ -16,15 +16,11 @@ code-timing-macros = { workspace = true, features = ["tracing"] }
 csv = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true, features = ["full"] }
-ff.workspace = true
 ff_ext = { version = "0.1.0", path = "../ff_ext" }
 gkr = { workspace = true }
-goldilocks.workspace = true
 itertools.workspace = true
 mpcs = { workspace = true }
-multilinear_extensions = { version = "0.1.0", path = "../multilinear_extensions", features = [
-    "parallel",
-] }
+multilinear_extensions = { version = "0.1.0", path = "../multilinear_extensions", features = ["parallel"] }
 num-traits = { workspace = true }
 once_cell = { workspace = true }
 poseidon = { version = "0.1.0", path = "../poseidon" }
@@ -42,3 +38,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 tract-onnx = { workspace = true }
 transcript = { version = "0.1.0", path = "../transcript" }
+p3-field = { workspace = true }
+p3-goldilocks = { workspace = true }
+p3-poseidon2 = { workspace = true }
+p3-symmetric = { workspace = true }
