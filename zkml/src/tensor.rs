@@ -7,7 +7,8 @@ use ark_std::rand::{self, Rng, SeedableRng, rngs::StdRng};
 use ff_ext::{ExtensionField, GoldilocksExt2};
 use itertools::Itertools;
 use multilinear_extensions::mle::DenseMultilinearExtension;
-use p3_field::FieldAlgebra;
+use p3_field::{FieldAlgebra, TwoAdicField};
+use p3_goldilocks::Goldilocks;
 use rayon::{
     iter::{
         IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
@@ -173,7 +174,8 @@ pub fn check_tensor_consistency(real_tensor: Tensor<Element>, padded_tensor: Ten
 ///
 /// The initial ROOT_OF_UNITY constant is verified to be a 32nd root of unity in the field implementation.
 pub fn get_root_of_unity<E: ExtensionField>(n: usize) -> E {
-    let mut rou = E::two_adic_generator(E::TWO_ADICITY);
+    let mut rou = E::from_bases(&[E::BaseField::two_adic_generator(Goldilocks::TWO_ADICITY), E::BaseField::ZERO]);
+    dbg!(rou);
 
     for _ in 0..(32 - n) {
         rou = rou * rou;
