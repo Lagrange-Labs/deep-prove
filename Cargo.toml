@@ -32,13 +32,13 @@ ff = "0.13"
 goldilocks = { git = "https://github.com/scroll-tech/ceno-Goldilocks" }
 itertools = "0.13"
 plonky2 = "1.1"
-p3-challenger = { git = "https://github.com/Plonky3/Plonky3", tag = "v0.3.0" }
-p3-field = { git = "https://github.com/Plonky3/Plonky3", tag = "v0.3.0" }
-p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", tag = "v0.3.0" }
-p3-poseidon = { git = "https://github.com/Plonky3/Plonky3", tag = "v0.3.0" }
-p3-mds = { git = "https://github.com/Plonky3/Plonky3", tag = "v0.3.0" }
-p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", tag = "v0.3.0" }
-p3-poseidon2 = { git = "https://github.com/Plonky3/Plonky3", tag = "v0.3.0" }
+p3-challenger = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
+p3-field = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
+p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb", features = ["nightly-features"] }
+p3-poseidon = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
+p3-mds = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
+p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
+p3-poseidon2 = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
 poseidon = { path = "./poseidon" }
 rand = "0.8.5"
 rand_chacha = { version = "0.3", features = ["serde"] }
