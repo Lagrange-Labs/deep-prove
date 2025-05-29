@@ -241,7 +241,7 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
             };
             let num_vars_multiplicity = self.poly.aux_info.max_num_variables - (ceil_log2(v1.len()).max(1) + self.round - 1);
             if num_vars_multiplicity > 0 {
-                AdditiveArray(res.0.map(|e| e * E::BaseField::from(1 << num_vars_multiplicity)))
+                AdditiveArray(res.0.map(|e| e * E::BaseField::from_canonical_u64(1 << num_vars_multiplicity)))
             } else {
                 res
             }
@@ -295,7 +295,7 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
             quote! {
                 #arm_body
                 let result = {#additive_converter};
-                AdditiveArray(result.0.map(E::from))
+                AdditiveArray(result.0.map(E::from_base))
             }
         } else {
             quote! {

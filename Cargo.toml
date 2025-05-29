@@ -32,9 +32,15 @@ ff = "0.13"
 goldilocks = { git = "https://github.com/scroll-tech/ceno-Goldilocks" }
 itertools = "0.13"
 plonky2 = "1.1"
+p3-field = { git = "https://github.com/Plonky3/Plonky3", tag = "v0.3.0" }
+p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", tag = "v0.3.0" }
+p3-poseidon = { git = "https://github.com/Plonky3/Plonky3", tag = "v0.3.0" }
+p3-mds = { git = "https://github.com/Plonky3/Plonky3", tag = "v0.3.0" }
+p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", tag = "v0.3.0" }
 poseidon = { path = "./poseidon" }
-rand = "0.8"
-rand_chacha = { version = "0.3", features = ["serde1"] }
+rand = "0.8.5"
+rand_chacha = { version = "0.3", features = ["serde"] }
+rand_core = "0.6"
 rayon = "1.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -42,6 +48,35 @@ tracing = { version = "0.1.41", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 timed = { git = "https://github.com/nikkolasg/timed-rs" }
 timed-core = { git = "https://github.com/nikkolasg/timed-rs" }
+aes = "0.8"
+bitvec = "1.0"
+clap = "4"
+code-timing-macros = "0.0.6"
+csv = "1.3.1"
+ctr = "0.9"
+derive_builder = "0.20.2"
+derive_more = "2.0.1"
+env_logger = "0.11"
+gkr = { version = "0.1.0", path = "gkr" }
+log = "0.4"
+mpcs = { version = "0.1.0", path = "mpcs" }
+num-bigint = "0.4"
+num-integer = "0.1"
+num-traits = "0.2.19"
+once_cell = "1.20.3"
+pprof = "0.14.0"
+proc-macro2 = "1.0.92"
+quote = "1.0"
+rmp-serde = "1.3.0"
+simple-frontend = { path = "simple-frontend" }
+statrs = "0.18.0"
+sumcheck_macro = { path = "sumcheck_macro" }
+syn = "2.0"
+thiserror = "2.0.12"
+tiny-keccak = "2.0"
+tracing-flame = "0.2.0"
+tract-onnx = "=0.21.9"
+unroll = "0.1"
 
 # Test must run fast, but still provides stacktraces.
 [profile.test]

@@ -1,9 +1,10 @@
 use ark_std::test_rng;
-use ff::Field;
-use ff_ext::ExtensionField;
-use goldilocks::{Goldilocks, GoldilocksExt2};
+use ff_ext::{ExtensionField, FromUniformBytes};
+use p3_field::{FieldAlgebra, extension::BinomialExtensionField};
+use p3_goldilocks::Goldilocks;
 
-type E = GoldilocksExt2;
+type F = Goldilocks;
+type E = BinomialExtensionField<F, 2>;
 
 use crate::{
     mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension, MultilinearExtension},
@@ -46,29 +47,31 @@ fn test_eq_xr() {
 fn test_fix_high_variables() {
     let poly: DenseMultilinearExtension<E> =
         DenseMultilinearExtension::from_evaluations_vec(3, vec![
-            Goldilocks::from(13),
-            Goldilocks::from(97),
-            Goldilocks::from(11),
-            Goldilocks::from(101),
-            Goldilocks::from(7),
-            Goldilocks::from(103),
-            Goldilocks::from(5),
-            Goldilocks::from(107),
+            F::from_canonical_u64(13),
+            F::from_canonical_u64(97),
+            F::from_canonical_u64(11),
+            F::from_canonical_u64(101),
+            F::from_canonical_u64(7),
+            F::from_canonical_u64(103),
+            F::from_canonical_u64(5),
+            F::from_canonical_u64(107),
         ]);
 
-    let partial_point = vec![E::from(3), E::from(5)];
+    let partial_point = vec![E::from_canonical_u64(3), E::from_canonical_u64(5)];
 
     let expected1 = DenseMultilinearExtension::from_evaluations_ext_vec(2, vec![
-        -E::from(17),
-        E::from(127),
-        -E::from(19),
-        E::from(131),
+        -E::from_canonical_u64(17),
+        E::from_canonical_u64(127),
+        -E::from_canonical_u64(19),
+        E::from_canonical_u64(131),
     ]);
     let result1 = poly.fix_high_variables(&partial_point[1..]);
     assert_eq!(result1, expected1);
 
-    let expected2 =
-        DenseMultilinearExtension::from_evaluations_ext_vec(1, vec![-E::from(23), E::from(139)]);
+    let expected2 = DenseMultilinearExtension::from_evaluations_ext_vec(1, vec![
+        -E::from_canonical_u64(23),
+        E::from_canonical_u64(139),
+    ]);
     let result2 = poly.fix_high_variables(&partial_point);
     assert_eq!(result2, expected2);
 }
@@ -92,7 +95,7 @@ fn build_eq_x_r_for_test<E: ExtensionField>(r: &[E]) -> ArcDenseMultilinearExten
     // we will need 2^num_var evaluations
 
     // First, we build array for {1 - r_i}
-    let one_minus_r: Vec<E> = r.iter().map(|ri| E::ONE - ri).collect();
+    let one_minus_r: Vec<E> = r.iter().map(|ri| E::ONE - *ri).collect();
 
     let num_var = r.len();
     let mut eval = vec![];

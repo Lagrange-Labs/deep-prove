@@ -594,7 +594,7 @@ where
             evals.iter().map(Evaluation::value),
             &evals
                 .iter()
-                .map(|eval| E::from(1 << (num_vars - points[eval.point()].len())))
+                .map(|eval| E::from_canonical_u64(1 << (num_vars - points[eval.point()].len())))
                 .collect_vec(),
             &poly_iter_ext(&eq_xt).take(evals.len()).collect_vec(),
         );
@@ -645,8 +645,8 @@ where
                     inner_product(
                         &poly_iter_ext(poly).collect_vec(),
                         build_eq_x_r_vec(point).iter(),
-                    ) * scalar
-                        * E::from(1 << (num_vars - poly.num_vars))
+                    ) * *scalar
+                        * E::from_canonical_u64(1 << (num_vars - poly.num_vars))
                     // When this polynomial is smaller, it will be repeatedly summed over the cosets of the hypercube
                 })
                 .sum::<E>();
@@ -864,7 +864,7 @@ where
 
         if proof.is_trivial() {
             let trivial_proof = &proof.trivial_proof;
-            let merkle_tree = MerkleTree::from_batch_leaves(trivial_proof.clone());
+            let merkle_tree = MerkleTree::<E>::from_batch_leaves(trivial_proof.clone());
             if comm.root() == merkle_tree.root() {
                 return Ok(());
             } else {
@@ -977,7 +977,7 @@ where
             evals.iter().map(Evaluation::value),
             &evals
                 .iter()
-                .map(|eval| E::from(1 << (num_vars - points[eval.point()].len())))
+                .map(|eval| E::from_canonical_u64(1 << (num_vars - points[eval.point()].len())))
                 .collect_vec(),
             &poly_iter_ext(&eq_xt).take(evals.len()).collect_vec(),
         );
@@ -1079,7 +1079,7 @@ where
 
         if proof.is_trivial() {
             let trivial_proof = &proof.trivial_proof;
-            let merkle_tree = MerkleTree::from_batch_leaves(trivial_proof.clone());
+            let merkle_tree = MerkleTree::<E>::from_batch_leaves(trivial_proof.clone());
             if comm.root() == merkle_tree.root() {
                 return Ok(());
             } else {
@@ -1174,6 +1174,8 @@ where
 
 #[cfg(test)]
 mod test {
+    use ff_ext::GoldilocksExt2;
+
     use crate::{
         basefold::Basefold,
         test_util::{
@@ -1181,7 +1183,6 @@ mod test {
             run_commit_open_verify, run_simple_batch_commit_open_verify,
         },
     };
-    use goldilocks::GoldilocksExt2;
 
     use super::{BasefoldRSParams, structure::BasefoldBasecodeParams};
 

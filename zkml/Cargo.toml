@@ -11,34 +11,34 @@ version.workspace = true
 [dependencies]
 anyhow.workspace = true
 ark-std.workspace = true
-clap = { version = "4", features = ["derive"] }
-code-timing-macros = { version = "0.0.6", features = ["tracing"] }
-csv = "1.3.1"
-derive_builder = "0.20.2"
-derive_more = { version = "2.0.1", features = ["full"] }
+clap = { workspace = true, features = ["derive"] }
+code-timing-macros = { workspace = true, features = ["tracing"] }
+csv = { workspace = true }
+derive_builder = { workspace = true }
+derive_more = { workspace = true, features = ["full"] }
 ff.workspace = true
 ff_ext = { version = "0.1.0", path = "../ff_ext" }
-gkr = { version = "0.1.0", path = "../gkr" }
+gkr = { workspace = true }
 goldilocks.workspace = true
 itertools.workspace = true
-mpcs = { version = "0.1.0", path = "../mpcs" }
+mpcs = { workspace = true }
 multilinear_extensions = { version = "0.1.0", path = "../multilinear_extensions", features = [
     "parallel",
 ] }
-num-traits = "0.2.19"
-once_cell = "1.20.3"
+num-traits = { workspace = true }
+once_cell = { workspace = true }
 poseidon = { version = "0.1.0", path = "../poseidon" }
 rayon.workspace = true
-rmp-serde = "1.3.0"
+rmp-serde = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
-simple-frontend = { path = "../simple-frontend" }
-statrs = "0.18.0"
+simple-frontend = { workspace = true }
+statrs = { workspace = true }
 sumcheck = { version = "0.1.0", path = "../sumcheck" }
-thiserror = "2.0.12"
+thiserror = { workspace = true }
 timed = { workspace = true }
 timed-core = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
-tract-onnx = "=0.21.9"
+tract-onnx = { workspace = true }
 transcript = { version = "0.1.0", path = "../transcript" }

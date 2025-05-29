@@ -9,7 +9,6 @@ use crate::{
     },
 };
 use ark_std::{end_timer, start_timer};
-use ff::Field;
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use num_integer::Integer;
@@ -24,6 +23,7 @@ use multilinear_extensions::{
 
 pub(crate) use coeff::Coefficients;
 pub use coeff::CoefficientsProver;
+use p3_field::FieldAlgebra;
 
 #[derive(Debug)]
 pub struct ProverState<'a, E: ExtensionField> {
@@ -99,12 +99,12 @@ impl<'a, E: ExtensionField> ProverState<'a, E> {
 
     fn next_round(&mut self, sum: E, challenge: &E) {
         self.sum = sum;
-        self.identity += E::from(1 << self.round) * challenge;
+        self.identity += E::from_canonical_u64(1 << self.round) * *challenge;
         self.lagranges.values_mut().for_each(|(b, value)| {
             if b.is_even() {
-                *value *= &(E::ONE - challenge);
+                *value *= E::ONE - *challenge;
             } else {
-                *value *= challenge;
+                *value *= *challenge;
             }
             *b >>= 1;
         });
@@ -324,51 +324,58 @@ mod tests {
     use transcript::BasicTranscript;
 
     use super::*;
-    use goldilocks::{Goldilocks as Fr, GoldilocksExt2 as E};
+    use ff_ext::GoldilocksExt2 as E;
+    use p3_goldilocks::Goldilocks as Fr;
 
     #[test]
     fn test_sum_check_protocol() {
         let polys = [
             DenseMultilinearExtension::<E>::from_evaluations_vec(2, vec![
-                Fr::from(1),
-                Fr::from(2),
-                Fr::from(3),
-                Fr::from(4),
+                Fr::from_canonical_u64(1),
+                Fr::from_canonical_u64(2),
+                Fr::from_canonical_u64(3),
+                Fr::from_canonical_u64(4),
             ]),
             DenseMultilinearExtension::from_evaluations_vec(2, vec![
-                Fr::from(0),
-                Fr::from(1),
-                Fr::from(1),
-                Fr::from(0),
+                Fr::from_canonical_u64(0),
+                Fr::from_canonical_u64(1),
+                Fr::from_canonical_u64(1),
+                Fr::from_canonical_u64(0),
             ]),
-            DenseMultilinearExtension::from_evaluations_vec(1, vec![Fr::from(0), Fr::from(1)]),
+            DenseMultilinearExtension::from_evaluations_vec(1, vec![
+                Fr::from_canonical_u64(0),
+                Fr::from_canonical_u64(1),
+            ]),
         ];
-        let points = vec![vec![E::from(1), E::from(2)], vec![E::from(1)]];
+        let points = vec![
+            vec![E::from_canonical_u64(1), E::from_canonical_u64(2)],
+            vec![E::from_canonical_u64(1)],
+        ];
         let expression = Expression::<E>::eq_xy(0)
             * Expression::Polynomial(Query::new(0, Rotation::cur()))
-            * E::from(Fr::from(2))
+            * E::from(Fr::from_canonical_u64(2))
             + Expression::<E>::eq_xy(0)
                 * Expression::Polynomial(Query::new(1, Rotation::cur()))
-                * E::from(Fr::from(3))
+                * E::from(Fr::from_canonical_u64(3))
             + Expression::<E>::eq_xy(1)
                 * Expression::Polynomial(Query::new(2, Rotation::cur()))
-                * E::from(Fr::from(4));
+                * E::from(Fr::from_canonical_u64(4));
         let virtual_poly =
             VirtualPolynomial::<E>::new(&expression, polys.iter(), &[], points.as_slice());
         let sum = inner_product(
             &poly_iter_ext(&polys[0]).collect_vec(),
             &build_eq_x_r_vec(&points[0]),
-        ) * Fr::from(2)
+        ) * Fr::from_canonical_u64(2)
             + inner_product(
                 &poly_iter_ext(&polys[1]).collect_vec(),
                 &build_eq_x_r_vec(&points[0]),
-            ) * Fr::from(3)
+            ) * Fr::from_canonical_u64(3)
             + inner_product(
                 &poly_iter_ext(&polys[2]).collect_vec(),
                 &build_eq_x_r_vec(&points[1]),
-            ) * Fr::from(4)
-                * Fr::from(2); // The third polynomial is summed twice because the hypercube is larger
-        let mut transcript = BasicTranscript::<E>::new(b"sumcheck");
+            ) * Fr::from_canonical_u64(4)
+                * Fr::from_canonical_u64(2); // The third polynomial is summed twice because the hypercube is larger
+        let mut transcript = BasicTranscript::new(b"sumcheck");
         let (challenges, evals, proof) =
             <ClassicSumCheck<CoefficientsProver<E>> as SumCheck<E>>::prove(
                 &(),
@@ -383,7 +390,7 @@ mod tests {
         assert_eq!(polys[1].evaluate(&challenges), evals[1]);
         assert_eq!(polys[2].evaluate(&challenges[..1]), evals[2]);
 
-        let mut transcript = BasicTranscript::<E>::new(b"sumcheck");
+        let mut transcript = BasicTranscript::new(b"sumcheck");
 
         let (new_sum, verifier_challenges) = <ClassicSumCheck<CoefficientsProver<E>> as SumCheck<
             E,
@@ -395,12 +402,12 @@ mod tests {
         assert_eq!(verifier_challenges, challenges);
         assert_eq!(
             new_sum,
-            evals[0] * eq_xy_eval(&points[0], &challenges[..2]) * Fr::from(2)
-                + evals[1] * eq_xy_eval(&points[0], &challenges[..2]) * Fr::from(3)
-                + evals[2] * eq_xy_eval(&points[1], &challenges[..1]) * Fr::from(4)
+            evals[0] * eq_xy_eval(&points[0], &challenges[..2]) * Fr::from_canonical_u64(2)
+                + evals[1] * eq_xy_eval(&points[0], &challenges[..2]) * Fr::from_canonical_u64(3)
+                + evals[2] * eq_xy_eval(&points[1], &challenges[..1]) * Fr::from_canonical_u64(4)
         );
 
-        let mut transcript = BasicTranscript::<E>::new(b"sumcheck");
+        let mut transcript = BasicTranscript::new(b"sumcheck");
 
         <ClassicSumCheck<CoefficientsProver<E>> as SumCheck<E>>::verify(
             &(),

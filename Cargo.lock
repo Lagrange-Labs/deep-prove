@@ -1573,6 +1573,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nums"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf3c74f925fb8cfc49a8022f2afce48a0683b70f9e439885594e84c5edbf5b01"
+dependencies = [
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "rand",
+]
+
+[[package]]
 name = "object"
 version = "0.36.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1604,6 +1616,36 @@ name = "overload"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b15813163c1d831bf4a13c3610c05c0d03b39feb07f7e09fa234dac9b15aaf39"
+
+[[package]]
+name = "p3-field"
+version = "0.3.0"
+source = "git+https://github.com/Plonky3/Plonky3?tag=v0.3.0#8f27c3638a230eced31d3a4a7c25362220eab1ca"
+dependencies = [
+ "itertools 0.13.0",
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "nums",
+ "p3-maybe-rayon",
+ "p3-util",
+ "rand",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "p3-maybe-rayon"
+version = "0.3.0"
+source = "git+https://github.com/Plonky3/Plonky3?tag=v0.3.0#8f27c3638a230eced31d3a4a7c25362220eab1ca"
+
+[[package]]
+name = "p3-util"
+version = "0.3.0"
+source = "git+https://github.com/Plonky3/Plonky3?tag=v0.3.0#8f27c3638a230eced31d3a4a7c25362220eab1ca"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "parking_lot"
@@ -2345,9 +2387,9 @@ name = "sumcheck_macro"
 version = "0.1.0"
 dependencies = [
  "ff_ext",
- "goldilocks",
  "itertools 0.13.0",
  "multilinear_extensions",
+ "p3-field",
  "proc-macro2",
  "quote",
  "rayon",

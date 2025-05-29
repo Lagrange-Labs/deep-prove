@@ -18,7 +18,7 @@ pub struct BasicTranscriptWithStat<'a, E: ExtensionField> {
 impl<'a, E: ExtensionField> BasicTranscriptWithStat<'a, E> {
     pub fn new(stat: &'a StatisticRecorder, label: &'static [u8]) -> Self {
         Self {
-            inner: BasicTranscript::<_>::new(label),
+            inner: BasicTranscript::new(label),
             stat,
         }
     }

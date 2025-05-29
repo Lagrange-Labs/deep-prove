@@ -1,8 +1,7 @@
 use std::time::Duration;
 
 use criterion::*;
-use ff_ext::ExtensionField;
-use goldilocks::GoldilocksExt2;
+use ff_ext::{ExtensionField, GoldilocksExt2};
 
 use itertools::{Itertools, chain};
 use mpcs::{
@@ -73,12 +72,12 @@ fn bench_commit_open_verify_goldilocks<Pcs: PolynomialCommitmentScheme<E>>(
         let point = get_point_from_challenge(num_vars, &mut transcript);
         let eval = poly.evaluate(point.as_slice());
         transcript.append_field_element_ext(&eval);
-        let transcript_for_bench = transcript;
+        let transcript_for_bench = transcript.clone();
         let proof = Pcs::open(&pp, &poly, &comm, &point, &eval, &mut transcript).unwrap();
 
         group.bench_function(BenchmarkId::new("open", format!("{}", num_vars)), |b| {
             b.iter_batched(
-                || transcript_for_bench,
+                || transcript_for_bench.clone(),
                 |mut transcript| {
                     Pcs::open(&pp, &poly, &comm, &point, &eval, &mut transcript).unwrap();
                 },
@@ -91,11 +90,11 @@ fn bench_commit_open_verify_goldilocks<Pcs: PolynomialCommitmentScheme<E>>(
         Pcs::write_commitment(&comm, &mut transcript).unwrap();
         let point = get_point_from_challenge(num_vars, &mut transcript);
         transcript.append_field_element_ext(&eval);
-        let transcript_for_bench = transcript;
+        let transcript_for_bench = transcript.clone();
         Pcs::verify(&vp, &comm, &point, &eval, &proof, &mut transcript).unwrap();
         group.bench_function(BenchmarkId::new("verify", format!("{}", num_vars)), |b| {
             b.iter_batched(
-                || transcript_for_bench,
+                || transcript_for_bench.clone(),
                 |mut transcript| {
                     Pcs::verify(&vp, &comm, &point, &eval, &proof, &mut transcript).unwrap();
                 },
@@ -163,7 +162,7 @@ fn bench_batch_commit_open_verify_goldilocks<Pcs: PolynomialCommitmentScheme<E>>
                 .collect_vec();
             let values: Vec<E> = evals.iter().map(Evaluation::value).copied().collect();
             transcript.append_field_element_exts(values.as_slice());
-            let transcript_for_bench = transcript;
+            let transcript_for_bench = transcript.clone();
             let proof =
                 Pcs::batch_open(&pp, &polys, &comms, &points, &evals, &mut transcript).unwrap();
 
@@ -171,7 +170,7 @@ fn bench_batch_commit_open_verify_goldilocks<Pcs: PolynomialCommitmentScheme<E>>
                 BenchmarkId::new("batch_open", format!("{}-{}", num_vars, batch_size)),
                 |b| {
                     b.iter_batched(
-                        || transcript_for_bench,
+                        || transcript_for_bench.clone(),
                         |mut transcript| {
                             Pcs::batch_open(&pp, &polys, &comms, &points, &evals, &mut transcript)
                                 .unwrap();
@@ -203,7 +202,7 @@ fn bench_batch_commit_open_verify_goldilocks<Pcs: PolynomialCommitmentScheme<E>>
                 .collect::<Vec<E>>();
             transcript.append_field_element_exts(values.as_slice());
 
-            let backup_transcript = transcript;
+            let backup_transcript = transcript.clone();
 
             Pcs::batch_verify(&vp, &comms, &points, &evals, &proof, &mut transcript).unwrap();
 
@@ -211,7 +210,7 @@ fn bench_batch_commit_open_verify_goldilocks<Pcs: PolynomialCommitmentScheme<E>>
                 BenchmarkId::new("batch_verify", format!("{}-{}", num_vars, batch_size)),
                 |b| {
                     b.iter_batched(
-                        || backup_transcript,
+                        || backup_transcript.clone(),
                         |mut transcript| {
                             Pcs::batch_verify(
                                 &vp,
@@ -261,7 +260,7 @@ fn bench_simple_batch_commit_open_verify_goldilocks<Pcs: PolynomialCommitmentSch
             let point = get_point_from_challenge(num_vars, &mut transcript);
             let evals = polys.iter().map(|poly| poly.evaluate(&point)).collect_vec();
             transcript.append_field_element_exts(&evals);
-            let transcript_for_bench = transcript;
+            let transcript_for_bench = transcript.clone();
             let polys = polys
                 .iter()
                 .map(|poly| ArcMultilinearExtension::from(poly.clone()))
@@ -273,7 +272,7 @@ fn bench_simple_batch_commit_open_verify_goldilocks<Pcs: PolynomialCommitmentSch
                 BenchmarkId::new("batch_open", format!("{}-{}", num_vars, batch_size)),
                 |b| {
                     b.iter_batched(
-                        || transcript_for_bench,
+                        || transcript_for_bench.clone(),
                         |mut transcript| {
                             Pcs::simple_batch_open(
                                 &pp,
@@ -292,12 +291,12 @@ fn bench_simple_batch_commit_open_verify_goldilocks<Pcs: PolynomialCommitmentSch
             let comm = Pcs::get_pure_commitment(&comm);
 
             // Batch verify
-            let mut transcript = BasicTranscript::new(b"BaseFold");
+            let mut transcript = BasicTranscript::<E>::new(b"BaseFold");
             Pcs::write_commitment(&comm, &mut transcript).unwrap();
 
             let point = get_point_from_challenge(num_vars, &mut transcript);
             transcript.append_field_element_exts(&evals);
-            let backup_transcript = transcript;
+            let backup_transcript = transcript.clone();
 
             Pcs::simple_batch_verify(&vp, &comm, &point, &evals, &proof, &mut transcript).unwrap();
 
@@ -305,7 +304,7 @@ fn bench_simple_batch_commit_open_verify_goldilocks<Pcs: PolynomialCommitmentSch
                 BenchmarkId::new("batch_verify", format!("{}-{}", num_vars, batch_size)),
                 |b| {
                     b.iter_batched(
-                        || backup_transcript,
+                        || backup_transcript.clone(),
                         |mut transcript| {
                             Pcs::simple_batch_verify(
                                 &vp,

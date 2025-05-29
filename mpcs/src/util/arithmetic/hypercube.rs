@@ -1,6 +1,6 @@
-use ff::Field;
 use ff_ext::ExtensionField;
 use multilinear_extensions::mle::FieldType;
+use p3_field::Field;
 use rayon::prelude::{ParallelIterator, ParallelSliceMut};
 
 use crate::util::log2_strict;

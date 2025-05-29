@@ -312,7 +312,7 @@ fn merkelize<E: ExtensionField>(values: &[&FieldType<E>]) -> Vec<Vec<Digest<E::B
     for i in 1..(log_v) {
         let oracle = tree[i - 1]
             .par_chunks_exact(2)
-            .map(|ys| hash_two_digests(&ys[0], &ys[1]))
+            .map(|ys| hash_two_digests::<E::BaseField>(&ys[0], &ys[1]))
             .collect::<Vec<_>>();
 
         tree.push(oracle);
@@ -357,7 +357,7 @@ fn merkelize_base<E: ExtensionField>(values: &[&[E::BaseField]]) -> Vec<Vec<Dige
     for i in 1..(log_v) {
         let oracle = tree[i - 1]
             .par_chunks_exact(2)
-            .map(|ys| hash_two_digests(&ys[0], &ys[1]))
+            .map(|ys| hash_two_digests::<E::BaseField>(&ys[0], &ys[1]))
             .collect::<Vec<_>>();
 
         tree.push(oracle);
@@ -402,7 +402,7 @@ fn merkelize_ext<E: ExtensionField>(values: &[&[E]]) -> Vec<Vec<Digest<E::BaseFi
     for i in 1..(log_v) {
         let oracle = tree[i - 1]
             .par_chunks_exact(2)
-            .map(|ys| hash_two_digests(&ys[0], &ys[1]))
+            .map(|ys| hash_two_digests::<E::BaseField>(&ys[0], &ys[1]))
             .collect::<Vec<_>>();
 
         tree.push(oracle);
@@ -421,7 +421,7 @@ fn authenticate_merkle_path_root<E: ExtensionField>(
     assert_eq!(leaves.len(), 2);
     let mut hash = match leaves {
         FieldType::Base(leaves) => hash_two_leaves_base::<E>(&leaves[0], &leaves[1]),
-        FieldType::Ext(leaves) => hash_two_leaves_ext(&leaves[0], &leaves[1]),
+        FieldType::Ext(leaves) => hash_two_leaves_ext::<E>(&leaves[0], &leaves[1]),
         FieldType::Unreachable => unreachable!(),
     };
 
@@ -429,9 +429,9 @@ fn authenticate_merkle_path_root<E: ExtensionField>(
     x_index >>= 1;
     for path_i in path.iter() {
         hash = if x_index & 1 == 0 {
-            hash_two_digests(&hash, path_i)
+            hash_two_digests::<E::BaseField>(&hash, path_i)
         } else {
-            hash_two_digests(path_i, &hash)
+            hash_two_digests::<E::BaseField>(path_i, &hash)
         };
         x_index >>= 1;
     }
@@ -472,9 +472,9 @@ fn authenticate_merkle_path_root_batch<E: ExtensionField>(
     x_index >>= 1;
     for path_i in path.iter() {
         hash = if x_index & 1 == 0 {
-            hash_two_digests(&hash, path_i)
+            hash_two_digests::<E::BaseField>(&hash, path_i)
         } else {
-            hash_two_digests(path_i, &hash)
+            hash_two_digests::<E::BaseField>(path_i, &hash)
         };
         x_index >>= 1;
     }

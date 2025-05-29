@@ -1,9 +1,8 @@
 use std::time::Duration;
 
 use criterion::*;
-use ff::Field;
-use goldilocks::GoldilocksExt2;
 
+use ff_ext::{FromUniformBytes, GoldilocksExt2};
 use mpcs::{one_level_eval_hc, one_level_interp_hc};
 
 use rand::rngs::OsRng;

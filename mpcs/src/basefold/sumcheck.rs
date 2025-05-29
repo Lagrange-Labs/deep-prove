@@ -1,6 +1,6 @@
-use ff::Field;
 use ff_ext::ExtensionField;
 use multilinear_extensions::mle::FieldType;
+use p3_field::Field;
 use rayon::prelude::{
     IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator,
     ParallelSliceMut,
@@ -101,9 +101,9 @@ fn parallel_pi<F: Field>(evals: &[F], eq: &[F]) -> Vec<F> {
         }
     });
 
-    coeffs[0] = firsts.par_iter().sum();
-    coeffs[1] = seconds.par_iter().sum();
-    coeffs[2] = thirds.par_iter().sum();
+    coeffs[0] = firsts.par_iter().copied().sum();
+    coeffs[1] = seconds.par_iter().copied().sum();
+    coeffs[2] = thirds.par_iter().copied().sum();
 
     coeffs
 }
@@ -136,9 +136,9 @@ fn parallel_pi_base<E: ExtensionField>(evals: &[E::BaseField], eq: &[E]) -> Vec<
         }
     });
 
-    coeffs[0] = firsts.par_iter().sum();
-    coeffs[1] = seconds.par_iter().sum();
-    coeffs[2] = thirds.par_iter().sum();
+    coeffs[0] = firsts.par_iter().copied().sum();
+    coeffs[1] = seconds.par_iter().copied().sum();
+    coeffs[2] = thirds.par_iter().copied().sum();
 
     coeffs
 }
@@ -169,8 +169,7 @@ pub fn sum_check_last_round<F: Field>(eq: &mut Vec<F>, bh_values: &mut Vec<F>, c
 
 #[cfg(test)]
 mod tests {
-    use ff::Field;
-    use goldilocks::Goldilocks;
+    use p3_goldilocks::Goldilocks;
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
 
