@@ -55,7 +55,7 @@ impl<E: ExtensionField> IOPProverState<E> {
 
         let sumcheck_proofs = (0..circuit.layers.len() as LayerId)
             .flat_map(|layer_id| {
-                let timer = start_timer!(|| format!("Prove layer {}", layer_id));
+                let timer = start_timer!(|| format!("Prove layer {layer_id}"));
 
                 prover_state.layer_id = layer_id;
 

@@ -98,8 +98,8 @@ where
 
         proof.table_proofs.iter().for_each(|proof| {
             let (nums, denoms) = proof.lookup.fractional_outputs();
-            numerators.extend(nums.into_iter());
-            denominators.extend(denoms.into_iter());
+            numerators.extend(nums);
+            denominators.extend(denoms);
         });
         // 2. Derive output claims
         let out_claims = io
@@ -250,7 +250,7 @@ where
             .verify(&ctx.weights, proof.commit, self.transcript)?;
 
         // 8. verify that the accumulated numerator is zero and accumulated denominator is non-zero
-        let (final_num, final_denom) = numerators.into_iter().zip(denominators.into_iter()).fold(
+        let (final_num, final_denom) = numerators.into_iter().zip(denominators).fold(
             (E::ZERO, E::ONE),
             |(acc_num, acc_denom), (num, denom)| {
                 (acc_num * denom + num * acc_denom, acc_denom * denom)

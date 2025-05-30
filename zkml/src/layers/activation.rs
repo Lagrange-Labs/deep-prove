@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 use crate::{
     Claim, Element, Prover,
@@ -196,22 +195,24 @@ where
         let table_lookup_map = gen
             .lookups
             .entry(TableType::Relu)
-            .or_insert_with(|| HashMap::default());
+            .or_default();
 
         merged_lookups
             .into_iter()
             .for_each(|lookup| *table_lookup_map.entry(lookup).or_insert(0u64) += 1);
 
-        gen.polys_with_id.push((
-            id as PolyID,
-            step_data.outputs.outputs()[0]
-                .get_data()
-                .iter()
-                .map(Fieldizer::<E>::to_field)
-                .collect(),
-        ));
+        // Add the witness polynomials that we need to commit to
+        [&col_one, &col_two]
+            .iter()
+            .enumerate()
+            .for_each(|(i, poly)| {
+                gen.polys_with_id.push((
+                    id * 100 + i,
+                    poly.iter().map(|v| E::from(*v)).collect::<Vec<E>>(),
+                ));
+            });
         gen.lookups_no_challenges
-            .insert(id, (vec![col_one, col_two], 2, TableType::Relu));
+            .insert(id, vec![(vec![col_one, col_two], 2, TableType::Relu)]);
 
         Ok(())
     }
@@ -287,10 +288,18 @@ impl Activation {
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
+        // Should only be one prover_info for this step
         let prover_info = prover.lookup_witness(node_id)?;
+        if prover_info.len() != 1 {
+            return Err(anyhow!(
+                "Activation only requires a lookup into one table type, but node: {} had {} lookup witnesses",
+                node_id,
+                prover_info.len()
+            ));
+        }
 
         // Run the lookup protocol and return the lookup proof
-        let logup_proof = logup_batch_prove(&prover_info, prover.transcript)?;
+        let logup_proof = logup_batch_prove(&prover_info[0], prover.transcript)?;
 
         // We need to prove that the output of this step is the input to following activation function
         let mut same_poly_prover = same_poly::Prover::<E>::new(output.to_vec().into_mle());
@@ -302,10 +311,13 @@ impl Activation {
 
         same_poly_prover.add_claim(output_claim)?;
         let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, prover.transcript)?;
-        // order is (output,mult)
+        // order is (input, output)
         prover
             .witness_prover
-            .add_claim(step.poly_id, claim_acc_proof.extract_claim())?;
+            .add_claim(step.poly_id * 100, input_claim.clone())?;
+        prover
+            .witness_prover
+            .add_claim(step.poly_id * 100 + 1, claim_acc_proof.extract_claim())?;
 
         // Add the proof in
         prover.push_proof(
@@ -362,6 +374,12 @@ impl ActivationCtx {
 
 #[derive(Clone, Debug, Copy, Serialize, Deserialize)]
 pub struct Relu;
+
+impl Default for Relu {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Relu {
     pub fn new() -> Relu {

@@ -30,13 +30,13 @@ impl ModelMetadata {
     pub fn layer_output_scaling_factor(&self, node_id: NodeId) -> &[ScalingFactor] {
         self.output_layers_scaling
             .get(&node_id)
-            .expect(&format!("Node {node_id} not found"))
+            .unwrap_or_else(|| panic!("Node {node_id} not found"))
     }
 
     pub fn layer_input_scaling_factor(&self, node_id: NodeId) -> &[ScalingFactor] {
         self.input_layers_scaling
             .get(&node_id)
-            .expect(&format!("Node {node_id} not found"))
+            .unwrap_or_else(|| panic!("Node {node_id} not found"))
     }
 }
 
@@ -66,7 +66,7 @@ impl MetadataBuilder {
     }
 
     pub(crate) fn compute_input_scaling(&self, node_inputs: &[Edge]) -> Result<Vec<ScalingFactor>> {
-        node_inputs.into_iter().map(|edge| {
+        node_inputs.iter().map(|edge| {
                 if let Some(n) = &edge.node {
                     let scalings = self.get_output_layer_scaling(n).ok_or(
                         anyhow!("Scaling factors for node {n} not found")
@@ -76,14 +76,14 @@ impl MetadataBuilder {
                         edge.index,
                         scalings.len(),
                     );
-                    Ok(scalings[edge.index].clone())
+                    Ok(scalings[edge.index])
                 } else {
                     ensure!(edge.index < self.input_scaling.len(),
                         "Getting scaling factor {} for model inputs, but there are only {} scaling factors",
                         edge.index,
                         self.input_scaling.len(),
                     );
-                    Ok(self.input_scaling[edge.index].clone())
+                    Ok(self.input_scaling[edge.index])
                 }
             }).collect()
     }
@@ -136,7 +136,7 @@ impl MetadataBuilder {
             input: self.input_scaling,
             output_layers_scaling: self.output_layers_scaling,
             input_layers_scaling: self.input_layers_scaling,
-            output: output_scalings.into_iter().map(|(_, s)| s).collect(),
+            output: output_scalings.into_values().collect(),
             float_model: None,
         })
     }

@@ -268,7 +268,7 @@ impl<E: ExtensionField> MultilinearExtensionFromVectors<E> for &[Vec<E::BaseFiel
                 .flat_map(|instance| {
                     instance
                         .into_iter()
-                        .chain(iter::repeat(E::BaseField::ZERO).take(n_zeros))
+                        .chain(std::iter::repeat_n(E::BaseField::ZERO, n_zeros))
                 })
                 .chain(vec![E::BaseField::ZERO; n_zero_vecs])
                 .collect_vec(),

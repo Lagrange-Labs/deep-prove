@@ -14,6 +14,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use ff_ext::ExtensionField;
+use gkr::util::ceil_log2;
 use itertools::Itertools;
 use multilinear_extensions::{
     mle::{IntoMLE, MultilinearExtension},
@@ -74,9 +75,7 @@ fn output_shape(input_shape: &[usize], matrix_shape: &[usize]) -> Vec<usize> {
     assert_eq!(
         input_shape.iter().product::<usize>(),
         matrix_shape[1],
-        "matrix_shape must be 2D: input_shape {:?} vs matrix {:?}",
-        input_shape,
-        matrix_shape
+        "matrix_shape must be 2D: input_shape {input_shape:?} vs matrix {matrix_shape:?}"
     );
     vec![matrix_shape[0]]
 }
@@ -144,8 +143,8 @@ impl<N: Number> OpInfo for Dense<N> {
         padding_mode: PaddingMode,
     ) -> Vec<Vec<usize>> {
         input_shapes
-            .into_iter()
-            .map(|shape| self.output_shape(&shape, padding_mode))
+            .iter()
+            .map(|shape| self.output_shape(shape, padding_mode))
             .collect()
     }
 
@@ -207,7 +206,7 @@ where
         // there is only one product (i.e. quadratic sumcheck)
         let dense_info = LayerCtx::Dense(DenseCtx {
             matrix_poly_id: id,
-            matrix_poly_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![
+            matrix_poly_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
                 matrix_num_vars,
                 vector_num_vars,
             ]]),
@@ -268,11 +267,15 @@ impl Dense<f32> {
                 Some((min_quantized, max_quantized)),
             )
         };
-        let shift = input_scaling.shift(&model_scaling, &output_scaling);
+
         let quantized_dense = self.quantize(&model_scaling, &bias_scaling);
-        let (quantized_min, _quantized_max) =
-            quantized_dense.output_range(*quantization::MIN, *quantization::MAX);
-        let requant = Requant::new(quantized_min.abs() as usize, shift);
+        let intermediate_bit_size = quantized_dense.output_bitsize();
+        let requant = Requant::from_scaling_factors(
+            *input_scaling,
+            model_scaling,
+            output_scaling,
+            intermediate_bit_size,
+        );
 
         Ok(QuantizeOutput {
             quanzited_op: quantized_dense,
@@ -322,7 +325,7 @@ where
             prover,
             last_claims[0],
             &step_data.inputs[0],
-            &step_data.outputs.outputs()[0],
+            step_data.outputs.outputs()[0],
             ctx,
             id,
         )?])
@@ -341,8 +344,8 @@ where
         padding_mode: PaddingMode,
     ) -> Vec<Vec<usize>> {
         input_shapes
-            .into_iter()
-            .map(|shape| self.output_shape(&shape, padding_mode))
+            .iter()
+            .map(|shape| self.output_shape(shape, padding_mode))
             .collect()
     }
 
@@ -425,10 +428,19 @@ impl Dense<Element> {
         let ncols = self.matrix.ncols_2d() as u32;
         // - 1 because numbers are signed so only half of the range is used when doing multiplication
         let power = 2 * (*quantization::BIT_LEN as u32 - 1) + ncols.ilog2() + 1;
-        let min = -(2u64.pow(power as u32) as Element);
-        let max = 2u64.pow(power as u32) as Element;
-        return (min, max);
+        let min = -(2u64.pow(power) as Element);
+        let max = 2u64.pow(power) as Element;
+        (min, max)
     }
+
+    /// Returns the maximum size in bits of the output
+    pub fn output_bitsize(&self) -> usize {
+        // formula is 2^{2 * BIT_LEN + log(c) + 1} where c is the number of columns and +1 because of the bias
+        let ncols = self.matrix.ncols_2d();
+        // - 1 because numbers are signed so only half of the range is used when doing multiplication
+        2 * (*quantization::BIT_LEN - 1) + ceil_log2(ncols) + 1
+    }
+
     #[timed::timed_instrument(name = "Prover::prove_dense")]
     pub fn prove_step<'b, E, T>(
         &self,
@@ -757,11 +769,12 @@ mod test {
     #[test]
     fn test_dense_pad_mixed_dimensions() {
         // Create a Dense layer with one power-of-two dimension and one non-power-of-two
-        let matrix =
-            Tensor::<Element>::matix_from_coeffs(vec![vec![1, 2, 3, 4], vec![5, 6, 7, 8], vec![
-                9, 10, 11, 12,
-            ]])
-            .unwrap();
+        let matrix = Tensor::<Element>::matix_from_coeffs(vec![
+            vec![1, 2, 3, 4],
+            vec![5, 6, 7, 8],
+            vec![9, 10, 11, 12],
+        ])
+        .unwrap();
 
         let bias = Tensor::<Element>::new(vec![3], vec![20, 21, 22]);
 

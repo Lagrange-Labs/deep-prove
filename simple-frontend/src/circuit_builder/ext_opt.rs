@@ -146,8 +146,7 @@ impl<Ext: ExtensionField> CircuitBuilder<Ext> {
             .zip_eq(
                 in_0.cells.iter().zip_eq(
                     [*in_1].iter().chain(
-                        std::iter::repeat(&MixedCell::Constant(Ext::BaseField::ZERO))
-                            .take(<Ext as ExtensionField>::DEGREE - 1),
+                        std::iter::repeat_n(&MixedCell::Constant(Ext::BaseField::ZERO), <Ext as ExtensionField>::DEGREE - 1),
                     ),
                 ),
             )
@@ -172,8 +171,7 @@ impl<Ext: ExtensionField> CircuitBuilder<Ext> {
             .zip_eq(
                 in_1.cells.iter().zip_eq(
                     [*in_0].iter().chain(
-                        std::iter::repeat(&MixedCell::Constant(Ext::BaseField::ZERO))
-                            .take(<Ext as ExtensionField>::DEGREE - 1),
+                        std::iter::repeat_n(&MixedCell::Constant(Ext::BaseField::ZERO), <Ext as ExtensionField>::DEGREE - 1),
                     ),
                 ),
             )

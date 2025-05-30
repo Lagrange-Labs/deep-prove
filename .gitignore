@@ -13,4 +13,15 @@ proptest-regressions/
 zkml/bench
 zkml/data
 zkml/cifar_net.pth
+zkml/bench.csv
 .venv
+
+# Devenv
+.devenv*
+devenv.local.nix
+
+# direnv
+.direnv
+
+# pre-commit
+.pre-commit-config.yaml

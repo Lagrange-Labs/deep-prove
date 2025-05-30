@@ -80,7 +80,7 @@ fn is_mlp(filepath: &str) -> Result<bool> {
 
     let model = tract_onnx::onnx()
         .proto_model_for_path(filepath)
-        .map_err(|e| Error::msg(format!("Failed to load model: {:?}", e)))?;
+        .map_err(|e| Error::msg(format!("Failed to load model: {e:?}")))?;
     let graph = model.graph.unwrap();
 
     for node in graph.node.iter() {
@@ -112,7 +112,7 @@ fn is_cnn(filepath: &str) -> Result<bool> {
     // Load the ONNX model
     let model = tract_onnx::onnx()
         .proto_model_for_path(filepath)
-        .map_err(|e| Error::msg(format!("Failed to load model: {:?}", e)))?;
+        .map_err(|e| Error::msg(format!("Failed to load model: {e:?}")))?;
 
     let graph = model.graph.unwrap();
     let mut previous_op = "";
@@ -127,8 +127,7 @@ fn is_cnn(filepath: &str) -> Result<bool> {
             && !RESHAPE.contains(&op_type)
         {
             return Err(Error::msg(format!(
-                "Operator '{}' unsupported, yet.",
-                op_type
+                "Operator '{op_type}' unsupported, yet."
             )));
         }
 

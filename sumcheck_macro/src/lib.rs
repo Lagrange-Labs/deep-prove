@@ -63,7 +63,7 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
     // ...
     let mut f_var_names = Vec::new();
     for i in 1..=degree {
-        let f_var_name = ident(format!("f{}", i));
+        let f_var_name = ident(format!("f{i}"));
         let idx = (i - 1) as usize;
         out = quote! {
             #out
@@ -151,7 +151,7 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
             let n_bits = n.ilog2() + 1;
             let v = ident(format!("v{i}"));
             for j in 0..n_bits {
-                let c = ident(format!("c{i}_{}", j));
+                let c = ident(format!("c{i}_{j}"));
                 let declaration = if j == 0 {
                     quote! { let #c = #v[b + 1] - #v[b]; }
                 } else {
@@ -196,7 +196,7 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
                                 let c_terms = idx_of_one_bits(i - 2).iter().fold(
                                     TokenStream::new(),
                                     |acc, k| {
-                                        let c = ident(format!("c{j}_{}", k));
+                                        let c = ident(format!("c{j}_{k}"));
                                         acc_add(acc, c)
                                     },
                                 );

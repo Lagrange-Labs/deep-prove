@@ -101,7 +101,7 @@ pub(crate) fn to_bit_sequence_le(
         bit_length as u32 <= usize::BITS,
         "bit_length cannot exceed usize::BITS"
     );
-    (0..bit_length).map(move |i| ((num >> i) & 1) as usize)
+    (0..bit_length).map(move |i| ((num >> i) & 1))
 }
 
 pub(crate) fn try_unzip<I, C, T, E>(iter: I) -> Result<C, E>

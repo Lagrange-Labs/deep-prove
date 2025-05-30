@@ -29,7 +29,7 @@ impl<F: ExtensionField> HadamardCtx<F> {
             v1.get_data().len().next_power_of_two().ilog2() as usize
         };
         Self {
-            sumcheck_aux: VPAuxInfo::from_mle_list_dimensions(&vec![vec![
+            sumcheck_aux: VPAuxInfo::from_mle_list_dimensions(&[vec![
                 // v1, v2, beta
                 num_vars, num_vars, num_vars,
             ]]),
@@ -39,7 +39,7 @@ impl<F: ExtensionField> HadamardCtx<F> {
         let num_vars = vector_len.next_power_of_two().ilog2() as usize;
         Self {
             // v1, v2, beta
-            sumcheck_aux: VPAuxInfo::from_mle_list_dimensions(&vec![vec![
+            sumcheck_aux: VPAuxInfo::from_mle_list_dimensions(&[vec![
                 num_vars, num_vars, num_vars,
             ]]),
         }

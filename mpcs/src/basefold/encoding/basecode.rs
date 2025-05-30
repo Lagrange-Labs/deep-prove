@@ -12,7 +12,6 @@ use aes::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
 use ark_std::{end_timer, start_timer};
 use ff::{BatchInvert, Field, PrimeField};
 use ff_ext::ExtensionField;
-use generic_array::GenericArray;
 use multilinear_extensions::mle::FieldType;
 use rand::SeedableRng;
 use rayon::prelude::{ParallelIterator, ParallelSlice, ParallelSliceMut};
@@ -208,10 +207,7 @@ where
         index: usize,
     ) -> (E, E, E) {
         type Aes128Ctr64LE = ctr::Ctr32LE<aes::Aes128>;
-        let mut cipher = Aes128Ctr64LE::new(
-            GenericArray::from_slice(&vp.aes_key[..]),
-            GenericArray::from_slice(&vp.aes_iv[..]),
-        );
+        let mut cipher = Aes128Ctr64LE::new((vp.aes_key[..]).into(), (vp.aes_iv[..]).into());
 
         let x0: E::BaseField = query_root_table_from_rng_aes::<E>(level, index, &mut cipher);
         let x1 = -x0;
@@ -329,10 +325,7 @@ pub fn get_table_aes<E: ExtensionField, Rng: RngCore + Clone>(
 
     type Aes128Ctr64LE = ctr::Ctr32LE<aes::Aes128>;
 
-    let mut cipher = Aes128Ctr64LE::new(
-        GenericArray::from_slice(&key[..]),
-        GenericArray::from_slice(&iv[..]),
-    );
+    let mut cipher = Aes128Ctr64LE::new(key[..].into(), iv[..].into());
 
     // Allocate the buffer for storing n field elements (the entire codeword)
     let bytes = num_of_bytes::<E::BaseField>(1 << lg_n);

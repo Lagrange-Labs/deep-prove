@@ -54,12 +54,12 @@ pub fn compute_beta_eval_poly<E: ExtensionField>(
     let mut beta_evals = fs_challenges
         .into_par_iter()
         .zip(ris.into_par_iter())
-        .map(|(x_i, r_i)| *x_i * identity_eval(&r_i, &point))
+        .map(|(x_i, r_i)| *x_i * identity_eval(r_i, point))
         .collect::<Vec<_>>();
 
     let mut pos = 0;
     for (idx, poly_size) in poly_lens.iter().enumerate() {
-        let prod = get_offset_product(*poly_size, pos, &point);
+        let prod = get_offset_product(*poly_size, pos, point);
         pos += poly_size;
         beta_evals[idx] *= prod;
     }

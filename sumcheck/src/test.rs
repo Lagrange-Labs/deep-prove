@@ -1,9 +1,6 @@
 use std::{array, sync::Arc};
 
-use ark_std::{
-    rand::{RngCore, thread_rng},
-    test_rng,
-};
+use ark_std::{rand::RngCore, test_rng};
 use ff::Field;
 use ff_ext::ExtensionField;
 use goldilocks::GoldilocksExt2;

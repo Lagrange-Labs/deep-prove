@@ -121,8 +121,7 @@ where
         );
         let flattened = polys
             .into_iter()
-            .map(|(_, w_i)| w_i)
-            .flatten()
+            .flat_map(|(_, w_i)| w_i)
             .chain(std::iter::repeat(E::ZERO))
             .take(padded_size)
             .collect_vec();
@@ -172,7 +171,7 @@ where
                 .poly_info
                 .get(&claim.poly_id)
                 .context("claim refers to unknown poly")?;
-            let given_size = 1 << claim.claim.point.len() as usize;
+            let given_size = 1 << claim.claim.point.len();
             // verify the consistency of the individual polys lens with the claims
             ensure!(
                 *poly_size == given_size,
@@ -331,8 +330,7 @@ where
         // Size of each poly, ORDERED by decreasing size of poly
         let pairs: Vec<usize> = sorted_claims
             .iter()
-            .enumerate()
-            .map(|(_idx, claim)| {
+            .map(|claim| {
                 let (_, poly_len) = *ctx
                     .poly_info
                     .get(&claim.poly_id)
@@ -388,19 +386,18 @@ fn beta_matrix_mle<E: ExtensionField>(ris: &[Vec<E>], ais: &[E]) -> DenseMultili
         .iter()
         .map(|r_i| 1 << r_i.len())
         .sum::<usize>()
-        .next_power_of_two() as usize;
+        .next_power_of_two();
     // compute the betas, and scale them by the associated verifier randomness
     // We just flatten them so when we do the combined sumcheck f_b(x) * f_w(x) then since both
     // are flattened, it's like a dot product.
     let betas = ris
         .iter()
         .zip(ais)
-        .map(|(ri, a_i)| {
+        .flat_map(|(ri, a_i)| {
             compute_betas_eval(ri.as_slice())
                 .into_iter()
                 .map(move |b_i| b_i * a_i)
         })
-        .flatten()
         .chain(std::iter::repeat(E::ZERO))
         .take(padded_len)
         .collect_vec();

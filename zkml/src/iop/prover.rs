@@ -50,7 +50,7 @@ where
     /// The prover related to proving multiple claims about different witness polyy (io of lookups etc)
     pub(crate) witness_prover: precommit::CommitProver<E>,
     /// The lookup witnesses
-    pub(crate) lookup_witness: HashMap<NodeId, LogUpInput<E>>,
+    pub(crate) lookup_witness: HashMap<NodeId, Vec<LogUpInput<E>>>,
     /// The Lookup table witness
     pub(crate) table_witness: Vec<LogUpInput<E>>,
     /// Stores all the challenges for the different lookup/table types
@@ -80,7 +80,7 @@ where
         }
     }
 
-    pub(crate) fn lookup_witness(&mut self, id: NodeId) -> anyhow::Result<LogUpInput<E>> {
+    pub(crate) fn lookup_witness(&mut self, id: NodeId) -> anyhow::Result<Vec<LogUpInput<E>>> {
         self.lookup_witness
             .remove(&id)
             .ok_or(anyhow!("No lookup witness found for node {id}!"))
@@ -99,7 +99,7 @@ where
             .zip(self.ctx.lookup.iter())
             .try_for_each(|(table_witness, _table_type)| {
                 // Make the proof for the table
-                let table_proof = logup_batch_prove(&table_witness, self.transcript)?;
+                let table_proof = logup_batch_prove(table_witness, self.transcript)?;
 
                 // Add the multiplicity poly claim
                 self.witness_prover.add_claim(
@@ -128,7 +128,7 @@ where
         mut r2: Vec<E>,
         is_fft: bool,
     ) -> (Vec<sumcheck::structs::IOPProof<E>>, Vec<Vec<E>>) {
-        let mut omegas = vec![E::ZERO; 1 << r1.len() as usize];
+        let mut omegas = vec![E::ZERO; 1 << r1.len()];
         self.phi_pow_init(&mut omegas, r1.len(), is_fft);
 
         let mut proofs: Vec<sumcheck::structs::IOPProof<E>> = Vec::new();
@@ -210,13 +210,11 @@ where
                     let tmp1 = E::ONE - rx[m];
                     let tmp2 = rx[m] * phi_mul[b << m];
                     phi_g[r] = phi_g[l] * (tmp1 - tmp2);
-                    phi_g[l] = phi_g[l] * (tmp1 + tmp2);
+                    phi_g[l] *= tmp1 + tmp2;
                 }
                 if i < n {
-                    mid_phi_g[i - 1] = vec![E::ZERO; 1 << (i) as usize];
-                    for b in 0..(1 << (i)) {
-                        mid_phi_g[i - 1][b] = phi_g[b];
-                    }
+                    mid_phi_g[i - 1] = vec![E::ZERO; 1 << (i)];
+                    mid_phi_g[i - 1][..(1 << (i))].copy_from_slice(&phi_g[..(1 << (i))]);
                 }
             }
         } else {
@@ -231,18 +229,16 @@ where
                     let tmp2 = rx[m] * phi_mul[b << m];
                     // printf("%d,%d\n",r,l );
                     phi_g[r] = phi_g[l] * (tmp1 - tmp2);
-                    phi_g[l] = phi_g[l] * (tmp1 + tmp2);
+                    phi_g[l] *= tmp1 + tmp2;
                 }
-                mid_phi_g[i - 1] = vec![E::ZERO; 1 << (i) as usize];
-                for b in 0..(1 << (i)) {
-                    mid_phi_g[i - 1][b] = phi_g[b];
-                }
+                mid_phi_g[i - 1] = vec![E::ZERO; 1 << i];
+                mid_phi_g[i - 1][..(1 << (i))].copy_from_slice(&phi_g[..(1 << (i))]);
             }
             for b in 0..(1 << (n - 1)) {
                 let l = b;
                 let tmp1 = E::ONE - rx[0];
                 let tmp2 = rx[0] * phi_mul[b];
-                phi_g[l] = phi_g[l] * (tmp1 + tmp2);
+                phi_g[l] *= tmp1 + tmp2;
             }
         }
     }
@@ -267,9 +263,8 @@ where
         // Partition r in (r1,r2)
         let mut r1 = vec![E::ZERO; x[0].len().ilog2() as usize];
         let mut r2 = vec![E::ZERO; x.len().ilog2() as usize];
-        for i in 0..r1.len() {
-            r1[i] = r[i];
-        }
+        let r1_len = r1.len();
+        r1.copy_from_slice(&r[..r1_len]);
 
         for i in 0..r2.len() {
             r2[i] = r[i + r1.len()];
