@@ -98,7 +98,7 @@ The computation of $\widetilde{m}$ from $m$ can be proven as follows. Define the
 $$
 \widetilde{M}[i, j] = P[i]*m[j]
 $$ 
-We can prove this relation via sum-check protocol. Given the claim $y_M = m(r)$, for a random point $r \in \mathbb{F}^{\log(w*h)}$, the prover proves the following relationship via sum-check:
+We can prove this relation via sum-check protocol[^note]. Given the claim $y_M = m(r)$, for a random point $r \in \mathbb{F}^{\log(w*h)}$, the prover proves the following relationship via sum-check:
 \begin{equation}
 Y_M = \sum_{x \in \{0, 1\}^{\log(w)}} \sum_{y \in \{0, 1\}^{\log(h)}} \beta(x||y, r) * P(x) * m(y)
 \tag{2}
@@ -161,3 +161,5 @@ Note that the claims $y_{K_{prev}}$ and $y_{V_{prev}}$, computed by the prover w
 Therefore, before proving concatenation for a QVK layer at i-th iteration, the 2 claims for each of the matrices $K$ and $V$ are aggregated in a single one, using the [same poly technique](https://github.com/Lagrange-Labs/deep-prove/blob/c2752df53be1b4b6832e452b6cbca17e3543556b/docs/src/commitments.md#accumulation-for-same-polynomial). The claims $y_K$ and $y_V$ produced by the same-poly aggregation are then used as the claims $y_K$, $y_V$ for the matrices $K$ and $V$ in Equations (3) and (4), during the concatenation proving protocol for the current iteration 
 
 This allows to bind the claims computed over MLEs chosen by the prover at iteration $i+1$ to the actual output matrices produced by the same QKV layer at iteration $i$.
+
+[^note]: Used sum-check here to be safe, I was unsure if it was secure to just randomly evaluate at a given point as for matrix addition
