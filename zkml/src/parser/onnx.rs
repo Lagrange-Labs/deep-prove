@@ -346,7 +346,7 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
     let mut input_shape = get_node_output_shape(input_node, input_link.slot)?;
     assert!(
         input_shape[0] == 1,
-        "First dimension of Gemm layer input should be 1."
+        "First dimension of Gemm layer input should be 1, input_shape is {input_shape:?}."
     );
     input_shape.remove(0);
     ensure_onnx!(
