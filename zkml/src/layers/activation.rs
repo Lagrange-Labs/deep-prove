@@ -212,7 +212,7 @@ where
                 ));
             });
         gen.lookups_no_challenges
-            .insert(id, (vec![col_one, col_two], 2, TableType::Relu));
+            .insert(id, vec![(vec![col_one, col_two], 2, TableType::Relu)]);
 
         Ok(())
     }
@@ -288,10 +288,18 @@ impl Activation {
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
+        // Should only be one prover_info for this step
         let prover_info = prover.lookup_witness(node_id)?;
+        if prover_info.len() != 1 {
+            return Err(anyhow!(
+                "Activation only requires a lookup into one table type, but node: {} had {} lookup witnesses",
+                node_id,
+                prover_info.len()
+            ));
+        }
 
         // Run the lookup protocol and return the lookup proof
-        let logup_proof = logup_batch_prove(&prover_info, prover.transcript)?;
+        let logup_proof = logup_batch_prove(&prover_info[0], prover.transcript)?;
 
         // We need to prove that the output of this step is the input to following activation function
         let mut same_poly_prover = same_poly::Prover::<E>::new(output.to_vec().into_mle());
