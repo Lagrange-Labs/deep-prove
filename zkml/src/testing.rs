@@ -25,7 +25,7 @@ pub fn random_field_vector<E: ExtensionField>(n: usize) -> Vec<E> {
 pub fn random_bool_vector<E: ExtensionField>(n: usize) -> Vec<E> {
     let mut rng = thread_rng();
     (0..n)
-        .map(|_| E::from(rng.gen_bool(0.5) as u64))
+        .map(|_| E::from_canonical_u64(rng.gen_bool(0.5) as u64))
         .collect_vec()
 }
 

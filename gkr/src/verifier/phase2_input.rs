@@ -128,8 +128,7 @@ impl<E: ExtensionField> IOPVerifierState<E> {
                     .iter()
                     .map(|x| E::ONE - *x)
                     .product::<E>()
-                    .invert()
-                    .unwrap();
+                    .inverse();
             PointAndEval::new_from_ref(&point, &wit_in_eval)
         })
         .collect_vec();

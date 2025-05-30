@@ -1,11 +1,11 @@
 use ark_std::{end_timer, iterable::Iterable, start_timer};
-use ff::Field;
 use ff_ext::ExtensionField;
 use itertools::{Itertools, izip};
 use multilinear_extensions::{
     mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension},
     virtual_poly::{ArcMultilinearExtension, VirtualPolynomial},
 };
+use p3_field::FieldAlgebra;
 use simple_frontend::structs::LayerId;
 use std::sync::Arc;
 
@@ -176,7 +176,7 @@ impl<E: ExtensionField> IOPProverState<E> {
                     circuit.layers[old_layer_id].copy_to[&{ layer_id }][subset_wire_id]
                 };
 
-                let mut f1_j = vec![0.into(); 1 << f1.num_vars()];
+                let mut f1_j = vec![E::BaseField::ZERO; 1 << f1.num_vars()];
                 let mut g1_j = vec![E::ZERO; 1 << f1.num_vars()];
 
                 for s in 0..(1 << (hi_num_vars - log2_max_thread_id)) {

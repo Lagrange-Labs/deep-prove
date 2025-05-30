@@ -12,11 +12,11 @@ use crate::{
     quantization,
 };
 use anyhow::{Result, anyhow, ensure};
-use ff::Field;
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
 use itertools::Itertools;
 use multilinear_extensions::mle::IntoMLE;
+use p3_field::{Field, FieldAlgebra};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::ops::{Add, Mul, Sub};
 use tracing::warn;
@@ -69,6 +69,7 @@ pub struct RequantCtx {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct RequantProof<E: ExtensionField>
 where
     E::BaseField: Serialize + DeserializeOwned,
@@ -198,10 +199,7 @@ where
         );
 
         gen.tables.insert(TableType::Range);
-        let table_lookup_map = gen
-            .lookups
-            .entry(TableType::Range)
-            .or_default();
+        let table_lookup_map = gen.lookups.entry(TableType::Range).or_default();
 
         let (merged_lookups, column_evals) =
             self.lookup_witness::<E>(step_data.inputs[0].get_data());
@@ -386,8 +384,8 @@ impl Requant {
     }
 
     pub fn write_to_transcript<E: ExtensionField, T: Transcript<E>>(&self, t: &mut T) {
-        t.append_field_element(&E::BaseField::from(self.right_shift as u64));
-        t.append_field_element(&E::BaseField::from(self.range as u64));
+        t.append_field_element(&E::BaseField::from_canonical_u64(self.right_shift as u64));
+        t.append_field_element(&E::BaseField::from_canonical_u64(self.range as u64));
     }
 
     /// to_mle returns two polynomials:
@@ -534,7 +532,7 @@ impl Requant {
     /// Function to recombine claims of constituent MLEs into a single value to be used as the initial sumcheck evaluation
     /// of the subsequent proof.
     pub fn recombine_claims<
-        E: From<u64> + Default + Add<Output = E> + Mul<Output = E> + Sub<Output = E> + Copy,
+        E: Field + Default + Add<Output = E> + Mul<Output = E> + Sub<Output = E> + Copy,
     >(
         &self,
         eval_claims: &[E],
@@ -544,16 +542,18 @@ impl Requant {
 
         // There may be padding claims so we only take the first `num_columns` claims
 
-        let tmp_eval = E::from(1 << self.right_shift as u64)
-            * (eval_claims[0] + E::from(subtract as u64) - E::from(self.after_range as u64 >> 1))
+        let tmp_eval = E::from_canonical_u64(1 << self.right_shift as u64)
+            * (eval_claims[0] + E::from_canonical_u64(subtract as u64)
+                - E::from_canonical_u64(self.after_range as u64 >> 1))
             + eval_claims.iter().skip(1).rev().enumerate().fold(
                 E::default(),
                 |acc, (i, &claim)| {
-                    acc + E::from((self.after_range.next_power_of_two().pow(i as u32)) as u64)
-                        * (claim)
+                    acc + E::from_canonical_u64(
+                        (self.after_range.next_power_of_two().pow(i as u32)) as u64,
+                    ) * (claim)
                 },
             );
-        tmp_eval - E::from(max_bit as u64)
+        tmp_eval - E::from_canonical_u64(max_bit as u64)
     }
     #[timed::timed_instrument(name = "Prover::prove_requant")]
     pub(crate) fn prove_step<E: ExtensionField, T: Transcript<E>>(
@@ -595,7 +595,7 @@ impl Requant {
 
         let corrected_claim = Claim::<E> {
             point: point.clone(),
-            eval: first_claim.eval - E::from((*quantization::RANGE / 2) as u64),
+            eval: first_claim.eval - E::from_canonical_u64((*quantization::RANGE / 2) as u64),
         };
         // println!("correct claim eval: {:?}", corrected_claim.eval);
         // println!(
@@ -662,7 +662,7 @@ impl RequantCtx {
         // The first claim needs to be shifted down as we add a value to make sure that all its evals are in the range 0..1 << BIT_LEn
         let corrected_claim = Claim::<E>::new(
             point.clone(),
-            first_claim.eval - E::from((*quantization::RANGE / 2) as u64),
+            first_claim.eval - E::from_canonical_u64((*quantization::RANGE / 2) as u64),
         );
         sp_verifier.add_claim(corrected_claim)?;
 

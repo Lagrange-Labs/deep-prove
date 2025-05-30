@@ -10,25 +10,27 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
-aes = "0.8"
+aes = { workspace = true }
 ark-std.workspace = true
-bitvec = "1.0"
-ctr = "0.9"
-ff.workspace = true
+bitvec = { workspace = true }
+ctr = { workspace = true }
 ff_ext = { path = "../ff_ext" }
-goldilocks.workspace = true
 itertools.workspace = true
 multilinear_extensions = { path = "../multilinear_extensions" }
-num-bigint = "0.4"
-num-integer = "0.1"
+num-bigint = { workspace = true }
+num-integer = { workspace = true }
 plonky2.workspace = true
 poseidon.workspace = true
 rand.workspace = true
 rand_chacha.workspace = true
 rayon = { workspace = true, optional = true }
 serde.workspace = true
-thiserror = "2.0.11"
+thiserror = { workspace = true }
 transcript = { path = "../transcript" }
+p3-field = { workspace = true }
+p3-goldilocks = { workspace = true }
+p3-poseidon2 = { workspace = true }
+p3-symmetric = { workspace = true }
 
 [dev-dependencies]
 criterion.workspace = true

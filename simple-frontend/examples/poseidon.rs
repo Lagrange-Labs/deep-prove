@@ -1,9 +1,9 @@
 //! Poseidon hash function. This is modified from https://github.com/iden3/circomlib/blob/master/circuits/poseidon.circom.
 
-use ff::Field;
-use ff_ext::ExtensionField;
-use goldilocks::GoldilocksExt2;
+use ff_ext::GoldilocksExt2;
 use mock_constant::{poseidon_c, poseidon_m, poseidon_p, poseidon_s};
+use p3_field::FieldAlgebra;
+use p3_goldilocks::Goldilocks;
 use simple_frontend::structs::{CellId, CircuitBuilder};
 
 // round constant
@@ -24,13 +24,13 @@ const N_ROUNDS_P: [usize; 16] = [
 //     out <== in4*in;
 // }
 
-fn sigma<E: ExtensionField>(circuit_builder: &mut CircuitBuilder<E>, in_: CellId) -> CellId {
+fn sigma(circuit_builder: &mut CircuitBuilder<GoldilocksExt2>, in_: CellId) -> CellId {
     let in2 = circuit_builder.create_cell();
     let in4 = circuit_builder.create_cell();
 
     let out = circuit_builder.create_cell();
 
-    let one = E::BaseField::ONE;
+    let one = Goldilocks::ONE;
     circuit_builder.mul2(in2, in_, in_, one);
     circuit_builder.mul2(in4, in2, in2, one);
     circuit_builder.mul2(out, in4, in_, one);
@@ -47,15 +47,15 @@ fn sigma<E: ExtensionField>(circuit_builder: &mut CircuitBuilder<E>, in_: CellId
 //     }
 // }
 
-fn ark<E: ExtensionField>(
-    circuit_builder: &mut CircuitBuilder<E>,
+fn ark(
+    circuit_builder: &mut CircuitBuilder<GoldilocksExt2>,
     in_: &[CellId],
-    c: &[E::BaseField],
+    c: &[Goldilocks],
     r: usize,
 ) -> Vec<CellId> {
     let out = circuit_builder.create_cells(in_.len());
 
-    let one = E::BaseField::ONE;
+    let one = Goldilocks::ONE;
 
     for i in 0..in_.len() {
         circuit_builder.add(out[i], in_[i], one);
@@ -79,10 +79,10 @@ fn ark<E: ExtensionField>(
 //     }
 // }
 
-fn mix<E: ExtensionField>(
-    circuit_builder: &mut CircuitBuilder<E>,
+fn mix(
+    circuit_builder: &mut CircuitBuilder<GoldilocksExt2>,
     in_: &[CellId],
-    m: &[&[E::BaseField]],
+    m: &[&[Goldilocks]],
 ) -> Vec<CellId> {
     let out = circuit_builder.create_cells(in_.len());
 
@@ -106,10 +106,10 @@ fn mix<E: ExtensionField>(
 //     out <== lc;
 // }
 
-fn mix_last<E: ExtensionField>(
-    circuit_builder: &mut CircuitBuilder<E>,
+fn mix_last(
+    circuit_builder: &mut CircuitBuilder<GoldilocksExt2>,
     in_: &[CellId],
-    m: &[&[E::BaseField]],
+    m: &[&[Goldilocks]],
     s: usize,
 ) -> CellId {
     let out = circuit_builder.create_cell();
@@ -135,16 +135,16 @@ fn mix_last<E: ExtensionField>(
 //     }
 // }
 
-fn mix_s<E: ExtensionField>(
-    circuit_builder: &mut CircuitBuilder<E>,
+fn mix_s(
+    circuit_builder: &mut CircuitBuilder<GoldilocksExt2>,
     in_: &[CellId],
-    s: &[E::BaseField],
+    s: &[Goldilocks],
     r: usize,
 ) -> Vec<CellId> {
     let t = in_.len();
     let out = circuit_builder.create_cells(t);
 
-    let one = E::BaseField::ONE;
+    let one = Goldilocks::ONE;
 
     for i in 0..in_.len() {
         circuit_builder.add(out[0], in_[i], s[(t * 2 - 1) * r + i]);
@@ -158,8 +158,8 @@ fn mix_s<E: ExtensionField>(
     out
 }
 
-fn poseidon_ex<E: ExtensionField>(
-    circuit_builder: &mut CircuitBuilder<E>,
+fn poseidon_ex(
+    circuit_builder: &mut CircuitBuilder<GoldilocksExt2>,
     n_outs: usize,
     inputs: &[CellId],
     initial_state: CellId,
@@ -182,18 +182,18 @@ fn poseidon_ex<E: ExtensionField>(
     let t = n_inputs + 1;
     let n_rounds_f = 8;
     let n_rounds_p = N_ROUNDS_P[t - 2];
-    let c = poseidon_c::<E::BaseField>(t);
-    let s = poseidon_s::<E::BaseField>(t);
-    let m = poseidon_m::<E::BaseField>(t);
+    let c = poseidon_c(t);
+    let s = poseidon_s(t);
+    let m = poseidon_m(t);
     let m_slices = m
         .iter()
         .map(|row| row.as_slice())
-        .collect::<Vec<&[E::BaseField]>>();
-    let p = poseidon_p::<E::BaseField>(t);
+        .collect::<Vec<&[Goldilocks]>>();
+    let p = poseidon_p(t);
     let p_slices = p
         .iter()
         .map(|row| row.as_slice())
-        .collect::<Vec<&[E::BaseField]>>();
+        .collect::<Vec<&[Goldilocks]>>();
 
     //     component ark[nRoundsF];
     //     component sigmaF[nRoundsF][t];
@@ -330,7 +330,7 @@ fn poseidon_ex<E: ExtensionField>(
     //         }
     //     }
 
-    let one = E::BaseField::ONE;
+    let one = Goldilocks::ONE;
     for r in 0..n_rounds_p {
         sigma_p_in[r] = if r == 0 {
             mix_out[n_rounds_f / 2 - 1][0]
@@ -445,46 +445,47 @@ fn main() {
 }
 
 mod mock_constant {
-    use goldilocks::SmallField;
+    use p3_field::FieldAlgebra;
+    use p3_goldilocks::Goldilocks;
 
     use crate::N_ROUNDS_P;
 
-    pub(crate) fn poseidon_c<F: SmallField>(t: usize) -> Vec<F> {
+    pub(crate) fn poseidon_c(t: usize) -> Vec<Goldilocks> {
         let n = t * 8 + N_ROUNDS_P[t - 2];
         let mut c = Vec::with_capacity(n);
         for i in 0..n {
-            c.push(F::from(i as u64));
+            c.push(Goldilocks::from_canonical_u64(i as u64));
         }
         c
     }
 
-    pub(crate) fn poseidon_s<F: SmallField>(t: usize) -> Vec<F> {
+    pub(crate) fn poseidon_s(t: usize) -> Vec<Goldilocks> {
         let n = N_ROUNDS_P[t - 2] * (t * 2 - 1);
         let mut s = Vec::with_capacity(n);
         for i in 0..n {
-            s.push(F::from(i as u64));
+            s.push(Goldilocks::from_canonical_u64(i as u64));
         }
         s
     }
 
-    pub(crate) fn poseidon_m<F: SmallField>(t: usize) -> Vec<Vec<F>> {
+    pub(crate) fn poseidon_m(t: usize) -> Vec<Vec<Goldilocks>> {
         let mut m = Vec::with_capacity(t);
         for i in 0..t {
             let mut row = Vec::with_capacity(t);
             for j in 0..t {
-                row.push(F::from((i * t + j) as u64));
+                row.push(Goldilocks::from_canonical_u64((i * t + j) as u64));
             }
             m.push(row);
         }
         m
     }
 
-    pub(crate) fn poseidon_p<F: SmallField>(t: usize) -> Vec<Vec<F>> {
+    pub(crate) fn poseidon_p(t: usize) -> Vec<Vec<Goldilocks>> {
         let mut p = Vec::with_capacity(t);
         for i in 0..t {
             let mut row = Vec::with_capacity(t);
             for j in 0..t {
-                row.push(F::from((i * t + j) as u64));
+                row.push(Goldilocks::from_canonical_u64((i * t + j) as u64));
             }
             p.push(row);
         }

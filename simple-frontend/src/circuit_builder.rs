@@ -117,11 +117,12 @@ impl<Ext: ExtensionField> CircuitBuilder<Ext> {
 
 #[cfg(test)]
 mod tests {
-    use ff::Field;
-    use goldilocks::{Goldilocks, GoldilocksExt2};
     use itertools::enumerate;
 
     use crate::structs::CircuitBuilder;
+    use ff_ext::GoldilocksExt2;
+    use p3_field::FieldAlgebra;
+    use p3_goldilocks::Goldilocks;
 
     #[test]
     fn test_cb_empty_cells() {

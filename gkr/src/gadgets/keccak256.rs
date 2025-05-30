@@ -9,12 +9,12 @@ use ark_std::rand::{
     Rng, RngCore, SeedableRng,
     rngs::{OsRng, StdRng},
 };
-use ff::Field;
 use ff_ext::ExtensionField;
 use itertools::{Itertools, izip};
 use multilinear_extensions::{
     mle::DenseMultilinearExtension, virtual_poly::ArcMultilinearExtension,
 };
+use p3_field::FieldAlgebra;
 use simple_frontend::structs::CircuitBuilder;
 use std::iter;
 use sumcheck::util::ceil_log2;
@@ -228,14 +228,14 @@ fn chi_and_xor_constant<E: ExtensionField>(
             cb.add(*out, *wire_0, -E::BaseField::ONE);
         } else {
             // x0
-            cb.add(*out, *wire_0, 1.into());
+            cb.add(*out, *wire_0, E::BaseField::ONE);
         };
         if const_bit & 1 == 1 {
             // -x2
             cb.add(*out, *wire_2, -E::BaseField::ONE);
         } else {
             // x2
-            cb.add(*out, *wire_2, 1.into());
+            cb.add(*out, *wire_2, E::BaseField::ONE);
         };
         cb.add_const(
             *out,
@@ -468,10 +468,10 @@ pub fn prove_keccak256<E: ExtensionField>(
         .into_iter()
         .map(|wit_in| wit_in.into_mle())
         .collect();
-        let all_one = vec![vec![E::BaseField::ONE; 25 * 64], vec![
-            E::BaseField::ZERO;
-            17 * 64
-        ]]
+        let all_one = vec![
+            vec![E::BaseField::ONE; 25 * 64],
+            vec![E::BaseField::ZERO; 17 * 64],
+        ]
         .into_iter()
         .map(|wit_in| wit_in.into_mle())
         .collect();
@@ -510,19 +510,22 @@ pub fn prove_keccak256<E: ExtensionField>(
             let mut data = vec![E::BaseField::ZERO; 1 << ceil_log2(n)];
             data.iter_mut()
                 .take(n)
-                .for_each(|d| *d = E::BaseField::from(rng.gen_bool(0.5) as u64));
+                .for_each(|d| *d = E::BaseField::from_canonical_u64(rng.gen_bool(0.5) as u64));
             data
         });
-        witness.add_instance(circuit, vec![
-            DenseMultilinearExtension::from_evaluations_vec(
-                ceil_log2(rand_state.len()),
-                rand_state,
-            ),
-            DenseMultilinearExtension::from_evaluations_vec(
-                ceil_log2(rand_input.len()),
-                rand_input,
-            ),
-        ]);
+        witness.add_instance(
+            circuit,
+            vec![
+                DenseMultilinearExtension::from_evaluations_vec(
+                    ceil_log2(rand_state.len()),
+                    rand_state,
+                ),
+                DenseMultilinearExtension::from_evaluations_vec(
+                    ceil_log2(rand_input.len()),
+                    rand_input,
+                ),
+            ],
+        );
     }
 
     let output_mle = &witness.witness_out_ref()[0];

@@ -1,5 +1,6 @@
-use ff::Field;
+extern crate p3_field;
 use ff_ext::ExtensionField;
+use p3_field::FieldAlgebra;
 use serde::{Deserialize, Serialize};
 use std::{hash::Hash, marker::PhantomData};
 

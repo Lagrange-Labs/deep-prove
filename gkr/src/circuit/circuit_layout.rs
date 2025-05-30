@@ -332,12 +332,12 @@ impl<E: ExtensionField> Circuit<E> {
             ConstantType::Challenge(c, _) => {
                 challenge_exps
                     .entry(c)
-                    .or_insert(challenges[c.challenge as usize].pow([c.exp]));
+                    .or_insert(challenges[c.challenge as usize].exp_u64(c.exp));
             }
             ConstantType::ChallengeScaled(c, _, _) => {
                 challenge_exps
                     .entry(c)
-                    .or_insert(challenges[c.challenge as usize].pow([c.exp]));
+                    .or_insert(challenges[c.challenge as usize].exp_u64(c.exp));
             }
             _ => {}
         };
@@ -511,8 +511,9 @@ impl<E: ExtensionField> fmt::Debug for Circuit<E> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use ff::Field;
-    use goldilocks::{Goldilocks, GoldilocksExt2};
+    use ff_ext::GoldilocksExt2;
+    use p3_field::FieldAlgebra;
+    use p3_goldilocks::Goldilocks;
     use simple_frontend::structs::{ChallengeConst, ChallengeId, CircuitBuilder, ConstantType};
 
     use crate::structs::{Circuit, Gate, GateCIn, SumcheckStepType};
@@ -842,9 +843,10 @@ mod tests {
         circuit_builder.configure();
         let circuit = Circuit::new(&circuit_builder);
         assert_eq!(circuit.layers.len(), 1);
-        assert_eq!(circuit.layers[0].sumcheck_steps, vec![
-            SumcheckStepType::InputPhase2Step1
-        ]);
+        assert_eq!(
+            circuit.layers[0].sumcheck_steps,
+            vec![SumcheckStepType::InputPhase2Step1]
+        );
     }
 
     #[test]
@@ -882,19 +884,24 @@ mod tests {
 
         assert_eq!(circuit.layers.len(), 3);
         // Single input witness, therefore no input phase 2 steps.
-        assert_eq!(circuit.layers[2].sumcheck_steps, vec![
-            SumcheckStepType::Phase1Step1
-        ]);
+        assert_eq!(
+            circuit.layers[2].sumcheck_steps,
+            vec![SumcheckStepType::Phase1Step1]
+        );
         // There are only one incoming evals since the last layer is linear, and
         // no subset evals. Therefore, there are no phase1 steps.
-        assert_eq!(circuit.layers[1].sumcheck_steps, vec![
-            SumcheckStepType::Phase2Step1,
-            SumcheckStepType::Phase2Step2NoStep3,
-        ]);
+        assert_eq!(
+            circuit.layers[1].sumcheck_steps,
+            vec![
+                SumcheckStepType::Phase2Step1,
+                SumcheckStepType::Phase2Step2NoStep3,
+            ]
+        );
         // Output layer, single output witness, therefore no output phase 1 steps.
-        assert_eq!(circuit.layers[0].sumcheck_steps, vec![
-            SumcheckStepType::LinearPhase2Step1
-        ]);
+        assert_eq!(
+            circuit.layers[0].sumcheck_steps,
+            vec![SumcheckStepType::LinearPhase2Step1]
+        );
     }
 
     #[test]
@@ -908,13 +915,17 @@ mod tests {
 
         assert_eq!(circuit.layers.len(), 2);
         // Single input witness, therefore no input phase 2 steps.
-        assert_eq!(circuit.layers[1].sumcheck_steps, vec![
-            SumcheckStepType::Phase1Step1
-        ]);
+        assert_eq!(
+            circuit.layers[1].sumcheck_steps,
+            vec![SumcheckStepType::Phase1Step1]
+        );
         // Output layer, single output witness, therefore no output phase 1 steps.
-        assert_eq!(circuit.layers[0].sumcheck_steps, vec![
-            SumcheckStepType::Phase2Step1,
-            SumcheckStepType::Phase2Step2NoStep3
-        ]);
+        assert_eq!(
+            circuit.layers[0].sumcheck_steps,
+            vec![
+                SumcheckStepType::Phase2Step1,
+                SumcheckStepType::Phase2Step2NoStep3
+            ]
+        );
     }
 }

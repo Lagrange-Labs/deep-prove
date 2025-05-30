@@ -244,7 +244,7 @@ where
         points: &[Vec<E>],
         evals: &[Evaluation<E>],
     ) -> Result<Self::Proof, Error> {
-        let mut transcript = BasicTranscript::<E>::new(b"BaseFold");
+        let mut transcript = BasicTranscript::new(b"BaseFold");
         Self::batch_open(pp, polys, comms, points, evals, &mut transcript)
     }
 
@@ -255,7 +255,7 @@ where
         eval: &E,
         proof: &Self::Proof,
     ) -> Result<(), Error> {
-        let mut transcript = BasicTranscript::<E>::new(b"BaseFold");
+        let mut transcript = BasicTranscript::new(b"BaseFold");
         Self::verify(vp, comm, point, eval, proof, &mut transcript)
     }
 
@@ -269,7 +269,7 @@ where
     where
         Self::Commitment: 'a,
     {
-        let mut transcript = BasicTranscript::<E>::new(b"BaseFold");
+        let mut transcript = BasicTranscript::new(b"BaseFold");
         Self::batch_verify(vp, comms, points, evals, proof, &mut transcript)
     }
 }

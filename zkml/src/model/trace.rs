@@ -55,28 +55,31 @@ impl<'a, E: ExtensionField, N, D> Trace<'a, E, N, D> {
             .steps
             .into_iter()
             .map(|(id, step)| {
-                (id, InferenceStep {
-                    op: step.op,
-                    step_data: StepData {
-                        inputs: step
-                            .step_data
-                            .inputs
-                            .into_iter()
-                            .map(|inp| inp.to_fields())
-                            .collect(),
-                        outputs: LayerOut {
-                            outputs: step
+                (
+                    id,
+                    InferenceStep {
+                        op: step.op,
+                        step_data: StepData {
+                            inputs: step
                                 .step_data
-                                .outputs
-                                .outputs
+                                .inputs
                                 .into_iter()
-                                .map(|out| out.to_fields())
+                                .map(|inp| inp.to_fields())
                                 .collect(),
-                            proving_data: step.step_data.outputs.proving_data,
+                            outputs: LayerOut {
+                                outputs: step
+                                    .step_data
+                                    .outputs
+                                    .outputs
+                                    .into_iter()
+                                    .map(|out| out.to_fields())
+                                    .collect(),
+                                proving_data: step.step_data.outputs.proving_data,
+                            },
+                            unpadded_output_shapes: step.step_data.unpadded_output_shapes,
                         },
-                        unpadded_output_shapes: step.step_data.unpadded_output_shapes,
                     },
-                })
+                )
             })
             .collect();
         Trace {
@@ -129,17 +132,20 @@ impl<'a, E: ExtensionField> InferenceTrace<'a, E, Element> {
                     .zip(output_scaling)
                     .map(|(out, s)| out.dequantize(s))
                     .collect();
-                (*node_id, InferenceStep {
-                    op: step.op,
-                    step_data: StepData {
-                        inputs,
-                        outputs: LayerOut {
-                            outputs,
-                            proving_data: step.step_data.outputs.proving_data.clone(),
+                (
+                    *node_id,
+                    InferenceStep {
+                        op: step.op,
+                        step_data: StepData {
+                            inputs,
+                            outputs: LayerOut {
+                                outputs,
+                                proving_data: step.step_data.outputs.proving_data.clone(),
+                            },
+                            unpadded_output_shapes: step.step_data.unpadded_output_shapes.clone(),
                         },
-                        unpadded_output_shapes: step.step_data.unpadded_output_shapes.clone(),
                     },
-                })
+                )
             })
             .collect();
         Trace {

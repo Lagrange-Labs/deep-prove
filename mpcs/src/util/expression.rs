@@ -1,5 +1,4 @@
 use crate::util::{Deserialize, Itertools, Serialize, izip};
-use ff::Field;
 use std::{
     collections::BTreeSet,
     fmt::Debug,
@@ -7,6 +6,8 @@ use std::{
     iter::{self, Product, Sum},
     ops::{Add, Mul, Neg, Sub},
 };
+
+use p3_field::Field;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Rotation(pub i32);

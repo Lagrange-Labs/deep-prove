@@ -2,8 +2,8 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use ff::Field;
 use ff_ext::ExtensionField;
+use p3_field::FieldAlgebra;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::{debug, warn};
 use transcript::Transcript;
@@ -88,10 +88,9 @@ impl TableType {
                 }
 
                 Ok(vec![
-                    point
-                        .iter()
-                        .enumerate()
-                        .fold(E::ZERO, |acc, (index, p)| acc + *p * E::from(1u64 << index)),
+                    point.iter().enumerate().fold(E::ZERO, |acc, (index, p)| {
+                        acc + *p * E::from_canonical_u64(1u64 << index)
+                    }),
                 ])
             }
             TableType::Relu => {
@@ -103,19 +102,16 @@ impl TableType {
                     )));
                 }
 
-                let first_column = point
-                    .iter()
-                    .enumerate()
-                    .fold(E::ZERO, |acc, (index, p)| acc + *p * E::from(1u64 << index))
-                    - E::from(1u64 << (*quantization::BIT_LEN - 1));
+                let first_column = point.iter().enumerate().fold(E::ZERO, |acc, (index, p)| {
+                    acc + *p * E::from_canonical_u64(1u64 << index)
+                }) - E::from_canonical_u64(1u64 << (*quantization::BIT_LEN - 1));
 
-                let second_column = point
-                    .iter()
-                    .enumerate()
-                    .take(point.len() - 1)
-                    .fold(E::ZERO, |acc, (index, p)| {
-                        acc + *p * E::from(1u64 << index) * point[point.len() - 1]
-                    });
+                let second_column = point.iter().enumerate().take(point.len() - 1).fold(
+                    E::ZERO,
+                    |acc, (index, p)| {
+                        acc + *p * E::from_canonical_u64(1u64 << index) * point[point.len() - 1]
+                    },
+                );
                 Ok(vec![first_column, second_column])
             }
         }
@@ -232,7 +228,7 @@ where
 
         let (multiplicities, mults_ext)  = table_column.iter().map(|table_val| {
             if let Some(lookup_count) = table_lookup_data.get(table_val) {
-                (E::BaseField::from(*lookup_count), E::from(*lookup_count))
+                (E::BaseField::from_canonical_u64(*lookup_count), E::from_canonical_u64(*lookup_count))
             } else {
                 (E::BaseField::ZERO, E::ZERO)
             }

@@ -1,6 +1,6 @@
-use ff::Field;
 use ff_ext::ExtensionField;
 use itertools::Itertools;
+use p3_field::FieldAlgebra;
 use std::marker::PhantomData;
 
 use crate::{
@@ -89,9 +89,10 @@ impl<Ext: ExtensionField> CircuitBuilder<Ext> {
         let cells = self.create_ext_cells(num);
         cells.iter().for_each(|ext_cell| {
             // first base field is the constant
-            self.mark_cells(CellType::In(InType::Constant(constant)), &[
-                ext_cell.cells[0]
-            ]);
+            self.mark_cells(
+                CellType::In(InType::Constant(constant)),
+                &[ext_cell.cells[0]],
+            );
             // the rest fields are 0s
             self.mark_cells(CellType::In(InType::Constant(0)), &ext_cell.cells[1..]);
         });
@@ -144,11 +145,12 @@ impl<Ext: ExtensionField> CircuitBuilder<Ext> {
         out.cells
             .iter()
             .zip_eq(
-                in_0.cells.iter().zip_eq(
-                    [*in_1].iter().chain(
-                        std::iter::repeat_n(&MixedCell::Constant(Ext::BaseField::ZERO), <Ext as ExtensionField>::DEGREE - 1),
-                    ),
-                ),
+                in_0.cells
+                    .iter()
+                    .zip_eq([*in_1].iter().chain(std::iter::repeat_n(
+                        &MixedCell::Constant(Ext::BaseField::ZERO),
+                        <Ext as ExtensionField>::DEGREE - 1,
+                    ))),
             )
             .for_each(|(&out, (&in0, &in1))| self.sel_mixed(out, in0.into(), in1, cond));
     }
@@ -169,11 +171,12 @@ impl<Ext: ExtensionField> CircuitBuilder<Ext> {
         out.cells
             .iter()
             .zip_eq(
-                in_1.cells.iter().zip_eq(
-                    [*in_0].iter().chain(
-                        std::iter::repeat_n(&MixedCell::Constant(Ext::BaseField::ZERO), <Ext as ExtensionField>::DEGREE - 1),
-                    ),
-                ),
+                in_1.cells
+                    .iter()
+                    .zip_eq([*in_0].iter().chain(std::iter::repeat_n(
+                        &MixedCell::Constant(Ext::BaseField::ZERO),
+                        <Ext as ExtensionField>::DEGREE - 1,
+                    ))),
             )
             .for_each(|(&out, (&in1, &in0))| self.sel_mixed(out, in0, in1.into(), cond));
     }
@@ -421,7 +424,7 @@ impl<Ext: ExtensionField> CircuitBuilder<Ext> {
         let a1b1 = self.create_cell();
         self.mul2(a1b1, in_0[1], in_1[1], Ext::BaseField::ONE);
         self.add(out[0], a0b0, scalar);
-        self.add(out[0], a1b1, Ext::BaseField::from(7) * scalar);
+        self.add(out[0], a1b1, Ext::BaseField::from_canonical_u64(7) * scalar);
         self.add(out[1], a1b0, scalar);
         self.add(out[1], a0b1, scalar);
     }
@@ -437,7 +440,7 @@ impl<Ext: ExtensionField> CircuitBuilder<Ext> {
         let a1b1 = self.create_cell();
         self.add_internal(a1b1, in_0[1], in_1[1]);
         self.add(out[0], a0b0, Ext::BaseField::ONE);
-        self.add(out[0], a1b1, Ext::BaseField::from(7));
+        self.add(out[0], a1b1, Ext::BaseField::from_canonical_u64(7));
         self.add(out[1], a1b0, Ext::BaseField::ONE);
         self.add(out[1], a0b1, Ext::BaseField::ONE);
     }

@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
 use ark_std::{end_timer, start_timer};
-use ff::Field;
 use ff_ext::ExtensionField;
 use itertools::{Itertools, izip};
 use multilinear_extensions::{
     mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension, MultilinearExtension},
     virtual_poly::{ArcMultilinearExtension, VirtualPolynomial, build_eq_x_r_vec},
 };
+use p3_field::FieldAlgebra;
 use transcript::Transcript;
 
 use crate::{
@@ -95,7 +95,7 @@ impl<E: ExtensionField> IOPProverState<E> {
                 circuit_witness.layers_ref()[j as usize].evaluations().len()
                     / circuit_witness.n_instances();
 
-            let mut f1_j = vec![0.into(); 1 << (lo_in_num_vars + hi_num_vars)];
+            let mut f1_j = vec![E::BaseField::ZERO; 1 << (lo_in_num_vars + hi_num_vars)];
             let mut g1_j = vec![E::ZERO; 1 << lo_in_num_vars];
 
             paste_from

@@ -26,6 +26,7 @@ use crate::{
         merge_sumcheck_polys, serial_extrapolate,
     },
 };
+use p3_field::FieldAlgebra;
 
 impl<'a, E: ExtensionField> IOPProverState<'a, E> {
     /// Given a virtual polynomial, generate an IOP proof.
@@ -56,10 +57,13 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
 
         // return empty proof when target polymonial is constant
         if num_variables == 0 {
-            return (IOPProof::default(), IOPProverState {
-                poly: polys[0].clone(),
-                ..Default::default()
-            });
+            return (
+                IOPProof::default(),
+                IOPProverState {
+                    poly: polys[0].clone(),
+                    ..Default::default()
+                },
+            );
         }
         let start = start_timer!(|| "sum check prove");
 
@@ -71,7 +75,9 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
         // extrapolation_aux only need to init once
         let extrapolation_aux = (1..max_degree)
             .map(|degree| {
-                let points = (0..1 + degree as u64).map(E::from).collect::<Vec<_>>();
+                let points = (0..1 + degree as u64)
+                    .map(E::from_canonical_u64)
+                    .collect::<Vec<_>>();
                 let weights = barycentric_weights(&points);
                 (points, weights)
             })
@@ -438,13 +444,13 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                     _ => unimplemented!("do not support degree {} > 5", products.len()),
                 };
                 exit_span!(span);
-                sum.iter_mut().for_each(|sum| *sum *= coefficient);
+                sum.iter_mut().for_each(|sum| *sum *= *coefficient);
 
                 let span = entered_span!("extrapolation");
                 let extrapolation = (0..self.poly.aux_info.max_degree - products.len())
                     .map(|i| {
                         let (points, weights) = &self.extrapolation_aux[products.len() - 1];
-                        let at = E::from((products.len() + 1 + i) as u64);
+                        let at = E::from_canonical_u64((products.len() + 1 + i) as u64);
                         serial_extrapolate(points, weights, &sum, &at)
                     })
                     .collect::<Vec<_>>();
@@ -499,10 +505,13 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
 
         // return empty proof when target polymonial is constant
         if num_variables == 0 {
-            return (IOPProof::default(), IOPProverState {
-                poly,
-                ..Default::default()
-            });
+            return (
+                IOPProof::default(),
+                IOPProverState {
+                    poly,
+                    ..Default::default()
+                },
+            );
         }
         let start = start_timer!(|| "sum check prove");
 
@@ -592,7 +601,9 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
             poly: polynomial,
             extrapolation_aux: (1..max_degree)
                 .map(|degree| {
-                    let points = (0..1 + degree as u64).map(E::from).collect::<Vec<_>>();
+                    let points = (0..1 + degree as u64)
+                        .map(E::from_canonical_u64)
+                        .collect::<Vec<_>>();
                     let weights = barycentric_weights(&points);
                     (points, weights)
                 })
@@ -701,14 +712,14 @@ impl<'a, E: ExtensionField> IOPProverState<'a, E> {
                         _ => unimplemented!("do not support degree {} > 5", products.len()),
                     };
                     exit_span!(span);
-                    sum.iter_mut().for_each(|sum| *sum *= coefficient);
+                    sum.iter_mut().for_each(|sum| *sum *= *coefficient);
 
                     let span = entered_span!("extrapolation");
                     let extrapolation = (0..self.poly.aux_info.max_degree - products.len())
                         .into_par_iter()
                         .map(|i| {
                             let (points, weights) = &self.extrapolation_aux[products.len() - 1];
-                            let at = E::from((products.len() + 1 + i) as u64);
+                            let at = E::from_canonical_u64((products.len() + 1 + i) as u64);
                             extrapolate(points, weights, &sum, &at)
                         })
                         .collect::<Vec<_>>();

@@ -1,5 +1,4 @@
 use ark_std::{end_timer, iterable::Iterable, start_timer};
-use ff::Field;
 use ff_ext::ExtensionField;
 use itertools::{Itertools, izip};
 use multilinear_extensions::{
@@ -9,6 +8,7 @@ use multilinear_extensions::{
     util::ceil_log2,
     virtual_poly::{ArcMultilinearExtension, VirtualPolynomial, build_eq_x_r_vec_sequential},
 };
+use p3_field::FieldAlgebra;
 use std::{iter, sync::Arc};
 
 use crate::{
@@ -146,7 +146,7 @@ impl<E: ExtensionField> IOPProverState<E> {
                         .zip(g1_j.as_slice().into_instance_iter(num_thread_instances))
                         .for_each(|(g_last, g1_j)| {
                             circuit.assert_consts.iter().for_each(|gate| {
-                                g_last[gate.idx_out] = g1_j[gate.idx_out] * alpha_pow;
+                                g_last[gate.idx_out] = g1_j[gate.idx_out] * *alpha_pow;
                             });
                         });
                     g_last

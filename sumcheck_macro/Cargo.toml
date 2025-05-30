@@ -14,13 +14,13 @@ proc-macro = true
 
 [dependencies]
 itertools.workspace = true
-proc-macro2 = "1.0.92"
-quote = "1.0"
-syn = { version = "2.0", features = ["full"] }
+p3-field.workspace = true
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true, features = ["full"] }
 
 [dev-dependencies]
 ff_ext = { path = "../ff_ext" }
-goldilocks.workspace = true
 multilinear_extensions = { path = "../multilinear_extensions" }
 rayon = { workspace = true }
 sumcheck = { path = "../sumcheck" }

@@ -2,8 +2,7 @@
 mod metadata;
 mod strategy;
 use derive_more::From;
-use ff_ext::ExtensionField;
-use goldilocks::SmallField;
+use ff_ext::{ExtensionField, SmallField};
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -137,10 +136,12 @@ impl<F: ExtensionField> Fieldizer<F> for Element {
     fn to_field(&self) -> F {
         if self.is_negative() {
             // Doing wrapped arithmetic : p-128 ... p-1 means negative number
-            F::from(<F::BaseField as SmallField>::MODULUS_U64 - self.unsigned_abs() as u64)
+            F::from_canonical_u64(
+                <F::BaseField as SmallField>::MODULUS_U64 - self.unsigned_abs() as u64,
+            )
         } else {
             // for positive and zero, it's just the number
-            F::from(*self as u64)
+            F::from_canonical_u64(*self as u64)
         }
     }
 }
@@ -178,10 +179,7 @@ where
     fn to_fields(self) -> Tensor<F> {
         Tensor::new(
             self.get_shape(),
-            self.get_data()
-                .iter()
-                .map(|i| i.to_field())
-                .collect_vec(),
+            self.get_data().iter().map(|i| i.to_field()).collect_vec(),
         )
     }
 }
@@ -244,7 +242,7 @@ mod test {
     use crate::Element;
 
     use super::{MAX, MIN};
-    type F = goldilocks::GoldilocksExt2;
+    type F = ff_ext::GoldilocksExt2;
 
     #[test]
     fn test_wrapped_arithmetic() {

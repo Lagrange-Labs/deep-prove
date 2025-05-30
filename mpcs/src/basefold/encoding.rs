@@ -173,7 +173,9 @@ pub(crate) mod test_util {
     pub fn test_codeword_folding<E: ExtensionField, Code: EncodingScheme<E>>() {
         let num_vars = 12;
 
-        let poly: Vec<E> = (0..(1 << num_vars)).map(|i| E::from(i)).collect();
+        let poly: Vec<E> = (0..(1 << num_vars))
+            .map(|i| E::from_canonical_u64(i))
+            .collect();
         let mut poly = FieldType::Ext(poly);
 
         let pp: Code::PublicParameters = Code::setup(num_vars);

@@ -10,7 +10,7 @@ use multilinear_extensions::{
     mle::{IntoMLE, MultilinearExtension},
     virtual_poly::{VPAuxInfo, VirtualPolynomial},
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
 use transcript::Transcript;
 
@@ -47,9 +47,10 @@ impl<F: ExtensionField> HadamardCtx<F> {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
-pub struct HadamardProof<F: ExtensionField> {
-    sumcheck: IOPProof<F>,
-    individual_claim: Vec<F>,
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
+pub struct HadamardProof<E: ExtensionField> {
+    sumcheck: IOPProof<E>,
+    individual_claim: Vec<E>,
 }
 
 impl<F: ExtensionField> HadamardProof<F> {
@@ -147,7 +148,7 @@ pub fn verify<F: ExtensionField, T: Transcript<F>>(
 
 #[cfg(test)]
 mod test {
-    use goldilocks::GoldilocksExt2;
+    use ff_ext::GoldilocksExt2;
 
     use super::*;
     use crate::{default_transcript, testing::random_field_vector};

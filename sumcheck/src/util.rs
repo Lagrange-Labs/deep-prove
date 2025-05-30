@@ -7,16 +7,16 @@ use std::{
 };
 
 use ark_std::{end_timer, start_timer};
-use ff::PrimeField;
 use ff_ext::ExtensionField;
 use multilinear_extensions::{
     mle::DenseMultilinearExtension, op_mle, virtual_poly::VirtualPolynomial,
 };
+use p3_field::Field;
 use rayon::{prelude::ParallelIterator, slice::ParallelSliceMut};
 
 use crate::structs::IOPProverState;
 
-pub fn barycentric_weights<F: PrimeField>(points: &[F]) -> Vec<F> {
+pub fn barycentric_weights<F: Field>(points: &[F]) -> Vec<F> {
     let mut weights = points
         .iter()
         .enumerate()
@@ -25,7 +25,7 @@ pub fn barycentric_weights<F: PrimeField>(points: &[F]) -> Vec<F> {
                 .iter()
                 .enumerate()
                 .filter(|&(i, _)| (i != j))
-                .map(|(_, point_i)| *point_j - point_i)
+                .map(|(_, point_i)| *point_j - *point_i)
                 .reduce(|acc, value| acc * value)
                 .unwrap_or(F::ONE)
         })
@@ -35,17 +35,17 @@ pub fn barycentric_weights<F: PrimeField>(points: &[F]) -> Vec<F> {
 }
 
 // Computes the inverse of each field element in a vector {v_i} using a parallelized batch inversion.
-pub fn batch_inversion<F: PrimeField>(v: &mut [F]) {
+pub fn batch_inversion<F: Field>(v: &mut [F]) {
     batch_inversion_and_mul(v, &F::ONE);
 }
 
 // Computes the inverse of each field element in a vector {v_i} sequentially (serial version).
-pub fn serial_batch_inversion<F: PrimeField>(v: &mut [F]) {
+pub fn serial_batch_inversion<F: Field>(v: &mut [F]) {
     serial_batch_inversion_and_mul(v, &F::ONE)
 }
 
 // Given a vector of field elements {v_i}, compute the vector {coeff * v_i^(-1)}
-pub fn batch_inversion_and_mul<F: PrimeField>(v: &mut [F], coeff: &F) {
+pub fn batch_inversion_and_mul<F: Field>(v: &mut [F], coeff: &F) {
     // Divide the vector v evenly between all available cores
     let min_elements_per_thread = 1;
     let num_cpus_available = rayon::current_num_threads();
@@ -60,7 +60,7 @@ pub fn batch_inversion_and_mul<F: PrimeField>(v: &mut [F], coeff: &F) {
 
 /// Given a vector of field elements {v_i}, compute the vector {coeff * v_i^(-1)}.
 /// This method is explicitly single-threaded.
-fn serial_batch_inversion_and_mul<F: PrimeField>(v: &mut [F], coeff: &F) {
+fn serial_batch_inversion_and_mul<F: Field>(v: &mut [F], coeff: &F) {
     // Montgomery’s Trick and Fast Implementation of Masked AES
     // Genelle, Prouff and Quisquater
     // Section 3.2
@@ -70,16 +70,16 @@ fn serial_batch_inversion_and_mul<F: PrimeField>(v: &mut [F], coeff: &F) {
     // First pass: compute [a, ab, abc, ...]
     let mut prod = Vec::with_capacity(v.len());
     let mut tmp = F::ONE;
-    for f in v.iter().filter(|f| !f.is_zero_vartime()) {
-        tmp.mul_assign(f);
+    for f in v.iter().filter(|f| !f.is_zero()) {
+        tmp.mul_assign(*f);
         prod.push(tmp);
     }
 
     // Invert `tmp`.
-    tmp = tmp.invert().unwrap(); // Guaranteed to be nonzero.
+    tmp = tmp.try_inverse().unwrap(); // Guaranteed to be nonzero.
 
     // Multiply product by coeff, so all inverses will be scaled by coeff
-    tmp *= coeff;
+    tmp *= *coeff;
 
     // Second pass: iterate backwards to compute inverses
     for (f, s) in v
@@ -87,7 +87,7 @@ fn serial_batch_inversion_and_mul<F: PrimeField>(v: &mut [F], coeff: &F) {
         // Backwards
         .rev()
         // Ignore normalized elements
-        .filter(|f| !f.is_zero_vartime())
+        .filter(|f| !f.is_zero())
         // Backwards, skip last element, fill in one for last term.
         .zip(prod.into_iter().rev().skip(1).chain(Some(F::ONE)))
     {
@@ -98,27 +98,22 @@ fn serial_batch_inversion_and_mul<F: PrimeField>(v: &mut [F], coeff: &F) {
     }
 }
 
-pub(crate) fn extrapolate<F: PrimeField>(points: &[F], weights: &[F], evals: &[F], at: &F) -> F {
+pub(crate) fn extrapolate<F: Field>(points: &[F], weights: &[F], evals: &[F], at: &F) -> F {
     inner_extrapolate::<F, true>(points, weights, evals, at)
 }
 
-pub(crate) fn serial_extrapolate<F: PrimeField>(
-    points: &[F],
-    weights: &[F],
-    evals: &[F],
-    at: &F,
-) -> F {
+pub(crate) fn serial_extrapolate<F: Field>(points: &[F], weights: &[F], evals: &[F], at: &F) -> F {
     inner_extrapolate::<F, false>(points, weights, evals, at)
 }
 
-fn inner_extrapolate<F: PrimeField, const IS_PARALLEL: bool>(
+fn inner_extrapolate<F: Field, const IS_PARALLEL: bool>(
     points: &[F],
     weights: &[F],
     evals: &[F],
     at: &F,
 ) -> F {
     let (coeffs, sum_inv) = {
-        let mut coeffs = points.iter().map(|point| *at - point).collect::<Vec<_>>();
+        let mut coeffs = points.iter().map(|point| *at - *point).collect::<Vec<_>>();
         if IS_PARALLEL {
             batch_inversion(&mut coeffs);
         } else {
@@ -126,16 +121,16 @@ fn inner_extrapolate<F: PrimeField, const IS_PARALLEL: bool>(
         }
         let mut sum = F::ZERO;
         coeffs.iter_mut().zip(weights).for_each(|(coeff, weight)| {
-            *coeff *= weight;
+            *coeff *= *weight;
             sum += *coeff
         });
-        let sum_inv = sum.invert().unwrap_or(F::ZERO);
+        let sum_inv = sum.try_inverse().unwrap_or(F::ZERO);
         (coeffs, sum_inv)
     };
     coeffs
         .iter()
         .zip(evals)
-        .map(|(coeff, eval)| *coeff * eval)
+        .map(|(coeff, eval)| *coeff * *eval)
         .sum::<F>()
         * sum_inv
 }
@@ -150,7 +145,7 @@ fn inner_extrapolate<F: PrimeField, const IS_PARALLEL: bool>(
 /// negligible compared to field operations.
 /// TODO: The quadratic term can be removed by precomputing the lagrange
 /// coefficients.
-pub(crate) fn interpolate_uni_poly<F: PrimeField>(p_i: &[F], eval_at: F) -> F {
+pub(crate) fn interpolate_uni_poly<F: Field>(p_i: &[F], eval_at: F) -> F {
     let start = start_timer!(|| "sum check interpolate uni poly opt");
 
     let len = p_i.len();
@@ -160,7 +155,7 @@ pub(crate) fn interpolate_uni_poly<F: PrimeField>(p_i: &[F], eval_at: F) -> F {
 
     // `prod = \prod_{j} (eval_at - j)`
     for e in 1..len {
-        let tmp = eval_at - F::from(e as u64);
+        let tmp = eval_at - F::from_canonical_u64(e as u64);
         evals.push(tmp);
         prod *= tmp;
     }
@@ -187,12 +182,12 @@ pub(crate) fn interpolate_uni_poly<F: PrimeField>(p_i: &[F], eval_at: F) -> F {
     let mut denom_down = F::ONE;
 
     for i in (0..len).rev() {
-        res += p_i[i] * prod * denom_down * (denom_up * evals[i]).invert().unwrap();
+        res += p_i[i] * prod * denom_down * (denom_up * evals[i]).inverse();
 
         // compute denom for the next step is current_denom * (len-i)/i
         if i != 0 {
-            denom_up *= -F::from((len - i) as u64);
-            denom_down *= F::from(i as u64);
+            denom_up *= -F::from_canonical_u64((len - i) as u64);
+            denom_down *= F::from_canonical_u64(i as u64);
         }
     }
     end_timer!(start);
@@ -201,10 +196,10 @@ pub(crate) fn interpolate_uni_poly<F: PrimeField>(p_i: &[F], eval_at: F) -> F {
 
 /// compute the factorial(a) = 1 * 2 * ... * a
 #[inline]
-fn field_factorial<F: PrimeField>(a: usize) -> F {
+fn field_factorial<F: Field>(a: usize) -> F {
     let mut res = F::ONE;
     for i in 2..=a {
-        res *= F::from(i as u64);
+        res *= F::from_canonical_u64(i as u64);
     }
     res
 }

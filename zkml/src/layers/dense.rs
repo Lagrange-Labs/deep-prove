@@ -57,6 +57,7 @@ pub struct DenseCtx<E> {
 
 /// Proof of the layer.
 #[derive(Default, Clone, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct DenseProof<E: ExtensionField> {
     /// the actual sumcheck proof proving the mat2vec protocol
     pub(crate) sumcheck: IOPProof<E>,
@@ -650,13 +651,15 @@ impl<E: ExtensionField> DenseProof<E> {
     /// Returns the individual claims f_1(r) f_2(r)  f_3(r) ... at the end of a sumcheck multiplied
     /// together
     pub fn individual_to_virtual_claim(&self) -> E {
-        self.individual_claims.iter().fold(E::ONE, |acc, e| acc * e)
+        self.individual_claims
+            .iter()
+            .fold(E::ONE, |acc, e| acc * *e)
     }
 }
 
 #[cfg(test)]
 mod test {
-    use goldilocks::GoldilocksExt2;
+    use ff_ext::GoldilocksExt2;
 
     use crate::layers::provable::evaluate_layer;
 
@@ -755,11 +758,12 @@ mod test {
     #[test]
     fn test_dense_pad_mixed_dimensions() {
         // Create a Dense layer with one power-of-two dimension and one non-power-of-two
-        let matrix =
-            Tensor::<Element>::matix_from_coeffs(vec![vec![1, 2, 3, 4], vec![5, 6, 7, 8], vec![
-                9, 10, 11, 12,
-            ]])
-            .unwrap();
+        let matrix = Tensor::<Element>::matix_from_coeffs(vec![
+            vec![1, 2, 3, 4],
+            vec![5, 6, 7, 8],
+            vec![9, 10, 11, 12],
+        ])
+        .unwrap();
 
         let bias = Tensor::<Element>::new(vec![3], vec![20, 21, 22]);
 

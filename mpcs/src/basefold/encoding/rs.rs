@@ -7,9 +7,9 @@ use crate::{
     vec_mut,
 };
 use ark_std::{end_timer, start_timer};
-use ff::{Field, PrimeField};
 use ff_ext::ExtensionField;
 use multilinear_extensions::mle::FieldType;
+use p3_field::{Field, FieldAlgebra, PrimeField, TwoAdicField};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -28,11 +28,11 @@ pub trait RSCodeSpec: std::fmt::Debug + Clone {
 /// The FFT codes in this file are borrowed and adapted from Plonky2.
 type FftRootTable<F> = Vec<Vec<F>>;
 
-pub fn fft_root_table<F: PrimeField>(lg_n: usize) -> FftRootTable<F> {
+pub fn fft_root_table<F: PrimeField + TwoAdicField>(lg_n: usize) -> FftRootTable<F> {
     // bases[i] = g^2^i, for i = 0, ..., lg_n - 1
     // Note that the end of bases is g^{n/2} = -1
     let mut bases = Vec::with_capacity(lg_n);
-    let mut base = F::ROOT_OF_UNITY.pow([(1 << (F::S - lg_n as u32)) as u64]);
+    let mut base = F::two_adic_generator(lg_n);
     bases.push(base);
     for _ in 1..lg_n {
         base = base.square(); // base = g^2^_
@@ -71,9 +71,8 @@ fn ifft<E: ExtensionField>(
     let n = poly.len();
     let lg_n = log2_strict(n);
     let n_inv = (E::BaseField::ONE + E::BaseField::ONE)
-        .invert()
-        .unwrap()
-        .pow([lg_n as u64]);
+        .inverse()
+        .exp_u64(lg_n as u64);
 
     fft(poly, zero_factor, root_table);
 
@@ -275,7 +274,9 @@ where
 
     fn setup(max_message_size_log: usize) -> Self::PublicParameters {
         RSCodeParameters {
-            fft_root_table: fft_root_table(max_message_size_log + Spec::get_rate_log()),
+            fft_root_table: fft_root_table::<E::BaseField>(
+                max_message_size_log + Spec::get_rate_log(),
+            ),
         }
     }
 
@@ -310,13 +311,13 @@ where
         }
         let mut gamma_powers = Vec::with_capacity(max_message_size_log);
         let mut gamma_powers_inv = Vec::with_capacity(max_message_size_log);
-        gamma_powers.push(E::BaseField::MULTIPLICATIVE_GENERATOR);
-        gamma_powers_inv.push(E::BaseField::MULTIPLICATIVE_GENERATOR.invert().unwrap());
+        gamma_powers.push(E::BaseField::GENERATOR);
+        gamma_powers_inv.push(E::BaseField::GENERATOR.inverse());
         for i in 1..max_message_size_log + Spec::get_rate_log() {
             gamma_powers.push(gamma_powers[i - 1].square());
             gamma_powers_inv.push(gamma_powers_inv[i - 1].square());
         }
-        let inv_of_two = E::BaseField::from(2).invert().unwrap();
+        let inv_of_two = E::BaseField::from_canonical_u64(2).inverse();
         gamma_powers_inv.iter_mut().for_each(|x| *x *= inv_of_two);
         pp.fft_root_table
             .truncate(max_message_size_log + Spec::get_rate_log());
@@ -427,7 +428,7 @@ where
         } else {
             // In this case, the level-th row of fft root table of the verifier
             // only stores the first 2^(level+1)-th roots of unity.
-            vp.fft_root_table[level][0].pow([index as u64])
+            vp.fft_root_table[level][0].exp_u64(index as u64)
         } * vp.gamma_powers[vp.full_message_size_log + Spec::get_rate_log() - level - 1];
         let x1 = -x0;
         // The weight is 1/(x1-x0) = -1/(2x0)
@@ -447,7 +448,7 @@ where
             } else {
                 // In this case, this level of fft root table of the verifier
                 // only stores the first 2^(level+1)-th root of unity.
-                vp.fft_root_table[level][0].pow([(1 << (level + 1)) - index as u64])
+                vp.fft_root_table[level][0].exp_u64((1 << (level + 1)) - index as u64)
             };
         (E::from(x0), E::from(x1), E::from(w))
     }
@@ -490,10 +491,9 @@ impl<Spec: RSCodeSpec> RSCode<Spec> {
         // of size n * rate.
         // When the input message size is not n, but n/2^k, then the domain is
         // gamma^2^k H.
-        let k = 1 << (full_message_size_log - lg_m);
         coset_fft(
             &mut ret,
-            E::BaseField::MULTIPLICATIVE_GENERATOR.pow([k]),
+            E::BaseField::GENERATOR.exp_power_of_2(full_message_size_log - lg_m),
             Spec::get_rate_log(),
             fft_root_table,
         );
@@ -511,13 +511,11 @@ impl<Spec: RSCodeSpec> RSCode<Spec> {
         let index = reverse_bits(index, level);
         // x0 is the index-th 2^(level+1)-th root of unity, multiplied by
         // the shift factor at level+1, which is gamma^2^(full_codeword_log_n - level - 1).
-        let x0 = E::BaseField::ROOT_OF_UNITY
-            .pow([1 << (E::BaseField::S - (level as u32 + 1))])
-            .pow([index as u64])
-            * E::BaseField::MULTIPLICATIVE_GENERATOR
-                .pow([1 << (full_message_size_log + Spec::get_rate_log() - level - 1)]);
+        let x0 = E::BaseField::two_adic_generator(level + 1).exp_u64(index as u64)
+            * E::BaseField::GENERATOR
+                .exp_power_of_2(full_message_size_log + Spec::get_rate_log() - level - 1);
         let x1 = -x0;
-        let w = (x1 - x0).invert().unwrap();
+        let w = (x1 - x0).inverse();
         (E::from(x0), E::from(x1), E::from(w))
     }
 }
@@ -527,7 +525,7 @@ fn naive_fft<E: ExtensionField>(poly: &[E], rate: usize, shift: E::BaseField) ->
     let timer = start_timer!(|| "Encode RSCode");
     let message_size = poly.len();
     let domain_size_bit = log2_strict(message_size * rate);
-    let root = E::BaseField::ROOT_OF_UNITY.pow([1 << (E::BaseField::S - domain_size_bit as u32)]);
+    let root = E::BaseField::two_adic_generator(domain_size_bit);
     // The domain is shift * H where H is the multiplicative subgroup of size
     // message_size * rate.
     let mut domain = Vec::<E::BaseField>::with_capacity(message_size * rate);
@@ -546,19 +544,24 @@ fn naive_fft<E: ExtensionField>(poly: &[E], rate: usize, shift: E::BaseField) ->
 
 #[cfg(test)]
 mod tests {
+    use ff_ext::GoldilocksExt2;
+    use p3_goldilocks::Goldilocks;
+
     use crate::{
         basefold::encoding::test_util::test_codeword_folding,
         util::{field_type_index_ext, plonky2_util::reverse_index_bits_in_place_field_type},
     };
+    use ff_ext::FromUniformBytes;
 
     use super::*;
-    use goldilocks::{Goldilocks, GoldilocksExt2};
 
     #[test]
     fn test_naive_fft() {
         let num_vars = 5;
 
-        let poly: Vec<GoldilocksExt2> = (0..(1 << num_vars)).map(GoldilocksExt2::from).collect();
+        let poly: Vec<GoldilocksExt2> = (0..(1 << num_vars))
+            .map(GoldilocksExt2::from_canonical_u64)
+            .collect();
         let mut poly2 = FieldType::Ext(poly.clone());
 
         let naive = naive_fft::<GoldilocksExt2>(&poly, 1, Goldilocks::ONE);
@@ -583,15 +586,10 @@ mod tests {
             .collect();
         let mut poly2 = FieldType::Ext(poly.clone());
 
-        let naive = naive_fft::<GoldilocksExt2>(&poly, 1, Goldilocks::MULTIPLICATIVE_GENERATOR);
+        let naive = naive_fft::<GoldilocksExt2>(&poly, 1, Goldilocks::GENERATOR);
 
         let root_table = fft_root_table(num_vars);
-        coset_fft::<GoldilocksExt2>(
-            &mut poly2,
-            Goldilocks::MULTIPLICATIVE_GENERATOR,
-            0,
-            &root_table,
-        );
+        coset_fft::<GoldilocksExt2>(&mut poly2, Goldilocks::GENERATOR, 0, &root_table);
 
         let poly2 = match poly2 {
             FieldType::Ext(coeffs) => coeffs,
@@ -613,19 +611,10 @@ mod tests {
         poly2.as_mut_slice()[..poly.len()].copy_from_slice(poly.as_slice());
         let mut poly2 = FieldType::Ext(poly2.clone());
 
-        let naive = naive_fft::<GoldilocksExt2>(
-            &poly,
-            1 << rate_bits,
-            Goldilocks::MULTIPLICATIVE_GENERATOR,
-        );
+        let naive = naive_fft::<GoldilocksExt2>(&poly, 1 << rate_bits, Goldilocks::GENERATOR);
 
         let root_table = fft_root_table(num_vars + rate_bits);
-        coset_fft::<GoldilocksExt2>(
-            &mut poly2,
-            Goldilocks::MULTIPLICATIVE_GENERATOR,
-            rate_bits,
-            &root_table,
-        );
+        coset_fft::<GoldilocksExt2>(&mut poly2, Goldilocks::GENERATOR, rate_bits, &root_table);
 
         let poly2 = match poly2 {
             FieldType::Ext(coeffs) => coeffs,
@@ -638,7 +627,9 @@ mod tests {
     fn test_ifft() {
         let num_vars = 5;
 
-        let poly: Vec<GoldilocksExt2> = (0..(1 << num_vars)).map(GoldilocksExt2::from).collect();
+        let poly: Vec<GoldilocksExt2> = (0..(1 << num_vars))
+            .map(GoldilocksExt2::from_canonical_u64)
+            .collect();
         let mut poly = FieldType::Ext(poly);
         let original = poly.clone();
 
@@ -686,14 +677,14 @@ mod tests {
     pub fn test_colinearity() {
         let num_vars = 10;
 
-        let poly: Vec<E> = (0..(1 << num_vars)).map(E::from).collect();
+        let poly: Vec<E> = (0..(1 << num_vars)).map(E::from_canonical_u64).collect();
         let poly = FieldType::Ext(poly);
 
         let pp = <Code as EncodingScheme<E>>::setup(num_vars);
         let (pp, _) = Code::trim(pp, num_vars).unwrap();
         let mut codeword = Code::encode(&pp, &poly);
         reverse_index_bits_in_place_field_type(&mut codeword);
-        let challenge = E::from(2);
+        let challenge = E::from_canonical_u64(2);
         let folded_codeword = Code::fold_bitreversed_codeword(&pp, &codeword, challenge);
         let codeword = match codeword {
             FieldType::Ext(coeffs) => coeffs,
@@ -712,8 +703,8 @@ mod tests {
             // which is equivalent to
             // (x0-challenge)*(b[1]-a) = (x1-challenge)*(b[0]-a)
             assert_eq!(
-                (x0 - challenge) * (b[1] - a),
-                (x1 - challenge) * (b[0] - a),
+                (x0 - challenge) * (b[1] - *a),
+                (x1 - challenge) * (b[0] - *a),
                 "failed for i = {}",
                 i
             );
@@ -724,7 +715,7 @@ mod tests {
     pub fn test_low_degree() {
         let num_vars = 10;
 
-        let poly: Vec<E> = (0..(1 << num_vars)).map(E::from).collect();
+        let poly: Vec<E> = (0..(1 << num_vars)).map(E::from_canonical_u64).collect();
         let poly = FieldType::Ext(poly);
 
         let pp = <Code as EncodingScheme<E>>::setup(num_vars);
@@ -777,10 +768,11 @@ mod tests {
         assert_eq!(left_right_diff[0], c0 - c_mid);
         reverse_index_bits_in_place(&mut left_right_diff);
         assert_eq!(left_right_diff[1], c1 - c_mid1);
-        let root_of_unity_inv = F::ROOT_OF_UNITY_INV
-            .pow([1 << (F::S as usize - log2_strict(left_right_diff.len()) - 1)]);
+        let root_of_unity_inv = F::two_adic_generator(F::TWO_ADICITY)
+            .inverse()
+            .exp_power_of_2(F::TWO_ADICITY - log2_strict(left_right_diff.len()) - 1);
         for (i, coeff) in left_right_diff.iter_mut().enumerate() {
-            *coeff *= root_of_unity_inv.pow([i as u64]);
+            *coeff *= root_of_unity_inv.exp_u64(i as u64);
         }
         assert_eq!(left_right_diff[0], c0 - c_mid);
         assert_eq!(left_right_diff[1], (c1 - c_mid1) * root_of_unity_inv);
@@ -789,7 +781,7 @@ mod tests {
             "check low degree of (left-right)*omega^(-i)",
         );
 
-        let challenge = E::from(2);
+        let challenge = E::from_canonical_u64(2);
         let folded_codeword = Code::fold_bitreversed_codeword(&pp, &codeword, challenge);
         let c_fold = folded_codeword[0];
         let c_fold1 = folded_codeword[folded_codeword.len() >> 1];
@@ -800,7 +792,7 @@ mod tests {
 
         // The top level folding coefficient should have shift factor gamma
         let folding_coeffs = Code::prover_folding_coeffs(&pp, log2_strict(codeword.len()) - 1, 0);
-        assert_eq!(folding_coeffs.0, E::from(F::MULTIPLICATIVE_GENERATOR));
+        assert_eq!(folding_coeffs.0, E::from(F::GENERATOR));
         assert_eq!(folding_coeffs.0 + folding_coeffs.1, E::ZERO);
         assert_eq!(
             (folding_coeffs.1 - folding_coeffs.0) * folding_coeffs.2,
@@ -815,28 +807,25 @@ mod tests {
         // So the folded value should be equal to
         // (gamma^{-1} * alpha * (c0 - c_mid) + (c0 + c_mid)) / 2
         assert_eq!(
-            c_fold * F::MULTIPLICATIVE_GENERATOR * F::from(2),
-            challenge * (c0 - c_mid) + (c0 + c_mid) * F::MULTIPLICATIVE_GENERATOR
+            c_fold * F::GENERATOR * F::from_canonical_u64(2),
+            challenge * (c0 - c_mid) + (c0 + c_mid) * F::GENERATOR
         );
         assert_eq!(
-            c_fold * F::MULTIPLICATIVE_GENERATOR * F::from(2),
-            challenge * left_right_diff[0] + left_right_sum[0] * F::MULTIPLICATIVE_GENERATOR
+            c_fold * F::GENERATOR * F::from_canonical_u64(2),
+            challenge * left_right_diff[0] + left_right_sum[0] * F::GENERATOR
         );
         assert_eq!(
-            c_fold * F::from(2),
-            challenge * left_right_diff[0] * F::MULTIPLICATIVE_GENERATOR.invert().unwrap()
-                + left_right_sum[0]
+            c_fold * F::from_canonical_u64(2),
+            challenge * left_right_diff[0] * F::GENERATOR.inverse() + left_right_sum[0]
         );
 
         let folding_coeffs = Code::prover_folding_coeffs(&pp, log2_strict(codeword.len()) - 1, 1);
-        let root_of_unity =
-            F::ROOT_OF_UNITY.pow([1 << (F::S as usize - log2_strict(codeword.len()))]);
-        assert_eq!(root_of_unity.pow([codeword.len() as u64]), F::ONE);
-        assert_eq!(root_of_unity.pow([(codeword.len() >> 1) as u64]), -F::ONE);
+        let root_of_unity = F::two_adic_generator(log2_strict(codeword.len()));
+        assert_eq!(root_of_unity.exp_u64(codeword.len() as u64), F::ONE);
+        assert_eq!(root_of_unity.exp_u64((codeword.len() >> 1) as u64), -F::ONE);
         assert_eq!(
             folding_coeffs.0,
-            E::from(F::MULTIPLICATIVE_GENERATOR)
-                * E::from(root_of_unity).pow([(codeword.len() >> 2) as u64])
+            E::from(F::GENERATOR) * E::from(root_of_unity).exp_u64((codeword.len() >> 2) as u64)
         );
         assert_eq!(folding_coeffs.0 + folding_coeffs.1, E::ZERO);
         assert_eq!(
@@ -849,14 +838,14 @@ mod tests {
         // The coefficients are respectively 1/2 and gamma^{-1}/2 * alpha.
         // In another word, the folded codeword multipled by 2 is the linear
         // combination by coeffs: 1 and gamma^{-1} * alpha
-        let gamma_inv = F::MULTIPLICATIVE_GENERATOR.invert().unwrap();
+        let gamma_inv = F::GENERATOR.inverse();
         let b = challenge * gamma_inv;
         let folded_codeword_vec = match &folded_codeword {
             FieldType::Ext(coeffs) => coeffs.clone(),
             _ => panic!("Wrong field type"),
         };
         assert_eq!(
-            c_fold * F::from(2),
+            c_fold * F::from_canonical_u64(2),
             left_right_diff[0] * b + left_right_sum[0]
         );
         for (i, (c, (diff, sum))) in folded_codeword_vec
@@ -864,7 +853,7 @@ mod tests {
             .zip(left_right_diff.iter().zip(left_right_sum.iter()))
             .enumerate()
         {
-            assert_eq!(*c + c, *sum + b * diff, "failed for i = {}", i);
+            assert_eq!(*c + *c, *sum + b * *diff, "failed for i = {}", i);
         }
 
         check_low_degree(&folded_codeword, "low degree check for folded");

@@ -1,9 +1,8 @@
 use std::time::Duration;
 
 use criterion::*;
-use ff::Field;
-use goldilocks::GoldilocksExt2;
 
+use ff_ext::{FromUniformBytes, GoldilocksExt2};
 use itertools::Itertools;
 use mpcs::{
     Basefold, BasefoldRSParams, BasefoldSpec, EncodingScheme, PolynomialCommitmentScheme,

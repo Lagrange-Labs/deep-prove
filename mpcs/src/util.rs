@@ -3,14 +3,13 @@ pub mod expression;
 pub mod hash;
 pub mod parallel;
 pub mod plonky2_util;
-use ff::{Field, PrimeField};
-use ff_ext::ExtensionField;
-use goldilocks::SmallField;
+use ff_ext::{ExtensionField, SmallField};
 use itertools::{Either, Itertools, izip};
 use multilinear_extensions::mle::{DenseMultilinearExtension, FieldType};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 pub mod merkle_tree;
 use crate::{Error, util::parallel::parallelize};
+use p3_field::{FieldAlgebra, PrimeField};
 pub use plonky2_util::log2_strict;
 
 pub fn ext_to_usize<E: ExtensionField>(x: &E) -> usize {
@@ -23,7 +22,7 @@ pub fn base_to_usize<E: ExtensionField>(x: &E::BaseField) -> usize {
 }
 
 pub fn u32_to_field<E: ExtensionField>(x: u32) -> E::BaseField {
-    E::BaseField::from(x as u64)
+    E::BaseField::from_canonical_u32(x)
 }
 
 pub trait BitIndex {
@@ -38,7 +37,7 @@ impl BitIndex for usize {
 
 /// How many bytes are required to store n field elements?
 pub fn num_of_bytes<F: PrimeField>(n: usize) -> usize {
-    (F::NUM_BITS as usize).next_power_of_two() * n / 8
+    F::bits().next_power_of_two() * n / 8
 }
 
 macro_rules! impl_index {
@@ -118,8 +117,8 @@ pub fn field_type_index_mul_base<E: ExtensionField>(
     scalar: &E::BaseField,
 ) {
     match poly {
-        FieldType::Ext(coeffs) => coeffs[index] *= scalar,
-        FieldType::Base(coeffs) => coeffs[index] *= scalar,
+        FieldType::Ext(coeffs) => coeffs[index] *= *scalar,
+        FieldType::Base(coeffs) => coeffs[index] *= *scalar,
         _ => unreachable!(),
     }
 }
@@ -194,13 +193,13 @@ pub fn multiply_poly<E: ExtensionField>(poly: &mut DenseMultilinearExtension<E>,
     match &mut poly.evaluations {
         FieldType::Ext(coeffs) => {
             for coeff in coeffs.iter_mut() {
-                *coeff *= scalar;
+                *coeff *= *scalar;
             }
         }
         FieldType::Base(coeffs) => {
             *poly = DenseMultilinearExtension::<E>::from_evaluations_ext_vec(
                 poly.num_vars,
-                coeffs.iter().map(|x| E::from(*x) * scalar).collect(),
+                coeffs.iter().map(|x| E::from(*x) * *scalar).collect(),
             );
         }
         _ => unreachable!(),
@@ -320,11 +319,12 @@ pub fn ext_try_into_base<E: ExtensionField>(x: &E) -> Result<E::BaseField, Error
 pub mod test {
     #[cfg(test)]
     use crate::util::{base_to_usize, u32_to_field};
-    use ff::Field;
+    use ff_ext::FromUniformBytes;
+    use p3_field::FieldAlgebra;
     #[cfg(test)]
-    type E = goldilocks::GoldilocksExt2;
+    type E = ff_ext::GoldilocksExt2;
     #[cfg(test)]
-    type F = goldilocks::Goldilocks;
+    type F = p3_goldilocks::Goldilocks;
     use rand::{
         CryptoRng, RngCore, SeedableRng,
         rngs::{OsRng, StdRng},
@@ -343,17 +343,20 @@ pub mod test {
         range.start + (rng.next_u64() as usize % (range.end - range.start))
     }
 
-    pub fn rand_array<F: Field, const N: usize>(mut rng: impl RngCore) -> [F; N] {
+    pub fn rand_array<F: FromUniformBytes, const N: usize>(mut rng: impl RngCore) -> [F; N] {
         array::from_fn(|_| F::random(&mut rng))
     }
 
-    pub fn rand_vec<F: Field>(n: usize, mut rng: impl RngCore) -> Vec<F> {
+    pub fn rand_vec<F: FromUniformBytes>(n: usize, mut rng: impl RngCore) -> Vec<F> {
         iter::repeat_with(|| F::random(&mut rng)).take(n).collect()
     }
 
     #[test]
     pub fn test_field_transform() {
-        assert_eq!(F::from(2) * F::from(3), F::from(6));
+        assert_eq!(
+            F::from_canonical_u64(2) * F::from_canonical_u64(3),
+            F::from_canonical_u64(6)
+        );
         assert_eq!(base_to_usize::<E>(&u32_to_field::<E>(1u32)), 1);
         assert_eq!(base_to_usize::<E>(&u32_to_field::<E>(10u32)), 10);
     }
