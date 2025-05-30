@@ -46,8 +46,8 @@ transform = transforms.Compose([
 train_dataset = datasets.ImageFolder(root=TRAIN_PATH, transform=transform)
 val_dataset = datasets.ImageFolder(root=VAL_PATH, transform=transform)
 
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
 
 
 class CNNModel(nn.Module):
@@ -123,8 +123,8 @@ class CNNModel(nn.Module):
         # Dense layers with dropout
         x = self.relu(self.fc1(x))
         x = self.dropout2(x)
-        x = self.sigmoid(self.fc2(x))
-        # x = self.relu(self.fc2(x))
+        # x = self.sigmoid(self.fc2(x))
+        x = self.relu(self.fc2(x))
 
         return x
 
