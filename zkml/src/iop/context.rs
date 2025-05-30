@@ -164,11 +164,14 @@ where
                 .collect::<anyhow::Result<Vec<_>>>()?;
             ctx_aux.last_output_shape = node_input_shapes;
             let (info, new_aux) = node.step_info(id as PolyID, ctx_aux)?;
-            step_infos.insert(id, NodeCtx {
-                inputs: node.inputs.clone(),
-                outputs: node.outputs.clone(),
-                ctx: info,
-            });
+            step_infos.insert(
+                id,
+                NodeCtx {
+                    inputs: node.inputs.clone(),
+                    outputs: node.outputs.clone(),
+                    ctx: info,
+                },
+            );
             ctx_aux = new_aux;
             shapes.insert(id, ctx_aux.last_output_shape.clone());
         }

@@ -44,8 +44,9 @@ fn test_eq_xr() {
 
 #[test]
 fn test_fix_high_variables() {
-    let poly: DenseMultilinearExtension<E> =
-        DenseMultilinearExtension::from_evaluations_vec(3, vec![
+    let poly: DenseMultilinearExtension<E> = DenseMultilinearExtension::from_evaluations_vec(
+        3,
+        vec![
             Goldilocks::from(13),
             Goldilocks::from(97),
             Goldilocks::from(11),
@@ -54,16 +55,15 @@ fn test_fix_high_variables() {
             Goldilocks::from(103),
             Goldilocks::from(5),
             Goldilocks::from(107),
-        ]);
+        ],
+    );
 
     let partial_point = vec![E::from(3), E::from(5)];
 
-    let expected1 = DenseMultilinearExtension::from_evaluations_ext_vec(2, vec![
-        -E::from(17),
-        E::from(127),
-        -E::from(19),
-        E::from(131),
-    ]);
+    let expected1 = DenseMultilinearExtension::from_evaluations_ext_vec(
+        2,
+        vec![-E::from(17), E::from(127), -E::from(19), E::from(131)],
+    );
     let result1 = poly.fix_high_variables(&partial_point[1..]);
     assert_eq!(result1, expected1);
 

@@ -75,7 +75,8 @@ where
 
     pub fn get_challenges_by_name(&self, name: &String) -> Option<(E, E)> {
         self.challenge_map
-            .get(name).map(|challenges| (self.constant_challenge, *challenges))
+            .get(name)
+            .map(|challenges| (self.constant_challenge, *challenges))
     }
 }
 

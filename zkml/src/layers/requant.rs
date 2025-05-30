@@ -198,10 +198,7 @@ where
         );
 
         gen.tables.insert(TableType::Range);
-        let table_lookup_map = gen
-            .lookups
-            .entry(TableType::Range)
-            .or_default();
+        let table_lookup_map = gen.lookups.entry(TableType::Range).or_default();
 
         let (merged_lookups, column_evals) =
             self.lookup_witness::<E>(step_data.inputs[0].get_data());

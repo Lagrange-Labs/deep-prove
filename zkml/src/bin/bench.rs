@@ -59,9 +59,7 @@ struct Args {
 
 // Helper function to parse a single usize
 fn parse_usize(s: &str) -> Result<usize, String> {
-    s.trim()
-        .parse()
-        .map_err(|e| format!("Invalid index: {e}"))
+    s.trim().parse().map_err(|e| format!("Invalid index: {e}"))
 }
 
 pub fn main() -> anyhow::Result<()> {
@@ -184,7 +182,6 @@ impl InputJSON {
             );
         }
 
-        
         calculate_average_accuracy(&accuracies)
     }
 }
@@ -289,10 +286,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     // Track failed inputs
     let mut failed_inputs = Vec::new();
 
-    let input_iter = inputs
-        .into_iter()
-        .zip(given_outputs)
-        .enumerate();
+    let input_iter = inputs.into_iter().zip(given_outputs).enumerate();
 
     for (i, (input, given_output)) in input_iter {
         let mut bencher = CSVBencher::from_headers(vec![

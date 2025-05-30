@@ -178,10 +178,7 @@ where
     fn to_fields(self) -> Tensor<F> {
         Tensor::new(
             self.get_shape(),
-            self.get_data()
-                .iter()
-                .map(|i| i.to_field())
-                .collect_vec(),
+            self.get_data().iter().map(|i| i.to_field()).collect_vec(),
         )
     }
 }

@@ -1,4 +1,3 @@
-
 use crate::{
     Claim, Element, Prover,
     commit::same_poly,
@@ -192,10 +191,7 @@ where
             .unzip();
 
         let (col_one, col_two): (Vec<E::BaseField>, Vec<E::BaseField>) = field.into_iter().unzip();
-        let table_lookup_map = gen
-            .lookups
-            .entry(TableType::Relu)
-            .or_default();
+        let table_lookup_map = gen.lookups.entry(TableType::Relu).or_default();
 
         merged_lookups
             .into_iter()

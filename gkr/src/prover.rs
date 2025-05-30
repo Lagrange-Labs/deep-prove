@@ -296,9 +296,12 @@ impl<E: ExtensionField> IOPProverState<E> {
         end_timer!(timer);
         exit_span!(span);
 
-        (IOPProof { sumcheck_proofs }, GKRInputClaims {
-            point_and_evals: prover_state.to_next_phase_point_and_evals,
-        })
+        (
+            IOPProof { sumcheck_proofs },
+            GKRInputClaims {
+                point_and_evals: prover_state.to_next_phase_point_and_evals,
+            },
+        )
     }
 
     /// Initialize proving state for data parallel circuits.

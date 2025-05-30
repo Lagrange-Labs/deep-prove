@@ -1,4 +1,3 @@
-
 use crate::{
     Claim, Element, Prover,
     commit::{compute_betas_eval, identity_eval, precommit::PolyID, same_poly},
@@ -212,10 +211,7 @@ where
         );
 
         gen.tables.insert(TableType::Range);
-        let table_lookup_map = gen
-            .lookups
-            .entry(TableType::Range)
-            .or_default();
+        let table_lookup_map = gen.lookups.entry(TableType::Range).or_default();
 
         let (merged_lookups, column_evals) = self.lookup_witness::<E>(&step_data.inputs[0]);
 
@@ -969,10 +965,12 @@ mod tests {
                 .map(|chal| chal.elements)
                 .collect::<Vec<F>>();
 
-            let fixed_points = [[F::ZERO, F::ZERO], [F::ZERO, F::ONE], [F::ONE, F::ZERO], [
-                F::ONE,
-                F::ONE,
-            ]]
+            let fixed_points = [
+                [F::ZERO, F::ZERO],
+                [F::ZERO, F::ONE],
+                [F::ONE, F::ZERO],
+                [F::ONE, F::ONE],
+            ]
             .map(|pair| {
                 [
                     &[pair[0]],
