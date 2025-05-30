@@ -110,13 +110,13 @@ where
 }
 
 pub trait PolynomialCommitmentScheme<E: ExtensionField>: Clone + Debug {
-    type Param: Clone + Debug + Serialize + DeserializeOwned;
-    type ProverParam: Clone + Debug + Serialize + DeserializeOwned;
-    type VerifierParam: Clone + Debug + Serialize + DeserializeOwned;
-    type CommitmentWithWitness: Clone + Debug + Serialize + DeserializeOwned;
-    type Commitment: Clone + Debug + Default + Serialize + DeserializeOwned;
+    type Param: Clone + Debug + Serialize + DeserializeOwned + Send + Sync;
+    type ProverParam: Clone + Debug + Serialize + DeserializeOwned + Send + Sync;
+    type VerifierParam: Clone + Debug + Serialize + DeserializeOwned + Send + Sync;
+    type CommitmentWithWitness: Clone + Debug + Serialize + DeserializeOwned + Send + Sync;
+    type Commitment: Clone + Debug + Default + Serialize + DeserializeOwned + Send + Sync;
     type CommitmentChunk: Clone + Debug + Default;
-    type Proof: Clone + Debug + Serialize + DeserializeOwned;
+    type Proof: Clone + Debug + Serialize + DeserializeOwned + Send + Sync;
 
     fn setup(poly_size: usize) -> Result<Self::Param, Error>;
 
@@ -274,7 +274,7 @@ where
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Copy)]
 pub struct Evaluation<F> {
     poly: usize,
     point: usize,
@@ -574,6 +574,94 @@ pub mod test_util {
                 let v_challenge = transcript.read_challenge();
                 assert_eq!(challenge, v_challenge);
             }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn run_batch_commit_open_verify_multiple_sizes<E, Pcs>(
+        gen_rand_poly: fn(usize) -> DenseMultilinearExtension<E>,
+        num_vars_start: usize,
+        num_vars_end: usize,
+    ) where
+        E: ExtensionField,
+        Pcs: PolynomialCommitmentScheme<E>,
+    {
+        // Generate a poly, comm and two points per num_vars
+        let (pp, vp) = setup_pcs::<E, Pcs>(num_vars_end);
+        let mut transcript = BasicTranscript::new(b"BaseFold");
+        let polys = (num_vars_start..num_vars_end)
+            .flat_map(|num_vars| gen_rand_polys(|_| num_vars, 2, gen_rand_poly))
+            .collect::<Vec<DenseMultilinearExtension<E>>>();
+
+        let comms = commit_polys_individually::<E, Pcs>(&pp, polys.as_slice(), &mut transcript);
+
+        let (points, evals) = (num_vars_start..num_vars_end).enumerate().fold(
+            (vec![], vec![]),
+            |(mut points_acc, mut evals_acc), (i, num_vars)| {
+                let point = get_points_from_challenge(|_| num_vars, 1, &mut transcript)
+                    .first()
+                    .unwrap()
+                    .clone();
+
+                let eval_1 = Evaluation {
+                    poly: 2 * i,
+                    point: i,
+                    value: polys[2 * i].evaluate(&point),
+                };
+
+                let eval_2 = Evaluation {
+                    poly: 2 * i + 1,
+                    point: i,
+                    value: polys[2 * i + 1].evaluate(&point),
+                };
+
+                points_acc.push(point);
+                evals_acc.push(eval_1);
+                evals_acc.push(eval_2);
+                (points_acc, evals_acc)
+            },
+        );
+
+        let values: Vec<E> = evals
+            .iter()
+            .map(Evaluation::value)
+            .copied()
+            .collect::<Vec<E>>();
+        transcript.append_field_element_exts(values.as_slice());
+
+        let proof = Pcs::batch_open(&pp, &polys, &comms, &points, &evals, &mut transcript).unwrap();
+        let challenge = transcript.read_challenge();
+        // Batch verify
+        {
+            let mut transcript = BasicTranscript::new(b"BaseFold");
+            let comms = comms
+                .iter()
+                .map(|comm| {
+                    let comm = Pcs::get_pure_commitment(comm);
+                    Pcs::write_commitment(&comm, &mut transcript).unwrap();
+                    comm
+                })
+                .collect_vec();
+
+            let points = (num_vars_start..num_vars_end)
+                .map(|num_vars| {
+                    get_points_from_challenge(|_| num_vars, 1, &mut transcript)
+                        .first()
+                        .unwrap()
+                        .clone()
+                })
+                .collect::<Vec<Vec<E>>>();
+
+            let values: Vec<E> = evals
+                .iter()
+                .map(Evaluation::value)
+                .copied()
+                .collect::<Vec<E>>();
+            transcript.append_field_element_exts(values.as_slice());
+
+            Pcs::batch_verify(&vp, &comms, &points, &evals, &proof, &mut transcript).unwrap();
+            let v_challenge = transcript.read_challenge();
+            assert_eq!(challenge, v_challenge);
         }
     }
 

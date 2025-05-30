@@ -13,15 +13,17 @@ use std::fmt::Debug;
 use anyhow::{Result, bail};
 use ff_ext::ExtensionField;
 use flatten::Flatten;
+use mpcs::PolynomialCommitmentScheme;
 use pooling::{PoolingCtx, PoolingProof};
 use provable::{
-    Evaluate, LayerOut, Node, OpInfo, PadOp, ProvableOp, ProveInfo, QuantizeOp, QuantizeOutput,
+    Evaluate, LayerOut, Node, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, QuantizeOp,
+    QuantizeOutput,
 };
 use requant::RequantCtx;
 use transcript::Transcript;
 
 use crate::{
-    Element, ScalingStrategy,
+    Context, Element, ScalingStrategy,
     commit::precommit::PolyID,
     iop::context::{ContextAux, ShapeStep, TableCtx},
     layers::{
@@ -81,15 +83,17 @@ where
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub enum LayerProof<E: ExtensionField>
+pub enum LayerProof<E, PCS>
 where
+    E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
 {
     Dense(DenseProof<E>),
     Convolution(ConvProof<E>),
-    Activation(ActivationProof<E>),
-    Requant(RequantProof<E>),
-    Pooling(PoolingProof<E>),
+    Activation(ActivationProof<E, PCS>),
+    Requant(RequantProof<E, PCS>),
+    Pooling(PoolingProof<E, PCS>),
     Dummy, // To be used for non-provable layers
 }
 
@@ -112,7 +116,10 @@ where
     }
 
     pub fn has_proof(&self) -> bool {
-        !matches!(self, Self::Flatten | Self::Table(_) | Self::SchoolBookConvolution(_))
+        !matches!(
+            self,
+            Self::Flatten | Self::Table(_) | Self::SchoolBookConvolution(_)
+        )
     }
 
     pub fn output_shape(&self, input_shape: &[usize], padding_mode: PaddingMode) -> Vec<usize> {
@@ -125,12 +132,11 @@ where
             Self::Activation(..) => input_shape.to_vec(),
             Self::Requant(..) => input_shape.to_vec(),
             Self::Pooling(ref pooling) => pooling.output_shape(input_shape),
-            Self::Flatten => <Flatten as OpInfo>::output_shapes(
-                &Flatten,
-                &[input_shape.to_vec()],
-                padding_mode,
-            )[0]
-            .clone(),
+            Self::Flatten => {
+                <Flatten as OpInfo>::output_shapes(&Flatten, &[input_shape.to_vec()], padding_mode)
+                    [0]
+                .clone()
+            }
             Self::Table(..) => panic!("Table should NOT be used in proving"),
         }
     }
@@ -195,7 +201,7 @@ where
 
     pub(crate) fn step_info<E>(
         &self,
-        id: PolyID,
+        id: NodeId,
         aux: ContextAux,
     ) -> Result<(LayerCtx<E>, ContextAux)>
     where
@@ -364,10 +370,11 @@ impl PadOp for Layer<Element> {
     }
 }
 
-impl<E: ExtensionField> ProvableOp<E> for Layer<Element>
+impl<E, PCS> ProvableOp<E, PCS> for Layer<Element>
 where
     E::BaseField: Serialize + DeserializeOwned,
-    E: Serialize + DeserializeOwned,
+    E: ExtensionField + Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
 {
     type Ctx = LayerCtx<E>;
 
@@ -377,7 +384,7 @@ where
         ctx: &Self::Ctx,
         last_claims: Vec<&crate::Claim<E>>,
         step_data: &StepData<E, E>,
-        prover: &mut crate::Prover<E, T>,
+        prover: &mut crate::Prover<E, T, PCS>,
     ) -> Result<Vec<crate::Claim<E>>> {
         match self {
             Layer::Dense(dense) => {
@@ -425,20 +432,23 @@ where
     fn gen_lookup_witness(
         &self,
         id: provable::NodeId,
-        gen: &mut LookupWitnessGen<E>,
+        gen: &mut LookupWitnessGen<E, PCS>,
+        ctx: &Context<E, PCS>,
         step_data: &StepData<Element, E>,
     ) -> Result<()> {
         match self {
-            Layer::Dense(dense) => dense.gen_lookup_witness(id, gen, step_data),
-            Layer::Convolution(convolution) => convolution.gen_lookup_witness(id, gen, step_data),
+            Layer::Dense(dense) => dense.gen_lookup_witness(id, gen, ctx, step_data),
+            Layer::Convolution(convolution) => {
+                convolution.gen_lookup_witness(id, gen, ctx, step_data)
+            }
             Layer::SchoolBookConvolution(school_book_conv) => {
                 // check that the layer is not provable, so we don't need to call the method
                 assert!(!school_book_conv.is_provable());
                 Ok(())
             }
-            Layer::Activation(activation) => activation.gen_lookup_witness(id, gen, step_data),
-            Layer::Requant(requant) => requant.gen_lookup_witness(id, gen, step_data),
-            Layer::Pooling(pooling) => pooling.gen_lookup_witness(id, gen, step_data),
+            Layer::Activation(activation) => activation.gen_lookup_witness(id, gen, ctx, step_data),
+            Layer::Requant(requant) => requant.gen_lookup_witness(id, gen, ctx, step_data),
+            Layer::Pooling(pooling) => pooling.gen_lookup_witness(id, gen, ctx, step_data),
             Layer::Flatten(reshape) => {
                 // check that the layer is not provable, so we don't need to call the method
                 assert!(!reshape.is_provable());
@@ -506,9 +516,11 @@ impl QuantizeOp for Layer<f32> {
     }
 }
 
-impl<E: ExtensionField> LayerProof<E>
+impl<E, PCS> LayerProof<E, PCS>
 where
+    E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
 {
     pub fn variant_name(&self) -> String {
         match self {

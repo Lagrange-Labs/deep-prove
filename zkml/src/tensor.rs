@@ -867,6 +867,10 @@ where
     pub fn pad_next_power_of_two(&self) -> Self {
         let shape = self.get_shape();
 
+        if shape.iter().all(|dim| dim.is_power_of_two()) {
+            return self.clone();
+        }
+
         let padded_data = Self::recursive_pad(self.get_data(), &shape);
 
         let padded_shape = shape
