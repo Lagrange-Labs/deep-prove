@@ -158,7 +158,9 @@ impl InferenceTracker {
         let mut d: Data<Vec<f64>> = Data::new(
             self.data
                 .get(&(node_id, output_index))
-                .unwrap_or_else(|| panic!("No data for output tensor {output_index} of node {node_id}"))
+                .unwrap_or_else(|| {
+                    panic!("No data for output tensor {output_index} of node {node_id}")
+                })
                 .clone(),
         );
         let min = d.percentile(5) as f32;

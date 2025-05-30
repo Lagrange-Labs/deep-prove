@@ -2,7 +2,6 @@
 
 from torch.ao.quantization import MinMaxObserver
 import json
-import os
 import matplotlib.pyplot as plt
 import pandas as pd
 from sklearn.datasets import load_iris
@@ -10,16 +9,12 @@ from sklearn.model_selection import train_test_split
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.autograd import Variable
 import tqdm
-from sklearn.preprocessing import MinMaxScaler, StandardScaler
+from sklearn.preprocessing import MinMaxScaler
 import argparse
 from pathlib import Path
-import torch.optim as optim
 from torch.ao.quantization import QuantStub, DeQuantStub
-from torch.utils.data import Subset
-import math  # Add to imports at top
 
 print(torch.backends.quantized.supported_engines)
 torch.backends.quantized.engine = 'qnnpack'
@@ -390,10 +385,10 @@ try:
 
     # Compare rounded accuracies
     if round(json_accuracy) != round(accuracy):
-        print(f"⚠️  WARNING: Accuracy mismatch!")
+        print("⚠️  WARNING: Accuracy mismatch!")
         print(f"    Direct evaluation: {round(accuracy)}%")
         print(f"    JSON file evaluation: {round(json_accuracy)}%")
-        print(f"    This suggests an inconsistency in the evaluation process.")
+        print("    This suggests an inconsistency in the evaluation process.")
 except Exception as e:
     print(f"Error verifying accuracy consistency: {e}")
 
@@ -589,7 +584,7 @@ json_accuracy = 100 * correct_json / total_json
 print(f'JSON file accuracy on {total_json} samples: {json_accuracy:.2f}%')
 
 # Compare the two
-print(f'\nComparison: Model evaluation vs JSON file accuracy')
+print('\nComparison: Model evaluation vs JSON file accuracy')
 print(
     f'Model evaluation: {json_model_top1.avg:.2f}% | JSON file: {json_accuracy:.2f}%')
 
