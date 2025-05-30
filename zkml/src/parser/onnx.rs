@@ -344,28 +344,43 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
     // check if the weight matrix needs to be transposed
     let input_node = model.node(input_link.node);
     let mut input_shape = get_node_output_shape(input_node, input_link.slot)?;
-    assert!(
-        input_shape[0] == 1,
-        "First dimension of Gemm layer input should be 1, input_shape is {input_shape:?}."
-    );
-    input_shape.remove(0);
+
+    if input_shape.len() != 1 {
+        assert!(
+            input_shape[0] == 1,
+            "First dimension of Gemm layer input should be 1. Input shape was: {:?}",
+            input_shape
+        );
+        input_shape.remove(0);
+    }
     ensure_onnx!(
         input_shape.len() == 1,
         "Input shape for Gemm must be a vector, found {:?}",
         input_shape
     );
-    ensure_onnx!(weight.is_matrix(), "Weight for Gemm must be a matrix");
+    // ensure_onnx!(weight.is_matrix(), "Weight for Gemm must be a matrix");
     let mut weight_shape = weight.get_shape();
-    if weight_shape[1] != input_shape[0] {
-        weight = weight.transpose();
-        weight_shape = weight.get_shape();
+    // If the weights are a 1D vector we insert a 1 in the shape after checking everything lines up
+    if weight_shape.len() == 1 {
+        ensure_onnx!(
+            weight_shape[0] == input_shape[0],
+            "Incompatible shapes found for Gemm node: input shape is {:?}, weight shape is {:?}",
+            input_shape,
+            weight_shape,
+        );
+        weight.shape.insert(0, 1);
+    } else {
+        if weight_shape[1] != input_shape[0] {
+            weight = weight.transpose();
+            weight_shape = weight.get_shape();
+        }
+        ensure_onnx!(
+            *weight_shape.last().unwrap() == input_shape[0],
+            "Incompatible shapes found for Gemm node: input shape is {:?}, weight shape is {:?}",
+            input_shape,
+            weight_shape,
+        );
     }
-    ensure_onnx!(
-        weight_shape[1] == input_shape[0],
-        "Incompatible shapes found for Gemm node: input shape is {:?}, weight shape is {:?}",
-        input_shape,
-        weight_shape,
-    );
 
     // also extract the bias if any. If there is one, that means the next node is a Add node and we
     // must make sure one of the inputs is the current matrix node. Otherwise that's just a normal add that we don't support.
