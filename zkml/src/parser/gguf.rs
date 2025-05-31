@@ -21,7 +21,7 @@ use candle_core::{
 
 use crate::{
     Tensor,
-    layers::transformer::{embeddings::Embeddings, layernorm::LayerNorm, positional::Positional},
+    layers::transformer::{embeddings::Embeddings, layernorm::LayerNorm, positional::Positional, qkv::QKV},
     tensor::Number,
 };
 
@@ -105,24 +105,6 @@ pub struct LLMConfig {
 }
 
 impl LLMConfig {
-    pub fn from_json(l: &json::FileTensorLoader) -> anyhow::Result<Self> {
-        let variant = LLMVariant::from_json(l)?;
-        let hidden_size = l.metadata_to_u32("hidden_dim")? as usize;
-        let embedding_size = hidden_size;
-        let num_heads = l.metadata_to_u32("num_attention_heads")? as usize;
-        let num_blocks = l.metadata_to_u32("num_hidden_layers")? as usize;
-        let context_length = l.metadata_to_u32("max_seq_len")? as usize;
-        let norm_epsilon = l.metadata_to_f32("norm_epsilon")?;
-        Ok(Self {
-            embedding_size,
-            hidden_size,
-            num_heads,
-            num_block: num_blocks,
-            context_length,
-            norm_epsilon,
-            specific_config: variant,
-        })
-    }
     pub fn from_content(l: &FileTensorLoader) -> anyhow::Result<Self> {
         let variant = LLMVariant::from_content(l)?;
         let embedding_size = l.content.metadata[variant.embedding_size_key()].to_u32()? as usize;
@@ -161,21 +143,7 @@ pub enum LLMVariant {
 }
 
 impl LLMVariant {
-    pub fn from_json(l: &json::FileTensorLoader) -> anyhow::Result<Self> {
-        let variant_value = l.get_metadata("model_name")
-            .ok_or_else(|| anyhow::anyhow!("Metadata key 'model_name' not found"))?;
-        
-        let model_name_str = variant_value.as_str()
-            .ok_or_else(|| anyhow::anyhow!("Metadata 'model_name' is not a string value"))?;
-
-        match model_name_str
-            .trim() // Keep the trim, it's good practice
-        {
-            "gpt2" => Ok(Self::GPT2),
-            "sshleifer/tiny-gpt2" => Ok(Self::GPT2),
-            a => bail!("unsupported architecture: {:?}", a),
-        }
-    }
+    
     pub fn from_content(l: &FileTensorLoader) -> anyhow::Result<Self> {
         let Some(variant) = l
             .content
@@ -290,26 +258,7 @@ pub struct FeedForward<N: Number> {
 }
 
 impl FeedForward<f32> {
-    pub fn from_json(l: &json::FileTensorLoader, c: &LLMConfig) -> anyhow::Result<Self> {
-        let norm = LayerNorm::from_json(&l.pp("ffn_"), c)?;
-        let up = l.get_tensor("ffn_up.weight")?;
-        let up_bias = l.get_tensor("ffn_up.bias")?;
-        let down = l.get_tensor("ffn_down.weight")?;
-        let down_bias = l.get_tensor("ffn_down.bias")?;
-        ensure!(
-            down.get_shape()[0] == c.embedding_size,
-            "down must have shape {:?} vs embedding_size: {}",
-            down.get_shape(),
-            c.embedding_size
-        ); 
-        Ok(Self {
-            norm,
-            up,
-            up_bias,
-            down,
-            down_bias,
-        })
-    }
+    
     // Replaces from_var_builder and from_tensor_loader
     // 'loader' is expected to be the block-level loader (e.g., scoped to "blk.N.")
     pub fn from_loader(loader: &FileTensorLoader, c: &LLMConfig) -> anyhow::Result<Self> {
@@ -354,30 +303,7 @@ pub struct Attention<N: Number> {
 }
 
 impl Attention<f32> {
-    pub fn from_json(l: &json::FileTensorLoader, c: &LLMConfig) -> anyhow::Result<Self> {
-        let norm = LayerNorm::from_json(&l.pp("attn_"), c)?;
-        let q = l.get_tensor("attn_qkv.weight")?;
-        let q_bias = l.get_tensor("attn_qkv.bias")?;
-        let k = l.get_tensor("attn_qkv.weight")?;
-        let k_bias = l.get_tensor("attn_qkv.bias")?;
-        let v = l.get_tensor("attn_qkv.weight")?;
-        let v_bias = l.get_tensor("attn_qkv.bias")?;
-        let out = l.get_tensor("attn_output.weight")?;
-        let out_bias = l.get_tensor("attn_output.bias")?;
-        let feedforward = FeedForward::from_json(l, c)?;
-        Ok(Self {
-            norm,
-            q,
-            q_bias,
-            k,
-            k_bias,
-            v,
-            v_bias,
-            out,
-            out_bias,
-            feedforward,
-        })
-    }
+    
 
     // Replaces from_var_builder and from_tensor_loader
     // 'loader' is expected to be the block-level loader (e.g., scoped to "blk.N.")
@@ -441,45 +367,44 @@ impl Attention<f32> {
 
 fn dequantize(qtensor: Arc<QTensor>) -> anyhow::Result<Tensor<f32>> {
     let shape = qtensor.shape().dims().to_vec();
-    let tensor = match qtensor.dtype() {
-        // it's a no op for f32 or f16 to dequantize
-        GgmlDType::Q8_0 | GgmlDType::Q5_0 | GgmlDType::Q8_0 | GgmlDType::F16 | GgmlDType::F32 => {
-            qtensor.dequantize(&Device::Cpu)?
-        }
-        _ => {
-            bail!("unsupported dtype");
-        }
-    };
-    let (s, l) = tensor.storage_and_layout();
-    let data = match s.deref() {
-        Storage::Cpu(cpu) => match cpu {
+    
+    let dequantized_candle_tensor = qtensor.dequantize(&Device::Cpu)
+        .with_context(|| format!("Failed to dequantize QTensor (dtype: {:?}, shape: {:?})", qtensor.dtype(), qtensor.shape()))?;
+
+    let (s, _l) = dequantized_candle_tensor.storage_and_layout();
+    let data: Vec<f32> = match s.deref() {
+        Storage::Cpu(cpu_storage) => match cpu_storage {
             CpuStorage::F32(d) => d.to_vec(),
             CpuStorage::F16(d) => d.iter().map(|x| x.to_f32()).collect(),
-            _ => bail!("unsupported storage type (only f32 or f16 is supported)"),
+            CpuStorage::BF16(d) => d.iter().map(|x| x.to_f32()).collect(),
+            _ => bail!("Dequantization resulted in an unexpected quantized CPU storage type (original QTensor dtype: {:?})", qtensor.dtype()),
         },
-        _ => bail!("unsupported storage backend (only cpu is supported)"),
+        // Change storage_device() to device()
+        _ => bail!("Unsupported storage backend for dequantized tensor (expected CPU), got: {:?}", dequantized_candle_tensor.device()),
     };
     Ok(Tensor::new(shape, data))
 }
 
 fn unfuse_tensors(fused: candle_core::Tensor, chunk_len: usize) -> anyhow::Result<Vec<Vec<f32>>> {
-    let (s, l) = fused.storage_and_layout();
-    // let shape = l.shape().dims().to_vec();
-    let data = match s.deref() {
+    let (s, _l) = fused.storage_and_layout();
+    let data: Vec<f32> = match s.deref() {
         Storage::Cpu(cpu) => match cpu {
             CpuStorage::F32(d) => d.to_vec(),
             CpuStorage::F16(d) => d.iter().map(|x| x.to_f32()).collect(),
-            _ => bail!("unsupported storage type (only f32 or f16 is supported)"),
+            _ => bail!("unsupported storage type (only f32 or f16 is supported for unfusing candle::Tensor)"),
         },
-        _ => bail!("unsupported storage backend (only cpu is supported)"),
+        _ => bail!("unsupported storage backend (only cpu is supported for unfusing candle::Tensor)"),
     };
-    let tensors: Vec<Vec<f32>> = data.chunks(chunk_len).map(|chunk| chunk.to_vec()).collect();
+    let num_elements = data.len();
     ensure!(
-        tensors.iter().all(|t| t.len() == chunk_len),
-        "all chunks must have the same length"
+        num_elements % chunk_len == 0,
+        "Total elements {} is not divisible by chunk_len {} for unfusing",
+        num_elements, chunk_len
     );
+    let tensors: Vec<Vec<f32>> = data.chunks_exact(chunk_len).map(|chunk| chunk.to_vec()).collect();
     Ok(tensors)
 }
+
 
 trait FromValue<T> {
     fn from_value(v: &Value) -> T;
@@ -636,7 +561,7 @@ impl TensorLoader<BufReader<File>> {
 
 #[cfg(test)]
 pub mod tests {
-    use candle_core::{CpuStorage, Device, Storage, Tensor, quantized::gguf_file::Content};
+    use candle_core::{CpuStorage, Device, Storage, Tensor as CandleTensor, quantized::gguf_file::Content};
     use candle_transformers::quantized_var_builder::VarBuilder;
     use gguf_rs::get_gguf_container;
     use std::{fs::File, io::Read, ops::Deref, path::Path};
