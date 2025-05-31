@@ -3,7 +3,7 @@ use anyhow::ensure;
 use crate::{
     Element, Tensor,
     padding::PaddingMode,
-    parser::gguf::{FileTensorLoader, LLMConfig},
+    parser::{gguf::{FileTensorLoader, LLMConfig}, json},
     tensor::Number,
 };
 
@@ -30,6 +30,13 @@ impl<N: Number> LayerNorm<N> {
 }
 
 impl LayerNorm<f32> {
+    pub fn from_json(l: &json::FileTensorLoader, c: &LLMConfig) -> anyhow::Result<Self> {
+        println!("from_json: current path: {:?}", l.prefix);
+        let gamma = l.get_tensor("norm.weight")?;
+        let beta = l.get_tensor("norm.bias")?;
+        let eps = l.metadata_to_f32("norm_epsilon")?;
+        Ok(Self::new(gamma, beta, eps))
+    }
     // Replaces from_var_builder and from_tensor_loader
     // The 'loader' passed here is expected to be pre-scoped by the caller
     // (e.g., loader.pp("attn_") or loader.pp("ffn_"))

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Tensor, tensor::Number};
 
-use super::provable::{Evaluate, LayerOut, OpInfo, ProvableOpError};
+use super::provable::{Evaluate, LayerOut, OpInfo};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Reshape {

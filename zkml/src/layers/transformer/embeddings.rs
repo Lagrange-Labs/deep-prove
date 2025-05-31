@@ -2,7 +2,7 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
     Element, Tensor, layers::provable::OpInfo, padding::PaddingMode,
-    parser::gguf::FileTensorLoader, tensor::Number,
+    parser::{gguf::FileTensorLoader, json}, tensor::Number,
 };
 
 #[derive(Debug, Clone)]
@@ -46,6 +46,10 @@ impl Embeddings<f32> {
     // TODO: make that a trait ? or part of the Layer enum ?
     pub fn from_loader(loader: &FileTensorLoader) -> anyhow::Result<Self> {
         let emb_tensor = loader.get_tensor("token_embd.weight")?;
+        Ok(Embeddings::new(emb_tensor))
+    }
+    pub fn from_json(l: &json::FileTensorLoader) -> anyhow::Result<Self> {
+        let emb_tensor = l.get_tensor("token_embd.weight")?;
         Ok(Embeddings::new(emb_tensor))
     }
 }

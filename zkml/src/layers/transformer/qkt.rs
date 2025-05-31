@@ -8,7 +8,7 @@ use crate::{
     Tensor,
     layers::{
         LayerOut,
-        provable::{Evaluate, ProvableOpError},
+        provable::{Evaluate},
     },
     tensor::Number,
 };

@@ -1,5 +1,6 @@
 pub mod gguf;
 pub mod onnx;
+pub mod json;
 
 use crate::{
     Element,

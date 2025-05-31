@@ -2,6 +2,7 @@ use candle_core::quantized::{
     QTensor,
     gguf_file::{Value, ValueType},
 };
+use super::json;
 use candle_transformers::{models::deepseek2::SplitOp, quantized_var_builder::VarBuilder};
 use std::{
     any::TypeId,
@@ -104,6 +105,24 @@ pub struct LLMConfig {
 }
 
 impl LLMConfig {
+    pub fn from_json(l: &json::FileTensorLoader) -> anyhow::Result<Self> {
+        let variant = LLMVariant::from_json(l)?;
+        let hidden_size = l.metadata_to_u32("hidden_dim")? as usize;
+        let embedding_size = hidden_size;
+        let num_heads = l.metadata_to_u32("num_attention_heads")? as usize;
+        let num_blocks = l.metadata_to_u32("num_hidden_layers")? as usize;
+        let context_length = l.metadata_to_u32("max_seq_len")? as usize;
+        let norm_epsilon = l.metadata_to_f32("norm_epsilon")?;
+        Ok(Self {
+            embedding_size,
+            hidden_size,
+            num_heads,
+            num_block: num_blocks,
+            context_length,
+            norm_epsilon,
+            specific_config: variant,
+        })
+    }
     pub fn from_content(l: &FileTensorLoader) -> anyhow::Result<Self> {
         let variant = LLMVariant::from_content(l)?;
         let embedding_size = l.content.metadata[variant.embedding_size_key()].to_u32()? as usize;
@@ -130,6 +149,10 @@ impl LLMConfig {
     pub fn model(&self, l: &FileTensorLoader) -> anyhow::Result<LLMModel> {
         self.specific_config.model(l, &self)
     }
+
+    pub fn model_json(&self, l: &json::FileTensorLoader) -> anyhow::Result<LLMModel> {  
+        self.specific_config.model_json(l, &self)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -138,6 +161,21 @@ pub enum LLMVariant {
 }
 
 impl LLMVariant {
+    pub fn from_json(l: &json::FileTensorLoader) -> anyhow::Result<Self> {
+        let variant_value = l.get_metadata("model_name")
+            .ok_or_else(|| anyhow::anyhow!("Metadata key 'model_name' not found"))?;
+        
+        let model_name_str = variant_value.as_str()
+            .ok_or_else(|| anyhow::anyhow!("Metadata 'model_name' is not a string value"))?;
+
+        match model_name_str
+            .trim() // Keep the trim, it's good practice
+        {
+            "gpt2" => Ok(Self::GPT2),
+            "sshleifer/tiny-gpt2" => Ok(Self::GPT2),
+            a => bail!("unsupported architecture: {:?}", a),
+        }
+    }
     pub fn from_content(l: &FileTensorLoader) -> anyhow::Result<Self> {
         let Some(variant) = l
             .content
@@ -194,6 +232,11 @@ impl LLMVariant {
             Self::GPT2 => Ok(LLMModel::GPT2(GPT2Model::from_loader(l, config)?)),
         }
     }
+    pub fn model_json(&self, l: &json::FileTensorLoader, config: &LLMConfig) -> anyhow::Result<LLMModel> {
+        match self {
+            Self::GPT2 => Ok(LLMModel::GPT2(GPT2Model::from_json(l, config)?)),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -209,6 +252,19 @@ pub struct GPT2Model {
 }
 
 impl GPT2Model {
+    pub fn from_json(l: &json::FileTensorLoader, config: &LLMConfig) -> anyhow::Result<Self> {
+        let embeddings = Embeddings::from_json(l)?;
+        let positional = Positional::from_json(l, config)?;
+        let num_layers = config.num_block;
+        let blocks = (0..num_layers)
+            .map(|i| Attention::from_json(&l.pp(&format!("blk.{i}.")), &config))
+            .collect::<anyhow::Result<Vec<Attention<f32>>>>()?;
+        Ok(Self {
+            embeddings,
+            positional,
+            blocks,
+        })
+    }
     pub fn from_loader(loader: &FileTensorLoader, config: &LLMConfig) -> anyhow::Result<Self> {
         let embeddings = Embeddings::from_loader(loader)?;
         let positional = Positional::from_loader(loader, config)?;
@@ -234,6 +290,26 @@ pub struct FeedForward<N: Number> {
 }
 
 impl FeedForward<f32> {
+    pub fn from_json(l: &json::FileTensorLoader, c: &LLMConfig) -> anyhow::Result<Self> {
+        let norm = LayerNorm::from_json(&l.pp("ffn_"), c)?;
+        let up = l.get_tensor("ffn_up.weight")?;
+        let up_bias = l.get_tensor("ffn_up.bias")?;
+        let down = l.get_tensor("ffn_down.weight")?;
+        let down_bias = l.get_tensor("ffn_down.bias")?;
+        ensure!(
+            down.get_shape()[0] == c.embedding_size,
+            "down must have shape {:?} vs embedding_size: {}",
+            down.get_shape(),
+            c.embedding_size
+        ); 
+        Ok(Self {
+            norm,
+            up,
+            up_bias,
+            down,
+            down_bias,
+        })
+    }
     // Replaces from_var_builder and from_tensor_loader
     // 'loader' is expected to be the block-level loader (e.g., scoped to "blk.N.")
     pub fn from_loader(loader: &FileTensorLoader, c: &LLMConfig) -> anyhow::Result<Self> {
@@ -278,6 +354,31 @@ pub struct Attention<N: Number> {
 }
 
 impl Attention<f32> {
+    pub fn from_json(l: &json::FileTensorLoader, c: &LLMConfig) -> anyhow::Result<Self> {
+        let norm = LayerNorm::from_json(&l.pp("attn_"), c)?;
+        let q = l.get_tensor("attn_qkv.weight")?;
+        let q_bias = l.get_tensor("attn_qkv.bias")?;
+        let k = l.get_tensor("attn_qkv.weight")?;
+        let k_bias = l.get_tensor("attn_qkv.bias")?;
+        let v = l.get_tensor("attn_qkv.weight")?;
+        let v_bias = l.get_tensor("attn_qkv.bias")?;
+        let out = l.get_tensor("attn_output.weight")?;
+        let out_bias = l.get_tensor("attn_output.bias")?;
+        let feedforward = FeedForward::from_json(l, c)?;
+        Ok(Self {
+            norm,
+            q,
+            q_bias,
+            k,
+            k_bias,
+            v,
+            v_bias,
+            out,
+            out_bias,
+            feedforward,
+        })
+    }
+
     // Replaces from_var_builder and from_tensor_loader
     // 'loader' is expected to be the block-level loader (e.g., scoped to "blk.N.")
     pub fn from_loader(loader: &FileTensorLoader, c: &LLMConfig) -> anyhow::Result<Self> {
