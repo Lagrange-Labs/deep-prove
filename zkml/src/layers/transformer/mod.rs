@@ -350,15 +350,19 @@ mod test {
             diff <= atol + rtol * y.abs()
         })
     }
+
+    use crate::parser::json;
+
     #[test]
     fn test_read_gpt2_pytorch_output() -> anyhow::Result<()> {
-        let loader = FileTensorLoader::from_path(GPT2_Q8_0_PATH)?;
-        let config = LLMConfig::from_content(&loader)?;
+        let model_path = "assets/scripts/llms/gpt2_tiny_weights.json";
+        let loader = json::FileTensorLoader::new_from_path(model_path)?;
+        let config = LLMConfig::from_json(&loader)?;
         let path = "assets/scripts/llms/gpt2_debug_output.json";
         let gpt2_output =
             serde_json::from_reader::<_, GPT2Output>(File::open(path).unwrap()).unwrap();
         let input = Tensor::new(vec![1, config.embedding_size], gpt2_output.inputs_embeds.clone());
-        let LLMModel::GPT2(mut model) = config.model(&loader)? else {
+        let LLMModel::GPT2(mut model) = config.model_json(&loader)? else {
             bail!("Model is not a GPT2 model");
         };
         println!("model: {:?}", config.specific_config);
