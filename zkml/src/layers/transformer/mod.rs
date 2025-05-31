@@ -17,18 +17,15 @@ mod test {
     use serde::Deserialize;
 
     use crate::{
-        Element, Tensor,
         layers::{
-            activation::{Activation, Relu},
+            activation::{Activation, Relu, GELU},
             add::{self, Add},
             concat_matmul::{self, ConcatMatMul},
             dense::Dense,
             mul,
             provable::Evaluate,
             reshape::{self, Reshape},
-        },
-        parser::gguf::{self, FileTensorLoader, LLMConfig, LLMModel, tests::GPT2_Q8_0_PATH},
-        tensor::Number,
+        }, parser::gguf::{self, tests::GPT2_Q8_0_PATH, FileTensorLoader, LLMConfig, LLMModel}, tensor::Number, Element, Tensor
     };
 
     use super::{layernorm, mha, qkv, softmax};
@@ -47,7 +44,7 @@ mod test {
     struct FlatFFN<N> {
         layernorm: layernorm::LayerNorm<N>,
         up: Dense<N>,
-        activation: Activation,
+        activation: GELU<N>,
         down: Dense<N>,
         add: Add<N>,
     }
@@ -56,7 +53,7 @@ mod test {
         pub fn new_from_gguf(c: &gguf::LLMConfig, ffn: gguf::FeedForward<f32>) -> Self {
             let layernorm = ffn.norm;
             let up = Dense::new(ffn.up, ffn.up_bias);
-            let activation = Activation::Relu(Relu);
+            let activation = GELU::new();
             let down = Dense::new(ffn.down, ffn.down_bias);
             let add = add::Add::new();
             Self {
@@ -68,13 +65,19 @@ mod test {
             }
         }
 
-        pub fn evaluate(&mut self, input: &Tensor<f32>) -> anyhow::Result<Tensor<f32>> {
+        pub fn evaluate(&mut self, input: &Tensor<f32>,output: Option<&GPT2Output>) -> anyhow::Result<Tensor<f32>> {
             let normed = self
                 .layernorm
                 .evaluate::<GoldilocksExt2>(&vec![input], vec![])?;
+            if let Some(gpt2_output) = output {
+                gpt2_output.is_prefnn_layernorm_close(normed.outputs());
+            }
             let up = self
                 .up
                 .evaluate::<GoldilocksExt2>(&normed.outputs(), vec![])?;
+            if let Some(gpt2_output) = output {
+                gpt2_output.is_ffn_up_close(up.outputs());
+            }
             let act = self
                 .activation
                 .evaluate::<GoldilocksExt2>(&up.outputs(), vec![])?;
@@ -92,7 +95,7 @@ mod test {
         pub fn random(hidden_size: usize, up_size: usize) -> Self {
             let layernorm = layernorm::LayerNorm::random(hidden_size);
             let up = Dense::random(vec![up_size, hidden_size]);
-            let activation = Activation::Relu(Relu);
+            let activation = GELU::new();
             let down = Dense::random(vec![hidden_size, up_size]);
             let add = add::Add::new();
             Self {
@@ -147,7 +150,7 @@ mod test {
                 mha,
                 reshape_merged: Reshape::new_fixed(vec![vec![1, c.hidden_size]]),
                 reshape_qkt,
-                ffn,
+               ffn,
                 add: add::Add::new(),
             }
         }
@@ -171,7 +174,7 @@ mod test {
                 println!("W_k weights: {:?}", self.qkv.k.get_data());
                 println!("W_v weights: {:?}", self.qkv.v.get_data());
                 println!("b_q bias: {:?}", self.qkv.q_bias.get_data());
-               println!("b_k bias: {:?}", self.qkv.k_bias.get_data());
+                println!("b_k bias: {:?}", self.qkv.k_bias.get_data());
                 println!("b_v bias: {:?}", self.qkv.v_bias.get_data());
                 gpt2_output.is_qkv_close(qkv.outputs());
             }
@@ -206,16 +209,25 @@ mod test {
             let merged = self
                 .reshape_merged
                 .evaluate::<_, GoldilocksExt2>(&qkt_v.outputs())?;
+            if let Some(gpt2_output) = gpt2_output {
+                gpt2_output.is_attention_mha_output_close(merged.outputs());
+            }
             // now we do the final projection - still [1,hidden_size]
             let projected = self
                 .out
                 .evaluate::<GoldilocksExt2>(&merged.outputs(), vec![])?;
+            if let Some(gpt2_output) = gpt2_output {
+                gpt2_output.is_attention_output_proj_close(projected.outputs());
+            }
             // and then residual connection, [1, hidden_size]
             let out = self
                 .add
                 .evaluate::<GoldilocksExt2>(&vec![input, &projected.outputs()[0]])?;
+            if let Some(gpt2_output) = gpt2_output {
+                gpt2_output.is_residual_attn_close(out.outputs());
+            }
             // and then FFN
-            let ffn_out = self.ffn.evaluate(&out.outputs()[0])?;
+            let ffn_out = self.ffn.evaluate(&out.outputs()[0],gpt2_output)?;
             Ok(ffn_out)
         }
     }
@@ -320,14 +332,16 @@ mod test {
         input_ids: u32,
         inputs_embeds: Vec<f32>,
         ln1_out: Vec<f32>,
+        ln2_out: Vec<f32>,
         q: Vec<f32>,
         k: Vec<f32>,
         v: Vec<f32>,
         attn_scores: Vec<f32>,
         attn_weights: Vec<f32>,
+        attn_output: Vec<f32>,
         attn_output_proj: Vec<f32>,
         residual_attn: Vec<f32>,
-        ffn_intermediate: Vec<f32>,
+        ffn_up: Vec<f32>,
         ffn_activated: Vec<f32>,
         ffn_output_proj: Vec<f32>,
         manual_output: Vec<f32>,
@@ -350,6 +364,26 @@ mod test {
         pub fn is_layernorm_close(&self, layernorm: Vec<&Tensor<f32>>) {
             let layernorm_close = is_close(layernorm[0].get_data(), &self.ln1_out);
             println!("layernorm close? {}", layernorm_close);
+        }
+        pub fn is_attention_mha_output_close(&self, mha_output: Vec<&Tensor<f32>>) {
+            let mha_output_close = is_close(mha_output[0].get_data(), &self.attn_output);
+            println!("mha output close? {} -> {:?} vs {:?}", mha_output_close, mha_output[0].get_data(), self.attn_output);
+        }
+        pub fn is_attention_output_proj_close(&self, output_proj: Vec<&Tensor<f32>>) {
+            let output_proj_close = is_close(output_proj[0].get_data(), &self.attn_output_proj);
+            println!("output proj close? {} -> {:?} vs {:?}", output_proj_close, output_proj[0].get_data(), self.attn_output_proj);
+        }
+        pub fn is_residual_attn_close(&self, residual_attn: Vec<&Tensor<f32>>) {
+            let residual_attn_close = is_close(residual_attn[0].get_data(), &self.residual_attn);
+            println!("residual attn close? {} -> {:?} vs {:?}", residual_attn_close, residual_attn[0].get_data(), self.residual_attn);
+        }
+        pub fn is_prefnn_layernorm_close(&self, ln2_out: Vec<&Tensor<f32>>) {
+            let ln2_out_close = is_close(ln2_out[0].get_data(), &self.ln2_out);
+            println!("ln2 out close? {} -> {:?} vs {:?}", ln2_out_close, ln2_out[0].get_data(), self.ln2_out);
+        }
+        pub fn is_ffn_up_close(&self, ffn_up: Vec<&Tensor<f32>>) {
+            let ffn_up_close = is_close(ffn_up[0].get_data(), &self.ffn_up);
+            println!("ffn up close? {} -> {:?} vs {:?}", ffn_up_close, ffn_up[0].get_data(), self.ffn_up);
         }
     }
 
