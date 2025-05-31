@@ -159,10 +159,20 @@ mod test {
             let normed = self
                 .layernorm
                 .evaluate::<GoldilocksExt2>(&vec![input], vec![])?;
+            if let Some(gpt2_output) = gpt2_output {
+                gpt2_output.is_layernorm_close(normed.outputs());
+            }
             let qkv = self
                 .qkv
                 .evaluate::<GoldilocksExt2>(&normed.outputs(), &mut self.cache)?;
             if let Some(gpt2_output) = gpt2_output {
+                println!("input to qkv: {:?}", normed.outputs()[0].get_data());
+                println!("W_q weights: {:?}", self.qkv.q.get_data());
+                println!("W_k weights: {:?}", self.qkv.k.get_data());
+                println!("W_v weights: {:?}", self.qkv.v.get_data());
+                println!("b_q bias: {:?}", self.qkv.q_bias.get_data());
+               println!("b_k bias: {:?}", self.qkv.k_bias.get_data());
+                println!("b_v bias: {:?}", self.qkv.v_bias.get_data());
                 gpt2_output.is_qkv_close(qkv.outputs());
             }
             let mha = self.mha.evaluate::<_, GoldilocksExt2>(&qkv.outputs())?;
@@ -309,6 +319,7 @@ mod test {
         token: String,
         input_ids: u32,
         inputs_embeds: Vec<f32>,
+        ln1_out: Vec<f32>,
         q: Vec<f32>,
         k: Vec<f32>,
         v: Vec<f32>,
@@ -331,9 +342,14 @@ mod test {
             let q_close = is_close(q.get_data(), &self.q);
             let k_close = is_close(k.get_data(), &self.k);
             let v_close = is_close(v.get_data(), &self.v);
-            println!("q close? {}", q_close);
-            println!("k close? {}", k_close);
-            println!("v close? {}", v_close);
+            println!("q close? {} -> {:?} vs {:?}", q_close, q.get_data(), self.q);
+            println!("k close? {} -> {:?} vs {:?}", k_close, k.get_data(), self.k);
+            println!("v close? {} -> {:?} vs {:?}", v_close, v.get_data(), self.v);
+        }
+
+        pub fn is_layernorm_close(&self, layernorm: Vec<&Tensor<f32>>) {
+            let layernorm_close = is_close(layernorm[0].get_data(), &self.ln1_out);
+            println!("layernorm close? {}", layernorm_close);
         }
     }
 
@@ -343,6 +359,7 @@ mod test {
         let atol = 1e-8_f32;
         let rtol = 1e-5_f32;
         if a.len() != b.len() {
+            println!("INVALID SIZE: {} vs {}",a.len(),b.len());
             return false;
         }
         a.iter().zip(b.iter()).all(|(x, y)| {
@@ -358,6 +375,7 @@ mod test {
         let model_path = "assets/scripts/llms/gpt2_tiny_weights.json";
         let loader = json::FileTensorLoader::new_from_path(model_path)?;
         let config = LLMConfig::from_json(&loader)?;
+        println!("config: {:?}", config);
         let path = "assets/scripts/llms/gpt2_debug_output.json";
         let gpt2_output =
             serde_json::from_reader::<_, GPT2Output>(File::open(path).unwrap()).unwrap();

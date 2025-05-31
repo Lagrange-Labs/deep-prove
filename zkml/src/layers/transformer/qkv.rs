@@ -14,12 +14,12 @@ use crate::{
 /// the full K and V matrices as if they were computed using the whole input tensor.
 #[derive(Debug, Clone)]
 pub struct QKV<N> {
-    q: Tensor<N>,
-    q_bias: Tensor<N>,
-    k: Tensor<N>,
-    k_bias: Tensor<N>,
-    v: Tensor<N>,
-    v_bias: Tensor<N>,
+    pub q: Tensor<N>,
+    pub q_bias: Tensor<N>,
+    pub k: Tensor<N>,
+    pub k_bias: Tensor<N>,
+    pub v: Tensor<N>,
+    pub v_bias: Tensor<N>,
 }
 
 impl<N: Number> QKV<N> {
@@ -56,7 +56,7 @@ impl<N: Number> QKV<N> {
         let shape = inputs[0].get_shape();
         let [seq_len, emb_size] = [shape[0], shape[1]];
         let q_emb_size = self.q.get_shape()[0];
-        ensure!(q_emb_size == emb_size, "QKV: q_emb_size != emb_size");
+        ensure!(q_emb_size == emb_size, "QKV: q_emb_size {} != emb_size {} (input shape {:?} vs q shape {:?})", q_emb_size, emb_size, shape, self.q.get_shape());
         // make sure the size of the input match the size of the cache + 1
         // as we only want to do the the matmul for the new token, not for the previously generated ones
         ensure!(
