@@ -1,7 +1,7 @@
 //! This layer applies the softmax function to the last dimension of the input tensor
 use crate::{
     Tensor,
-    layers::provable::{Evaluate, LayerOut, ProvableOpError},
+    layers::provable::{Evaluate, LayerOut},
 };
 
 #[derive(Debug, Clone)]
@@ -12,7 +12,7 @@ impl Evaluate<f32> for Softmax {
         &self,
         inputs: &[&crate::Tensor<f32>],
         _unpadded_input_shapes: Vec<Vec<usize>>,
-    ) -> anyhow::Result<LayerOut<f32, E>, ProvableOpError> {
+    ) -> anyhow::Result<LayerOut<f32, E>> {
         let input = inputs[0];
         let output = input
             .slices_last_dim()

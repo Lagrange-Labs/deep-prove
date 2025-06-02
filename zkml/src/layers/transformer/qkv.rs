@@ -36,7 +36,8 @@ impl<N: Number> QKV<N> {
         assert_eq!(q_bias.get_shape().len(), 1);
         assert_eq!(q_bias.get_shape(), k_bias.get_shape());
         assert_eq!(q_bias.get_shape(), v_bias.get_shape());
-        assert_eq!(q.get_shape()[0], q_bias.get_shape()[0], "q.get_shape() {:?} != q_bias.get_shape() {:?}", q.get_shape(), q_bias.get_shape());
+        // mat mul : [a,b] * [b, c] -> [a, c] + [c]
+        assert_eq!(q.get_shape()[1], q_bias.get_shape()[0], "q.get_shape() {:?} != q_bias.get_shape() {:?}", q.get_shape(), q_bias.get_shape());
         Self {
             q,
             q_bias,

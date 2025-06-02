@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Tensor, tensor::Number};
 
-use super::provable::{Evaluate, LayerOut, ProvableOpError};
+use super::provable::{Evaluate, LayerOut};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Add<N> {

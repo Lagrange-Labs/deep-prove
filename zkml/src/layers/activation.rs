@@ -413,26 +413,20 @@ impl Evaluate<f32> for GELU<f32> {
         &self,
         inputs: &[&Tensor<f32>],
         _unpadded_input_shapes: Vec<Vec<usize>>,
-    ) -> Result<LayerOut<f32, E>, ProvableOpError> {
-        if inputs.len() != 1 {
-            return Err(ProvableOpError::ParameterError(
-                "GELU activation expects exactly one input tensor".to_string(),
-            ));
-        }
-        let input_tensor = inputs[0];
-        let input_data = input_tensor.get_data();
-
-        let output_data: Vec<f32> = input_data
+    ) -> anyhow::Result<LayerOut<f32, E>> {
+        let output_tensors: Vec<Tensor<f32>> = inputs
             .par_iter()
-            .map(|&x| {
-                let x_cubed = x * x * x;
-                let inner_term = (2.0f32 / std::f32::consts::PI).sqrt() * (x + 0.044715 * x_cubed);
-                0.5 * x * (1.0 + inner_term.tanh())
+            .map(|t| {
+                let d  = t.get_data();
+                let gelued = d.iter().map(|&x| {
+                    let x_cubed = x * x * x;
+                    let inner_term = (2.0f32 / std::f32::consts::PI).sqrt() * (x + 0.044715 * x_cubed);
+                    0.5 * x * (1.0 + inner_term.tanh())
+                }).collect::<Vec<_>>();
+                Tensor::new(t.get_shape(), gelued)
             })
             .collect();
-
-        let output_tensor = Tensor::new(input_tensor.get_shape(), output_data);
-        Ok(LayerOut::from_vec(vec![output_tensor]))
+        Ok(LayerOut::from_vec(output_tensors))
     }
 }
 
@@ -467,7 +461,7 @@ mod test {
     }
 
     #[test]
-    fn test_activation_gelu_evaluate_f32() {
+    fn test_activation_gelu_evaluate_f32() -> anyhow::Result<()> {
         let gelu = GELU::<f32>::new();
         let input_data = vec![-2.0, -1.0, 0.0, 1.0, 2.0, 3.0];
         let input_tensor = Tensor::new(vec![1, input_data.len()], input_data.clone());
@@ -483,10 +477,7 @@ mod test {
             2.9963627,    // GELU(3.0)
         ];
 
-        let result = gelu.evaluate::<GoldilocksExt2>(&[&input_tensor], vec![]);
-        assert!(result.is_ok());
-
-        let layer_out = result.unwrap();
+        let layer_out = gelu.evaluate::<GoldilocksExt2>(&[&input_tensor], vec![])?;
         assert_eq!(layer_out.outputs().len(), 1);
         let output_tensor = &layer_out.outputs()[0];
 
@@ -499,5 +490,6 @@ mod test {
             .for_each(|(actual, expected)| {
                 assert!((actual - expected).abs() < 1e-3, "Actual: {}, Expected: {}", actual, expected);
             });
+        Ok(())
     }
 }
