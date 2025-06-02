@@ -211,7 +211,6 @@ fn load_flatten<'a, I: Iterator<Item = &'a usize> + Sized>(
         vec![Edge::new(node.inputs[0].node, node.inputs[0].slot)],
         Layer::Flatten(crate::layers::flatten::Flatten),
     );
-    println!("Flatten node id : {:?}", node_id);
     Ok((node_id, node))
 }
 
