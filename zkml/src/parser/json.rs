@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 
-use anyhow::{bail, ensure, Context};
+use anyhow::{Context, bail, ensure};
 use serde::Deserialize;
 
-use crate::{layers::transformer::layernorm::LayerNorm, parser::gguf::{Attention, FeedForward, LLMConfig, LLMVariant}, Tensor};
+use crate::{
+    Tensor,
+    layers::transformer::layernorm::LayerNorm,
+    parser::gguf::{Attention, FeedForward, LLMConfig, LLMVariant},
+};
 
 impl LLMConfig {
     pub fn from_json(l: &FileTensorLoader) -> anyhow::Result<Self> {
@@ -28,10 +32,12 @@ impl LLMConfig {
 
 impl LLMVariant {
     pub fn from_json(l: &FileTensorLoader) -> anyhow::Result<Self> {
-        let variant_value = l.get_metadata("model_name")
+        let variant_value = l
+            .get_metadata("model_name")
             .ok_or_else(|| anyhow::anyhow!("Metadata key 'model_name' not found"))?;
-        
-        let model_name_str = variant_value.as_str()
+
+        let model_name_str = variant_value
+            .as_str()
             .ok_or_else(|| anyhow::anyhow!("Metadata 'model_name' is not a string value"))?;
 
         match model_name_str
@@ -56,7 +62,7 @@ impl FeedForward<f32> {
             "down must have shape {:?} vs embedding_size: {}",
             down.get_shape(),
             c.embedding_size
-        ); 
+        );
         Ok(Self {
             norm,
             up,
@@ -72,25 +78,37 @@ impl Attention<f32> {
         let norm = LayerNorm::from_json(&l.pp("attn_"), c)
             .context("Failed to load LayerNorm for attention in from_json")?;
 
-        let fused_qkv_weight = l.get_tensor("attn_qkv.weight")
+        let fused_qkv_weight = l
+            .get_tensor("attn_qkv.weight")
             .context("Failed to load attn_qkv.weight in from_json")?;
-        let fused_qkv_bias = l.get_tensor("attn_qkv.bias")
+        let fused_qkv_bias = l
+            .get_tensor("attn_qkv.bias")
             .context("Failed to load attn_qkv.bias in from_json")?;
 
         let hidden_size = c.hidden_size; // embedding_dim for GPT-2
-        
+
         // Unfuse weights:
         // Expected shape of fused_qkv_weight is [3 * hidden_size, hidden_size] after python script transpose.
         // Each individual q, k, v weight matrix should be [hidden_size, hidden_size].
         // So, each chunk has hidden_size * hidden_size elements.
         let weight_chunk_elements = hidden_size * hidden_size;
-        let mut unfused_weights_data = unfuse_crate_tensors(fused_qkv_weight.clone(), weight_chunk_elements, 3)
-            .context("Failed to unfuse QKV weights in from_json")?;
-        
-        let q_weight = Tensor::new(vec![c.embedding_size, hidden_size], unfused_weights_data.remove(0));
-        let k_weight = Tensor::new(vec![c.embedding_size, hidden_size], unfused_weights_data.remove(0));
-        let v_weight = Tensor::new(vec![c.embedding_size, hidden_size], unfused_weights_data.remove(0));
-        println!("fused qkv: {:?}",fused_qkv_weight);
+        let mut unfused_weights_data =
+            unfuse_crate_tensors(fused_qkv_weight.clone(), weight_chunk_elements, 3)
+                .context("Failed to unfuse QKV weights in from_json")?;
+
+        let q_weight = Tensor::new(
+            vec![c.embedding_size, hidden_size],
+            unfused_weights_data.remove(0),
+        );
+        let k_weight = Tensor::new(
+            vec![c.embedding_size, hidden_size],
+            unfused_weights_data.remove(0),
+        );
+        let v_weight = Tensor::new(
+            vec![c.embedding_size, hidden_size],
+            unfused_weights_data.remove(0),
+        );
+        println!("fused qkv: {:?}", fused_qkv_weight);
         println!("qkv full tensor {:?}", unfused_weights_data);
         println!("q_weight {:?}", q_weight.get_data());
 
@@ -105,36 +123,40 @@ impl Attention<f32> {
         let q_bias_vec = Tensor::new(vec![hidden_size], unfused_biases_data.remove(0));
         let k_bias_vec = Tensor::new(vec![hidden_size], unfused_biases_data.remove(0));
         let v_bias_vec = Tensor::new(vec![hidden_size], unfused_biases_data.remove(0));
-        
+
         // These are the individual Q, K, V matrices and biases now.
         // The QKV struct or logic that consumes these will handle them.
         // For now, let's assume Attention struct stores these directly if QKV is not used here.
         // Or, construct the QKV layer if that's the design.
         // The original struct for Attention<f32> directly stores q, q_bias, k, k_bias, v, v_bias.
 
-        let out = l.get_tensor("attn_output.weight")
+        let out = l
+            .get_tensor("attn_output.weight")
             .context("Failed to load attn_output.weight in from_json")?;
-        let out_bias = l.get_tensor("attn_output.bias")
+        let out_bias = l
+            .get_tensor("attn_output.bias")
             .context("Failed to load attn_output.bias in from_json")?;
-            
+
         // Shape check for attn_output.weight: [hidden_size, hidden_size] for GPT-2
         // Python script exports it as [out_features, in_features]
         // For c_proj (attn_output), out_features = hidden_size, in_features = hidden_size
         ensure!(
             out.get_shape().as_slice() == &[hidden_size, hidden_size],
             "Attention output weight tensor shape mismatch in from_json. Expected [{}, {}], got {:?}",
-            hidden_size, hidden_size, out.get_shape()
+            hidden_size,
+            hidden_size,
+            out.get_shape()
         );
         ensure!(
             out_bias.get_shape().as_slice() == &[hidden_size],
             "Attention output bias tensor shape mismatch in from_json. Expected [{}], got {:?}",
-            hidden_size, out_bias.get_shape()
+            hidden_size,
+            out_bias.get_shape()
         );
 
+        let feedforward =
+            FeedForward::from_json(l, c).context("Failed to load FeedForward in from_json")?;
 
-        let feedforward = FeedForward::from_json(l, c)
-            .context("Failed to load FeedForward in from_json")?;
-            
         Ok(Self {
             norm,
             q: q_weight,
@@ -162,18 +184,24 @@ fn unfuse_crate_tensors(
 
     ensure!(
         expected_chunk_len_elements > 0,
-        "expected_chunk_len_elements must be positive, got {}", expected_chunk_len_elements
+        "expected_chunk_len_elements must be positive, got {}",
+        expected_chunk_len_elements
     );
     ensure!(
         num_chunks > 0,
-        "num_chunks must be positive, got {}", num_chunks
+        "num_chunks must be positive, got {}",
+        num_chunks
     );
 
     let expected_total_elements = expected_chunk_len_elements * num_chunks;
     ensure!(
         total_elements == expected_total_elements,
         "Tensor data size ({}) does not match expected total size ({} chunks * {} elements_per_chunk = {}). Original tensor shape: {:?}",
-        total_elements, num_chunks, expected_chunk_len_elements, expected_total_elements, fused_tensor.get_shape()
+        total_elements,
+        num_chunks,
+        expected_chunk_len_elements,
+        expected_total_elements,
+        fused_tensor.get_shape()
     );
 
     let tensors_data: Vec<Vec<f32>> = data
@@ -190,7 +218,6 @@ fn unfuse_crate_tensors(
 
     Ok(tensors_data)
 }
-
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct JsonTensor {
@@ -220,7 +247,10 @@ impl FileTensorLoader {
     pub fn new_from_path(path: &str) -> anyhow::Result<Self> {
         let file = std::fs::File::open(path)?;
         let content: JsonModel = serde_json::from_reader(file)?;
-        Ok(Self { content, prefix: "".to_string() })
+        Ok(Self {
+            content,
+            prefix: "".to_string(),
+        })
     }
 
     pub fn pp(&self, sub: &str) -> Self {
@@ -235,7 +265,9 @@ impl FileTensorLoader {
     }
 
     pub fn get_tensor(&self, key: &str) -> anyhow::Result<Tensor<f32>> {
-        let tensor = self.resolve_key(key).ok_or_else(|| anyhow::anyhow!("tensor not found: {key}"))?;
+        let tensor = self
+            .resolve_key(key)
+            .ok_or_else(|| anyhow::anyhow!("tensor not found: {key}"))?;
         Ok(Tensor::new(tensor.shape.clone(), tensor.data.clone()))
     }
 
@@ -244,15 +276,19 @@ impl FileTensorLoader {
     }
 
     pub fn metadata_to_u32(&self, key: &str) -> anyhow::Result<u32> {
-        Ok(self.get_metadata(key)
+        Ok(self
+            .get_metadata(key)
             .ok_or_else(|| anyhow::anyhow!("missing metadata {key}"))?
-            .as_u64().ok_or_else(|| anyhow::anyhow!("metadata {key} not a u32"))? as u32)
+            .as_u64()
+            .ok_or_else(|| anyhow::anyhow!("metadata {key} not a u32"))? as u32)
     }
 
     pub fn metadata_to_f32(&self, key: &str) -> anyhow::Result<f32> {
-        Ok(self.get_metadata(key)
+        Ok(self
+            .get_metadata(key)
             .ok_or_else(|| anyhow::anyhow!("missing metadata {key}"))?
-            .as_f64().ok_or_else(|| anyhow::anyhow!("metadata {key} not a f32"))? as f32)
+            .as_f64()
+            .ok_or_else(|| anyhow::anyhow!("metadata {key} not a f32"))? as f32)
     }
 }
 

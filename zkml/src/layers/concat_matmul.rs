@@ -99,9 +99,10 @@ mod test {
         let result = concat_matmul
             .evaluate::<_, GoldilocksExt2>(&[&a, &b])
             .unwrap();
-        assert_eq!(result.outputs[0].data, vec![
-            7.0, 10.0, 15.0, 22.0, 67.0, 78.0, 91.0, 106.0
-        ]);
+        assert_eq!(
+            result.outputs[0].data,
+            vec![7.0, 10.0, 15.0, 22.0, 67.0, 78.0, 91.0, 106.0]
+        );
     }
 
     #[test]
@@ -112,9 +113,10 @@ mod test {
         let result = concat_matmul
             .evaluate::<_, GoldilocksExt2>(&[&a, &b])
             .unwrap();
-        let expected = Tensor::new(vec![2, 2, 2], vec![
-            7.0, 10.0, 15.0, 22.0, 67.0, 78.0, 91.0, 106.0,
-        ]);
+        let expected = Tensor::new(
+            vec![2, 2, 2],
+            vec![7.0, 10.0, 15.0, 22.0, 67.0, 78.0, 91.0, 106.0],
+        );
         let expected = expected.permute3d(&vec![1, 0, 2]);
         assert_eq!(result.outputs[0].data, expected.data);
     }

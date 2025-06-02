@@ -2,8 +2,10 @@ use anyhow::ensure;
 
 use crate::{
     Tensor,
-    parser::gguf::{FileTensorLoader, LLMConfig, LLMVariant},
-    parser::json,
+    parser::{
+        gguf::{FileTensorLoader, LLMConfig, LLMVariant},
+        json,
+    },
     tensor::Number,
 };
 
@@ -17,12 +19,25 @@ pub enum Positional<N: Number> {
 impl Positional<f32> {
     pub fn from_json(l: &json::FileTensorLoader, c: &LLMConfig) -> anyhow::Result<Self> {
         let position_embd = l.get_tensor("position_embd.weight")?;
-        ensure!(position_embd.get_shape().len() == 2, "position_embd must be 2d");
-        ensure!(position_embd.get_shape()[0] == c.context_length, "position_embd must have shape [0] [{}] vs given {:?}", c.context_length, position_embd.get_shape());
-        ensure!(position_embd.get_shape()[1] == c.embedding_size, "position_embd must have shape [1] [{}] vs given {:?}", c.embedding_size, position_embd.get_shape());
+        ensure!(
+            position_embd.get_shape().len() == 2,
+            "position_embd must be 2d"
+        );
+        ensure!(
+            position_embd.get_shape()[0] == c.context_length,
+            "position_embd must have shape [0] [{}] vs given {:?}",
+            c.context_length,
+            position_embd.get_shape()
+        );
+        ensure!(
+            position_embd.get_shape()[1] == c.embedding_size,
+            "position_embd must have shape [1] [{}] vs given {:?}",
+            c.embedding_size,
+            position_embd.get_shape()
+        );
         Ok(Self::Learned(position_embd))
     }
-        
+
     pub fn from_loader(loader: &FileTensorLoader, c: &LLMConfig) -> anyhow::Result<Self> {
         match c.specific_config {
             LLMVariant::GPT2 => {

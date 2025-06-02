@@ -368,7 +368,7 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
         "Input shape for Gemm must be a vector, found {:?}",
         input_shape
     );
-    
+
     let mut weight_shape = weight.get_shape();
     if weight_shape[1] != input_shape[0] {
         weight = weight.transpose();

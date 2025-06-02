@@ -2137,25 +2137,32 @@ mod test {
         let vector = Tensor::<Element>::new(vec![1, 3], vec![66, 77, 88]);
         tensor.concat(vector);
         assert_eq!(tensor.get_shape(), vec![4, 3]);
-        assert_eq!(tensor.get_data(), vec![
-            1, 2, 3, 4, 5, 6, 10, 20, 30, 66, 77, 88
-        ]);
+        assert_eq!(
+            tensor.get_data(),
+            vec![1, 2, 3, 4, 5, 6, 10, 20, 30, 66, 77, 88]
+        );
     }
 
     #[test]
     fn test_tensor_get() {
-        let tensor = Tensor::<Element>::new(vec![2, 3, 3], vec![
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
-        ]);
+        let tensor = Tensor::<Element>::new(
+            vec![2, 3, 3],
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+            ],
+        );
         // 2 + 2 * 3 + 1 * 3 * 3 = 17
         assert_eq!(tensor.get(vec![1, 2, 2]), tensor.data[17]);
     }
 
     #[test]
     fn test_tensor_permute3d() {
-        let tensor = Tensor::<Element>::new(vec![2, 3, 3], vec![
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
-        ]);
+        let tensor = Tensor::<Element>::new(
+            vec![2, 3, 3],
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+            ],
+        );
         // i,j,k --> j,i,k -> new shape = 3,2,3
         let permuted = tensor.permute3d(&[1, 0, 2]);
         assert_eq!(permuted.get_shape(), vec![3, 2, 3]);
@@ -2182,9 +2189,12 @@ mod test {
 
     #[test]
     fn test_tensor_slices_last_dim() {
-        let tensor = Tensor::<Element>::new(vec![2, 3, 3], vec![
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
-        ]);
+        let tensor = Tensor::<Element>::new(
+            vec![2, 3, 3],
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+            ],
+        );
 
         let mut slices = tensor.slices_last_dim();
 

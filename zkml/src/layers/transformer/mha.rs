@@ -9,18 +9,19 @@
 //! NOTE: it does NOT Perform the softmax per head neither the subsequent projection with the V matrix.
 //! THis is done in subsequent layers due to proving logic proving these operation separately.
 use crate::{layers::transformer::qkt::QKT, tensor::Number};
-use anyhow::{bail, ensure};
+use anyhow::{ensure};
+use crate::layers::provable::Evaluate;
 use ff_ext::ExtensionField;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::{Tensor, layers::provable::LayerOut};
 #[derive(Clone, Debug)]
-pub struct MHA_QK {
+pub struct MhaQK {
     num_heads: usize,
     head_dim: usize,
 }
 
-impl MHA_QK {
+impl MhaQK {
     pub fn new(num_heads: usize, head_dim: usize) -> Self {
         Self {
             num_heads,
@@ -75,7 +76,7 @@ impl MHA_QK {
                     .reshape(vec![seq_len, self.head_dim]); // [seq_len, head_dim]
                 // output Q @ K^T is of shape [1, seq_len], and v is of shape [seq_len, head_dim]
                 Ok(vec![
-                    QKT::evaluate::<N, E>(&[&mini_q, &mini_k])?
+                    QKT.evaluate::<E>(&[&mini_q, &mini_k],vec![])?
                         .outputs
                         .remove(0),
                     mini_v,
@@ -124,7 +125,7 @@ mod test {
         let num_heads = 2;
         let head_dim = 4;
         let hidden_size = num_heads * head_dim;
-        let mha_qk = MHA_QK::new(num_heads, head_dim);
+        let mha_qk = MhaQK::new(num_heads, head_dim);
         let seq_len = 2;
         let q = Tensor::<Element>::random(&vec![1, hidden_size]);
         let k = Tensor::<Element>::random(&vec![seq_len, hidden_size]);

@@ -42,13 +42,16 @@ mod tests {
         let output = softmax
             .evaluate::<GoldilocksExt2>(&[&input], vec![vec![2, 3]])
             .unwrap();
-        assert_eq!(output.outputs[0].get_data(), vec![
-            1.0 / 3.0,
-            1.0 / 3.0,
-            1.0 / 3.0,
-            1.0 / 3.0,
-            1.0 / 3.0,
-            1.0 / 3.0
-        ]);
+        assert_eq!(
+            output.outputs[0].get_data(),
+            vec![
+                1.0 / 3.0,
+                1.0 / 3.0,
+                1.0 / 3.0,
+                1.0 / 3.0,
+                1.0 / 3.0,
+                1.0 / 3.0
+            ]
+        );
     }
 }

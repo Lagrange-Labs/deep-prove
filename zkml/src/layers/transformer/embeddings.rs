@@ -1,8 +1,11 @@
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
-    Element, Tensor, layers::provable::OpInfo, padding::PaddingMode,
-    parser::{gguf::FileTensorLoader, json}, tensor::Number,
+    Tensor,
+    layers::provable::OpInfo,
+    padding::PaddingMode,
+    parser::{gguf::FileTensorLoader, json},
+    tensor::Number,
 };
 
 #[derive(Debug, Clone)]
@@ -85,8 +88,9 @@ impl<N: Number> Embeddings<N> {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::bail;
     use ark_std::rand::{Rng, thread_rng};
+
+    use crate::Element;
 
     use super::*;
 

@@ -2,9 +2,7 @@ use anyhow::ensure;
 use ff_ext::ExtensionField;
 
 use crate::{
-    Tensor,
-    layers::provable::{Evaluate, LayerOut},
-    tensor::Number,
+    layers::provable::{Evaluate, LayerOut}, tensor::Number, Tensor
 };
 
 pub struct Permute {
@@ -15,10 +13,13 @@ impl Permute {
     pub fn new(args: Vec<usize>) -> Self {
         Self { args }
     }
+}
 
-    fn evaluate<N: Number, E: ExtensionField>(
+impl<N: Number> Evaluate<N> for Permute {
+    fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
+        _unpadded_input_shapes: Vec<Vec<usize>>,
     ) -> anyhow::Result<LayerOut<N, E>> {
         ensure!(
             inputs.iter().all(|t| t.get_shape().len() == 3),
@@ -47,7 +48,7 @@ mod test {
         let input = Tensor::<Element>::random(&[2, 3, 4]);
         let permute = Permute::new(vec![1, 0, 2]);
         let output = permute
-            .evaluate::<Element, GoldilocksExt2>(&[&input])
+            .evaluate::<GoldilocksExt2>(&[&input],vec![])
             .unwrap();
         assert_eq!(output.outputs()[0].get_shape(), vec![3, 2, 4]);
     }

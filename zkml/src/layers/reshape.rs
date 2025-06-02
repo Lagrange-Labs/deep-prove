@@ -98,10 +98,11 @@ impl OpInfo for Reshape {
     }
 }
 
-impl Reshape {
-    pub fn evaluate<N: Number, E: ExtensionField>(
+impl<N: Number> Evaluate<N> for Reshape {
+    fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
+        _unpadded_input_shapes: Vec<Vec<usize>>,
     ) -> anyhow::Result<LayerOut<N, E>> {
         let output_shapes =
             self.internal_output(&inputs.iter().map(|x| x.get_shape()).collect::<Vec<_>>())?;
@@ -125,12 +126,15 @@ mod tests {
 
     #[test]
     fn test_reshape_fixed() {
-        let input = Tensor::<Element>::new(vec![2, 3, 3], vec![
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
-        ]);
+        let input = Tensor::<Element>::new(
+            vec![2, 3, 3],
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+            ],
+        );
         let reshape = Reshape::new_fixed(vec![vec![3, 2, 3]]);
         let output = reshape
-            .evaluate::<_, GoldilocksExt2>(&[&input])
+            .evaluate::<GoldilocksExt2>(&[&input],vec![])
             .expect("reshape shouldn't fail");
         assert_eq!(output.outputs[0].get_shape(), vec![3, 2, 3]);
         assert_eq!(output.outputs[0].get_data(), input.get_data());
@@ -141,7 +145,7 @@ mod tests {
         let input = Tensor::<Element>::new(vec![2, 3], vec![0, 1, 2, 3, 4, 5]);
         let reshape = Reshape::new_squeeze(1);
         let output = reshape
-            .evaluate::<_, GoldilocksExt2>(&[&input])
+            .evaluate::<GoldilocksExt2>(&[&input],vec![])
             .expect("reshape shouldn't fail");
         assert_eq!(output.outputs[0].get_shape(), vec![2, 1, 3]);
         assert_eq!(output.outputs[0].get_data(), vec![0, 1, 2, 3, 4, 5]);
@@ -163,7 +167,7 @@ mod tests {
         );
         let reshape = Reshape::new_subspace(1..2, vec![3, 4]);
         let output = reshape
-            .evaluate::<_, GoldilocksExt2>(&[&input])
+            .evaluate::<GoldilocksExt2>(&[&input],vec![])
             .expect("reshape shouldn't fail");
         assert_eq!(output.outputs[0].get_shape(), vec![2, 3, 4]);
         assert_eq!(

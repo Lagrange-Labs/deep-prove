@@ -1,4 +1,3 @@
-use std::{collections::HashMap, marker::PhantomData};
 use crate::{
     Claim, Element, Prover,
     commit::same_poly,
@@ -24,6 +23,7 @@ use gkr::util::ceil_log2;
 use multilinear_extensions::mle::IntoMLE;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::{marker::PhantomData};
 use transcript::Transcript;
 
 use crate::{quantization::BIT_LEN, tensor::Tensor};
@@ -402,9 +402,7 @@ pub struct GELU<N> {
 
 impl<N> GELU<N> {
     pub fn new() -> Self {
-        Self {
-            _n: PhantomData,
-        }
+        Self { _n: PhantomData }
     }
 }
 
@@ -417,12 +415,16 @@ impl Evaluate<f32> for GELU<f32> {
         let output_tensors: Vec<Tensor<f32>> = inputs
             .par_iter()
             .map(|t| {
-                let d  = t.get_data();
-                let gelued = d.iter().map(|&x| {
-                    let x_cubed = x * x * x;
-                    let inner_term = (2.0f32 / std::f32::consts::PI).sqrt() * (x + 0.044715 * x_cubed);
-                    0.5 * x * (1.0 + inner_term.tanh())
-                }).collect::<Vec<_>>();
+                let d = t.get_data();
+                let gelued = d
+                    .iter()
+                    .map(|&x| {
+                        let x_cubed = x * x * x;
+                        let inner_term =
+                            (2.0f32 / std::f32::consts::PI).sqrt() * (x + 0.044715 * x_cubed);
+                        0.5 * x * (1.0 + inner_term.tanh())
+                    })
+                    .collect::<Vec<_>>();
                 Tensor::new(t.get_shape(), gelued)
             })
             .collect();
@@ -488,7 +490,12 @@ mod test {
             .iter()
             .zip(expected_output_data.iter())
             .for_each(|(actual, expected)| {
-                assert!((actual - expected).abs() < 1e-3, "Actual: {}, Expected: {}", actual, expected);
+                assert!(
+                    (actual - expected).abs() < 1e-3,
+                    "Actual: {}, Expected: {}",
+                    actual,
+                    expected
+                );
             });
         Ok(())
     }

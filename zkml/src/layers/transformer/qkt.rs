@@ -6,19 +6,18 @@ use ff_ext::ExtensionField;
 
 use crate::{
     Tensor,
-    layers::{
-        LayerOut,
-        provable::{Evaluate},
-    },
+    layers::{LayerOut, provable::Evaluate},
     tensor::Number,
 };
 
 #[derive(Clone, Debug)]
 pub struct QKT;
 
-impl QKT {
-    pub fn evaluate<N: Number, E: ExtensionField>(
+impl<N: Number> Evaluate<N> for QKT {
+    fn evaluate<E: ExtensionField>(
+        &self,
         inputs: &[&Tensor<N>],
+        _unpadded_input_shapes: Vec<Vec<usize>>,
     ) -> anyhow::Result<LayerOut<N, E>> {
         let q = inputs[0];
         let k = inputs[1];
@@ -60,11 +59,14 @@ mod test {
     #[test]
     fn test_qkt() {
         let mut q = Tensor::<Element>::new(vec![10], vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-        let k = Tensor::<Element>::new(vec![2, 10], vec![
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
-        ]);
+        let k = Tensor::<Element>::new(
+            vec![2, 10],
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+            ],
+        );
         let output =
-            QKT::evaluate::<Element, GoldilocksExt2>(&[&q, &k]).expect("qkt shouldn't fail");
+            QKT.evaluate::<GoldilocksExt2>(&[&q, &k],vec![]).expect("qkt shouldn't fail");
         let kt = k.transpose();
         // just to treat it as a matrix for matmul
         q.shape = vec![1, 10];

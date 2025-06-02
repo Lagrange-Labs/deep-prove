@@ -1,5 +1,3 @@
-use crate::tensor::Number;
-
 pub mod embeddings;
 pub mod layernorm;
 pub mod mha;
@@ -17,15 +15,18 @@ mod test {
     use serde::Deserialize;
 
     use crate::{
+        Element, Tensor,
         layers::{
-            activation::{Activation, Relu, GELU},
+            activation::{Activation, GELU, Relu},
             add::{self, Add},
             concat_matmul::{self, ConcatMatMul},
             dense::Dense,
             mul,
             provable::Evaluate,
             reshape::{self, Reshape},
-        }, parser::gguf::{self, tests::GPT2_Q8_0_PATH, FileTensorLoader, LLMConfig, LLMModel}, tensor::Number, Element, Tensor
+        },
+        parser::gguf::{self, FileTensorLoader, LLMConfig, LLMModel, tests::GPT2_Q8_0_PATH},
+        tensor::Number,
     };
 
     use super::{layernorm, mha, qkv, softmax};
@@ -65,7 +66,11 @@ mod test {
             }
         }
 
-        pub fn evaluate(&mut self, input: &Tensor<f32>,output: Option<&GPT2Output>) -> anyhow::Result<Tensor<f32>> {
+        pub fn evaluate(
+            &mut self,
+            input: &Tensor<f32>,
+            output: Option<&GPT2Output>,
+        ) -> anyhow::Result<Tensor<f32>> {
             let normed = self
                 .layernorm
                 .evaluate::<GoldilocksExt2>(&vec![input], vec![])?;
@@ -121,7 +126,7 @@ mod test {
         qkt_v: ConcatMatMul,
         scaler: mul::ScalarMul<f32>,
         layernorm: layernorm::LayerNorm<N>,
-        mha: mha::MHA_QK,
+        mha: mha::MhaQK,
         cache: qkv::CacheQKV<N>,
         out: Dense<N>,
         reshape_merged: Reshape,
@@ -134,7 +139,7 @@ mod test {
         pub fn new_from_gguf(c: &gguf::LLMConfig, att: gguf::Attention<f32>) -> Self {
             let qkv = qkv::QKV::new(att.q, att.q_bias, att.k, att.k_bias, att.v, att.v_bias);
             let reshape_qkt = reshape::Reshape::new_squeeze(1);
-            let mha = mha::MHA_QK::new(c.num_heads, c.head_dim());
+            let mha = mha::MhaQK::new(c.num_heads, c.head_dim());
             let scaler = mul::ScalarMul::new((1.0 / (c.head_dim() as f32)).sqrt());
             let ffn = FlatFFN::new_from_gguf(c, att.feedforward);
             Self {
@@ -150,13 +155,17 @@ mod test {
                 mha,
                 reshape_merged: Reshape::new_fixed(vec![vec![1, c.hidden_size]]),
                 reshape_qkt,
-               ffn,
+                ffn,
                 add: add::Add::new(),
             }
         }
 
         /// currently hardcoded for f32 - need to implement layernorm and softmax in quantized world to be generic over N
-        pub fn forward(&mut self, input: &Tensor<f32>, gpt2_output: Option<&GPT2Output>) -> anyhow::Result<Tensor<f32>> {
+        pub fn forward(
+            &mut self,
+            input: &Tensor<f32>,
+            gpt2_output: Option<&GPT2Output>,
+        ) -> anyhow::Result<Tensor<f32>> {
             assert_eq!(input.get_shape().len(), 2);
             let seq_len = input.get_shape()[0];
             let normed = self
@@ -198,7 +207,7 @@ mod test {
             // We reshape to [num_heads, 1, seq_len] such concat_matmul can work, since it expects tensors of same shape
             let qkt_reshaped = self
                 .reshape_qkt
-                .evaluate::<_, GoldilocksExt2>(&softmaxed.outputs())?;
+                .evaluate::<GoldilocksExt2>(&softmaxed.outputs(),vec![])?;
             // now we can project back with V
             // We go from [num_heads, 1, head_dim] → transpose back to [1, h, head_dim]
             let qkt_v = self.qkt_v.evaluate::<_, GoldilocksExt2>(&vec![
@@ -208,7 +217,7 @@ mod test {
             // → and reshape to [1, hidden_size]
             let merged = self
                 .reshape_merged
-                .evaluate::<_, GoldilocksExt2>(&qkt_v.outputs())?;
+                .evaluate::<GoldilocksExt2>(&qkt_v.outputs(), vec![])?;
             if let Some(gpt2_output) = gpt2_output {
                 gpt2_output.is_attention_mha_output_close(merged.outputs());
             }
@@ -227,7 +236,7 @@ mod test {
                 gpt2_output.is_residual_attn_close(out.outputs());
             }
             // and then FFN
-            let ffn_out = self.ffn.evaluate(&out.outputs()[0],gpt2_output)?;
+            let ffn_out = self.ffn.evaluate(&out.outputs()[0], gpt2_output)?;
             Ok(ffn_out)
         }
     }
@@ -238,7 +247,7 @@ mod test {
             let hidden_size = emb_size;
             let head_size = hidden_size / num_heads;
             let qkv = qkv::QKV::random(emb_size, hidden_size);
-            let mha = mha::MHA_QK::new(num_heads, head_size);
+            let mha = mha::MhaQK::new(num_heads, head_size);
             let scaler = mul::ScalarMul::new((1.0 / (head_size as f32)).sqrt());
             let layernorm = layernorm::LayerNorm::random(emb_size);
             let out = Dense::random(vec![hidden_size, hidden_size]);
@@ -268,7 +277,7 @@ mod test {
         let num_heads = 2;
         let mut att = FlatAttention::random(emb_size, num_heads);
         let input = Tensor::<f32>::random(&[1, emb_size]);
-        let output = att.forward(&input,None).unwrap();
+        let output = att.forward(&input, None).unwrap();
         println!("output shape: {:?}", output.get_shape());
     }
 
@@ -282,7 +291,7 @@ mod test {
         println!("model: {:?}", config.specific_config);
         let mut att = FlatAttention::new_from_gguf(&config, model.blocks.remove(0));
         let input = Tensor::<f32>::random(&[1, config.embedding_size]);
-        let output = att.forward(&input,None).unwrap();
+        let output = att.forward(&input, None).unwrap();
         println!("output shape: {:?}", output.get_shape());
         Ok(())
     }
@@ -367,33 +376,56 @@ mod test {
         }
         pub fn is_attention_mha_output_close(&self, mha_output: Vec<&Tensor<f32>>) {
             let mha_output_close = is_close(mha_output[0].get_data(), &self.attn_output);
-            println!("mha output close? {} -> {:?} vs {:?}", mha_output_close, mha_output[0].get_data(), self.attn_output);
+            println!(
+                "mha output close? {} -> {:?} vs {:?}",
+                mha_output_close,
+                mha_output[0].get_data(),
+                self.attn_output
+            );
         }
         pub fn is_attention_output_proj_close(&self, output_proj: Vec<&Tensor<f32>>) {
             let output_proj_close = is_close(output_proj[0].get_data(), &self.attn_output_proj);
-            println!("output proj close? {} -> {:?} vs {:?}", output_proj_close, output_proj[0].get_data(), self.attn_output_proj);
+            println!(
+                "output proj close? {} -> {:?} vs {:?}",
+                output_proj_close,
+                output_proj[0].get_data(),
+                self.attn_output_proj
+            );
         }
         pub fn is_residual_attn_close(&self, residual_attn: Vec<&Tensor<f32>>) {
             let residual_attn_close = is_close(residual_attn[0].get_data(), &self.residual_attn);
-            println!("residual attn close? {} -> {:?} vs {:?}", residual_attn_close, residual_attn[0].get_data(), self.residual_attn);
+            println!(
+                "residual attn close? {} -> {:?} vs {:?}",
+                residual_attn_close,
+                residual_attn[0].get_data(),
+                self.residual_attn
+            );
         }
         pub fn is_prefnn_layernorm_close(&self, ln2_out: Vec<&Tensor<f32>>) {
             let ln2_out_close = is_close(ln2_out[0].get_data(), &self.ln2_out);
-            println!("ln2 out close? {} -> {:?} vs {:?}", ln2_out_close, ln2_out[0].get_data(), self.ln2_out);
+            println!(
+                "ln2 out close? {} -> {:?} vs {:?}",
+                ln2_out_close,
+                ln2_out[0].get_data(),
+                self.ln2_out
+            );
         }
         pub fn is_ffn_up_close(&self, ffn_up: Vec<&Tensor<f32>>) {
             let ffn_up_close = is_close(ffn_up[0].get_data(), &self.ffn_up);
-            println!("ffn up close? {} -> {:?} vs {:?}", ffn_up_close, ffn_up[0].get_data(), self.ffn_up);
+            println!(
+                "ffn up close? {} -> {:?} vs {:?}",
+                ffn_up_close,
+                ffn_up[0].get_data(),
+                self.ffn_up
+            );
         }
     }
-
-
 
     fn is_close(a: &[f32], b: &[f32]) -> bool {
         let atol = 1e-8_f32;
         let rtol = 1e-5_f32;
         if a.len() != b.len() {
-            println!("INVALID SIZE: {} vs {}",a.len(),b.len());
+            println!("INVALID SIZE: {} vs {}", a.len(), b.len());
             return false;
         }
         a.iter().zip(b.iter()).all(|(x, y)| {
@@ -413,13 +445,16 @@ mod test {
         let path = "assets/scripts/llms/gpt2_debug_output.json";
         let gpt2_output =
             serde_json::from_reader::<_, GPT2Output>(File::open(path).unwrap()).unwrap();
-        let input = Tensor::new(vec![1, config.embedding_size], gpt2_output.inputs_embeds.clone());
+        let input = Tensor::new(
+            vec![1, config.embedding_size],
+            gpt2_output.inputs_embeds.clone(),
+        );
         let LLMModel::GPT2(mut model) = config.model_json(&loader)? else {
             bail!("Model is not a GPT2 model");
         };
         println!("model: {:?}", config.specific_config);
         let mut att = FlatAttention::new_from_gguf(&config, model.blocks.remove(0));
-        let output = att.forward(&input,Some(&gpt2_output)).unwrap();
+        let output = att.forward(&input, Some(&gpt2_output)).unwrap();
         let expected_output = gpt2_output.manual_output;
         // Usage with PyTorch defaults
         println!(

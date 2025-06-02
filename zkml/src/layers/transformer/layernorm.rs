@@ -3,7 +3,10 @@ use anyhow::ensure;
 use crate::{
     Element, Tensor,
     padding::PaddingMode,
-    parser::{gguf::{FileTensorLoader, LLMConfig}, json},
+    parser::{
+        gguf::{FileTensorLoader, LLMConfig},
+        json,
+    },
     tensor::Number,
 };
 
@@ -11,7 +14,7 @@ use crate::layers::provable::{Evaluate, LayerOut, OpInfo};
 use burn::{
     backend::Wgpu,
     module::Param,
-    nn::{LayerNorm as BLayerNorm, LayerNormConfig as BLayerNormConfig},
+    nn::{LayerNormConfig as BLayerNormConfig},
     tensor::{Tensor as BTensor, TensorData},
 };
 
@@ -121,7 +124,7 @@ impl Evaluate<f32> for LayerNorm<f32> {
         norm.gamma = Param::from_tensor(gamma);
         norm.beta = Param::from_tensor(beta);
         let output = norm.forward(input);
-        let Ok(data) : Result<Vec<f32>, _> = output.to_data().into_vec() else {
+        let Ok(data): Result<Vec<f32>, _> = output.to_data().into_vec() else {
             anyhow::bail!("failed to convert to f32");
         };
         let output_shape = output.shape().dims.to_vec();

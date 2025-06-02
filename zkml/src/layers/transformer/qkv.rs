@@ -3,7 +3,7 @@ use ff_ext::ExtensionField;
 
 use crate::{
     Tensor,
-    layers::provable::{Evaluate, LayerOut},
+    layers::provable::{LayerOut},
     tensor::Number,
 };
 
@@ -37,7 +37,13 @@ impl<N: Number> QKV<N> {
         assert_eq!(q_bias.get_shape(), k_bias.get_shape());
         assert_eq!(q_bias.get_shape(), v_bias.get_shape());
         // mat mul : [a,b] * [b, c] -> [a, c] + [c]
-        assert_eq!(q.get_shape()[1], q_bias.get_shape()[0], "q.get_shape() {:?} != q_bias.get_shape() {:?}", q.get_shape(), q_bias.get_shape());
+        assert_eq!(
+            q.get_shape()[1],
+            q_bias.get_shape()[0],
+            "q.get_shape() {:?} != q_bias.get_shape() {:?}",
+            q.get_shape(),
+            q_bias.get_shape()
+        );
         Self {
             q,
             q_bias,
@@ -57,7 +63,14 @@ impl<N: Number> QKV<N> {
         let shape = inputs[0].get_shape();
         let [seq_len, emb_size] = [shape[0], shape[1]];
         let q_emb_size = self.q.get_shape()[0];
-        ensure!(q_emb_size == emb_size, "QKV: q_emb_size {} != emb_size {} (input shape {:?} vs q shape {:?})", q_emb_size, emb_size, shape, self.q.get_shape());
+        ensure!(
+            q_emb_size == emb_size,
+            "QKV: q_emb_size {} != emb_size {} (input shape {:?} vs q shape {:?})",
+            q_emb_size,
+            emb_size,
+            shape,
+            self.q.get_shape()
+        );
         // make sure the size of the input match the size of the cache + 1
         // as we only want to do the the matmul for the new token, not for the previously generated ones
         ensure!(
