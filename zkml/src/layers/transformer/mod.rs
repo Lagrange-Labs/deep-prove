@@ -9,9 +9,12 @@ pub mod softmax;
 #[cfg(test)]
 mod test {
     use std::fs::File;
+    use std::env;
+    use std::path::PathBuf;
 
     use goldilocks::GoldilocksExt2;
     use serde::Deserialize;
+    use anyhow::Context;
 
     use crate::{
         layers::{
@@ -392,13 +395,25 @@ mod test {
 
     #[test]
     fn test_read_gpt2_pytorch_output() -> anyhow::Result<()> {
-        let model_path = "assets/scripts/llms/gpt2_tiny_weights.json";
-        let loader = json::FileTensorLoader::new_from_path(model_path)?;
+        let base_path = if env::var("DEEPPROVE_CI").unwrap_or_default() == "true" {
+            let ci_asset_dir = env::var("DEEPPROVE_ASSET_DIR")
+                .context("DEEPPROVE_ASSET_DIR not set in CI environment")?;
+            PathBuf::from(ci_asset_dir)
+        } else {
+            PathBuf::from("assets/scripts/llms/")
+        };
+
+        let model_weights_path = base_path.join("gpt2_tiny_weights.json");
+        let debug_output_path = base_path.join("gpt2_debug_output.json");
+
+        let model_weights_path_str = model_weights_path.to_str()
+            .ok_or_else(|| anyhow::anyhow!("Model weights path is not valid UTF-8: {:?}", model_weights_path))?;
+        let loader = json::FileTensorLoader::new_from_path(model_weights_path_str)?;
         let config = LLMConfig::from_json(&loader)?;
         println!("config: {:?}", config);
-        let path = "assets/scripts/llms/gpt2_debug_output.json";
+        
         let gpt2_output =
-            serde_json::from_reader::<_, GPT2Output>(File::open(path).unwrap()).unwrap();
+            serde_json::from_reader::<_, GPT2Output>(File::open(debug_output_path.as_path()).unwrap()).unwrap();
         let input = Tensor::new(
             vec![1, config.embedding_size],
             gpt2_output.inputs_embeds.clone(),
