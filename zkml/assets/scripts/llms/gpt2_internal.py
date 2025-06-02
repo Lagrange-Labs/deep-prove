@@ -1,12 +1,30 @@
 import torch
 import re
 import json
+import argparse
+import os
 from transformers import GPT2Model, GPT2Tokenizer
 from transformers import AutoModelForCausalLM
 from transformers.modeling_utils import Conv1D
-import os
 
 torch.set_printoptions(precision=6, sci_mode=False)
+
+# --- Argument Parsing --- #
+# This MUST be at the top level of the script to ensure `args` is globally available.
+parser = argparse.ArgumentParser(description="Run GPT-2 tiny model and dump weights and intermediate tensors.")
+parser.add_argument(
+    "--output-dir",
+    type=str,
+    default=".", # Default to current directory
+    help="Directory to save the output JSON files."
+)
+args = parser.parse_args() # This defines 'args'
+
+# Ensure output directory exists, executed early
+# This now correctly uses 'args' which should have just been defined.
+if not os.path.exists(args.output_dir):
+    os.makedirs(args.output_dir)
+    print(f"Created output directory: {args.output_dir}")
 
 # Load tokenizer and model
 tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
@@ -160,7 +178,8 @@ output_json = {
 output_debug_fname = os.path.join(args.output_dir, "gpt2_debug_output.json")
 with open(output_debug_fname, "w") as f:
     json.dump(output_json, f, indent=2)
-print(f"✅ Debug outputs written to {output_debug_fname}")
+# Print absolute path for clarity
+print(f"✅ Debug outputs written to {os.path.abspath(output_debug_fname)}")
 
 import json
 from collections import OrderedDict
@@ -350,5 +369,5 @@ for name, tensor in state_dict.items():
 weights_fname = os.path.join(args.output_dir, "gpt2_tiny_weights.json") 
 with open(weights_fname, "w") as f:
     json.dump(export, f, indent=2)
-
-print(f"✅ Export written to {weights_fname}")
+# Print absolute path for clarity
+print(f"✅ Export written to {os.path.abspath(weights_fname)}")
