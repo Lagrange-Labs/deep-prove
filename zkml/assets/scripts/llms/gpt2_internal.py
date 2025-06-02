@@ -4,6 +4,7 @@ import json
 from transformers import GPT2Model, GPT2Tokenizer
 from transformers import AutoModelForCausalLM
 from transformers.modeling_utils import Conv1D
+import os
 
 torch.set_printoptions(precision=6, sci_mode=False)
 
@@ -155,10 +156,11 @@ output_json = {
     "automated_output": to_list(automated_output)
 }
 
-with open("gpt2_debug_output.json", "w") as f:
+# Save the debug tensor outputs
+output_debug_fname = os.path.join(args.output_dir, "gpt2_debug_output.json")
+with open(output_debug_fname, "w") as f:
     json.dump(output_json, f, indent=2)
-
-print("✅ Outputs match. Dump written to gpt2_debug_output.json")
+print(f"✅ Debug outputs written to {output_debug_fname}")
 
 import json
 from collections import OrderedDict
@@ -344,8 +346,9 @@ for name, tensor in state_dict.items():
             if "others" not in export: export["others"] = {} 
             export["others"][name] = tensor_data
 
-fname = "gpt2_tiny_weights.json"
-with open(fname, "w") as f:
+# Save the model weights and metadata
+weights_fname = os.path.join(args.output_dir, "gpt2_tiny_weights.json") 
+with open(weights_fname, "w") as f:
     json.dump(export, f, indent=2)
 
-print(f"✅ Export written to {fname}")
+print(f"✅ Export written to {weights_fname}")
