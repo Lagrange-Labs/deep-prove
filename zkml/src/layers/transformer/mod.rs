@@ -2,7 +2,7 @@ pub mod embeddings;
 pub mod layernorm;
 pub mod mha;
 pub mod positional;
-pub mod qkt;
+//pub mod qkt;
 pub mod qkv;
 pub mod softmax;
 
