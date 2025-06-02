@@ -1,11 +1,7 @@
 use anyhow::ensure;
 use ff_ext::ExtensionField;
 
-use crate::{
-    Tensor,
-    layers::provable::{LayerOut},
-    tensor::Number,
-};
+use crate::{Tensor, layers::provable::LayerOut, tensor::Number};
 
 /// A layer that evaluates the tensor X against the matrices Q, K and V.
 /// NOTE: it performs optimizations with the cache, so it actually

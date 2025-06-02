@@ -10,14 +10,13 @@ pub mod softmax;
 mod test {
     use std::fs::File;
 
-    use anyhow::bail;
     use goldilocks::GoldilocksExt2;
     use serde::Deserialize;
 
     use crate::{
-        Element, Tensor,
+        Tensor,
         layers::{
-            activation::{Activation, GELU, Relu},
+            activation::GELU,
             add::{self, Add},
             concat_matmul::{self, ConcatMatMul},
             dense::Dense,
@@ -51,7 +50,7 @@ mod test {
     }
 
     impl FlatFFN<f32> {
-        pub fn new_from_gguf(c: &gguf::LLMConfig, ffn: gguf::FeedForward<f32>) -> Self {
+        pub fn new_from_gguf(_c: &gguf::LLMConfig, ffn: gguf::FeedForward<f32>) -> Self {
             let layernorm = ffn.norm;
             let up = Dense::new(ffn.up, ffn.up_bias);
             let activation = GELU::new();
@@ -121,6 +120,7 @@ mod test {
     struct FlatAttention<N> {
         num_heads: usize,
         head_dim: usize,
+        #[allow(dead_code)]
         hidden_size: usize,
         qkv: qkv::QKV<N>,
         qkt_v: ConcatMatMul,
@@ -207,7 +207,7 @@ mod test {
             // We reshape to [num_heads, 1, seq_len] such concat_matmul can work, since it expects tensors of same shape
             let qkt_reshaped = self
                 .reshape_qkt
-                .evaluate::<GoldilocksExt2>(&softmaxed.outputs(),vec![])?;
+                .evaluate::<GoldilocksExt2>(&softmaxed.outputs(), vec![])?;
             // now we can project back with V
             // We go from [num_heads, 1, head_dim] → transpose back to [1, h, head_dim]
             let qkt_v = self.qkt_v.evaluate::<_, GoldilocksExt2>(&vec![
@@ -285,9 +285,7 @@ mod test {
     fn test_flat_attention_from_gguf() -> anyhow::Result<()> {
         let loader = FileTensorLoader::from_path(GPT2_Q8_0_PATH)?;
         let config = LLMConfig::from_content(&loader)?;
-        let LLMModel::GPT2(mut model) = config.model(&loader)? else {
-            bail!("Model is not a GPT2 model");
-        };
+        let LLMModel::GPT2(mut model) = config.model(&loader)?;
         println!("model: {:?}", config.specific_config);
         let mut att = FlatAttention::new_from_gguf(&config, model.blocks.remove(0));
         let input = Tensor::<f32>::random(&[1, config.embedding_size]);
@@ -296,48 +294,11 @@ mod test {
         Ok(())
     }
 
-    /// # 1. Tokenization
-    /// input_ids               ← tokenizer.encode("Hello")
-
-    /// # 2. Embeddings
-    /// inputs_embeds           ← wte(input_ids) + wpe(positions)
-
-    /// # 3. LayerNorm before Attention
-    /// ln1_out                 ← LayerNorm(inputs_embeds)
-
-    /// # 4. QKV Projection
-    /// qkv                     ← c_attn(ln1_out)
-    /// q, k, v                 ← split(qkv)          # shape: [B, H, T, D]
-
-    /// # 5. Attention Scores
-    /// attn_scores             ← matmul(q, k.T) / sqrt(D)
-
-    /// # 6. Causal Mask + Softmax
-    /// attn_weights            ← softmax(masked(attn_scores))
-
-    /// # 7. Attention Output
-    /// attn_output             ← matmul(attn_weights, v)
-    /// attn_output_proj        ← c_proj(merge_heads(attn_output))
-
-    /// # 8. Add Attention Residual
-    /// residual_attn           ← inputs_embeds + attn_output_proj
-
-    /// # 9. LayerNorm before FFN
-    /// ln2_out                 ← LayerNorm(residual_attn)
-
-    /// # 10. Feedforward Network
-    /// ffn_intermediate        ← c_fc(ln2_out)       # Dense
-    /// ffn_activated           ← GELU(ffn_intermediate)
-    /// ffn_output_proj         ← c_proj(ffn_activated)
-
-    /// # 11. Final Residual Add
-    /// manual_output           ← residual_attn + ffn_output_proj
-
-    /// # 12. Reference Output
-    /// automated_output        ← model(...).hidden_states[1]
     #[derive(Debug, Deserialize)]
     struct GPT2Output {
+        #[allow(dead_code)]
         token: String,
+        #[allow(dead_code)]
         input_ids: u32,
         inputs_embeds: Vec<f32>,
         ln1_out: Vec<f32>,
@@ -345,16 +306,11 @@ mod test {
         q: Vec<f32>,
         k: Vec<f32>,
         v: Vec<f32>,
-        attn_scores: Vec<f32>,
-        attn_weights: Vec<f32>,
         attn_output: Vec<f32>,
         attn_output_proj: Vec<f32>,
         residual_attn: Vec<f32>,
         ffn_up: Vec<f32>,
-        ffn_activated: Vec<f32>,
-        ffn_output_proj: Vec<f32>,
         manual_output: Vec<f32>,
-        automated_output: Vec<f32>,
     }
 
     impl GPT2Output {
@@ -449,9 +405,7 @@ mod test {
             vec![1, config.embedding_size],
             gpt2_output.inputs_embeds.clone(),
         );
-        let LLMModel::GPT2(mut model) = config.model_json(&loader)? else {
-            bail!("Model is not a GPT2 model");
-        };
+        let LLMModel::GPT2(mut model) = config.model_json(&loader)?;
         println!("model: {:?}", config.specific_config);
         let mut att = FlatAttention::new_from_gguf(&config, model.blocks.remove(0));
         let output = att.forward(&input, Some(&gpt2_output)).unwrap();
@@ -462,80 +416,5 @@ mod test {
             is_close(&expected_output, &output.get_data())
         );
         Ok(())
-    }
-
-    /// Test if the following two operations are equivalent:
-    /// 1. reshape, transpose, partition, merge back, transpose back
-    /// 2. reshape, partition, merge back
-    #[test]
-    fn test_multihead_transpose() {
-        let seq_len = 10;
-        let emb_size = 16;
-        let head_dim = 4;
-        let num_heads = emb_size / head_dim;
-        // only do one token for Q
-        let q = Tensor::<Element>::random(&[1, emb_size]);
-        let k = Tensor::<Element>::random(&[seq_len, emb_size]);
-        let v = Tensor::<Element>::random(&[seq_len, emb_size]);
-        // -----------------------
-        // first technique:
-        // -----------------------
-        let qkt_v_1 = {
-            // go from [1, emb_size] to [1, num_heads, head_dim] to [num_heads, 1, head_dim]
-            let q_reshaped = q
-                .clone()
-                .reshape(vec![1, num_heads, head_dim])
-                .permute3d(&vec![1, 0, 2]);
-            // go from [seq_len, emb_size] to [seq_len, num_heads, head_dim]  to [num_heads, seq_len, head_dim]
-            let k_reshaped = k
-                .clone()
-                .reshape(vec![seq_len, num_heads, head_dim])
-                .permute3d(&vec![1, 0, 2]);
-            let v_reshaped = v
-                .clone()
-                .reshape(vec![seq_len, num_heads, head_dim])
-                .permute3d(&vec![1, 0, 2]);
-            // now we split by heads and multiply each mini q with mini k transposed
-            let qkt_heads = (0..num_heads)
-                .map(|head| {
-                    let mini_q = q_reshaped
-                        .slice_3d(head, head + 1)
-                        .reshape(vec![1, head_dim]);
-                    let mini_k = k_reshaped
-                        .slice_3d(head, head + 1)
-                        .reshape(vec![seq_len, head_dim])
-                        .transpose();
-                    // [1, head_dim] @ [head_dim, seq_len] = [1, seq_len]
-                    mini_q.matmul(&mini_k)
-                })
-                .collect::<Vec<_>>();
-            let v_heads = (0..num_heads)
-                .map(|head| {
-                    let mini_v = v_reshaped
-                        .slice_3d(head, head + 1)
-                        .reshape(vec![seq_len, head_dim]);
-                    // [seq_len, head_dim]
-                    mini_v
-                })
-                .collect::<Vec<_>>();
-            let mut qkt_it = qkt_heads.into_iter();
-            let mut v_it = v_heads.into_iter();
-            // now we do the matmul with v, so each heads is now of [1, seq_len] @ [seq_len, head_dim] = [1, head_dim]
-            // we then concat the results together so the end results is [num_heads, 1, head_dim]
-            // here we add the third coordinate for the concat to "work", e.g. [1,a,b] || [1, a, b] == [2, a, b]
-            let qkt = qkt_it
-                .next()
-                .unwrap()
-                .matmul(&v_it.next().unwrap())
-                .reshape(vec![1, 1, head_dim]);
-            let qkt_v = qkt_it.zip(v_it).fold(qkt, |mut acc, (qkt, v)| {
-                acc.concat(qkt.matmul(&v));
-                acc
-            });
-            println!("qkt_v shape: {:?}", qkt_v.get_shape());
-            // transpose back to [1, num_heads, head_dim] and then reshape to [1, emb_size]
-            let qkt_v = qkt_v.permute3d(&vec![1, 0, 2]).reshape(vec![1, emb_size]);
-            qkt_v
-        };
     }
 }

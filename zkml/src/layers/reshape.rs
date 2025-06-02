@@ -106,6 +106,7 @@ impl<N: Number> Evaluate<N> for Reshape {
     ) -> anyhow::Result<LayerOut<N, E>> {
         let output_shapes =
             self.internal_output(&inputs.iter().map(|x| x.get_shape()).collect::<Vec<_>>())?;
+        #[allow(suspicious_double_ref_op)]
         let out_tensors = inputs.iter().map(|x| x.clone().clone()).collect::<Vec<_>>();
         let out_tensors = output_shapes
             .into_iter()
@@ -134,7 +135,7 @@ mod tests {
         );
         let reshape = Reshape::new_fixed(vec![vec![3, 2, 3]]);
         let output = reshape
-            .evaluate::<GoldilocksExt2>(&[&input],vec![])
+            .evaluate::<GoldilocksExt2>(&[&input], vec![])
             .expect("reshape shouldn't fail");
         assert_eq!(output.outputs[0].get_shape(), vec![3, 2, 3]);
         assert_eq!(output.outputs[0].get_data(), input.get_data());
@@ -145,7 +146,7 @@ mod tests {
         let input = Tensor::<Element>::new(vec![2, 3], vec![0, 1, 2, 3, 4, 5]);
         let reshape = Reshape::new_squeeze(1);
         let output = reshape
-            .evaluate::<GoldilocksExt2>(&[&input],vec![])
+            .evaluate::<GoldilocksExt2>(&[&input], vec![])
             .expect("reshape shouldn't fail");
         assert_eq!(output.outputs[0].get_shape(), vec![2, 1, 3]);
         assert_eq!(output.outputs[0].get_data(), vec![0, 1, 2, 3, 4, 5]);
@@ -167,7 +168,7 @@ mod tests {
         );
         let reshape = Reshape::new_subspace(1..2, vec![3, 4]);
         let output = reshape
-            .evaluate::<GoldilocksExt2>(&[&input],vec![])
+            .evaluate::<GoldilocksExt2>(&[&input], vec![])
             .expect("reshape shouldn't fail");
         assert_eq!(output.outputs[0].get_shape(), vec![2, 3, 4]);
         assert_eq!(

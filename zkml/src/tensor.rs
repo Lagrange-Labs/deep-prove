@@ -21,7 +21,6 @@ use serde::{Deserialize, Serialize};
 use std::{
     cmp::{Ordering, PartialEq},
     fmt::{self, Debug},
-    ops::RangeBounds,
 };
 
 use crate::{
@@ -150,7 +149,7 @@ impl Number for GoldilocksExt2 {
     fn to_f32(&self) -> anyhow::Result<f32> {
         unreachable!("Called to_f32 for Goldilocks")
     }
-    fn from_f32(f: f32) -> anyhow::Result<Self> {
+    fn from_f32(_: f32) -> anyhow::Result<Self> {
         unreachable!("Called from_f32 for Goldilocks")
     }
 }
@@ -1646,7 +1645,6 @@ impl<T: Number> Tensor<T> {
     // In other words, we only concatenate another vector if it's exactly size of the highest dimension
     // If it's 2d, then we expect other to be a vector
     pub fn concat(&mut self, other: Self) {
-        let len = self.shape.last().unwrap();
         // make sure that the all dimension but the highest one are the same
         let common_shape = self.shape.len().min(other.shape.len());
         if common_shape < self.shape.len() {

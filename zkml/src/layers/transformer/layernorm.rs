@@ -14,7 +14,7 @@ use crate::layers::provable::{Evaluate, LayerOut, OpInfo};
 use burn::{
     backend::Wgpu,
     module::Param,
-    nn::{LayerNormConfig as BLayerNormConfig},
+    nn::LayerNormConfig as BLayerNormConfig,
     tensor::{Tensor as BTensor, TensorData},
 };
 
@@ -33,7 +33,7 @@ impl<N: Number> LayerNorm<N> {
 }
 
 impl LayerNorm<f32> {
-    pub fn from_json(l: &json::FileTensorLoader, c: &LLMConfig) -> anyhow::Result<Self> {
+    pub fn from_json(l: &json::FileTensorLoader, _c: &LLMConfig) -> anyhow::Result<Self> {
         println!("from_json: current path: {:?}", l.prefix);
         let gamma = l.get_tensor("norm.weight")?;
         let beta = l.get_tensor("norm.bias")?;
@@ -74,7 +74,7 @@ impl<N: Number> OpInfo for LayerNorm<N> {
     }
 
     fn num_outputs(&self, num_inputs: usize) -> usize {
-        1
+        num_inputs
     }
 
     fn describe(&self) -> String {
@@ -138,8 +138,8 @@ impl Evaluate<f32> for LayerNorm<f32> {
 impl Evaluate<Element> for LayerNorm<Element> {
     fn evaluate<E: ff_ext::ExtensionField>(
         &self,
-        inputs: &[&Tensor<Element>],
-        unpadded_input_shapes: Vec<Vec<usize>>,
+        _inputs: &[&Tensor<Element>],
+        _unpadded_input_shapes: Vec<Vec<usize>>,
     ) -> anyhow::Result<LayerOut<Element, E>> {
         unimplemented!()
     }

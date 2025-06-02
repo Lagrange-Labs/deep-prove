@@ -23,7 +23,7 @@ use gkr::util::ceil_log2;
 use multilinear_extensions::mle::IntoMLE;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{marker::PhantomData};
+use std::marker::PhantomData;
 use transcript::Transcript;
 
 use crate::{quantization::BIT_LEN, tensor::Tensor};

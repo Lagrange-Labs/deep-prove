@@ -299,11 +299,12 @@ pub mod test {
     use super::*;
 
     #[test]
-    fn test_json_tensor_loader() {
+    fn test_json_tensor_loader() -> anyhow::Result<()> {
         let path = "assets/scripts/llms/gpt2_tiny_weights.json";
-        let loader = FileTensorLoader::new_from_path(path).unwrap();
-        let config = LLMConfig::from_json(&loader).unwrap();
+        let loader = FileTensorLoader::new_from_path(path)?;
+        let config = LLMConfig::from_json(&loader)?;
         println!("tiny gpt2 config: {:?}", config);
-        let model = config.model_json(&loader).unwrap();
+        config.model_json(&loader)?;
+        Ok(())
     }
 }

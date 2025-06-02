@@ -8,9 +8,11 @@
 //! The vector is actually flattened since LayerOut only supports a vector of Tensors, not tuple, so the length is num_heads * 2
 //! NOTE: it does NOT Perform the softmax per head neither the subsequent projection with the V matrix.
 //! THis is done in subsequent layers due to proving logic proving these operation separately.
-use crate::{layers::transformer::qkt::QKT, tensor::Number};
-use anyhow::{ensure};
-use crate::layers::provable::Evaluate;
+use crate::{
+    layers::{provable::Evaluate, transformer::qkt::QKT},
+    tensor::Number,
+};
+use anyhow::ensure;
 use ff_ext::ExtensionField;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
@@ -76,7 +78,7 @@ impl MhaQK {
                     .reshape(vec![seq_len, self.head_dim]); // [seq_len, head_dim]
                 // output Q @ K^T is of shape [1, seq_len], and v is of shape [seq_len, head_dim]
                 Ok(vec![
-                    QKT.evaluate::<E>(&[&mini_q, &mini_k],vec![])?
+                    QKT.evaluate::<E>(&[&mini_q, &mini_k], vec![])?
                         .outputs
                         .remove(0),
                     mini_v,

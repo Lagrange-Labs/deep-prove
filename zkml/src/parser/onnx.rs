@@ -622,7 +622,6 @@ fn downcast_to<T: Op>(node: &OnnxNode) -> Result<&T> {
 mod tests {
 
     use anyhow::Ok;
-    use candle_core::{Device, Storage, quantized::gguf_file::Content};
     use goldilocks::GoldilocksExt2;
 
     use super::*;

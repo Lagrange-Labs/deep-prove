@@ -57,10 +57,6 @@ impl Positional<f32> {
                 );
                 Ok(Self::Learned(position_embd))
             }
-            _ => anyhow::bail!(
-                "Unsupported variant for positional embeddings: {:?}",
-                c.specific_config
-            ),
         }
     }
 }

@@ -1,8 +1,5 @@
 use super::json;
-use candle_core::quantized::{
-    QTensor,
-    gguf_file::{Value},
-};
+use candle_core::quantized::{QTensor, gguf_file::Value};
 use std::{
     fs::File,
     io::{BufReader, Read, Seek},
@@ -12,79 +9,15 @@ use std::{
 };
 
 use anyhow::{Context, bail, ensure};
-use candle_core::{
-    CpuStorage, Device, Storage,
-    quantized::{gguf_file::Content},
-};
+use candle_core::{CpuStorage, Device, Storage, quantized::gguf_file::Content};
 
 use crate::{
     Tensor,
-    layers::transformer::{
-        embeddings::Embeddings, layernorm::LayerNorm, positional::Positional, 
-    },
+    layers::transformer::{embeddings::Embeddings, layernorm::LayerNorm, positional::Positional},
     tensor::Number,
 };
 
-fn parse_gguf(path: &str) -> anyhow::Result<()> {
-    Ok(())
-}
-
-// 1. LayerNorm (Pre-Norm)
-// Input: [seq_len, hidden_size] (e.g. [N, 768])
-// Operation: Normalize across hidden_size (i.e., last axis)
-//
-// Parameters:
-// blk.N.attn_norm.weight (scale)
-// blk.N.attn_norm.bias (shift)
-//
-// 2. Fused QKV Projection
-// Operation: Linear layer projecting input into Q, K, V vectors in one go.
-// Matmul: x @ W_qkv.T + b_qkv
-// Shapes:
-// x: [N, 768]
-// W_qkv: [3 * hidden_size, 768] → [2304, 768]
-// b_qkv: [2304]
-//
-// Tensors:
-// blk.N.attn_qkv.weight
-// blk.N.attn_qkv.bias
-//
-// After matmul: Output [N, 2304] → split into:
-// q: [N, 768]
-// k: [N, 768]
-// v: [N, 768]
-//
-// 3. Attention Scores
-// Matmul: attn_scores = q @ k.T / sqrt(d_k)
-// Shape:
-// q: [N, 768] reshaped to [N, n_heads, head_dim]
-// k: [N, 768] reshaped to [N, n_heads, head_dim]
-//
-// Result: [N, n_heads, N]
-//
-// Optionally add attention mask (causal or padding mask)
-//
-// 4. Softmax + Dropout
-// Apply softmax over the last axis (tokens)
-// Optional dropout during training
-//
-// 5. Attention Output
-// Weighted sum: attn_output = softmax_scores @ v
-// Shape: [N, n_heads, head_dim] → merge heads → [N, 768]
-//
-// 6. Output Projection
-// Linear projection back to hidden size
-// Matmul: attn_output @ W_o.T + b_o
-// Shapes:
-// W_o: [768, 768]
-// b_o: [768]
-// Tensors:
-// blk.N.attn_output.weight
-// blk.N.attn_output.bias
-//
-// 7. Residual Add
-// Output: x + attn_output → shape [N, 768]
-
+/// Intermediary struct to hold the config of the model.
 #[derive(Debug, Clone)]
 pub struct LLMConfig {
     /// The size of an embedding vector (each token gets translated to an embedding vector of this size)
@@ -217,7 +150,9 @@ pub enum LLMModel {
 
 #[derive(Debug, Clone)]
 pub struct GPT2Model {
+    #[allow(dead_code)]
     embeddings: Embeddings<f32>,
+    #[allow(dead_code)]
     positional: Positional<f32>,
     pub blocks: Vec<Attention<f32>>,
 }
@@ -424,7 +359,7 @@ fn unfuse_tensors(fused: candle_core::Tensor, chunk_len: usize) -> anyhow::Resul
     Ok(tensors)
 }
 
-trait FromValue<T> {
+pub trait FromValue<T> {
     fn from_value(v: &Value) -> T;
 }
 
@@ -579,19 +514,13 @@ impl TensorLoader<BufReader<File>> {
 
 #[cfg(test)]
 pub mod tests {
-    use candle_core::{
-        CpuStorage, Device, Storage, Tensor as CandleTensor, quantized::gguf_file::Content,
-    };
-    use candle_transformers::quantized_var_builder::VarBuilder;
+    use candle_core::{CpuStorage, Device, Storage, quantized::gguf_file::Content};
     use gguf_rs::get_gguf_container;
-    use std::{fs::File, io::Read, ops::Deref, path::Path};
+    use std::{fs::File, ops::Deref};
 
-    use crate::{
-        layers::transformer::embeddings::Embeddings,
-        parser::gguf::{FeedForward, LLMConfig},
-    };
+    use crate::{layers::transformer::embeddings::Embeddings, parser::gguf::LLMConfig};
 
-    use super::{Attention, TensorLoader};
+    use super::Attention;
     // download at https://huggingface.co/igorbkz/gpt2-Q8_0-GGUF
     pub const GPT2_Q8_0_PATH: &str = "assets/scripts/llms/gpt2.q8_0.gguf";
 
@@ -599,7 +528,7 @@ pub mod tests {
     fn test_gguf_load_model() -> anyhow::Result<()> {
         let loader = FileTensorLoader::from_path(GPT2_Q8_0_PATH)?;
         let config = LLMConfig::from_content(&loader)?;
-        let model = config.model(&loader)?;
+        let _model = config.model(&loader)?;
         println!("model: {:?}", config.specific_config);
         Ok(())
     }
@@ -633,6 +562,7 @@ pub mod tests {
 
     // https://docs.rs/candle-transformers/latest/src/candle_transformers/models/llama.rs.html#517-535
     #[test]
+    #[ignore = "just a test to explore gguf internal structure"]
     fn test_load_and_inspect_gpt2_gguf() -> anyhow::Result<()> {
         // Path to the GGUF file
         let gguf_path = GPT2_Q8_0_PATH;
@@ -656,8 +586,8 @@ pub mod tests {
             );
             let qtensor = gguf_candle.tensor(&mut r, &tensor.name, &Device::Cpu)?;
             let tensor = qtensor.dequantize(&Device::Cpu)?;
-            let (s, l) = tensor.storage_and_layout();
-            let data = match s.deref() {
+            let (s, _l) = tensor.storage_and_layout();
+            let _data = match s.deref() {
                 Storage::Cpu(s) => match s {
                     CpuStorage::F32(d) => d.to_vec(),
                     CpuStorage::F16(d) => d.iter().map(|x| x.to_f32()).collect(),
