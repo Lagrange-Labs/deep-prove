@@ -12,9 +12,8 @@ use crate::{
 
 use crate::layers::provable::{Evaluate, LayerOut, OpInfo};
 use burn::{
-    backend::Wgpu,
     module::Param,
-    nn::LayerNormConfig as BLayerNormConfig,
+    nn::{LayerNormConfig as BLayerNormConfig},
     tensor::{Tensor as BTensor, TensorData},
 };
 
@@ -91,7 +90,7 @@ impl<N: Number> OpInfo for LayerNorm<N> {
 }
 
 // Type alias for the backend to use.
-type Backend = Wgpu;
+type Backend = burn::backend::NdArray;
 
 impl Evaluate<f32> for LayerNorm<f32> {
     fn evaluate<E: ff_ext::ExtensionField>(
