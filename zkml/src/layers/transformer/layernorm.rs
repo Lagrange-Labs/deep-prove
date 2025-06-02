@@ -13,7 +13,7 @@ use crate::{
 use crate::layers::provable::{Evaluate, LayerOut, OpInfo};
 use burn::{
     module::Param,
-    nn::{LayerNormConfig as BLayerNormConfig},
+    nn::LayerNormConfig as BLayerNormConfig,
     tensor::{Tensor as BTensor, TensorData},
 };
 

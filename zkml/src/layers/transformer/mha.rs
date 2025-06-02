@@ -78,7 +78,8 @@ impl MhaQK {
                     .reshape(vec![seq_len, self.head_dim]); // [seq_len, head_dim]
                 // output Q @ K^T is of shape [1, seq_len], and v is of shape [seq_len, head_dim]
                 Ok(vec![
-                    matmul::MatMul::new_with_config(matmul::Config::TransposeB).evaluate::<E>(&[&mini_q, &mini_k], vec![])?
+                    matmul::MatMul::new_with_config(matmul::Config::TransposeB)
+                        .evaluate::<E>(&[&mini_q, &mini_k], vec![])?
                         .outputs
                         .remove(0),
                     mini_v,

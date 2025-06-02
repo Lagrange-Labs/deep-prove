@@ -2,21 +2,20 @@ pub mod embeddings;
 pub mod layernorm;
 pub mod mha;
 pub mod positional;
-//pub mod qkt;
+// pub mod qkt;
 pub mod qkv;
 pub mod softmax;
 
 #[cfg(test)]
 mod test {
-    use std::fs::File;
-    use std::env;
-    use std::path::PathBuf;
+    use std::{env, fs::File, path::PathBuf};
 
+    use anyhow::Context;
     use goldilocks::GoldilocksExt2;
     use serde::Deserialize;
-    use anyhow::Context;
 
     use crate::{
+        Tensor,
         layers::{
             activation::GELU,
             add::{self, Add},
@@ -25,7 +24,12 @@ mod test {
             mul,
             provable::Evaluate,
             reshape::{self, Reshape},
-        }, parser::gguf::{self, tests::{file_cache, GPT2_Q8_0_URL}, FileTensorLoader, LLMConfig, LLMModel}, tensor::Number, Tensor
+        },
+        parser::gguf::{
+            self, FileTensorLoader, LLMConfig, LLMModel,
+            tests::{GPT2_Q8_0_URL, file_cache},
+        },
+        tensor::Number,
     };
 
     use super::{layernorm, mha, qkv, softmax};
@@ -406,14 +410,20 @@ mod test {
         let model_weights_path = base_path.join("gpt2_tiny_weights.json");
         let debug_output_path = base_path.join("gpt2_debug_output.json");
 
-        let model_weights_path_str = model_weights_path.to_str()
-            .ok_or_else(|| anyhow::anyhow!("Model weights path is not valid UTF-8: {:?}", model_weights_path))?;
+        let model_weights_path_str = model_weights_path.to_str().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Model weights path is not valid UTF-8: {:?}",
+                model_weights_path
+            )
+        })?;
         let loader = json::FileTensorLoader::new_from_path(model_weights_path_str)?;
         let config = LLMConfig::from_json(&loader)?;
         println!("config: {:?}", config);
-        
-        let gpt2_output =
-            serde_json::from_reader::<_, GPT2Output>(File::open(debug_output_path.as_path()).unwrap()).unwrap();
+
+        let gpt2_output = serde_json::from_reader::<_, GPT2Output>(
+            File::open(debug_output_path.as_path()).unwrap(),
+        )
+        .unwrap();
         let input = Tensor::new(
             vec![1, config.embedding_size],
             gpt2_output.inputs_embeds.clone(),

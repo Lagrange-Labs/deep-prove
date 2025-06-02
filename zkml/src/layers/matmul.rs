@@ -3,7 +3,7 @@
 use anyhow::ensure;
 use ff_ext::ExtensionField;
 
-use crate::{layers::provable::Evaluate, tensor::Number, Tensor};
+use crate::{Tensor, layers::provable::Evaluate, tensor::Number};
 
 use super::provable::LayerOut;
 
@@ -17,7 +17,9 @@ pub struct MatMul {
 
 impl MatMul {
     pub fn new_with_config(option: Config) -> Self {
-        Self { option: Some(option) }
+        Self {
+            option: Some(option),
+        }
     }
     pub fn new() -> Self {
         Self { option: None }
@@ -60,7 +62,9 @@ mod test {
         let matmul = MatMul::new();
         let a = Tensor::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let b = Tensor::new(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        let result = matmul.evaluate::<GoldilocksExt2>(&[&a, &b], vec![]).unwrap();
+        let result = matmul
+            .evaluate::<GoldilocksExt2>(&[&a, &b], vec![])
+            .unwrap();
         assert_eq!(result.outputs[0].data, vec![22.0, 28.0, 49.0, 64.0]);
     }
 
@@ -69,7 +73,9 @@ mod test {
         let matmul = MatMul::new_with_config(Config::TransposeB);
         let a = Tensor::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let b = Tensor::new(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).transpose();
-        let result = matmul.evaluate::<GoldilocksExt2>(&[&a, &b],vec![]).unwrap();
+        let result = matmul
+            .evaluate::<GoldilocksExt2>(&[&a, &b], vec![])
+            .unwrap();
         assert_eq!(result.outputs[0].data, vec![22.0, 28.0, 49.0, 64.0]);
     }
 }

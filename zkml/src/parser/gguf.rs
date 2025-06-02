@@ -89,8 +89,7 @@ impl LLMVariant {
         let variant_str = variant_value
             .to_string()
             .map_err(|e| anyhow::anyhow!("Failed to convert GGUF value to string: {}", e))?;
-        match variant_str.as_str()
-        {
+        match variant_str.as_str() {
             "gpt2" => Ok(Self::GPT2),
             a => bail!("unsupported architecture: {:?}", a),
         }
@@ -528,6 +527,11 @@ pub mod tests {
 
     // Module for caching downloaded files
     pub mod file_cache {
+        use anyhow::{Context as _, anyhow, bail};
+        use hex;
+        use once_cell::sync::Lazy;
+        use reqwest;
+        use sha2::{Digest, Sha256};
         use std::{
             fs::{self, File},
             io::{ErrorKind, Write},
@@ -535,18 +539,12 @@ pub mod tests {
             thread,
             time::Duration,
         };
-        use anyhow::{anyhow, bail, Context as _};
-        use once_cell::sync::Lazy;
-        use sha2::{Digest, Sha256};
-        use hex;
-        use reqwest;
 
         // Directory to store cached files.
         static CACHE_DIR: Lazy<PathBuf> = Lazy::new(|| {
             let dir = PathBuf::from("target").join("test_assets_cache");
             if !dir.exists() {
-                fs::create_dir_all(&dir)
-                    .expect("Failed to create cache directory for test assets");
+                fs::create_dir_all(&dir).expect("Failed to create cache directory for test assets");
             }
             dir
         });
@@ -625,7 +623,8 @@ pub mod tests {
                         if local_file_path.exists() {
                             eprintln!(
                                 "Warning: Lock file {} still exists, but target file {} is present. Proceeding with cached file.",
-                                lock_file_path.display(), local_file_path.display()
+                                lock_file_path.display(),
+                                local_file_path.display()
                             );
                             return Ok(local_file_path);
                         }
@@ -652,13 +651,16 @@ pub mod tests {
                             // Yes, file now exists. No need to download. Guard will release lock.
                             return Ok(local_file_path);
                         }
-                        
+
                         println!(
                             "Acquired lock for {}. Downloading {} to {}...",
-                            base_filename, url, local_file_path.display()
+                            base_filename,
+                            url,
+                            local_file_path.display()
                         );
-                        
-                        let temp_download_path = CACHE_DIR.join(format!("{}.tmp_download", base_filename));
+
+                        let temp_download_path =
+                            CACHE_DIR.join(format!("{}.tmp_download", base_filename));
 
                         // Perform the download. Lock_guard ensures lock removal on success or panic/error.
                         match (|| -> anyhow::Result<()> {
@@ -672,18 +674,19 @@ pub mod tests {
                                     response.status()
                                 );
                             }
-                            
-                            let mut dest_file = File::create(&temp_download_path).with_context(|| {
-                                format!(
-                                    "Download: Failed to create temporary file: {}",
-                                    temp_download_path.display()
-                                )
-                            })?;
-                            
+
+                            let mut dest_file =
+                                File::create(&temp_download_path).with_context(|| {
+                                    format!(
+                                        "Download: Failed to create temporary file: {}",
+                                        temp_download_path.display()
+                                    )
+                                })?;
+
                             let content = response.bytes().with_context(|| {
                                 format!("Download: Failed to read response bytes from URL: {}", url)
                             })?;
-                            
+
                             dest_file.write_all(&content).with_context(|| {
                                 format!(
                                     "Download: Failed to write content to temporary file: {}",
@@ -752,8 +755,8 @@ pub mod tests {
     // download at https://huggingface.co/igorbkz/gpt2-Q8_0-GGUF
     // pub const GPT2_Q8_0_PATH: &str = "assets/scripts/llms/gpt2.q8_0.gguf";
     // const GPT2_Q8_0_URL: &str = "https://huggingface.co/igorbkz/gpt2-Q8_0-GGUF/resolve/main/gpt2.q8_0.gguf";
-    pub const GPT2_Q8_0_URL: &str = "https://huggingface.co/igorbkz/gpt2-Q8_0-GGUF/resolve/main/gpt2.Q8_0.gguf?download=true";
-
+    pub const GPT2_Q8_0_URL: &str =
+        "https://huggingface.co/igorbkz/gpt2-Q8_0-GGUF/resolve/main/gpt2.Q8_0.gguf?download=true";
 
     #[test]
     fn test_gguf_load_model() -> anyhow::Result<()> {
@@ -799,7 +802,8 @@ pub mod tests {
     fn test_load_and_inspect_gpt2_gguf() -> anyhow::Result<()> {
         let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
 
-        let model_path_str = model_path.to_str()
+        let model_path_str = model_path
+            .to_str()
             .ok_or_else(|| anyhow::anyhow!("Model path is not valid UTF-8"))?;
         let mut container = get_gguf_container(model_path_str)?;
         let model = container.decode()?;
@@ -842,7 +846,6 @@ pub mod tests {
     fn test_tensor_loader_subscoping_and_lazy_load() -> anyhow::Result<()> {
         // let gguf_path = GPT2_Q8_0_PATH;
         let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
-
 
         // Create TensorLoader using the type alias
         let loader = FileTensorLoader::from_path(model_path)?;
