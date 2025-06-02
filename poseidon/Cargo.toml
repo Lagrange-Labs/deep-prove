@@ -10,7 +10,6 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
-criterion.workspace = true
 ff.workspace = true
 goldilocks.workspace = true
 serde.workspace = true
@@ -18,6 +17,7 @@ unroll = "0.1"
 
 [dev-dependencies]
 ark-std.workspace = true
+criterion.workspace = true
 plonky2.workspace = true
 rand.workspace = true
 
