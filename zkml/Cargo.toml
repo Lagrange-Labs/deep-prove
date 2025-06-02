@@ -24,6 +24,7 @@ ff_ext = { version = "0.1.0", path = "../ff_ext" }
 gguf-rs = "0.1.4"
 gkr = { version = "0.1.0", path = "../gkr" }
 goldilocks.workspace = true
+hex = "0.4.3"
 itertools.workspace = true
 mpcs = { version = "0.1.0", path = "../mpcs" }
 multilinear_extensions = { version = "0.1.0", path = "../multilinear_extensions", features = [
@@ -33,9 +34,11 @@ num-traits = "0.2.19"
 once_cell = "1.20.3"
 poseidon = { version = "0.1.0", path = "../poseidon" }
 rayon.workspace = true
+reqwest = { version = "0.12.19", features = ["blocking"] } 
 rmp-serde = "1.3.0"
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10.9"
 simple-frontend = { path = "../simple-frontend" }
 statrs = "0.18.0"
 sumcheck = { version = "0.1.0", path = "../sumcheck" }

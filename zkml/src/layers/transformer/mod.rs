@@ -14,7 +14,6 @@ mod test {
     use serde::Deserialize;
 
     use crate::{
-        Tensor,
         layers::{
             activation::GELU,
             add::{self, Add},
@@ -23,9 +22,7 @@ mod test {
             mul,
             provable::Evaluate,
             reshape::{self, Reshape},
-        },
-        parser::gguf::{self, FileTensorLoader, LLMConfig, LLMModel, tests::GPT2_Q8_0_PATH},
-        tensor::Number,
+        }, parser::gguf::{self, tests::{file_cache, GPT2_Q8_0_URL}, FileTensorLoader, LLMConfig, LLMModel}, tensor::Number, Tensor
     };
 
     use super::{layernorm, mha, qkv, softmax};
@@ -283,7 +280,8 @@ mod test {
 
     #[test]
     fn test_flat_attention_from_gguf() -> anyhow::Result<()> {
-        let loader = FileTensorLoader::from_path(GPT2_Q8_0_PATH)?;
+        let path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
+        let loader = FileTensorLoader::from_path(path)?;
         let config = LLMConfig::from_content(&loader)?;
         let LLMModel::GPT2(mut model) = config.model(&loader)?;
         println!("model: {:?}", config.specific_config);

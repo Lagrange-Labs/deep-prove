@@ -77,7 +77,7 @@ pub enum LLMVariant {
 
 impl LLMVariant {
     pub fn from_content(l: &FileTensorLoader) -> anyhow::Result<Self> {
-        let Some(variant) = l
+        let Some(variant_value) = l
             .content
             .metadata
             .get("general.name")
@@ -85,10 +85,11 @@ impl LLMVariant {
         else {
             bail!("no variant found");
         };
-        match variant
+        // Convert gguf_file::Value to String, then get &str
+        let variant_str = variant_value
             .to_string()
-            .context("unable to get variant into string")?
-            .as_str()
+            .map_err(|e| anyhow::anyhow!("Failed to convert GGUF value to string: {}", e))?;
+        match variant_str.as_str()
         {
             "gpt2" => Ok(Self::GPT2),
             a => bail!("unsupported architecture: {:?}", a),
@@ -303,13 +304,16 @@ impl Attention<f32> {
 fn dequantize(qtensor: Arc<QTensor>) -> anyhow::Result<Tensor<f32>> {
     let shape = qtensor.shape().dims().to_vec();
 
-    let dequantized_candle_tensor = qtensor.dequantize(&Device::Cpu).with_context(|| {
-        format!(
-            "Failed to dequantize QTensor (dtype: {:?}, shape: {:?})",
-            qtensor.dtype(),
-            qtensor.shape()
-        )
-    })?;
+    let dequantized_candle_tensor = qtensor
+        .dequantize(&Device::Cpu)
+        .map_err(anyhow::Error::from) // Convert candle_core::Error to anyhow::Error
+        .with_context(|| {
+            format!(
+                "Failed to dequantize QTensor (dtype: {:?}, shape: {:?})",
+                qtensor.dtype(),
+                qtensor.shape()
+            )
+        })?;
 
     let (s, _l) = dequantized_candle_tensor.storage_and_layout();
     let data: Vec<f32> = match s.deref() {
@@ -521,12 +525,240 @@ pub mod tests {
     use crate::{layers::transformer::embeddings::Embeddings, parser::gguf::LLMConfig};
 
     use super::Attention;
+
+    // Module for caching downloaded files
+    pub mod file_cache {
+        use std::{
+            fs::{self, File},
+            io::{ErrorKind, Write},
+            path::{Path, PathBuf},
+            thread,
+            time::Duration,
+        };
+        use anyhow::{anyhow, bail, Context as _};
+        use once_cell::sync::Lazy;
+        use sha2::{Digest, Sha256};
+        use hex;
+        use reqwest;
+
+        // Directory to store cached files.
+        static CACHE_DIR: Lazy<PathBuf> = Lazy::new(|| {
+            let dir = PathBuf::from("target").join("test_assets_cache");
+            if !dir.exists() {
+                fs::create_dir_all(&dir)
+                    .expect("Failed to create cache directory for test assets");
+            }
+            dir
+        });
+
+        fn generate_filename_from_url(url: &str) -> String {
+            let mut hasher = Sha256::new();
+            hasher.update(url.as_bytes());
+            let result = hasher.finalize();
+            // Append a common extension or a marker for GGUF if all files are such
+            format!("{}.gguf", hex::encode(result))
+        }
+
+        struct FileLockGuard {
+            path: PathBuf,
+            acquired: bool,
+        }
+
+        impl FileLockGuard {
+            fn acquire(path: &Path) -> anyhow::Result<Self> {
+                match File::options().write(true).create_new(true).open(path) {
+                    Ok(_) => Ok(FileLockGuard {
+                        path: path.to_path_buf(),
+                        acquired: true,
+                    }),
+                    Err(e) if e.kind() == ErrorKind::AlreadyExists => {
+                        // Lock already exists, we didn't acquire it.
+                        Ok(FileLockGuard {
+                            path: path.to_path_buf(),
+                            acquired: false,
+                        })
+                    }
+                    Err(e) => Err(anyhow!(e)
+                        .context(format!("Failed to create lock file {}", path.display()))),
+                }
+            }
+
+            #[inline]
+            fn is_acquired(&self) -> bool {
+                self.acquired
+            }
+        }
+
+        impl Drop for FileLockGuard {
+            fn drop(&mut self) {
+                if self.acquired {
+                    if let Err(e) = fs::remove_file(&self.path) {
+                        // Log error, but don't panic in drop.
+                        eprintln!(
+                            "Warning: Failed to remove lock file {}: {}",
+                            self.path.display(),
+                            e
+                        );
+                    }
+                }
+            }
+        }
+
+        pub fn ensure_downloaded(url: &str) -> anyhow::Result<PathBuf> {
+            let base_filename = generate_filename_from_url(url); // e.g., hash.gguf
+            let local_file_path = CACHE_DIR.join(&base_filename);
+            let lock_file_path = CACHE_DIR.join(format!("{}.lock", base_filename));
+
+            const MAX_RETRIES: u32 = 60; // Approx 60 * 200ms = 12 seconds total timeout
+            const RETRY_DELAY_MS: u64 = 200;
+
+            for attempt in 0..MAX_RETRIES {
+                // Check 1: File exists and no lock. This is the ideal fast path.
+                if local_file_path.exists() && !lock_file_path.exists() {
+                    return Ok(local_file_path);
+                }
+
+                // Check 2: Lock file exists. Someone else might be working or left a stale lock.
+                if lock_file_path.exists() {
+                    if attempt == MAX_RETRIES - 1 {
+                        // Last attempt, if lock is still there but main file appeared, warn and return.
+                        if local_file_path.exists() {
+                            eprintln!(
+                                "Warning: Lock file {} still exists, but target file {} is present. Proceeding with cached file.",
+                                lock_file_path.display(), local_file_path.display()
+                            );
+                            return Ok(local_file_path);
+                        }
+                        bail!(
+                            "Lock file {} persisted after {} retries. Target file {} not found.",
+                            lock_file_path.display(),
+                            MAX_RETRIES,
+                            local_file_path.display()
+                        );
+                    }
+                    thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
+                    continue; // Go to next retry iteration
+                }
+
+                // Check 3: No lock file present. Attempt to acquire lock if data file is also missing.
+                // (If data file exists here, and no lock, Check 1 would have caught it).
+                if !local_file_path.exists() {
+                    let lock_guard = FileLockGuard::acquire(&lock_file_path)?;
+
+                    if lock_guard.is_acquired() {
+                        // We got the lock. Critical section starts.
+                        // Re-check: did another thread create the file *just* before we got the lock?
+                        if local_file_path.exists() {
+                            // Yes, file now exists. No need to download. Guard will release lock.
+                            return Ok(local_file_path);
+                        }
+                        
+                        println!(
+                            "Acquired lock for {}. Downloading {} to {}...",
+                            base_filename, url, local_file_path.display()
+                        );
+                        
+                        let temp_download_path = CACHE_DIR.join(format!("{}.tmp_download", base_filename));
+
+                        // Perform the download. Lock_guard ensures lock removal on success or panic/error.
+                        match (|| -> anyhow::Result<()> {
+                            let response = reqwest::blocking::get(url)
+                                .with_context(|| format!("Download: Failed to GET URL: {}", url))?;
+
+                            if !response.status().is_success() {
+                                bail!(
+                                    "Download: Failed for URL: {}. Server status: {}",
+                                    url,
+                                    response.status()
+                                );
+                            }
+                            
+                            let mut dest_file = File::create(&temp_download_path).with_context(|| {
+                                format!(
+                                    "Download: Failed to create temporary file: {}",
+                                    temp_download_path.display()
+                                )
+                            })?;
+                            
+                            let content = response.bytes().with_context(|| {
+                                format!("Download: Failed to read response bytes from URL: {}", url)
+                            })?;
+                            
+                            dest_file.write_all(&content).with_context(|| {
+                                format!(
+                                    "Download: Failed to write content to temporary file: {}",
+                                    temp_download_path.display()
+                                )
+                            })?;
+
+                            fs::rename(&temp_download_path, &local_file_path).with_context(
+                                || {
+                                    format!(
+                                        "Download: Failed to move temp file {} to final location {}",
+                                        temp_download_path.display(),
+                                        local_file_path.display()
+                                    )
+                                },
+                            )?;
+                            Ok(())
+                        })() {
+                            Ok(_) => {
+                                println!(
+                                    "Successfully downloaded and cached {} to {}",
+                                    url,
+                                    local_file_path.display()
+                                );
+                                // lock_guard will release the lock.
+                                return Ok(local_file_path);
+                            }
+                            Err(e) => {
+                                // Download or rename failed. Clean up temp file if it exists.
+                                if temp_download_path.exists() {
+                                    if let Err(remove_err) = fs::remove_file(&temp_download_path) {
+                                        eprintln!(
+                                            "Error: Failed to remove temporary download file {}: {}",
+                                            temp_download_path.display(),
+                                            remove_err
+                                        );
+                                    }
+                                }
+                                // lock_guard will release the lock. Propagate the error.
+                                return Err(e);
+                            }
+                        }
+                    } else {
+                        // Lock acquisition failed (lock_path was created by another thread/process
+                        // between our check and our attempt to create it).
+                        // Sleep briefly and let the loop retry.
+                        thread::sleep(Duration::from_millis(RETRY_DELAY_MS / 2)); // Shorter sleep
+                        continue;
+                    }
+                }
+                // If local_file_path.exists() but we didn't hit Check 1 (because lock_path also existed
+                // or appeared), the loop will continue, sleep if lock_path is still there, and re-evaluate.
+            }
+
+            bail!(
+                "Failed to ensure file {} (from URL {}) is downloaded after {} retries. Last state: file exists: {}, lock exists: {}.",
+                local_file_path.display(),
+                url,
+                MAX_RETRIES,
+                local_file_path.exists(),
+                lock_file_path.exists()
+            );
+        }
+    }
+
     // download at https://huggingface.co/igorbkz/gpt2-Q8_0-GGUF
-    pub const GPT2_Q8_0_PATH: &str = "assets/scripts/llms/gpt2.q8_0.gguf";
+    // pub const GPT2_Q8_0_PATH: &str = "assets/scripts/llms/gpt2.q8_0.gguf";
+    // const GPT2_Q8_0_URL: &str = "https://huggingface.co/igorbkz/gpt2-Q8_0-GGUF/resolve/main/gpt2.q8_0.gguf";
+    pub const GPT2_Q8_0_URL: &str = "https://huggingface.co/igorbkz/gpt2-Q8_0-GGUF/resolve/main/gpt2.Q8_0.gguf?download=true";
+
 
     #[test]
     fn test_gguf_load_model() -> anyhow::Result<()> {
-        let loader = FileTensorLoader::from_path(GPT2_Q8_0_PATH)?;
+        let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
+        let loader = FileTensorLoader::from_path(model_path)?;
         let config = LLMConfig::from_content(&loader)?;
         let _model = config.model(&loader)?;
         println!("model: {:?}", config.specific_config);
@@ -535,9 +767,9 @@ pub mod tests {
 
     #[test]
     fn test_gguf_load_attention() -> anyhow::Result<()> {
-        let loader = FileTensorLoader::from_path(GPT2_Q8_0_PATH)?;
+        let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
+        let loader = FileTensorLoader::from_path(model_path)?;
         let config = LLMConfig::from_content(&loader)?;
-        // println!("config: {:?}", config); // Keep original println if desired for debugging
         let block0_loader = loader.pp("blk.0.");
 
         let _attention = Attention::from_loader(&block0_loader, &config)?;
@@ -546,7 +778,8 @@ pub mod tests {
 
     #[test]
     fn test_gguf_load_config() -> anyhow::Result<()> {
-        let loader = FileTensorLoader::from_path(GPT2_Q8_0_PATH)?;
+        let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
+        let loader = FileTensorLoader::from_path(model_path)?;
         let config = LLMConfig::from_content(&loader)?;
         println!("config: {:?}", config);
         Ok(())
@@ -554,8 +787,8 @@ pub mod tests {
 
     #[test]
     fn test_gguf_load_embedding() -> anyhow::Result<()> {
-        let gguf_path = GPT2_Q8_0_PATH;
-        let loader = FileTensorLoader::from_path(gguf_path)?;
+        let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
+        let loader = FileTensorLoader::from_path(model_path)?;
         let _embedding = Embeddings::from_loader(&loader)?;
         Ok(())
     }
@@ -564,15 +797,16 @@ pub mod tests {
     #[test]
     #[ignore = "just a test to explore gguf internal structure"]
     fn test_load_and_inspect_gpt2_gguf() -> anyhow::Result<()> {
-        // Path to the GGUF file
-        let gguf_path = GPT2_Q8_0_PATH;
+        let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
 
-        let mut container = get_gguf_container(&gguf_path)?;
+        let model_path_str = model_path.to_str()
+            .ok_or_else(|| anyhow::anyhow!("Model path is not valid UTF-8"))?;
+        let mut container = get_gguf_container(model_path_str)?;
         let model = container.decode()?;
 
         println!("GGUF version: {}", model.get_version());
         println!("GGUF metadata: {:?}", model.metadata());
-        let mut r = File::open(gguf_path)?;
+        let mut r = File::open(model_path)?;
         let gguf_candle = Content::read(&mut r)?;
         println!("GGUF metadata: {:?}", gguf_candle.metadata.keys());
         println!("GGUF tensors: {:?}", gguf_candle.tensor_infos);
@@ -606,10 +840,12 @@ pub mod tests {
     use crate::parser::gguf::FileTensorLoader;
     #[test]
     fn test_tensor_loader_subscoping_and_lazy_load() -> anyhow::Result<()> {
-        let gguf_path = GPT2_Q8_0_PATH;
+        // let gguf_path = GPT2_Q8_0_PATH;
+        let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
+
 
         // Create TensorLoader using the type alias
-        let loader = FileTensorLoader::from_path(gguf_path)?;
+        let loader = FileTensorLoader::from_path(model_path)?;
 
         // Test loading a tensor from the root scope
         let embedding_tensor = loader.get_tensor("token_embd.weight")?;
