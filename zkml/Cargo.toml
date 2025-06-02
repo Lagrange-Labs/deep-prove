@@ -40,5 +40,5 @@ timed = { workspace = true }
 timed-core = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
-tract-onnx = "=0.21.9"
+tract-onnx = "^0.21"
 transcript = { version = "0.1.0", path = "../transcript" }

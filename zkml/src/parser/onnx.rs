@@ -81,13 +81,8 @@ pub fn from_path(path: &str) -> Result<Model<f32>> {
             )),
         })
         .collect::<Result<Vec<_>, _>>()?;
-    match model_type {
-        ModelType::CNN | ModelType::MLP => {
-            assert!(
-                input_shape[0] == 1,
-                "First dimension of the CNNs or MLP's input should 1."
-            );
-            // We force the input shape to be for a single inference and not a batch inference.
+    if model_type == ModelType::CNN || model_type == ModelType::MLP {
+        if input_shape[0] == 1 {
             input_shape.remove(0);
         }
     }
@@ -216,6 +211,7 @@ fn load_flatten<'a, I: Iterator<Item = &'a usize> + Sized>(
         vec![Edge::new(node.inputs[0].node, node.inputs[0].slot)],
         Layer::Flatten(crate::layers::flatten::Flatten),
     );
+    println!("Flatten node id : {:?}", node_id);
     Ok((node_id, node))
 }
 
@@ -336,6 +332,19 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
         return err(format!("Gemm {} has no constant input", node.name));
     };
     let mut weight = extract_const_tensor(model.node(weight_link.node))?;
+    // here maybe the weights are still in 3d shape, so we need to flatten the input portion
+    // since it's always [out, in...], we just take everything after the first dimension and flatten it
+    let mut weight_shape = weight.get_shape();
+    if weight_shape.len() > 2 {
+        let input_flattened = weight_shape[1..].iter().product::<usize>();
+        weight_shape = vec![weight_shape[0], input_flattened];
+        weight.shape = weight_shape.clone();
+    }
+    ensure_onnx!(
+        weight.is_matrix(),
+        "Weight for Gemm must be a matrix: {:?}",
+        weight.get_shape()
+    );
     // find the input node
     let Some(input_link) = node.inputs.iter().find(|&x| x.node != weight_link.node) else {
         return err(format!("Gemm {} has no input", node.name));
@@ -343,7 +352,9 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
 
     // check if the weight matrix needs to be transposed
     let input_node = model.node(input_link.node);
-    let mut input_shape = get_node_output_shape(input_node, input_link.slot)?;
+    let input_shape = get_node_output_shape(input_node, input_link.slot)?;
+    // NOTE: flatten the input shape always because tract_onnx can skip the Flatten layer
+    let mut input_shape = vec![input_shape.iter().product::<usize>()];
 
     if input_shape.len() != 1 {
         assert!(
@@ -358,7 +369,6 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
         "Input shape for Gemm must be a vector, found {:?}",
         input_shape
     );
-    // ensure_onnx!(weight.is_matrix(), "Weight for Gemm must be a matrix");
     let mut weight_shape = weight.get_shape();
     // If the weights are a 1D vector we insert a 1 in the shape after checking everything lines up
     if weight_shape.len() == 1 {
@@ -507,7 +517,7 @@ fn is_const(node: &OnnxNode) -> bool {
 
 fn extract_const_tensor(node: &OnnxNode) -> Result<crate::Tensor<f32>> {
     let tensor = downcast_to::<Const>(node)?;
-    let slice = tensor.0.as_slice::<f32>()?;
+    let slice = tensor.val().as_slice::<f32>()?;
     ensure_onnx!(node.outputs.len() == 1, "constant output shape len == 1");
     let Some(shape) = node.outputs[0].fact.shape.as_concrete() else {
         return err(format!("Filter shape {} is not concrete", node.name));
