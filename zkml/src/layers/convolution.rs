@@ -1,10 +1,5 @@
 use crate::{
-    ScalingStrategy, VectorTranscript,
-    iop::context::ShapeStep,
-    layers::{hadamard, requant::Requant},
-    model::StepData,
-    padding::{PaddingMode, ShapeInfo, pad_conv},
-    quantization::{BIT_LEN, TensorFielder},
+    iop::context::ShapeStep, layers::{hadamard, requant::Requant}, model::StepData, padding::{pad_conv, PaddingMode, ShapeInfo}, quantization::{TensorFielder, BIT_LEN}, ScalingStrategy, VectorTranscript
 };
 use core::f32;
 

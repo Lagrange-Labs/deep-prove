@@ -368,6 +368,18 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
         "Input shape for Gemm must be a vector, found {:?}",
         input_shape
     );
+    
+    let mut weight_shape = weight.get_shape();
+    if weight_shape[1] != input_shape[0] {
+        weight = weight.transpose();
+        weight_shape = weight.get_shape();
+    }
+    ensure_onnx!(
+        weight_shape[1] == input_shape[0],
+        "Incompatible shapes found for Gemm node: input shape is {:?}, weight shape is {:?}",
+        input_shape,
+        weight_shape,
+    );
     let mut weight_shape = weight.get_shape();
     // If the weights are a 1D vector we insert a 1 in the shape after checking everything lines up
     if weight_shape.len() == 1 {
