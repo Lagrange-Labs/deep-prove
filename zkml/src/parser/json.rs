@@ -294,13 +294,13 @@ impl FileTensorLoader {
 
 #[cfg(test)]
 pub mod test {
-    use crate::parser::gguf::LLMConfig;
+    use crate::parser::gguf::{tests::GPT2_Q8_0_URL, LLMConfig};
 
     use super::*;
 
     #[test]
     fn test_json_tensor_loader() -> anyhow::Result<()> {
-        let path = "assets/scripts/llms/gpt2_tiny_weights.json";
+        let path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
         let loader = FileTensorLoader::new_from_path(path)?;
         let config = LLMConfig::from_json(&loader)?;
         println!("tiny gpt2 config: {:?}", config);
