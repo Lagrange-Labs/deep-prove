@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use anyhow::{Context, bail, ensure};
 use serde::Deserialize;
@@ -244,9 +245,11 @@ pub struct FileTensorLoader {
 }
 
 impl FileTensorLoader {
-    pub fn new_from_path(path: &str) -> anyhow::Result<Self> {
-        let file = std::fs::File::open(path)?;
-        let content: JsonModel = serde_json::from_reader(file)?;
+    pub fn new_from_path<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
+        let file = std::fs::File::open(path.as_ref())
+            .with_context(|| format!("Failed to open JSON file at: {:?}", path.as_ref().display()))?;
+        let content: JsonModel = serde_json::from_reader(file)
+            .with_context(|| format!("Failed to parse JSON from file at: {:?}", path.as_ref().display()))?;
         Ok(Self {
             content,
             prefix: "".to_string(),
@@ -294,14 +297,27 @@ impl FileTensorLoader {
 
 #[cfg(test)]
 pub mod test {
-    use crate::parser::gguf::{tests::{file_cache, GPT2_Q8_0_URL}, LLMConfig};
+    use crate::parser::gguf::{LLMConfig};
+    use std::path::PathBuf;
+    use std::env;
 
     use super::*;
 
+    pub fn get_json_folder_out() -> anyhow::Result<String> {
+        if env::var("DEEPPROVE_CI").unwrap_or_default() == "true" {
+            let ci_asset_dir = env::var("DEEPPROVE_ASSET_DIR")
+                .context("DEEPPROVE_ASSET_DIR not set in CI environment")?;
+            Ok(ci_asset_dir)
+        } else {
+            Ok("assets/scripts/llms/".to_string())
+        }
+    }
+
     #[test]
     fn test_json_tensor_loader() -> anyhow::Result<()> {
-        let path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
-        let loader = FileTensorLoader::new_from_path(path.to_str().unwrap())?;
+        let base_path_str = get_json_folder_out()?;
+        let path = PathBuf::from(base_path_str).join("gpt2_tiny_weights.json");
+        let loader = FileTensorLoader::new_from_path(path)?;
         let config = LLMConfig::from_json(&loader)?;
         println!("tiny gpt2 config: {:?}", config);
         config.model_json(&loader)?;

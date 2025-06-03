@@ -8,9 +8,8 @@ pub mod softmax;
 
 #[cfg(test)]
 mod test {
-    use std::{env, fs::File, path::PathBuf};
+    use std::{fs::File, path::PathBuf};
 
-    use anyhow::Context;
     use goldilocks::GoldilocksExt2;
     use serde::Deserialize;
 
@@ -399,14 +398,7 @@ mod test {
 
     #[test]
     fn test_read_gpt2_pytorch_output() -> anyhow::Result<()> {
-        let base_path = if env::var("DEEPPROVE_CI").unwrap_or_default() == "true" {
-            let ci_asset_dir = env::var("DEEPPROVE_ASSET_DIR")
-                .context("DEEPPROVE_ASSET_DIR not set in CI environment")?;
-            PathBuf::from(ci_asset_dir)
-        } else {
-            PathBuf::from("assets/scripts/llms/")
-        };
-
+        let base_path = PathBuf::from(json::test::get_json_folder_out()?);
         let model_weights_path = base_path.join("gpt2_tiny_weights.json");
         let debug_output_path = base_path.join("gpt2_debug_output.json");
 
@@ -433,11 +425,7 @@ mod test {
         let mut att = FlatAttention::new_from_gguf(&config, model.blocks.remove(0));
         let output = att.forward(&input, Some(&gpt2_output)).unwrap();
         let expected_output = gpt2_output.manual_output;
-        // Usage with PyTorch defaults
-        println!(
-            "is close? {}",
-            is_close(&expected_output, &output.get_data())
-        );
+        assert!(is_close(&expected_output, &output.get_data()));
         Ok(())
     }
 }
