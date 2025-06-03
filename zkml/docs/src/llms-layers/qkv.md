@@ -118,7 +118,7 @@ y_{\widetilde{M}} = \sum_{x \in \{0, 1\}^{\log(l)}} \sum_{y \in \{0, 1\}^{\log(h
 The sum-check proof will produce the following claims for a random point $r_s \in \mathbb{F}^{\log(l*h)} = (r_l \in \mathbb{F}^{\log(l)}, r_h \in \mathbb{F}^{\log{h}})$:
 
 - Claim $\beta(r_s, r)$, which can be verified efficienctly by the verifier
-- Claim $P(r_l)$, which can be verified efficiently by the verifier as well, given the simple structure of the MLE of P
+- Claim $P(r_l)$, which can be verified efficiently by the verifier as well: indeed, given that P has only one non-zero entry (i.e., $P[s] = 1$), its MLE is simply $P(x) = \beta(x, \mathtt{BitDecompose}(s))$, where $\mathtt{BitDecompose}(s)$ is the sequence of $\log(l)$ bits representing $s$; therefore, $P(r_l) = \beta(r_l, s)$. 
 - Claim $m(r_h)$, which is the claim about the input vector $m$ produced by the proving sub-protocol
 
 We could also get a claim for the MLE $M_{prev}$ from $\widetilde{M_{prev}}$ with a similar sum-check, but we don't show it here because it won't be necessary when using this sub-protocol to prove concatenation in the QKV layer. 
