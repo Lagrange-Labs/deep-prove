@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use anyhow::{Context, bail, ensure};
 use serde::Deserialize;
@@ -246,10 +245,15 @@ pub struct FileTensorLoader {
 
 impl FileTensorLoader {
     pub fn new_from_path<P: AsRef<Path>>(path: P) -> anyhow::Result<Self> {
-        let file = std::fs::File::open(path.as_ref())
-            .with_context(|| format!("Failed to open JSON file at: {:?}", path.as_ref().display()))?;
-        let content: JsonModel = serde_json::from_reader(file)
-            .with_context(|| format!("Failed to parse JSON from file at: {:?}", path.as_ref().display()))?;
+        let file = std::fs::File::open(path.as_ref()).with_context(|| {
+            format!("Failed to open JSON file at: {:?}", path.as_ref().display())
+        })?;
+        let content: JsonModel = serde_json::from_reader(file).with_context(|| {
+            format!(
+                "Failed to parse JSON from file at: {:?}",
+                path.as_ref().display()
+            )
+        })?;
         Ok(Self {
             content,
             prefix: "".to_string(),
@@ -297,9 +301,8 @@ impl FileTensorLoader {
 
 #[cfg(test)]
 pub mod test {
-    use crate::parser::gguf::{LLMConfig};
-    use std::path::PathBuf;
-    use std::env;
+    use crate::parser::gguf::LLMConfig;
+    use std::{env, path::PathBuf};
 
     use super::*;
 
