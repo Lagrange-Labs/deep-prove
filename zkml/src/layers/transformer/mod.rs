@@ -129,7 +129,6 @@ mod test {
         layernorm: layernorm::LayerNorm<N>,
         mha: mha::MhaQK,
         softmax: softmax::Softmax<N>,
-        cache: qkv::CacheQKV<N>,
         out: Dense<N>,
         reshape_merged: Reshape,
         reshape_qkt: Reshape,
@@ -139,7 +138,8 @@ mod test {
 
     impl FlatAttention<f32> {
         pub fn new_from_gguf(c: &gguf::LLMConfig, att: gguf::Attention<f32>) -> Self {
-            let qkv = qkv::QKV::new(att.q, att.q_bias, att.k, att.k_bias, att.v, att.v_bias);
+            let qkv =
+                qkv::QKV::new(att.q, att.q_bias, att.k, att.k_bias, att.v, att.v_bias).with_cache();
             let reshape_qkt = reshape::Reshape::new_squeeze(1);
             let mha = mha::MhaQK::new(c.num_heads, c.head_dim());
             let ffn = FlatFFN::new_from_gguf(c, att.feedforward);
@@ -152,7 +152,6 @@ mod test {
                 qkt_v: concat_matmul::ConcatMatMul::new_with_transpose(vec![1, 0, 2]),
                 softmax: softmax::Softmax::new_with_scale((1.0 / (c.head_dim() as f32)).sqrt()),
                 layernorm: att.norm,
-                cache: qkv::CacheQKV::new(),
                 mha,
                 reshape_merged: Reshape::new_fixed(vec![vec![1, c.hidden_size]]),
                 reshape_qkt,
@@ -175,9 +174,7 @@ mod test {
             if let Some(gpt2_output) = gpt2_output {
                 gpt2_output.is_layernorm_close(normed.outputs());
             }
-            let qkv = self
-                .qkv
-                .evaluate::<GoldilocksExt2>(&normed.outputs(), &mut self.cache)?;
+            let qkv = self.qkv.evaluate::<GoldilocksExt2>(&normed.outputs())?;
             if let Some(gpt2_output) = gpt2_output {
                 println!("input to qkv: {:?}", normed.outputs()[0].get_data());
                 println!("W_q weights: {:?}", self.qkv.q.get_data());
@@ -245,7 +242,7 @@ mod test {
             // Note in LLM, it's always the case that hidden_size = emb_size so we can apply residual
             let hidden_size = emb_size;
             let head_size = hidden_size / num_heads;
-            let qkv = qkv::QKV::random(emb_size, hidden_size);
+            let qkv = qkv::QKV::random(emb_size, hidden_size).with_cache();
             let mha = mha::MhaQK::new(num_heads, head_size);
             let layernorm = layernorm::LayerNorm::random(emb_size);
             let out = Dense::random(vec![hidden_size, hidden_size]);
@@ -261,7 +258,6 @@ mod test {
                     N::from_f32((1.0 / (head_size as f32)).sqrt()).unwrap(),
                 ),
                 layernorm,
-                cache: qkv::CacheQKV::new(),
                 mha,
                 reshape_merged: Reshape::new_fixed(vec![vec![1, hidden_size]]),
                 reshape_qkt: Reshape::new_squeeze(1),

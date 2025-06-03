@@ -210,6 +210,7 @@ mod test {
         let shape = &shapes[0];
         assert_eq!(shape.len(), 1);
         let input = Tensor::random(&vec![shape[0] - 1]);
+        println!("input: {:?}", input.get_data());
         let input = model.prepare_inputs(vec![input])?;
 
         let trace = model.run(&input).unwrap();
