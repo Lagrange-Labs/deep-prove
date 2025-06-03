@@ -45,6 +45,7 @@ pub trait Number:
 {
     const MIN: Self;
     const MAX: Self;
+    fn unit() -> Self;
     fn random<R: Rng>(rng: &mut R) -> Self;
     /// reason abs is necessary is because f32 doesn't implement Ord trait, so to have uniform code for f32 and Element,
     /// we implement abs here.
@@ -72,6 +73,9 @@ pub trait Number:
 impl Number for Element {
     const MIN: Element = Element::MIN;
     const MAX: Element = Element::MAX;
+    fn unit() -> Self {
+        1
+    }
     fn random<R: Rng>(rng: &mut R) -> Self {
         rng.gen_range(*quantization::MIN..=*quantization::MAX)
     }
@@ -102,6 +106,9 @@ impl Number for Element {
 impl Number for f32 {
     const MIN: f32 = f32::MIN;
     const MAX: f32 = f32::MAX;
+    fn unit() -> Self {
+        1.0
+    }
     fn random<R: Rng>(rng: &mut R) -> Self {
         rng.gen_range(MIN_FLOAT..=MAX_FLOAT)
     }
@@ -131,7 +138,9 @@ impl Number for f32 {
 impl Number for GoldilocksExt2 {
     const MIN: GoldilocksExt2 = GoldilocksExt2::ZERO;
     const MAX: GoldilocksExt2 = GoldilocksExt2::ZERO;
-
+    fn unit() -> Self {
+        GoldilocksExt2::ONE
+    }
     fn random<R: Rng>(rng: &mut R) -> Self {
         Element::random(rng).to_field()
     }

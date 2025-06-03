@@ -20,7 +20,6 @@ mod test {
             add::{self, Add},
             concat_matmul::{self, ConcatMatMul},
             dense::Dense,
-            mul,
             provable::Evaluate,
             reshape::{self, Reshape},
         },
@@ -127,9 +126,9 @@ mod test {
         hidden_size: usize,
         qkv: qkv::QKV<N>,
         qkt_v: ConcatMatMul,
-        scaler: mul::ScalarMul<f32>,
         layernorm: layernorm::LayerNorm<N>,
         mha: mha::MhaQK,
+        softmax: softmax::Softmax<N>,
         cache: qkv::CacheQKV<N>,
         out: Dense<N>,
         reshape_merged: Reshape,
@@ -143,7 +142,6 @@ mod test {
             let qkv = qkv::QKV::new(att.q, att.q_bias, att.k, att.k_bias, att.v, att.v_bias);
             let reshape_qkt = reshape::Reshape::new_squeeze(1);
             let mha = mha::MhaQK::new(c.num_heads, c.head_dim());
-            let scaler = mul::ScalarMul::new((1.0 / (c.head_dim() as f32)).sqrt());
             let ffn = FlatFFN::new_from_gguf(c, att.feedforward);
             Self {
                 out: Dense::new(att.out, att.out_bias),
@@ -152,7 +150,7 @@ mod test {
                 head_dim: c.head_dim(),
                 qkv,
                 qkt_v: concat_matmul::ConcatMatMul::new_with_transpose(vec![1, 0, 2]),
-                scaler,
+                softmax: softmax::Softmax::new_with_scale((1.0 / (c.head_dim() as f32)).sqrt()),
                 layernorm: att.norm,
                 cache: qkv::CacheQKV::new(),
                 mha,
@@ -191,13 +189,9 @@ mod test {
                 gpt2_output.is_qkv_close(qkv.outputs());
             }
             let mha = self.mha.evaluate::<_, GoldilocksExt2>(&qkv.outputs())?;
-            // apply softmax on the first output, Q @ K^T
-            let qkt = vec![mha.outputs()[0]];
-            // but first, we need to scale it down by 1/sqrt(head_dim)
-            let scaled = self.scaler.evaluate::<_, GoldilocksExt2>(&qkt)?;
-            let softmax_layer = softmax::Softmax;
-            // then we apply softmax row by row
-            let softmaxed = softmax_layer.evaluate::<GoldilocksExt2>(&scaled.outputs(), vec![])?;
+            // apply softmax + rescale on the first output, Q @ K^T
+            // NOTE that we apply softmax row by row
+            let softmaxed = self.softmax.evaluate::<GoldilocksExt2>(&mha.outputs(), vec![])?;
             #[cfg(test)]
             {
                 let qkt_shape = softmaxed.outputs()[0].get_shape();
@@ -251,7 +245,6 @@ mod test {
             let head_size = hidden_size / num_heads;
             let qkv = qkv::QKV::random(emb_size, hidden_size);
             let mha = mha::MhaQK::new(num_heads, head_size);
-            let scaler = mul::ScalarMul::new((1.0 / (head_size as f32)).sqrt());
             let layernorm = layernorm::LayerNorm::random(emb_size);
             let out = Dense::random(vec![hidden_size, hidden_size]);
             let ffn = FlatFFN::random(hidden_size, hidden_size);
@@ -262,7 +255,7 @@ mod test {
                 head_dim: head_size,
                 qkv,
                 qkt_v: concat_matmul::ConcatMatMul::new_with_transpose(vec![1, 0, 2]),
-                scaler,
+                softmax: softmax::Softmax::new_with_scale(N::from_f32((1.0 / (head_size as f32)).sqrt()).unwrap()),
                 layernorm,
                 cache: qkv::CacheQKV::new(),
                 mha,
