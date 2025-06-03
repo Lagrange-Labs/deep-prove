@@ -378,11 +378,11 @@ mod test {
         }
     }
 
+    // taken from https://docs.pytorch.org/docs/stable/generated/torch.isclose.html
     fn is_close(a: &[f32], b: &[f32]) -> bool {
         let atol = 1e-8_f32;
         let rtol = 1e-5_f32;
         if a.len() != b.len() {
-            println!("INVALID SIZE: {} vs {}", a.len(), b.len());
             return false;
         }
         a.iter().zip(b.iter()).all(|(x, y)| {
