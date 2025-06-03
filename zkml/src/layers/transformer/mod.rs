@@ -191,7 +191,9 @@ mod test {
             let mha = self.mha.evaluate::<_, GoldilocksExt2>(&qkv.outputs())?;
             // apply softmax + rescale on the first output, Q @ K^T
             // NOTE that we apply softmax row by row
-            let softmaxed = self.softmax.evaluate::<GoldilocksExt2>(&mha.outputs(), vec![])?;
+            let softmaxed = self
+                .softmax
+                .evaluate::<GoldilocksExt2>(&mha.outputs(), vec![])?;
             #[cfg(test)]
             {
                 let qkt_shape = softmaxed.outputs()[0].get_shape();
@@ -255,7 +257,9 @@ mod test {
                 head_dim: head_size,
                 qkv,
                 qkt_v: concat_matmul::ConcatMatMul::new_with_transpose(vec![1, 0, 2]),
-                softmax: softmax::Softmax::new_with_scale(N::from_f32((1.0 / (head_size as f32)).sqrt()).unwrap()),
+                softmax: softmax::Softmax::new_with_scale(
+                    N::from_f32((1.0 / (head_size as f32)).sqrt()).unwrap(),
+                ),
                 layernorm,
                 cache: qkv::CacheQKV::new(),
                 mha,

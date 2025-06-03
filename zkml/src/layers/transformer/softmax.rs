@@ -1,6 +1,8 @@
 //! This layer applies the softmax function to the last dimension of the input tensor
 use crate::{
-    layers::provable::{Evaluate, LayerOut}, tensor::Number, Tensor
+    Tensor,
+    layers::provable::{Evaluate, LayerOut},
+    tensor::Number,
 };
 
 #[derive(Debug, Clone)]
@@ -28,7 +30,9 @@ impl Evaluate<f32> for Softmax<f32> {
             .slices_last_dim()
             .map(|vec| {
                 let sum = vec.iter().map(|x| x.exp()).sum::<f32>();
-                vec.iter().map(|x| self.scale * x.exp() / sum).collect::<Vec<_>>()
+                vec.iter()
+                    .map(|x| self.scale * x.exp() / sum)
+                    .collect::<Vec<_>>()
             })
             .flatten()
             .collect::<Vec<_>>();
@@ -64,7 +68,7 @@ mod tests {
             ]
         );
     }
-  
+
     #[test]
     fn test_softmax_with_scale() {
         let softmax = Softmax::new_with_scale(2.0);
