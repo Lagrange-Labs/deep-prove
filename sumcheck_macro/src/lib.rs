@@ -73,7 +73,7 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
     }
 
     // Part 2 - Sort f vars based on FieldType.
-    // match (&f0.evaluations(), &f1.evalutations(), ...) {
+    // match (&f0.evaluations(), &f1.evaluations(), ...) {
     //     (FieldType::Base(base1), FieldType::Base(base2), ...) => {...}
     //     ...
     // }
