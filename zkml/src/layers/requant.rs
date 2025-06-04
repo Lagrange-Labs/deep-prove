@@ -2,7 +2,7 @@
 
 use crate::{
     Claim, Context, Element, Prover, ScalingFactor, Tensor,
-    commit::{PCSError, compute_betas_eval, precommit::PolyID},
+    commit::{compute_betas_eval, precommit::PolyID},
     iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
@@ -660,9 +660,9 @@ impl Requant {
                         .commit_prover
                         .add_witness_claim(comm_with_wit, Claim::<E>::new(point.clone(), eval))?;
 
-                    Result::<(E, PCS::Commitment), PCSError>::Ok((eval, commitment))
+                    Result::<(E, PCS::Commitment), anyhow::Error>::Ok((eval, commitment))
                 })
-                .collect::<Result<Vec<(E, PCS::Commitment)>, PCSError>>()?
+                .collect::<Result<Vec<(E, PCS::Commitment)>, anyhow::Error>>()?
                 .into_iter()
                 .unzip();
 

@@ -16,7 +16,6 @@ use transcript::Transcript;
 use super::{logup_gkr::error::LogUpError, witness::LogUpWitness};
 use crate::{
     Context, Element,
-    commit::PCSError,
     iop::ChallengeStorage,
     layers::{
         activation::Relu,
@@ -337,7 +336,13 @@ where
             let num_vars = ceil_log2(multiplicities.len());
             let mle =
                 DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, &multiplicities);
-            let commit = ctx.commitment_ctx.commit(&mle)?;
+            let commit = ctx.commitment_ctx.commit(&mle).map_err(|e| {
+                LogUpError::PolynomialError(format!(
+                    "Error while commiting to {} table multiplicity polynomial: {:?}",
+                    table_type.name(),
+                    e
+                ))
+            })?;
             Ok(LogUpWitness::<E, PCS>::new_table(
                 (commit, mle),
                 multiplicities,
@@ -345,7 +350,7 @@ where
                 *table_type,
             ))
         })
-        .collect::<Result<Vec<LogUpWitness<E, PCS>>, PCSError>>()?;
+        .collect::<Result<Vec<LogUpWitness<E, PCS>>, LogUpError>>()?;
 
     debug!("Lookup witness generation: commit context generation...");
 

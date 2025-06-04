@@ -1,6 +1,6 @@
 use crate::{
     Claim, Context, Element, Prover,
-    commit::{PCSError, compute_betas_eval, precommit::PolyID},
+    commit::{compute_betas_eval, precommit::PolyID},
     iop::{context::ShapeStep, verifier::Verifier},
     layers::{ContextAux, LayerProof},
     lookup::{
@@ -235,7 +235,7 @@ where
                 let commit = ctx.commitment_ctx.commit(&mle)?;
                 Ok((commit, mle))
             })
-            .collect::<Result<Vec<_>, PCSError>>()?;
+            .collect::<Result<Vec<_>, anyhow::Error>>()?;
         gen.logup_witnesses.insert(
             id,
             vec![LogUpWitness::<E, PCS>::new_lookup(
@@ -459,7 +459,7 @@ impl Pooling {
                 )?;
                 Ok(commit)
             })
-            .collect::<Result<Vec<PCS::Commitment>, PCSError>>()?;
+            .collect::<Result<Vec<PCS::Commitment>, anyhow::Error>>()?;
 
         // Now we must do the samething accumulating evals for the input poly as we fix variables on the input poly.
         // The point length is 2 longer because for now we only support MaxPool2D.

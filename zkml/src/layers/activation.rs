@@ -1,6 +1,6 @@
 use crate::{
     Claim, Context, Element, Prover,
-    commit::{PCSError, same_poly},
+    commit::same_poly,
     iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
@@ -212,7 +212,7 @@ where
                 let commit = ctx.commitment_ctx.commit(&mle)?;
                 Ok(((commit, mle), evaluations))
             })
-            .collect::<Result<Vec<_>, PCSError>>()?
+            .collect::<Result<Vec<_>, anyhow::Error>>()?
             .into_iter()
             .unzip();
         gen.logup_witnesses.insert(
@@ -347,7 +347,7 @@ impl Activation {
                     .add_witness_claim(comm_with_wit, claim)?;
                 Ok(comm)
             })
-            .collect::<Result<Vec<PCS::Commitment>, PCSError>>()?;
+            .collect::<Result<Vec<PCS::Commitment>, anyhow::Error>>()?;
 
         // Add the proof in
         prover.push_proof(

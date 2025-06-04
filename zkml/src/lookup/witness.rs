@@ -1,12 +1,13 @@
 //! Code used to define structs relating to witnesses for lookup layers
 
+use anyhow::{Result, anyhow};
 use ff_ext::ExtensionField;
 use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::mle::DenseMultilinearExtension;
 use serde::{Serialize, de::DeserializeOwned};
 use transcript::Transcript;
 
-use crate::{commit::PCSError, iop::ChallengeStorage};
+use crate::iop::ChallengeStorage;
 
 use super::{
     context::TableType,
@@ -70,17 +71,12 @@ where
     }
 
     /// Writes this witness to the transcript
-    pub fn write_to_transcript<T: Transcript<E>>(
-        &self,
-        transcript: &mut T,
-    ) -> Result<(), PCSError> {
+    pub fn write_to_transcript<T: Transcript<E>>(&self, transcript: &mut T) -> Result<()> {
         match self {
-            LogUpWitness::Lookup { commits, .. } => commits
-                .iter()
-                .try_for_each(|comm| {
-                    PCS::write_commitment(&PCS::get_pure_commitment(&comm.0), transcript)
-                })
-                .map_err(PCSError::from),
+            LogUpWitness::Lookup { commits, .. } => commits.iter().try_for_each(|comm| {
+                PCS::write_commitment(&PCS::get_pure_commitment(&comm.0), transcript)
+                    .map_err(|e| anyhow!("Could not write lookup witness to transcript: {:?}", e))
+            }),
             LogUpWitness::Table {
                 multiplicity_commit,
                 ..
@@ -88,7 +84,7 @@ where
                 &PCS::get_pure_commitment(&multiplicity_commit.0),
                 transcript,
             )
-            .map_err(PCSError::from),
+            .map_err(|e| anyhow!("Could not write table witness to transcript: {:?}", e)),
         }
     }
 

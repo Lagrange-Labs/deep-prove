@@ -3,10 +3,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use super::PCSError;
 use crate::{Claim, default_transcript, layers::provable::NodeId};
 use ff_ext::ExtensionField;
 
+use anyhow::{Result, anyhow, ensure};
 use mpcs::{Evaluation, PolynomialCommitmentScheme};
 use multilinear_extensions::mle::{DenseMultilinearExtension, MultilinearExtension};
 use rayon::prelude::*;
@@ -42,7 +42,7 @@ where
     pub fn new(
         witness_poly_size: usize,
         polys: Vec<(NodeId, Vec<DenseMultilinearExtension<E>>)>,
-    ) -> Result<CommitmentContext<E, PCS>, PCSError> {
+    ) -> Result<CommitmentContext<E, PCS>> {
         // Find the maximum size so we can generate params
         let max_poly_size = polys
             .iter()
@@ -65,13 +65,13 @@ where
                         .into_iter()
                         .map(|poly| {
                             let commit = PCS::commit(&prover_params, &poly)?;
-                            Result::<(_, _), PCSError>::Ok((commit, poly))
+                            Result::<(_, _), anyhow::Error>::Ok((commit, poly))
                         })
                         .collect::<Result<
                             Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
                             _,
                         >>()?;
-                Result::<(NodeId, Vec<(_, _)>), PCSError>::Ok((node_id, model_comms))
+                Result::<(NodeId, Vec<(_, _)>), anyhow::Error>::Ok((node_id, model_comms))
             })
             .collect::<Result<
                 BTreeMap<NodeId, Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>>,
@@ -95,22 +95,16 @@ where
     }
 
     /// Helper method to commit to polynomial.
-    pub fn commit(
-        &self,
-        mle: &DenseMultilinearExtension<E>,
-    ) -> Result<PCS::CommitmentWithWitness, PCSError> {
+    pub fn commit(&self, mle: &DenseMultilinearExtension<E>) -> Result<PCS::CommitmentWithWitness> {
         PCS::commit(&self.prover_params, mle).map_err(|e| e.into())
     }
 
     /// Write the commitment context to the transcript
-    pub fn write_to_transcript<T: Transcript<E>>(
-        &self,
-        transcript: &mut T,
-    ) -> Result<(), PCSError> {
+    pub fn write_to_transcript<T: Transcript<E>>(&self, transcript: &mut T) -> Result<()> {
         self.model_comms_map.iter().try_for_each(|(_, comms_vec)| {
             comms_vec.iter().try_for_each(|(comm, _)| {
                 let v_comm = PCS::get_pure_commitment(comm);
-                PCS::write_commitment(&v_comm, transcript).map_err(PCSError::from)
+                PCS::write_commitment(&v_comm, transcript).map_err(|e| e.into())
             })
         })
     }
@@ -214,7 +208,7 @@ where
         &mut self,
         (commitment, mle): (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>),
         claim: Claim<E>,
-    ) -> Result<(), PCSError> {
+    ) -> Result<()> {
         if mle.num_vars() <= PCS::trivial_num_vars() {
             self.trivial_claims.push(CommitmentClaim {
                 commitment,
@@ -236,15 +230,11 @@ where
         ctx: &CommitmentContext<E, PCS>,
         node_id: NodeId,
         claims: Vec<Claim<E>>,
-    ) -> Result<(), PCSError> {
-        let node_commitments =
-            ctx.model_comms_map
-                .get(&node_id)
-                .cloned()
-                .ok_or(PCSError::ParameterError(format!(
-                    "No commitments stored for node with id: {}",
-                    node_id
-                )))?;
+    ) -> Result<()> {
+        let node_commitments = ctx.model_comms_map.get(&node_id).cloned().ok_or(anyhow!(
+            "No commitments stored for node with id: {}",
+            node_id
+        ))?;
         node_commitments
             .into_iter()
             .zip(claims.into_iter())
@@ -256,7 +246,7 @@ where
         &mut self,
         commitment_context: &CommitmentContext<E, PCS>,
         transcript: &mut T,
-    ) -> Result<ModelOpeningProof<E, PCS>, PCSError> {
+    ) -> Result<ModelOpeningProof<E, PCS>> {
         // Prepare the parts that go into the batch proof
         let (comms, (polys, (points, evaluations))): (
             Vec<PCS::CommitmentWithWitness>,
@@ -299,9 +289,9 @@ where
                     eval,
                     transcript,
                 )
-                .map_err(PCSError::from)
+                .map_err(|e| anyhow!("Could not open trivial commitment: {:?}", e))
             })
-            .collect::<Result<Vec<PCS::Proof>, PCSError>>()?;
+            .collect::<Result<Vec<PCS::Proof>, anyhow::Error>>()?;
 
         // Make the batch proof
         let batch_proof = PCS::batch_open(
@@ -362,7 +352,7 @@ where
         &mut self,
         commitment: PCS::Commitment,
         claim: Claim<E>,
-    ) -> Result<(), PCSError> {
+    ) -> Result<()> {
         if claim.point.len() <= PCS::trivial_num_vars() {
             self.trivial_claims
                 .push(VerifierClaim { commitment, claim });
@@ -373,18 +363,11 @@ where
     }
 
     /// Add claims about model weights and biases for a certain node
-    pub fn add_common_claims(
-        &mut self,
-        node_id: NodeId,
-        claims: Vec<Claim<E>>,
-    ) -> Result<(), PCSError> {
-        let node_commitments =
-            self.model_comms_map
-                .remove(&node_id)
-                .ok_or(PCSError::ParameterError(format!(
-                    "No commitments stored for node with id: {}",
-                    node_id
-                )))?;
+    pub fn add_common_claims(&mut self, node_id: NodeId, claims: Vec<Claim<E>>) -> Result<()> {
+        let node_commitments = self.model_comms_map.remove(&node_id).ok_or(anyhow!(
+            "No commitments stored for node with id: {}",
+            node_id
+        ))?;
 
         node_commitments
             .into_iter()
@@ -398,14 +381,14 @@ where
         commitment_context: &CommitmentContext<E, PCS>,
         proof: &ModelOpeningProof<E, PCS>,
         transcript: &mut T,
-    ) -> Result<(), PCSError> {
+    ) -> Result<()> {
         // Check that all the model commitments have been used
-        if !self.model_comms_map.is_empty() {
-            return Err(PCSError::ParameterError(format!(
-                "Not all mdoel commits have been used, had {} remaining",
-                self.model_comms_map.len()
-            )));
-        }
+        ensure!(
+            self.model_comms_map.is_empty(),
+            "Not all mdoel commits have been used, had {} remaining",
+            self.model_comms_map.len()
+        );
+
         // Prepare the parts that go into the batch proof
         let (comms, points, evaluations) = self.claims.drain(..).enumerate().fold(
             (vec![], vec![], vec![]),
@@ -425,13 +408,13 @@ where
         // Ensure that if we have trivial claims then we also have the same number of trivial proofs
         let trivial_proofs = proof.trivial_proofs();
 
-        if self.trivial_claims.len() != trivial_proofs.len() {
-            return Err(PCSError::ParameterError(format!(
-                "Openign proof had {} trivial proofs, but the verifier has {} trivial claims",
-                trivial_proofs.len(),
-                self.trivial_claims.len()
-            )));
-        }
+        ensure!(
+            self.trivial_claims.len() == trivial_proofs.len(),
+            "Openign proof had {} trivial proofs, but the verifier has {} trivial claims",
+            trivial_proofs.len(),
+            self.trivial_claims.len()
+        );
+
         // Check all trivial commitments are correct
         self.trivial_claims
             .par_iter()
@@ -452,7 +435,7 @@ where
                     proof,
                     &mut t,
                 )?;
-                Result::<(), PCSError>::Ok(())
+                Result::<(), anyhow::Error>::Ok(())
             })?;
         // Verify the batch opening
         PCS::batch_verify(
@@ -463,6 +446,6 @@ where
             proof.batch_proof(),
             transcript,
         )
-        .map_err(PCSError::from)
+        .map_err(|e| anyhow!("Error in PCS bathc verification: {:?}", e))
     }
 }
