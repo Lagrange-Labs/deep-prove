@@ -12,7 +12,7 @@ use crate::{
     Claim, Prover,
     commit::{compute_betas_eval, identity_eval},
     iop::{context::ContextAux, verifier::Verifier},
-    layers::{LayerProof, PolyID},
+    layers::LayerProof,
     quantization::{self, ScalingFactor},
     tensor::{ConvData, Number, get_root_of_unity},
 };
@@ -33,7 +33,7 @@ use multilinear_extensions::{
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
-use tracing::{debug, warn};
+use tracing::warn;
 use transcript::Transcript;
 
 use super::{
@@ -530,23 +530,6 @@ where
         let bias_poly = self.bias.pad_next_power_of_two().get_data().to_vec();
         aux.model_polys = vec![filter_poly, bias_poly];
         Ok((conv_info, aux))
-    }
-
-    fn commit_info(&self, id: NodeId) -> Vec<Option<(PolyID, Vec<E>)>> {
-        let filter_evals = self.filter.get_conv_weights();
-        let bias_evals = self.bias.evals_flat();
-        let id = id as PolyID;
-        debug!(
-            "Commitment : conv layer ID {}: size {}",
-            id,
-            filter_evals.len().ilog2()
-        );
-        debug!(
-            "Commitment : conv layer bias ID {}: size {}",
-            id * 100,
-            bias_evals.len().ilog2()
-        );
-        vec![Some((id, filter_evals)), Some((id * 100, bias_evals))]
     }
 }
 
@@ -1436,7 +1419,7 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: ExtensionField + Serialize + DeserializeOwned,
 {
-    fn step_info(&self, _id: PolyID, aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
+    fn step_info(&self, _id: NodeId, aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         let conv_info = LayerCtx::SchoolBookConvolution(SchoolBookConvCtx);
         Ok((conv_info, aux))
     }

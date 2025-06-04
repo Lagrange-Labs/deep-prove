@@ -10,7 +10,6 @@ use transcript::Transcript;
 
 use crate::{
     Claim, Context, Element, Prover, ScalingFactor, ScalingStrategy, Tensor,
-    commit::precommit::PolyID,
     iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
@@ -275,14 +274,7 @@ where
     E::BaseField: Serialize + DeserializeOwned,
 {
     /// Compute the proving context for the operation
-    fn step_info(&self, id: PolyID, aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)>;
-
-    /// Compute the data necessary to commit to the constant polynomials
-    /// associated to the operation. Returns `None` if there are no
-    /// constant polynomials to be committed for the given operation
-    fn commit_info(&self, _id: NodeId) -> Vec<Option<(PolyID, Vec<E>)>> {
-        vec![None]
-    }
+    fn step_info(&self, id: NodeId, aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)>;
 }
 
 /// Output of `QuantizeOp` method over a layer

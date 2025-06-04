@@ -186,7 +186,10 @@ mod test {
     use mpcs::PolynomialCommitmentScheme;
     use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 
-    use crate::{Claim, commit::Pcs, default_transcript, testing::random_field_vector};
+    use crate::{
+        Claim, default_transcript,
+        testing::{Pcs, random_field_vector},
+    };
     use itertools::Itertools;
 
     use super::{Context, Prover, Verifier};

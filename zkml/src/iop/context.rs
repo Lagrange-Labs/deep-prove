@@ -1,7 +1,6 @@
 use crate::{
     Element,
     commit::context::CommitmentContext,
-    iop::precommit::PolyID,
     layers::provable::{NodeCtx, NodeId, OpInfo},
     lookup::context::{LookupContext, TableType},
     model::{Model, ModelCtx, ToIterator},
@@ -25,7 +24,6 @@ where
     E: ExtensionField + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
 {
-    pub poly_id: PolyID,
     pub num_vars: usize,
     pub table_commitment: BasefoldCommitment<E>,
 }

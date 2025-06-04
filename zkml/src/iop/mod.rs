@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    commit::{context::ModelOpeningProof, precommit},
+    commit::context::ModelOpeningProof,
     layers::{LayerProof, provable::NodeId},
     lookup::logup_gkr::structs::LogUpProof,
 };
@@ -98,7 +98,7 @@ where
 mod test {
     use goldilocks::GoldilocksExt2;
 
-    use crate::{commit::Pcs, default_transcript, init_test_logging, model::Model};
+    use crate::{default_transcript, init_test_logging, model::Model, testing::Pcs};
 
     use super::{Context, prover::Prover, verifier::verify};
 

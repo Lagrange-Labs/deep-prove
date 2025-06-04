@@ -24,7 +24,6 @@ use transcript::Transcript;
 
 use crate::{
     Context, Element, ScalingStrategy,
-    commit::precommit::PolyID,
     iop::context::{ContextAux, ShapeStep, TableCtx},
     layers::{
         activation::{Activation, ActivationProof},
@@ -326,7 +325,7 @@ where
     E: ExtensionField + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
 {
-    fn step_info(&self, id: PolyID, aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
+    fn step_info(&self, id: NodeId, aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         match self {
             Layer::Dense(dense) => dense.step_info(id, aux),
             Layer::Convolution(convolution) => convolution.step_info(id, aux),
@@ -335,18 +334,6 @@ where
             Layer::Requant(requant) => requant.step_info(id, aux),
             Layer::Pooling(pooling) => pooling.step_info(id, aux),
             Layer::Flatten(reshape) => reshape.step_info(id, aux),
-        }
-    }
-
-    fn commit_info(&self, id: provable::NodeId) -> Vec<Option<(PolyID, Vec<E>)>> {
-        match self {
-            Layer::Dense(dense) => dense.commit_info(id),
-            Layer::Convolution(convolution) => convolution.commit_info(id),
-            Layer::SchoolBookConvolution(school_book_conv) => school_book_conv.commit_info(id),
-            Layer::Activation(activation) => activation.commit_info(id),
-            Layer::Requant(requant) => requant.commit_info(id),
-            Layer::Pooling(pooling) => pooling.commit_info(id),
-            Layer::Flatten(reshape) => reshape.commit_info(id),
         }
     }
 }

@@ -5,7 +5,7 @@ use crate::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
     },
-    layers::{LayerCtx, LayerProof, PolyID},
+    layers::{LayerCtx, LayerProof},
     lookup::{
         context::{COLUMN_SEPARATOR, LookupWitnessGen, TableType},
         logup_gkr::{
@@ -107,7 +107,7 @@ where
     E: ExtensionField + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
 {
-    fn step_info(&self, id: PolyID, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
+    fn step_info(&self, id: NodeId, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         aux.tables.insert(TableType::Relu);
         let num_vars = aux
             .last_output_shape

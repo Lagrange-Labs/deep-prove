@@ -492,13 +492,6 @@ impl<N: Number> Model<N> {
     {
         self.run_with_tracker(input, None)
     }
-
-    /// Returns the set of nodes in the model which can be proven
-    pub(crate) fn provable_nodes(&self) -> impl Iterator<Item = (&NodeId, &Node<N>)> {
-        self.nodes
-            .iter()
-            .filter(|(_, node)| node.operation.is_provable())
-    }
 }
 
 /// Collection of the proving contexts of all the nodes in the model
@@ -514,9 +507,7 @@ where
 #[cfg(test)]
 pub(crate) mod test {
     use crate::{
-        ScalingFactor, ScalingStrategy,
-        commit::Pcs,
-        init_test_logging,
+        ScalingFactor, ScalingStrategy, init_test_logging,
         layers::{
             Layer,
             activation::{Activation, Relu},
@@ -529,7 +520,7 @@ pub(crate) mod test {
         padding::{PaddingMode, pad_model},
         quantization::{self, InferenceObserver},
         tensor::Number,
-        testing::{random_bool_vector, random_vector},
+        testing::{Pcs, random_bool_vector, random_vector},
     };
     use anyhow::Result;
     use ark_std::rand::{Rng, RngCore, thread_rng};

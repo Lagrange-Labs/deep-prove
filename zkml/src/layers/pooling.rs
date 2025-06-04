@@ -1,6 +1,6 @@
 use crate::{
     Claim, Context, Element, Prover,
-    commit::{compute_betas_eval, precommit::PolyID},
+    commit::compute_betas_eval,
     iop::{context::ShapeStep, verifier::Verifier},
     layers::{ContextAux, LayerProof},
     lookup::{
@@ -127,7 +127,7 @@ where
     E: ExtensionField + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
 {
-    fn step_info(&self, id: PolyID, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
+    fn step_info(&self, id: NodeId, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         let info = match self {
             Pooling::Maxpool2D(info) => {
                 aux.tables.insert(TableType::Range);

@@ -6,7 +6,7 @@ use crate::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
     },
-    layers::{LayerCtx, LayerProof, PolyID, requant::Requant},
+    layers::{LayerCtx, LayerProof, requant::Requant},
     model::StepData,
     padding::{PaddingMode, ShapeInfo, pad_dense},
     quantization::{self, BIT_LEN, ScalingFactor},
@@ -23,7 +23,7 @@ use multilinear_extensions::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
-use tracing::{debug, trace, warn};
+use tracing::{trace, warn};
 use transcript::Transcript;
 
 use crate::{Element, tensor::Tensor};
@@ -45,7 +45,7 @@ pub struct Dense<T> {
 /// Information stored in the context (setup phase) for this layer.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DenseCtx<E> {
-    pub node_id: PolyID,
+    pub node_id: NodeId,
     pub matrix_poly_aux: VPAuxInfo<E>,
     pub unpadded_matrix_shape: Vec<usize>,
     pub padded_matrix_shape: Vec<usize>,
@@ -214,23 +214,6 @@ where
 
         aux.model_polys = vec![weights_evals, bias_evals];
         Ok((dense_info, aux))
-    }
-
-    fn commit_info(&self, id: NodeId) -> Vec<Option<(PolyID, Vec<E>)>> {
-        let evals = self.matrix.evals_2d();
-        let bias_evals = self.bias.evals_flat();
-        let id = id as PolyID;
-        debug!(
-            "Commitment : dense layer ID {}: size {}",
-            id,
-            evals.len().ilog2()
-        );
-        debug!(
-            "Commitment : dense layer bias ID {}: size {}",
-            id * 100,
-            bias_evals.len().ilog2()
-        );
-        vec![Some((id, evals)), Some((id * 100, bias_evals))]
     }
 }
 

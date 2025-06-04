@@ -240,8 +240,8 @@ mod tests {
     use super::*;
 
     use crate::{
-        Context, Prover, ScalingFactor, commit::Pcs, init_test_logging,
-        quantization::InferenceObserver, verify,
+        Context, Prover, ScalingFactor, init_test_logging, quantization::InferenceObserver,
+        testing::Pcs, verify,
     };
     use goldilocks::GoldilocksExt2;
     use tracing::info;

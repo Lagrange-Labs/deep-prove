@@ -171,12 +171,11 @@ mod test {
     use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 
     use crate::{
-        FloatOnnxLoader,
-        commit::Pcs,
-        default_transcript,
+        FloatOnnxLoader, default_transcript,
         iop::{Context, prover::Prover, verifier::verify},
         parser::ModelType,
         tensor::Tensor,
+        testing::Pcs,
         to_bit_sequence_le,
     };
     use ff_ext::ff::Field;

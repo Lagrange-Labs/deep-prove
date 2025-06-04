@@ -2,7 +2,7 @@
 
 use crate::{
     Claim, Context, Element, Prover, ScalingFactor, Tensor,
-    commit::{compute_betas_eval, precommit::PolyID},
+    commit::compute_betas_eval,
     iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
@@ -142,7 +142,7 @@ where
     E: ExtensionField + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
 {
-    fn step_info(&self, id: PolyID, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
+    fn step_info(&self, id: NodeId, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         aux.tables.insert(TableType::Range);
         aux.tables.insert(TableType::Clamping(self.clamping_size()));
         let num_vars = aux
