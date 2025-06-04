@@ -1191,6 +1191,10 @@ where
 
         Ok(())
     }
+
+    fn trivial_num_vars() -> usize {
+        Spec::get_basecode_msg_size_log()
+    }
 }
 
 impl<E: ExtensionField, Spec: BasefoldSpec<E>> NoninteractivePCS<E> for Basefold<E, Spec>

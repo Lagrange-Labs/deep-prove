@@ -1,7 +1,7 @@
 //! This module contains logic to prove the correct opening of several claims from several independent
 //! polynomials.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use super::PCSError;
 use crate::{Claim, default_transcript, layers::provable::NodeId};
@@ -14,8 +14,6 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use transcript::Transcript;
 
-/// Constant we use to determine when a BaseFold commitment is trivial
-const TRIVIAL_COMMIT_SIZE: usize = 7;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 /// Struct that stores general information about commitments used for proving inference in a [`Model`].
@@ -31,9 +29,7 @@ where
     verifier_params: PCS::VerifierParam,
     /// This field contains a [`HashMap`] where the key is a [`NodeId`] and the value is a vector of tuples of [`PolynomialCommitmentScheme::CommitmentWithWitness`]  and [`DenseMultilinearExtension<E>`] corresponding to that ID.
     model_comms_map:
-        HashMap<NodeId, Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>>,
-    /// The order that we append the common commitments to the transcript.
-    order: Vec<NodeId>,
+        BTreeMap<NodeId, Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>>,
 }
 
 impl<E, PCS> CommitmentContext<E, PCS>
@@ -61,11 +57,6 @@ where
         let param = PCS::setup(max_poly_size)?;
         let (prover_params, verifier_params) = PCS::trim(param, max_poly_size)?;
 
-        let order = polys
-            .iter()
-            .map(|(node_id, _)| *node_id)
-            .collect::<Vec<NodeId>>();
-
         let model_comms_map = polys
             .into_par_iter()
             .map(|(node_id, polys_vec)| {
@@ -83,14 +74,13 @@ where
                 Result::<(NodeId, Vec<(_, _)>), PCSError>::Ok((node_id, model_comms))
             })
             .collect::<Result<
-                HashMap<NodeId, Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>>,
+                BTreeMap<NodeId, Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>>,
                 _,
             >>()?;
         Ok(CommitmentContext {
             prover_params,
             verifier_params,
             model_comms_map,
-            order,
         })
     }
 
@@ -117,9 +107,7 @@ where
         &self,
         transcript: &mut T,
     ) -> Result<(), PCSError> {
-        self.order.iter().try_for_each(|node_id| {
-            // Unwrap should never fail here
-            let comms_vec = self.model_comms_map.get(node_id).unwrap();
+        self.model_comms_map.iter().try_for_each(|(_, comms_vec)| {
             comms_vec.iter().try_for_each(|(comm, _)| {
                 let v_comm = PCS::get_pure_commitment(comm);
                 PCS::write_commitment(&v_comm, transcript).map_err(PCSError::from)
@@ -227,7 +215,7 @@ where
         (commitment, mle): (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>),
         claim: Claim<E>,
     ) -> Result<(), PCSError> {
-        if mle.num_vars() <= TRIVIAL_COMMIT_SIZE {
+        if mle.num_vars() <= PCS::trivial_num_vars() {
             self.trivial_claims.push(CommitmentClaim {
                 commitment,
                 poly: mle,
@@ -375,7 +363,7 @@ where
         commitment: PCS::Commitment,
         claim: Claim<E>,
     ) -> Result<(), PCSError> {
-        if claim.point.len() <= TRIVIAL_COMMIT_SIZE {
+        if claim.point.len() <= PCS::trivial_num_vars() {
             self.trivial_claims
                 .push(VerifierClaim { commitment, claim });
         } else {

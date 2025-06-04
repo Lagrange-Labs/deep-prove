@@ -146,6 +146,11 @@ pub trait PolynomialCommitmentScheme<E: ExtensionField>: Clone + Debug {
     ) -> Result<(), Error>;
 
     fn get_pure_commitment(comm: &Self::CommitmentWithWitness) -> Self::Commitment;
+    /// Method used to determine if a polynomial large enough that opening it with `open` method is more efficient than just sending the polynomial.
+    /// Defaults to `1`.
+    fn trivial_num_vars() -> usize {
+        1
+    }
 
     fn batch_commit(
         pp: &Self::ProverParam,
