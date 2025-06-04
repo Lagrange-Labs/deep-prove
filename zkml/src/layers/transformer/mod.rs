@@ -139,7 +139,7 @@ mod test {
     impl FlatAttention<f32> {
         pub fn new_from_gguf(c: &gguf::LLMConfig, att: gguf::Attention<f32>) -> Self {
             let qkv =
-                qkv::QKV::new(att.q, att.q_bias, att.k, att.k_bias, att.v, att.v_bias).with_cache();
+                qkv::QKV::new(att.q, att.q_bias, att.k, att.k_bias, att.v, att.v_bias);
             let reshape_qkt = reshape::Reshape::new_squeeze(1);
             let mha = mha::MhaQK::new(c.num_heads, c.head_dim());
             let ffn = FlatFFN::new_from_gguf(c, att.feedforward);
@@ -242,7 +242,7 @@ mod test {
             // Note in LLM, it's always the case that hidden_size = emb_size so we can apply residual
             let hidden_size = emb_size;
             let head_size = hidden_size / num_heads;
-            let qkv = qkv::QKV::random(emb_size, hidden_size).with_cache();
+            let qkv = qkv::QKV::random(emb_size, hidden_size);
             let mha = mha::MhaQK::new(num_heads, head_size);
             let layernorm = layernorm::LayerNorm::random(emb_size);
             let out = Dense::random(vec![hidden_size, hidden_size]);
