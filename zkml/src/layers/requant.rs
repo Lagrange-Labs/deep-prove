@@ -1,5 +1,7 @@
 //! Module containign code for performing proving friendly requantisation. This is done via a [fixed point multiplication](https://en.wikipedia.org/wiki/Fixed-point_arithmetic#Binary_fixed-point_multiplication) and use of lookup arguments.
 
+use std::collections::HashMap;
+
 use crate::{
     Claim, Context, Element, Prover, ScalingFactor, Tensor,
     commit::compute_betas_eval,
@@ -160,7 +162,7 @@ where
             })?
             .expect("No input shape found for requant layer?");
         // Set the model polys to be empty
-        aux.model_polys = vec![];
+        aux.model_polys = HashMap::new();
         Ok((
             LayerCtx::Requant(RequantCtx {
                 requant: *self,

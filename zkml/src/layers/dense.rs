@@ -1,4 +1,4 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, collections::HashMap};
 
 use crate::{
     Claim, NextPowerOfTwo, Prover, ScalingStrategy,
@@ -181,6 +181,9 @@ impl<N: Number> Evaluate<N> for Dense<N> {
     }
 }
 
+const WEIGHT_POLY_ID: &str = "DenseWeight";
+const BIAS_POLY_ID: &str = "DenseBias";
+
 impl<E> ProveInfo<E> for Dense<Element>
 where
     E: ExtensionField,
@@ -212,7 +215,18 @@ where
         let weights_evals = self.matrix.pad_next_power_of_two().get_data().to_vec();
         let bias_evals = self.bias.pad_next_power_of_two().get_data().to_vec();
 
-        aux.model_polys = vec![weights_evals, bias_evals];
+        aux.model_polys = {
+            let mut model_polys = HashMap::new();
+            model_polys.insert(
+                WEIGHT_POLY_ID.to_string(),
+                weights_evals,
+            );
+            model_polys.insert(
+                BIAS_POLY_ID.to_string(),
+                bias_evals,
+            );
+            model_polys
+        };
         Ok((dense_info, aux))
     }
 }
@@ -541,7 +555,19 @@ impl Dense<Element> {
         let weights_claim = Claim::new(point, eval);
 
         // Add common commitment claims to be proven
-        prover.add_common_claims(id, vec![weights_claim, bias_claim])?;
+        let common_claims = {
+            let mut claims = HashMap::new();
+            claims.insert(
+                WEIGHT_POLY_ID.to_string(),
+                weights_claim,
+            );
+            claims.insert(
+                BIAS_POLY_ID.to_string(),
+                bias_claim,
+            );
+            claims
+        };
+        prover.add_common_claims(id, common_claims)?;
 
         // the claim that this proving step outputs is the claim about not the matrix but the vector poly.
         // at next step, that claim will be proven over this vector poly (either by the next dense layer proving, or RELU etc).
@@ -607,7 +633,19 @@ where
         let weights_claim = Claim::new(pcs_eval_input, pcs_eval_output);
 
         // add the common commitment claims to be verified
-        verifier.add_common_claims(self.node_id, vec![weights_claim, bias_claim])?;
+        let common_claims = {
+            let mut claims = HashMap::new();
+            claims.insert(
+                WEIGHT_POLY_ID.to_string(),
+                weights_claim,
+            );
+            claims.insert(
+                BIAS_POLY_ID.to_string(),
+                bias_claim,
+            );
+            claims
+        };
+        verifier.add_common_claims(self.node_id, common_claims)?;
 
         // SUMCHECK verification part
         // Instead of computing the polynomial at the random point requested like this

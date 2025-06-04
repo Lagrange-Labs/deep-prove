@@ -2,19 +2,13 @@ use std::collections::HashMap;
 
 use super::{ChallengeStorage, Context, Proof, TableProof};
 use crate::{
-    Claim, Element, VectorTranscript,
-    commit::{compute_betas_eval, context},
-    layers::{
-        LayerProof,
-        provable::{NodeId, OpInfo, ProvableOp},
-    },
-    lookup::{
-        context::{TABLE_POLY_ID_OFFSET, generate_lookup_witnesses},
+    commit::{compute_betas_eval, context::{self, PolyId}}, layers::{
+        provable::{NodeId, OpInfo, ProvableOp}, LayerProof
+    }, lookup::{
+        context::{generate_lookup_witnesses, TABLE_POLY_ID_OFFSET},
         logup_gkr::prover::batch_prove as logup_batch_prove,
         witness::LogUpWitness,
-    },
-    model::{InferenceStep, InferenceTrace, ToIterator},
-    tensor::get_root_of_unity,
+    }, model::{InferenceStep, InferenceTrace, ToIterator}, tensor::get_root_of_unity, Claim, Element, VectorTranscript
 };
 use anyhow::anyhow;
 use ff_ext::ExtensionField;
@@ -77,7 +71,7 @@ where
     pub(crate) fn add_common_claims(
         &mut self,
         node_id: NodeId,
-        claims: Vec<Claim<E>>,
+        claims: HashMap<PolyId, Claim<E>>,
     ) -> anyhow::Result<()> {
         self.commit_prover
             .add_common_claims(&self.ctx.commitment_ctx, node_id, claims)
