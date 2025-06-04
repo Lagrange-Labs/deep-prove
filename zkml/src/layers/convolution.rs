@@ -534,7 +534,7 @@ where
                 BIAS_POLY_ID.to_string(),
                 bias_poly,
             );
-            model_polys
+            Some(model_polys)
         };
         Ok((conv_info, aux))
     }

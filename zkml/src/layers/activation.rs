@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::{
     Claim, Context, Element, Prover,
     commit::same_poly,
@@ -126,7 +124,7 @@ where
             })?
             .expect("No input shape found for activation layer?");
         // Set the model polys to be empty
-        aux.model_polys = HashMap::new();
+        aux.model_polys = None;
         let info = match self {
             Activation::Relu(relu) => LayerCtx::Activation(ActivationCtx {
                 op: Activation::Relu(*relu),

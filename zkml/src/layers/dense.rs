@@ -225,7 +225,7 @@ where
                 BIAS_POLY_ID.to_string(),
                 bias_evals,
             );
-            model_polys
+            Some(model_polys)
         };
         Ok((dense_info, aux))
     }

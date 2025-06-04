@@ -87,7 +87,7 @@ impl ShapeStep {
 pub struct ContextAux {
     pub tables: BTreeSet<TableType>,
     pub last_output_shape: Vec<Vec<usize>>,
-    pub model_polys: HashMap<PolyId, Vec<Element>>,
+    pub model_polys: Option<HashMap<PolyId, Vec<Element>>>,
 }
 
 impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> Context<E, PCS>
@@ -111,7 +111,7 @@ where
         let mut ctx_aux = ContextAux {
             tables,
             last_output_shape: input_shapes.clone(),
-            model_polys: HashMap::new(),
+            model_polys: None,
         };
         let mut max_poly_len = input_shapes.iter().fold(0usize, |acc, shapes| {
             acc.max(shapes.iter().product::<usize>())
@@ -167,11 +167,13 @@ where
             ctx_aux.last_output_shape = node_input_shapes;
             let (info, mut new_aux) = node.step_info(id, ctx_aux)?;
             // Retrieve any model polynomials that need to be committed
-            if !new_aux.model_polys.is_empty() {
+            if new_aux.model_polys.is_some() {
                 model_polys.push((
                     id,
                     new_aux
                         .model_polys
+                        .as_mut()
+                        .unwrap()
                         .drain()
                         .map(|(poly_id, evals)| {
                             let num_vars = ceil_log2(evals.len());
