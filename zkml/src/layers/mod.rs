@@ -5,7 +5,6 @@ pub mod convolution;
 pub mod dense;
 pub mod flatten;
 pub mod hadamard;
-pub mod matmul;
 pub mod matrix_mul;
 pub mod matvec;
 pub mod mul;

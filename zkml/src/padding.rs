@@ -235,7 +235,7 @@ pub(crate) fn pad_matmul(
         "Expected 1 unpadded output shape for MatMul, found {}", unpadded_output_shapes.len(),
     );
     let unpadded_output_shape = unpadded_output_shapes.pop().unwrap();
-    let (left_shape, right_shape) = match (&mut mat.left_matrix, &mut mat.right_matrix) {
+    let (left_shape, mut right_shape) = match (&mut mat.left_matrix, &mut mat.right_matrix) {
         (OperandMatrix::Weigth(m), OperandMatrix::Input) => {
             let nrows = pad_minimum(m.tensor.nrows_2d());
             let ncols = padded_input_shapes[0][0];
@@ -264,6 +264,9 @@ pub(crate) fn pad_matmul(
         }
         (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => unreachable!("Found MatMul layer with 2 weight matrices"),  
     };
+    if mat.is_right_transposed() {
+        right_shape.reverse();
+    }
     ensure!(left_shape[1] == right_shape[0], 
         "While padding MatMul layer. number of columns in left matrix ({}) does not match with number of rows in right matrix ({})",
                 left_shape[1],

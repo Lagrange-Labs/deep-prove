@@ -9,7 +9,7 @@
 //! NOTE: it does NOT Perform the softmax per head neither the subsequent projection with the V matrix.
 //! THis is done in subsequent layers due to proving logic proving these operation separately.
 use crate::{
-    layers::{matmul, provable::Evaluate},
+    layers::{matrix_mul::{self as matmul, OperandMatrix}, provable::Evaluate},
     tensor::Number,
 };
 use anyhow::ensure;
@@ -78,7 +78,11 @@ impl MhaQK {
                     .reshape(vec![seq_len, self.head_dim]); // [seq_len, head_dim]
                 // output Q @ K^T is of shape [1, seq_len], and v is of shape [seq_len, head_dim]
                 Ok(vec![
-                    matmul::MatMul::new_with_config(matmul::Config::TransposeB)
+                    matmul::MatMul::new_with_config(
+                        OperandMatrix::Input,
+                        OperandMatrix::Input,
+                        matmul::Config::TransposeB
+                    )?
                         .evaluate::<E>(&[&mini_q, &mini_k], vec![])?
                         .outputs
                         .remove(0),

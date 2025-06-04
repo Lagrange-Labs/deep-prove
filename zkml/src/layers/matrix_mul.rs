@@ -254,6 +254,10 @@ impl<T> MatMul<T> {
         })
     }
 
+    pub fn is_right_transposed(&self) -> bool {
+        matches!(self.config, Some(Config::TransposeB))
+    }
+
     pub fn pad_next_power_of_two(self) -> Result<Self> 
     where T: Number
     {
@@ -298,14 +302,23 @@ impl<T> MatMul<T> {
     /// - `claim`: claim computed for the output matrix MLE (input claim for the sumcheck)
     /// - `proof_point`: point employed in the sumcheck proof
     /// - `output_num_vars`: number of variables for each dimension of the output matrix
+    /// - `is_right_transposed`: flag specifying whether the right matrix is transposed or not
     fn full_points<E: ExtensionField>(
         claim: &Claim<E>,
         proof_point: &[E],
         output_num_vars: (usize, usize),
+        is_right_transposed: bool,
     ) -> (Vec<E>, Vec<E>) {
         let (claim_point_for_left, claim_point_for_right) =
             Self::split_claim(claim, output_num_vars);
-        let point_for_right = [claim_point_for_right, proof_point].concat();
+        let point_for_right = if is_right_transposed {
+            // if right matrix was transposed, we left the column variables
+            // free in the sum-check, so sum-check point should correspond
+            // to column variables (i.e., the low ones)
+            [proof_point, claim_point_for_right]
+        } else {
+            [claim_point_for_right, proof_point]
+        }.concat();
         let point_for_left = [proof_point, claim_point_for_left].concat();
         (point_for_left, point_for_right)
     }
@@ -377,7 +390,7 @@ impl<N: Number> OpInfo for MatMul<N> {
             "Matrix multiplication: left = {:?}, right = {:?}",
             self.left_matrix.get_actual_shape(),
             self.right_matrix.get_actual_shape().map(|shape| 
-                if let Some(Config::TransposeB) = self.config {
+                if self.is_right_transposed() {
                     shape.iter().rev().copied().collect()
                 } else {
                     shape.clone()
@@ -579,7 +592,13 @@ impl MatMul<Element> {
         // which corresponds to the number of additions performed in a matrix multiplication. 
         // If neither of the 2 matrices is constant in the model, then this number
         // will be undefined, and in this case the default value of MAX_BITS is used.
-        let ncols = self.left_matrix.ncols().or(self.right_matrix.nrows());
+        let ncols = self.left_matrix.ncols().or(
+            if self.is_right_transposed() {
+                self.right_matrix.ncols()
+            } else {
+                self.right_matrix.nrows()
+            }
+        );
         let power = ncols.map(|ncols| {
             // Number of addition is defined, so we return the number of bits as 
             // min_bits + max_bits + log(ncols) + 1, where `min_bit` and `max_bit` are the
@@ -631,6 +650,7 @@ impl MatMul<Element> {
                 (matrix, false)
             }
         };
+        let transposed = self.is_right_transposed();
         let (left_matrix, is_left_constant) = match &self.left_matrix {
             OperandMatrix::Weigth(mat) => (&Tensor::<E>::from(&mat.tensor), true),
             OperandMatrix::Input => {
@@ -658,7 +678,11 @@ impl MatMul<Element> {
             "right input matrix for MatMul layer is not a matrix"
         );
         let nrows_left = left_matrix.nrows_2d();
-        let ncols_right = right_matrix.ncols_2d();
+        let ncols_right = if transposed {
+            right_matrix.nrows_2d()
+        } else {
+            right_matrix.ncols_2d()
+        };
         ensure!(
             output.is_matrix(),
             "Output tensor for MatMul layer is not a matrix"
@@ -688,21 +712,26 @@ impl MatMul<Element> {
         // construct the MLE combining the input and the matrix
         let mut right_mat_mle: DenseMultilinearExtension<E> = right_matrix.to_mle_2d();
         let mut left_mat_mle = left_matrix.to_mle_2d();
-        let (point_for_input, point_for_mat) = Self::split_claim(&last_claim, num_vars_2d);
-        // fix the variables for the random input matrix; we need to fix the variables
+        let (point_for_left, point_for_right) = Self::split_claim(&last_claim, num_vars_2d);
+        // fix the variables for the left matrix; we need to fix the variables
         // corresponding to a row, so we must fix the HIGH variables
-        left_mat_mle.fix_high_variables_in_place(point_for_input);
-        // fix the variables for the layer matrix; we need to fix the variables
-        // corresponding to a column, so we must fix the low variables
-        right_mat_mle.fix_variables_in_place(point_for_mat);
-
-        // check that after fixing the variables in both matrixes the number of free
+        left_mat_mle.fix_high_variables_in_place(point_for_left);
+        if transposed {
+            // fix the variables for the right matrix; since it is transposed, we need to 
+            // fix the variables corresponding to a row, so we must fix the high variables
+            right_mat_mle.fix_high_variables_in_place(point_for_right);
+        } else {
+            // fix the variables for the right matrix; we need to fix the variables
+            // corresponding to a column, so we must fix the low variables
+            right_mat_mle.fix_variables_in_place(point_for_right);
+        }
+        
+        // check that after fixing the variables in both matrices the number of free
         // variables is the same
         assert_eq!(left_mat_mle.num_vars(), right_mat_mle.num_vars());
 
         let num_vars = left_mat_mle.num_vars();
         let mut vp = VirtualPolynomial::<E>::new(num_vars);
-        // TODO: remove the clone once prover+verifier are working
         vp.add_mle_list(vec![left_mat_mle.into(), right_mat_mle.into()], E::ONE);
         #[allow(deprecated)]
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, transcript);
@@ -716,7 +745,7 @@ impl MatMul<Element> {
         );
         // Note we need the _full_ input to the matrix since the matrix MLE has (row,column) vars space
         let (point_for_left, point_for_right) =
-            Self::full_points(&last_claim, &proof.point, num_vars_2d);
+            Self::full_points(&last_claim, &proof.point, num_vars_2d, transposed);
         // collection of claims to be returned as output
         let mut output_claims = vec![];
         // compute the claim for the left matrix polynomial. It will be either accumulated in the
@@ -804,7 +833,7 @@ impl MatMul<Element> {
             
         };
         // construct dimension of the polynomial given to the sumcheck
-        let transposed_right_shape = if let Some(Config::TransposeB) = self.config {
+        let transposed_right_shape = if self.is_right_transposed() {
             Some(right_shape.iter().rev().copied().collect_vec())
         } else {
             None
@@ -844,7 +873,10 @@ impl MatMul<Element> {
     }
 }
 
-impl<E: ExtensionField> OpInfo for MatMulCtx<E> 
+impl<E: ExtensionField> OpInfo for MatMulCtx<E>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+    E: Serialize + DeserializeOwned,
 {
     fn output_shapes(
         &self,
@@ -875,7 +907,7 @@ impl<E: ExtensionField> OpInfo for MatMulCtx<E>
             "Matrix multiplication ctx: left = {:?}, right = {:?}",
             self.left_matrix_shapes.as_ref().map(|s| s.1.clone()),
             self.right_matrix_shapes.as_ref().map(|s| 
-                if let Some(Config::TransposeB) = self.config {
+                if self.is_right_transposed() {
                     s.1.iter().rev().copied().collect()
                 } else {
                     s.1.clone()
@@ -917,6 +949,10 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
+    fn is_right_transposed(&self) -> bool {
+        matches!(self.config, Some(Config::TransposeB))
+    }
+    
     fn verify<T: Transcript<E>>(
         &self,
         commit_verifier: &mut CommitVerifier<E>,
@@ -942,10 +978,12 @@ where
             !(is_left_matrix_constant && is_right_matrix_constant),
             "Cannot have a MatMul layer with both constant matrices as input"
         );
+        let transposed = self.is_right_transposed();
         let (point_for_left, point_for_right) = MatMul::<Element>::full_points(
             &last_claim,
             &subclaim.point_flat(),
             self.output_mle_num_vars,
+            transposed,
         );
         // 0 because left matrix comes first in the product
         let eval_left = proof.individual_claims[0];
@@ -1020,21 +1058,29 @@ mod tests {
     use multilinear_extensions::mle::MultilinearExtension;
 
     use crate::{
-        commit::precommit::{CommitProver, CommitVerifier}, default_transcript, iop::context::ContextAux, layers::{matrix_mul::{Config, MatMul, OperandMatrix}, provable::Evaluate}, padding::PaddingMode, tensor::Tensor, testing::{random_field_vector, random_vector}, Claim, Element, ScalingFactor
+        commit::precommit::{CommitProver, CommitVerifier}, default_transcript, iop::context::ContextAux, layers::{matrix_mul::{Config, MatMul, OperandMatrix}, provable::Evaluate, Layer}, model::{test::prove_model, Model}, padding::PaddingMode, tensor::Tensor, testing::{random_field_vector, random_vector}, Claim, Element, ScalingFactor
     };
 
-    #[test]
-    fn test_matmul_pad_next_power_of_two() {
+    fn test_matmul_padding(transpose: bool) {
         // Create a Mat mul layer with non-power-of-two dimensions
         let matrix =
             Tensor::<Element>::matix_from_coeffs(vec![vec![1, 2, 3], vec![4, 5, 6], vec![7, 8, 9]])
                 .unwrap();
 
-        let layer = MatMul::new(
-            OperandMatrix::Input,
-            OperandMatrix::new_weight_matrix(matrix),
-        )
-        .unwrap();
+        let layer = if transpose {
+            MatMul::new_with_config(
+                OperandMatrix::Input,
+                OperandMatrix::new_weight_matrix(matrix),
+                Config::TransposeB,
+            )
+            .unwrap()
+        } else {
+            MatMul::new(
+                OperandMatrix::Input,
+                OperandMatrix::new_weight_matrix(matrix),
+            )
+            .unwrap()
+        };
 
         // Pad to next power of two
         let padded = layer.clone().pad_next_power_of_two().unwrap();
@@ -1069,6 +1115,11 @@ mod tests {
         assert_eq!(padded_matrix.get_data()[3], 0);
         assert_eq!(padded_matrix.get_data()[7], 0);
         assert_eq!(padded_matrix.get_data()[15], 0);
+    }
+
+    #[test]
+    fn test_matmul_pad_next_power_of_two() {
+        test_matmul_padding(false);
     }
 
     #[test]
@@ -1152,6 +1203,11 @@ mod tests {
         assert_eq!(padded_matrix.get_data()[4], 5);
         assert_eq!(padded_matrix.get_data()[8], 9);
         assert_eq!(padded_matrix.get_data()[12], 0); // Padding
+    }
+
+    #[test]
+    fn test_matmul_pad_transpose() {
+        test_matmul_padding(true);
     }
 
     #[test]
@@ -1247,6 +1303,52 @@ mod tests {
             .evaluate::<GoldilocksExt2>(&[&a, &b], vec![])
             .unwrap();
         assert_eq!(result.outputs[0].data, vec![22.0, 28.0, 49.0, 64.0]);
+    }
+
+    #[test]
+    fn test_proven_matmul_with_two_input_matrices() {
+        let first_input_shape = vec![100, 200];
+        let second_input_shape = vec![200, 300];
+        let matrix_shape = vec![300, 100];
+        let mut model = Model::new_from_input_shapes(vec![first_input_shape, second_input_shape], PaddingMode::NoPadding);
+        
+        let matmul = MatMul::new(
+            OperandMatrix::Input,
+            OperandMatrix::Input,
+        ).unwrap();
+        let first_matmul_id = model.add_consecutive_layer(Layer::MatMul(matmul), None).unwrap();
+        let matmul = MatMul::new(
+            OperandMatrix::new_weight_matrix(Tensor::random(&matrix_shape)),
+            OperandMatrix::Input,
+        ).unwrap();
+        model.add_consecutive_layer(Layer::MatMul(matmul), Some(first_matmul_id)).unwrap();
+        model.route_output(None).unwrap();
+        model.describe();
+        prove_model(model).unwrap();
+    }
+
+    #[test]
+    fn test_proven_matmul_transposed() {
+        let first_input_shape = vec![100, 200];
+        let second_input_shape = vec![300, 200];
+        let matrix_shape = vec![100, 300];
+        let mut model = Model::new_from_input_shapes(vec![first_input_shape, second_input_shape], PaddingMode::NoPadding);
+        
+        let matmul = MatMul::new_with_config(
+            OperandMatrix::Input,
+            OperandMatrix::Input,
+            Config::TransposeB,
+        ).unwrap();
+        let first_matmul_id = model.add_consecutive_layer(Layer::MatMul(matmul), None).unwrap();
+        let matmul = MatMul::new_with_config(
+            OperandMatrix::Input,
+            OperandMatrix::new_weight_matrix(Tensor::random(&matrix_shape)),
+            Config::TransposeB,
+        ).unwrap();
+        model.add_consecutive_layer(Layer::MatMul(matmul), Some(first_matmul_id)).unwrap();
+        model.route_output(None).unwrap();
+        model.describe();
+        prove_model(model).unwrap();
     }
 
     #[test]

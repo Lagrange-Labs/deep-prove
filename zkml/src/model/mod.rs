@@ -1009,28 +1009,6 @@ pub(crate) mod test {
     }
 
     #[test]
-    fn test_matmul_with_two_input_matrices() {
-        let first_input_shape = vec![100, 200];
-        let second_input_shape = vec![200, 300];
-        let matrix_shape = vec![300, 100];
-        let mut model = Model::new_from_input_shapes(vec![first_input_shape, second_input_shape], PaddingMode::NoPadding);
-        
-        let matmul = MatMul::new(
-            OperandMatrix::Input,
-            OperandMatrix::Input,
-        ).unwrap();
-        let first_matmul_id = model.add_consecutive_layer(Layer::MatMul(matmul), None).unwrap();
-        let matmul = MatMul::new(
-            OperandMatrix::new_weight_matrix(Tensor::random(&matrix_shape)),
-            OperandMatrix::Input,
-        ).unwrap();
-        model.add_consecutive_layer(Layer::MatMul(matmul), Some(first_matmul_id)).unwrap();
-        model.route_output(None).unwrap();
-        model.describe();
-        prove_model(model).unwrap();
-    }
-
-    #[test]
     fn test_single_cnn_prover() {
         let n_w = 1 << 2;
         let k_w = 1 << 4;
@@ -1186,7 +1164,7 @@ pub(crate) mod test {
         assert_eq!(trace.steps.len(), 3);
     }
 
-    fn prove_model(model: Model<f32>) -> anyhow::Result<()> {
+    pub(crate) fn prove_model(model: Model<f32>) -> anyhow::Result<()> {
         let float_inputs = model
             .input_shapes()
             .into_iter()
