@@ -1,12 +1,8 @@
 use crate::{
-    ScalingStrategy, VectorTranscript,
-    iop::context::ShapeStep,
-    layers::{hadamard, requant::Requant},
-    model::StepData,
-    padding::{PaddingMode, ShapeInfo, pad_conv},
-    quantization::{BIT_LEN, TensorFielder},
+    iop::context::ShapeStep, layers::{hadamard, requant::Requant}, model::StepData, padding::{pad_conv, PaddingMode, ShapeInfo}, quantization::{TensorFielder, BIT_LEN}, ScalingStrategy, VectorTranscript
 };
 use core::f32;
+use std::collections::HashMap;
 
 use crate::{
     Claim, Prover,
@@ -462,6 +458,9 @@ impl Convolution<Element> {
     }
 }
 
+const FILTER_POLY_ID: &str = "ConvFilter";
+const BIAS_POLY_ID: &str = "ConvBias";
+
 impl<E> ProveInfo<E> for Convolution<Element>
 where
     E: ExtensionField + DeserializeOwned,
@@ -528,7 +527,15 @@ where
 
         let filter_poly = self.filter.pad_next_power_of_two().get_data().to_vec();
         let bias_poly = self.bias.pad_next_power_of_two().get_data().to_vec();
-        aux.model_polys = vec![filter_poly, bias_poly];
+        aux.model_polys = {
+            let mut model_polys = HashMap::new();
+            model_polys.insert(FILTER_POLY_ID.to_string(), filter_poly);
+            model_polys.insert(
+                BIAS_POLY_ID.to_string(),
+                bias_poly,
+            );
+            Some(model_polys)
+        };
         Ok((conv_info, aux))
     }
 }
@@ -988,7 +995,19 @@ impl Convolution<Element> {
         );
 
         // Add common polynomial commitment claims to the commitment prover
-        prover.add_common_claims(id, vec![filter_claim, bias_claim])?;
+        let common_claims = {
+            let mut claims = HashMap::new();
+            claims.insert(
+                FILTER_POLY_ID.to_string(),
+                filter_claim,
+            );
+            claims.insert(
+                BIAS_POLY_ID.to_string(),
+                bias_claim,
+            );
+            claims
+        };
+        prover.add_common_claims(id, common_claims)?;
 
         prover.push_proof(
             id,
@@ -1324,7 +1343,19 @@ where
                 .evaluate(&weights_rand),
         );
         // Add the common commitment claims to be verified
-        verifier.add_common_claims(self.node_id, vec![filter_claim, bias_claim])?;
+        let common_claims = {
+            let mut claims = HashMap::new();
+            claims.insert(
+                FILTER_POLY_ID.to_string(),
+                filter_claim,
+            );
+            claims.insert(
+                BIAS_POLY_ID.to_string(),
+                bias_claim,
+            );
+            claims
+        };
+        verifier.add_common_claims(self.node_id, common_claims)?;
 
         let mut input_point = proof.fft_proof.point.clone();
         v = input_point.pop().unwrap();

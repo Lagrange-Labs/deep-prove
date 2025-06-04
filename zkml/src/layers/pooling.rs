@@ -149,7 +149,7 @@ where
                     Ok(Some(num_vars))
                 })?.expect("No input shape found for convolution layer?");
                 // Set the model polys to be empty
-                aux.model_polys = vec![];
+                aux.model_polys = None;
                 LayerCtx::Pooling(PoolingCtx {
                     poolinfo: *info,
                     node_id: id,

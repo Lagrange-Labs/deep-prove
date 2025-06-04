@@ -160,7 +160,7 @@ where
             })?
             .expect("No input shape found for requant layer?");
         // Set the model polys to be empty
-        aux.model_polys = vec![];
+        aux.model_polys = None;
         Ok((
             LayerCtx::Requant(RequantCtx {
                 requant: *self,

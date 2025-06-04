@@ -124,7 +124,7 @@ where
             })?
             .expect("No input shape found for activation layer?");
         // Set the model polys to be empty
-        aux.model_polys = vec![];
+        aux.model_polys = None;
         let info = match self {
             Activation::Relu(relu) => LayerCtx::Activation(ActivationCtx {
                 op: Activation::Relu(*relu),

@@ -1,10 +1,5 @@
 use crate::{
-    Element,
-    commit::context::CommitmentContext,
-    layers::provable::{NodeCtx, NodeId, OpInfo},
-    lookup::context::{LookupContext, TableType},
-    model::{Model, ModelCtx, ToIterator},
-    quantization::Fieldizer,
+    commit::context::{CommitmentContext, PolyId}, layers::provable::{NodeCtx, NodeId, OpInfo}, lookup::context::{LookupContext, TableType}, model::{Model, ModelCtx, ToIterator}, quantization::Fieldizer, Element
 };
 use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
@@ -92,7 +87,7 @@ impl ShapeStep {
 pub struct ContextAux {
     pub tables: BTreeSet<TableType>,
     pub last_output_shape: Vec<Vec<usize>>,
-    pub model_polys: Vec<Vec<Element>>,
+    pub model_polys: Option<HashMap<PolyId, Vec<Element>>>,
 }
 
 impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> Context<E, PCS>
@@ -116,12 +111,12 @@ where
         let mut ctx_aux = ContextAux {
             tables,
             last_output_shape: input_shapes.clone(),
-            model_polys: Vec::<Vec<Element>>::new(),
+            model_polys: None,
         };
         let mut max_poly_len = input_shapes.iter().fold(0usize, |acc, shapes| {
             acc.max(shapes.iter().product::<usize>())
         });
-        let mut model_polys = Vec::<(NodeId, Vec<DenseMultilinearExtension<E>>)>::new();
+        let mut model_polys = Vec::<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>::new();
         let mut step_infos = HashMap::new();
         let mut shapes: HashMap<NodeId, Vec<Vec<usize>>> = HashMap::new();
         debug!("Context : layer info generation ...");
@@ -172,27 +167,31 @@ where
             ctx_aux.last_output_shape = node_input_shapes;
             let (info, mut new_aux) = node.step_info(id, ctx_aux)?;
             // Retrieve any model polynomials that need to be committed
-            if !new_aux.model_polys.is_empty() {
+            if new_aux.model_polys.is_some() {
                 model_polys.push((
                     id,
                     new_aux
                         .model_polys
-                        .drain(..)
-                        .map(|evals| {
+                        .as_mut()
+                        .unwrap()
+                        .drain()
+                        .map(|(poly_id, evals)| {
                             let num_vars = ceil_log2(evals.len());
-
-                            DenseMultilinearExtension::<E>::from_evaluations_vec(
-                                num_vars,
-                                evals
-                                    .iter()
-                                    .map(|v| {
-                                        let f: E = v.to_field();
-                                        f.as_bases()[0]
-                                    })
-                                    .collect::<Vec<E::BaseField>>(),
+                            (
+                                poly_id,
+                                DenseMultilinearExtension::<E>::from_evaluations_vec(
+                                    num_vars,
+                                    evals
+                                        .iter()
+                                        .map(|v| {
+                                            let f: E = v.to_field();
+                                            f.as_bases()[0]
+                                        })
+                                        .collect::<Vec<E::BaseField>>(),
+                                )
                             )
                         })
-                        .collect::<Vec<DenseMultilinearExtension<E>>>(),
+                        .collect::<HashMap<PolyId, DenseMultilinearExtension<E>>>(),
                 ));
             }
             step_infos.insert(
