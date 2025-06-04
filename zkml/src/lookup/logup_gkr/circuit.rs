@@ -271,10 +271,7 @@ impl<E: ExtensionField> LogUpCircuit<E> {
 
     /// Retrieves the output values of the circuit in the order `numerator`, `denominator`
     pub fn outputs(&self) -> Vec<E> {
-        self.layers
-            .last()
-            .and_then(|layer| Some(layer.flat_evals()))
-            .unwrap()
+        self.layers.last().map(|layer| layer.flat_evals()).unwrap()
     }
 
     /// Works out the total number of variables the [`LogUpCircuit`] has in its larget (aka input) layer.

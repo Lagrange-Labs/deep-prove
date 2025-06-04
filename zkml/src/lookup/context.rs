@@ -156,6 +156,12 @@ pub struct LookupWitnessGen<E: ExtensionField> {
     pub(crate) lookups_no_challenges: HashMap<NodeId, (Vec<Vec<E::BaseField>>, usize, TableType)>,
 }
 
+impl<E: ExtensionField> Default for LookupWitnessGen<E> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<E: ExtensionField> LookupWitnessGen<E> {
     pub fn new() -> Self {
         Self {
@@ -169,7 +175,7 @@ impl<E: ExtensionField> LookupWitnessGen<E> {
 
 pub(crate) const COLUMN_SEPARATOR: Element = 1i128 << 32;
 
-pub fn generate_lookup_witnesses<'a, E: ExtensionField, T: Transcript<E>>(
+pub fn generate_lookup_witnesses<'a, E, T: Transcript<E>>(
     trace: &InferenceTrace<'a, E, Element>,
     ctx: &ModelCtx<E>,
     transcript: &mut T,
@@ -183,8 +189,8 @@ pub fn generate_lookup_witnesses<'a, E: ExtensionField, T: Transcript<E>>(
     LogUpError,
 >
 where
+    E: ExtensionField + Serialize + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
-    E: Serialize + DeserializeOwned,
 {
     let mut witness_gen = LookupWitnessGen::<E>::new();
 
@@ -199,9 +205,7 @@ where
             .gen_lookup_witness(node_id, &mut witness_gen, &step.step_data)
             .map_err(|e| {
                 LogUpError::ParameterError(format!(
-                    "Error generating lookup witness for node {} with error: {}",
-                    node_id,
-                    e.to_string()
+                    "Error generating lookup witness for node {node_id} with error: {e}"
                 ))
             })?;
     }
@@ -224,7 +228,7 @@ where
     let tables_no_challenges = witness_gen.tables.iter().enumerate().map(|(i,table_type)| {
         let (table_column, column_evals) = table_type.get_merged_table_column::<E>(COLUMN_SEPARATOR);
 
-        let table_lookup_data = witness_gen.lookups.get(table_type).ok_or(LogUpError::ParameterError(format!("Tried to retrieve lookups for a table of type: {:?}, but no table of that type exists", table_type)))?;
+        let table_lookup_data = witness_gen.lookups.get(table_type).ok_or(LogUpError::ParameterError(format!("Tried to retrieve lookups for a table of type: {table_type:?}, but no table of that type exists")))?;
 
         let (multiplicities, mults_ext)  = table_column.iter().map(|table_val| {
             if let Some(lookup_count) = table_lookup_data.get(table_val) {
@@ -241,15 +245,13 @@ where
     debug!("Lookup witness generation: commit context generation...");
     let ctx = Context::generate(witness_gen.polys_with_id).map_err(|e| {
         LogUpError::ParameterError(format!(
-            "Could not generate Lookup witness commit context {{ inner: {:?}}}",
-            e
+            "Could not generate Lookup witness commit context {{ inner: {e:?}}}"
         ))
     })?;
 
     ctx.write_to_transcript(transcript).map_err(|e| {
         LogUpError::ParameterError(format!(
-            "Unable to write lookup witness commit context to transcript, {{ inner: {:?}}}",
-            e
+            "Unable to write lookup witness commit context to transcript, {{ inner: {e:?}}}"
         ))
     })?;
 

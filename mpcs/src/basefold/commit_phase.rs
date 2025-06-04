@@ -80,7 +80,7 @@ where
     let mut final_message = Vec::new();
     let mut running_tree_inner = Vec::new();
     for i in 0..num_rounds {
-        let sumcheck_timer = start_timer!(|| format!("Basefold round {}", i));
+        let sumcheck_timer = start_timer!(|| format!("Basefold round {i}"));
         // For the first round, no need to send the running root, because this root is
         // committing to a vector that can be recovered from linearly combining other
         // already-committed vectors.
@@ -167,11 +167,14 @@ where
     }
     end_timer!(timer);
 
-    (trees, BasefoldCommitPhaseProof {
-        sumcheck_messages,
-        roots,
-        final_message,
-    })
+    (
+        trees,
+        BasefoldCommitPhaseProof {
+            sumcheck_messages,
+            roots,
+            final_message,
+        },
+    )
 }
 
 // outputs (trees, sumcheck_oracles, oracles, bh_evals, eq, eval)
@@ -247,7 +250,7 @@ where
     let mut final_message = Vec::new();
     let mut running_tree_inner = Vec::new();
     for i in 0..num_rounds {
-        let sumcheck_timer = start_timer!(|| format!("Batch basefold round {}", i));
+        let sumcheck_timer = start_timer!(|| format!("Batch basefold round {i}"));
         // For the first round, no need to send the running root, because this root is
         // committing to a vector that can be recovered from linearly combining other
         // already-committed vectors.
@@ -337,11 +340,14 @@ where
         end_timer!(sumcheck_timer);
     }
     end_timer!(timer);
-    (trees, BasefoldCommitPhaseProof {
-        sumcheck_messages,
-        roots,
-        final_message,
-    })
+    (
+        trees,
+        BasefoldCommitPhaseProof {
+            sumcheck_messages,
+            roots,
+            final_message,
+        },
+    )
 }
 
 // outputs (trees, sumcheck_oracles, oracles, bh_evals, eq, eval)
@@ -396,7 +402,7 @@ where
     let mut final_message = Vec::new();
     let mut running_tree_inner = Vec::new();
     for i in 0..num_rounds {
-        let sumcheck_timer = start_timer!(|| format!("Basefold round {}", i));
+        let sumcheck_timer = start_timer!(|| format!("Basefold round {i}"));
         // For the first round, no need to send the running root, because this root is
         // committing to a vector that can be recovered from linearly combining other
         // already-committed vectors.
@@ -476,11 +482,14 @@ where
         end_timer!(sumcheck_timer);
     }
     end_timer!(timer);
-    (trees, BasefoldCommitPhaseProof {
-        sumcheck_messages,
-        roots,
-        final_message,
-    })
+    (
+        trees,
+        BasefoldCommitPhaseProof {
+            sumcheck_messages,
+            roots,
+            final_message,
+        },
+    )
 }
 
 fn basefold_one_round_by_interpolation_weights<E: ExtensionField, Spec: BasefoldSpec<E>>(

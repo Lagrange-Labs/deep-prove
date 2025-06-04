@@ -42,7 +42,7 @@ pub fn batch_prove<E: ExtensionField, T: Transcript<E>>(
     // We also skip the first layer after reversing as this is just the output claims.
     let mut layer_iters = circuits
         .iter()
-        .map(|c| c.layers().into_iter().rev().skip(1))
+        .map(|c| c.layers().iter().rev().skip(1))
         .collect::<Vec<_>>();
 
     // Append the number of instances along with their output evals to the transcript and then squeeze our first alpha and lambda

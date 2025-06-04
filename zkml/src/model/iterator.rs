@@ -171,7 +171,7 @@ impl<E: NodeEgdes, const FORWARD: bool> Iterator for IntoNodeIterator<E, FORWARD
             let node = self
                 .nodes
                 .remove(&node_id)
-                .expect(format!("Node {node_id} not found").as_str());
+                .unwrap_or_else(|| panic!("Node {node_id} not found"));
             Some((node_id, node))
         }
     }

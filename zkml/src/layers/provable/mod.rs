@@ -129,6 +129,10 @@ impl<T, E: ExtensionField> LayerOut<T, E> {
         }
     }
 
+    pub(crate) fn from_tensor(out: Tensor<T>) -> Self {
+        Self::from_vec(vec![out])
+    }
+
     pub fn outputs(&self) -> Vec<&Tensor<T>> {
         self.outputs.iter().collect()
     }
@@ -213,7 +217,7 @@ where
             }
         }
         ensure!(
-            claims.len() >= 1,
+            !claims.is_empty(),
             "No input claims found for the set of nodes provided"
         );
         let min_index = claims.first_key_value().unwrap().0;
@@ -223,7 +227,7 @@ where
             "Not all input claims were found"
         );
 
-        Ok(claims.into_iter().map(|(_, claim)| claim).collect())
+        Ok(claims.into_values().collect())
     }
 }
 

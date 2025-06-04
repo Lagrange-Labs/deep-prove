@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow, ensure};
 
 use ff_ext::ExtensionField;
+use itertools::Itertools;
 use multilinear_extensions::{
     mle::{DenseMultilinearExtension, MultilinearExtension},
     virtual_poly::{VPAuxInfo, VirtualPolynomial},
@@ -15,6 +16,11 @@ use crate::{
 };
 
 use super::{provable::{Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, QuantizeOp, QuantizeOutput, VerifiableCtx}, requant::Requant, LayerCtx};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Config {
+    TransposeB,
+}
 
 #[derive(Clone, Debug)]
 pub struct WeightMatrix<T> {
@@ -102,6 +108,7 @@ impl<T> OperandMatrix<T> {
 pub struct MatMul<T> {
     pub(crate) left_matrix: OperandMatrix<T>,
     pub(crate) right_matrix: OperandMatrix<T>,
+    pub(crate) config: Option<Config>,
 }
 
 /// Information stored in the context (setup phase) for this layer.
@@ -115,6 +122,7 @@ pub struct MatMulCtx<E> {
     pub(crate) left_matrix_shapes: Option<(Vec<usize>, Vec<usize>)>,
     /// Unpadded and padded shapes of the right matrix, if the right matrx is a constant matrix
     pub(crate) right_matrix_shapes: Option<(Vec<usize>, Vec<usize>)>,
+    pub(crate) config: Option<Config>,
 }
 
 /// Proof of the layer.
@@ -130,6 +138,14 @@ pub struct MatMulProof<E: ExtensionField> {
 
 impl<T> MatMul<T> {
     pub fn new(left_matrix: OperandMatrix<T>, right_matrix: OperandMatrix<T>) -> Result<Self> {
+        Self::new_internal(left_matrix, right_matrix, None)
+    }
+
+    fn new_internal(
+        left_matrix: OperandMatrix<T>,
+        right_matrix: OperandMatrix<T>,
+        config: Option<Config>,
+    ) -> Result<Self> {
         ensure!(
             left_matrix.is_matrix(),
             "left matrix for MatMul layer is not a matrix"
@@ -159,7 +175,16 @@ impl<T> MatMul<T> {
         Ok(Self {
             left_matrix,
             right_matrix,
+            config,
         })
+    }
+
+    pub fn new_with_config(
+        left_matrix: OperandMatrix<T>,
+        right_matrix: OperandMatrix<T>,
+        config: Config,
+    ) -> Result<Self> {
+        Self::new_internal(left_matrix, right_matrix, Some(config))
     }
 
     pub fn op(&self, inputs: Vec<&Tensor<T>>) -> Result<Tensor<T>> 
@@ -174,25 +199,37 @@ impl<T> MatMul<T> {
                 let right_matrix = inputs
                     .first()
                     .ok_or(anyhow!("No matrix provided as input to MatMul"))?;
+                let transposed_matrix = if let Some(Config::TransposeB) = self.config {
+                    Some(right_matrix.transpose())
+                } else {
+                    None
+                };
+                let nrows = transposed_matrix.as_ref().unwrap_or(right_matrix).nrows_2d();
                 ensure!(
-                    right_matrix.nrows_2d() == mat.tensor.ncols_2d(),
+                    nrows == mat.tensor.ncols_2d(),
                     "Incompatible shape found for input matrix: expected {:?} rows, found {:?}",
                     mat.tensor.ncols_2d(),
-                    right_matrix.nrows_2d(),
+                    nrows,
                 );
-                mat.tensor.matmul(right_matrix)
+                mat.tensor.matmul(transposed_matrix.as_ref().unwrap_or(&right_matrix))
             }
             (OperandMatrix::Input, OperandMatrix::Weigth(mat)) => {
                 let left_matrix = inputs
                     .first()
                     .ok_or(anyhow!("No matrix provided as input to MatMul"))?;
+                let transposed_matrix = if let Some(Config::TransposeB) = self.config {
+                    Some(mat.tensor.transpose())
+                } else {
+                    None
+                };
+                let nrows = transposed_matrix.as_ref().unwrap_or(&mat.tensor).nrows_2d();
                 ensure!(
-                    left_matrix.ncols_2d() == mat.tensor.nrows_2d(),
+                    left_matrix.ncols_2d() == nrows,
                     "Incompatible shape found for input matrix: expected {:?} columns, found {:?}",
-                    mat.tensor.nrows_2d(),
+                    nrows,
                     left_matrix.ncols_2d(),
                 );
-                left_matrix.matmul(&mat.tensor)
+                left_matrix.matmul(transposed_matrix.as_ref().unwrap_or(&mat.tensor))
             }
             (OperandMatrix::Input, OperandMatrix::Input) => {
                 ensure!(
@@ -200,13 +237,19 @@ impl<T> MatMul<T> {
                     "Not enough inputs provided to MatMul: expected 2, found {}",
                     inputs.len()
                 );
+                let transposed_matrix = if let Some(Config::TransposeB) = self.config {
+                    Some(inputs[1].transpose())
+                } else {
+                    None
+                };
+                let nrows = transposed_matrix.as_ref().unwrap_or(inputs[1]).nrows_2d();
                 ensure!(
-                    inputs[0].ncols_2d() == inputs[1].nrows_2d(),
+                    inputs[0].ncols_2d() == nrows,
                     "Incompatible shape found for input matrices: left matrix has {} columns, right matrix has {} rows",
                     inputs[0].ncols_2d(),
-                    inputs[1].nrows_2d(),
+                    nrows,
                 );
-                inputs[0].matmul(inputs[1])
+                inputs[0].matmul(transposed_matrix.as_ref().unwrap_or(inputs[1]))
             }
         })
     }
@@ -281,6 +324,7 @@ fn compute_output_shapes(
     input_shapes: &[Vec<usize>],
     left_matrix_shape: Option<&Vec<usize>>,
     right_matrix_shape: Option<&Vec<usize>>,
+    config: &Option<Config>,
 ) -> Vec<Vec<usize>> {
     let (left_shape, right_shape) = match (left_matrix_shape, right_matrix_shape) {
             (None, None) => {
@@ -296,6 +340,11 @@ fn compute_output_shapes(
                 (shape, &input_shapes[0])
             },
             (Some(_), Some(_)) => unreachable!("Both matrices are constant, this should not happen"),
+        };
+        let right_shape = if let Some(Config::TransposeB) = config {
+            right_shape.iter().rev().copied().collect()
+        } else {
+            right_shape.clone()
         };
         assert_eq!(
             left_shape[1],
@@ -316,7 +365,7 @@ impl<N: Number> OpInfo for MatMul<N> {
     ) -> Vec<Vec<usize>> {
         let left_matrix_shape = self.left_matrix.get_shape(padding_mode);
         let right_matrix_shape = self.right_matrix.get_shape(padding_mode);
-        compute_output_shapes(input_shapes, left_matrix_shape.as_ref(), right_matrix_shape.as_ref())
+        compute_output_shapes(input_shapes, left_matrix_shape.as_ref(), right_matrix_shape.as_ref(), &self.config)
     }
 
     fn num_outputs(&self, num_inputs: usize) -> usize {
@@ -327,7 +376,13 @@ impl<N: Number> OpInfo for MatMul<N> {
         format!(
             "Matrix multiplication: left = {:?}, right = {:?}",
             self.left_matrix.get_actual_shape(),
-            self.right_matrix.get_actual_shape(),
+            self.right_matrix.get_actual_shape().map(|shape| 
+                if let Some(Config::TransposeB) = self.config {
+                    shape.iter().rev().copied().collect()
+                } else {
+                    shape.clone()
+                }
+            ),
         )
     }
 
@@ -401,7 +456,7 @@ impl MatMul<f32> {
             }),
             OperandMatrix::Input => OperandMatrix::Input, // No need to quantize since it's an input, not a constant in the model
         };
-        MatMul { left_matrix, right_matrix }
+        MatMul { left_matrix, right_matrix, config: self.config }
     }
 
     // Quantize a mat mul layer using scaling factor of input and output
@@ -749,12 +804,17 @@ impl MatMul<Element> {
             
         };
         // construct dimension of the polynomial given to the sumcheck
-        let (nrows, ncols) = (left_shape[0], right_shape[1]);
+        let transposed_right_shape = if let Some(Config::TransposeB) = self.config {
+            Some(right_shape.iter().rev().copied().collect_vec())
+        } else {
+            None
+        };
+        let (nrows, ncols) = (left_shape[0], transposed_right_shape.as_ref().unwrap_or(&right_shape)[1]);
         ctx_aux.last_output_shape = vec![vec![nrows, ncols]];
 
         // number of variables of the MLE polynomials is the number of row
         // variables in in layer matrix
-        let num_vars = Tensor::<Element>::new_from_shape(right_shape.clone()).num_vars_2d().0;
+        let num_vars = Tensor::<Element>::new_from_shape(transposed_right_shape.unwrap_or(right_shape.clone())).num_vars_2d().0;
         // check that the number of variables is the same as the number of
         // column variables for left matrix
         ensure!(num_vars == Tensor::<Element>::new_from_shape(left_shape.clone()).num_vars_2d().1);
@@ -777,6 +837,7 @@ impl MatMul<Element> {
             output_mle_num_vars: (nrows.ilog2() as usize, ncols.ilog2() as usize),
             left_matrix_shapes,
             right_matrix_shapes,
+            config: self.config.clone(),
         };
 
         Ok(info)
@@ -802,7 +863,7 @@ impl<E: ExtensionField> OpInfo for MatMulCtx<E>
                 PaddingMode::Padding => &s.1,
             }
         );
-        compute_output_shapes(input_shapes, left_matrix_shape, right_matrix_shape)
+        compute_output_shapes(input_shapes, left_matrix_shape, right_matrix_shape, &self.config)
     }
 
     fn num_outputs(&self, num_inputs: usize) -> usize {
@@ -813,7 +874,13 @@ impl<E: ExtensionField> OpInfo for MatMulCtx<E>
         format!(
             "Matrix multiplication ctx: left = {:?}, right = {:?}",
             self.left_matrix_shapes.as_ref().map(|s| s.1.clone()),
-            self.right_matrix_shapes.as_ref().map(|s| s.1.clone()),
+            self.right_matrix_shapes.as_ref().map(|s| 
+                if let Some(Config::TransposeB) = self.config {
+                    s.1.iter().rev().copied().collect()
+                } else {
+                    s.1.clone()
+                }
+            ),
         )
     }
 
@@ -953,7 +1020,7 @@ mod tests {
     use multilinear_extensions::mle::MultilinearExtension;
 
     use crate::{
-        commit::precommit::{CommitProver, CommitVerifier}, default_transcript, iop::context::ContextAux, layers::matrix_mul::{MatMul, OperandMatrix}, padding::PaddingMode, tensor::Tensor, testing::{random_field_vector, random_vector}, Claim, Element, ScalingFactor
+        commit::precommit::{CommitProver, CommitVerifier}, default_transcript, iop::context::ContextAux, layers::{matrix_mul::{Config, MatMul, OperandMatrix}, provable::Evaluate}, padding::PaddingMode, tensor::Tensor, testing::{random_field_vector, random_vector}, Claim, Element, ScalingFactor
     };
 
     #[test]
@@ -1151,6 +1218,35 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_matmul() {
+        let matmul = MatMul::new(
+            OperandMatrix::Input,
+            OperandMatrix::Input,
+        ).unwrap();
+        let a = Tensor::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = Tensor::new(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let result = matmul
+            .evaluate::<GoldilocksExt2>(&[&a, &b], vec![])
+            .unwrap();
+        assert_eq!(result.outputs[0].data, vec![22.0, 28.0, 49.0, 64.0]);
+    }
+
+    #[test]
+    fn test_matmul_transpose_b() {
+        let matmul = MatMul::new_with_config(
+            OperandMatrix::Input,
+            OperandMatrix::Input,
+            Config::TransposeB
+        ).unwrap();
+        let a = Tensor::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = Tensor::new(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).transpose();
+        let result = matmul
+            .evaluate::<GoldilocksExt2>(&[&a, &b], vec![])
+            .unwrap();
+        assert_eq!(result.outputs[0].data, vec![22.0, 28.0, 49.0, 64.0]);
     }
 
     #[test]

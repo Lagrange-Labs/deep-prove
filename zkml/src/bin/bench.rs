@@ -59,9 +59,7 @@ struct Args {
 
 // Helper function to parse a single usize
 fn parse_usize(s: &str) -> Result<usize, String> {
-    s.trim()
-        .parse()
-        .map_err(|e| format!("Invalid index: {}", e))
+    s.trim().parse().map_err(|e| format!("Invalid index: {e}"))
 }
 
 pub fn main() -> anyhow::Result<()> {
@@ -153,7 +151,7 @@ impl InputJSON {
             .into_iter()
             .map(|input| input.into_iter().map(|e| input_sf.quantize(&e)).collect())
             .collect();
-        let output_sf = md.output_scaling_factor().first().unwrap().clone();
+        let output_sf = *md.output_scaling_factor().first().unwrap();
         let outputs = self
             .output_data
             .into_iter()
@@ -184,8 +182,7 @@ impl InputJSON {
             );
         }
 
-        let avg_accuracy = calculate_average_accuracy(&accuracies);
-        avg_accuracy
+        calculate_average_accuracy(&accuracies)
     }
 }
 
@@ -210,7 +207,7 @@ fn run_float_model(raw_inputs: &InputJSON, model: &Model<f32>) -> Result<f32> {
         // Run the model in float mode
         let input = model.load_input_flat(vec![input.clone()])?;
         let output = &model.run_float(&input)?[0];
-        let accuracy = argmax_compare(expected, &output.get_data());
+        let accuracy = argmax_compare(expected, output.get_data());
         accuracies.push(accuracy);
         debug!(
             "Float Run {}/{}: Accuracy: {}",
@@ -289,10 +286,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     // Track failed inputs
     let mut failed_inputs = Vec::new();
 
-    let input_iter = inputs
-        .into_iter()
-        .zip(given_outputs.into_iter())
-        .enumerate();
+    let input_iter = inputs.into_iter().zip(given_outputs).enumerate();
 
     for (i, (input, given_output)) in input_iter {
         let mut bencher = CSVBencher::from_headers(vec![
@@ -343,7 +337,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         //    }
         //}
         let output = trace.outputs()?[0];
-        let accuracy = argmax_compare(&given_output, &output.get_data().to_vec());
+        let accuracy = argmax_compare(&given_output, output.get_data());
         accuracies.push(accuracy);
         bencher.set(CSV_ACCURACY, accuracy);
         // Log per-run accuracy
@@ -368,7 +362,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         // Serialize proof using MessagePack and calculate size in KB
         let proof_bytes = to_vec_named(&proof)?;
         let proof_size_kb = proof_bytes.len() as f64 / 1024.0;
-        bencher.set(CSV_PROOF_SIZE, format!("{:.3}", proof_size_kb));
+        bencher.set(CSV_PROOF_SIZE, format!("{proof_size_kb:.3}"));
 
         info!("[+] Running verifier");
         let mut verifier_transcript = default_transcript();
@@ -447,12 +441,11 @@ impl CSVBencher {
     fn check(&self, column: &str) {
         if self.data.contains_key(column) {
             panic!(
-                "CSVBencher only flushes one row at a time for now (key already registered: {})",
-                column
+                "CSVBencher only flushes one row at a time for now (key already registered: {column})"
             );
         }
         if !self.headers.contains(&column.to_string()) {
-            panic!("column {} non existing", column);
+            panic!("column {column} non existing");
         }
     }
 

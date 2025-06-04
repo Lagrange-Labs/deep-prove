@@ -25,11 +25,11 @@ pub struct MatVecProof<E: ExtensionField> {
 impl<E: ExtensionField> MatVecProof<E> {
     /// Evaluation of the matrix at the last random point of the sumcheck
     pub fn matrix_eval(&self) -> E {
-        self.evaluations[0].clone()
+        self.evaluations[0]
     }
     /// Evaluation of the vector at the last random point of the sumcheck
     pub fn vec_eval(&self) -> E {
-        self.evaluations[1].clone()
+        self.evaluations[1]
     }
 }
 impl<T: Number> MatVec<T> {
@@ -45,7 +45,7 @@ impl<T: Number> MatVec<T> {
     pub fn aux_info<E: ExtensionField>(&self) -> VPAuxInfo<E> {
         // we fix the rows variables during sumcheck so we only consider the columns
         let num_vars = self.matrix.ncols_2d().ilog2() as usize;
-        VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![num_vars, num_vars]])
+        VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![num_vars, num_vars]])
     }
 }
 
@@ -90,7 +90,7 @@ impl MatVec<Element> {
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, transcript);
         debug_assert!(
             {
-                let output = self.matrix.clone().to_fields().matvec(&input);
+                let output = self.matrix.clone().to_fields().matvec(input);
                 let claimed_sum = output
                     .get_data()
                     .to_vec()

@@ -329,18 +329,14 @@ mod tests {
     #[test]
     fn test_sum_check_protocol() {
         let polys = [
-            DenseMultilinearExtension::<E>::from_evaluations_vec(2, vec![
-                Fr::from(1),
-                Fr::from(2),
-                Fr::from(3),
-                Fr::from(4),
-            ]),
-            DenseMultilinearExtension::from_evaluations_vec(2, vec![
-                Fr::from(0),
-                Fr::from(1),
-                Fr::from(1),
-                Fr::from(0),
-            ]),
+            DenseMultilinearExtension::<E>::from_evaluations_vec(
+                2,
+                vec![Fr::from(1), Fr::from(2), Fr::from(3), Fr::from(4)],
+            ),
+            DenseMultilinearExtension::from_evaluations_vec(
+                2,
+                vec![Fr::from(0), Fr::from(1), Fr::from(1), Fr::from(0)],
+            ),
             DenseMultilinearExtension::from_evaluations_vec(1, vec![Fr::from(0), Fr::from(1)]),
         ];
         let points = vec![vec![E::from(1), E::from(2)], vec![E::from(1)]];

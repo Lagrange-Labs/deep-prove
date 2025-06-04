@@ -48,13 +48,8 @@ where
     /// Utility method to pad the inputs shapes to the next power of two
     fn compute_padded_input_shapes(unpadded_input_shapes: &[Vec<usize>]) -> Vec<Vec<usize>> {
         unpadded_input_shapes
-            .into_iter()
-            .map(|shape| {
-                shape
-                    .into_iter()
-                    .map(|dim| dim.next_power_of_two())
-                    .collect()
-            })
+            .iter()
+            .map(|shape| shape.iter().map(|dim| dim.next_power_of_two()).collect())
             .collect()
     }
 
@@ -266,13 +261,7 @@ where
     /// computed inside this method and returned as output
     pub fn add_node(&mut self, node: Node<N>) -> anyhow::Result<NodeId> {
         let node_id = (0..self.nodes.len() + 1)
-            .find_map(|i| {
-                if !self.nodes.contains_key(&i) {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
+            .find(|i| !self.nodes.contains_key(i))
             .ok_or(anyhow!("No valid node id found for new node"))?;
         self.add_node_with_id(node_id, node)?;
         Ok(node_id)
@@ -379,20 +368,20 @@ impl Model<f32> {
             .run::<GoldilocksExt2>(input)?
             .outputs()?
             .into_iter()
-            .map(|out| out.clone())
+            .cloned()
             .collect())
     }
 }
 
 impl<N: Number> Model<N> {
-    pub(crate) fn run_with_tracker<E: ExtensionField>(
+    pub(crate) fn run_with_tracker<E>(
         &self,
         input: &[Tensor<N>],
         mut tracker: Option<&mut InferenceTracker>,
     ) -> anyhow::Result<InferenceTrace<'_, E, N>>
     where
+        E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
-        E: Serialize + DeserializeOwned,
         Layer<N>: Evaluate<N>,
     {
         let mut trace = Trace {
@@ -440,10 +429,13 @@ impl<N: Number> Model<N> {
                 outputs: output,
                 unpadded_output_shapes: output_shapes,
             };
-            trace.new_step(node_id, InferenceStep {
-                op: &node.operation,
-                step_data: new_step,
-            });
+            trace.new_step(
+                node_id,
+                InferenceStep {
+                    op: &node.operation,
+                    step_data: new_step,
+                },
+            );
         }
 
         // compute the output tensor from the outputs of the output nodes
@@ -475,13 +467,16 @@ impl<N: Number> Model<N> {
             }
         }
         // check that all outputs have been found
-        ensure!(!outputs.is_empty(), "No outputs found for the model");
+        ensure!(
+            !outputs.is_empty(),
+            "No outputs found for the model: {outputs:?}"
+        );
         ensure!(
             *outputs.first_key_value().unwrap().0 == 0
                 && *outputs.last_key_value().unwrap().0 == outputs.len() - 1
         );
 
-        trace.output = outputs.into_iter().map(|(_, out)| out.clone()).collect();
+        trace.output = outputs.into_values().cloned().collect();
 
         Ok(trace)
     }
@@ -489,13 +484,10 @@ impl<N: Number> Model<N> {
     /// Run the inference of the model, producing the `InferenceTrace` necessary to
     /// later prove the model. The outputs of the model can be fetched from the returned
     /// trace
-    pub fn run<E: ExtensionField>(
-        &self,
-        input: &[Tensor<N>],
-    ) -> anyhow::Result<InferenceTrace<'_, E, N>>
+    pub fn run<E>(&self, input: &[Tensor<N>]) -> anyhow::Result<InferenceTrace<'_, E, N>>
     where
         E::BaseField: Serialize + DeserializeOwned,
-        E: Serialize + DeserializeOwned,
+        E: ExtensionField + Serialize + DeserializeOwned,
         Layer<N>: Evaluate<N>,
     {
         self.run_with_tracker(input, None)

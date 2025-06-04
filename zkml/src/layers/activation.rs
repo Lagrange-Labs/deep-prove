@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::{
     Claim, Element, Prover,
     commit::same_poly,
@@ -25,6 +23,7 @@ use gkr::util::ceil_log2;
 use multilinear_extensions::mle::IntoMLE;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::marker::PhantomData;
 use transcript::Transcript;
 
 use crate::{quantization::BIT_LEN, tensor::Tensor};
@@ -193,10 +192,7 @@ where
             .unzip();
 
         let (col_one, col_two): (Vec<E::BaseField>, Vec<E::BaseField>) = field.into_iter().unzip();
-        let table_lookup_map = gen
-            .lookups
-            .entry(TableType::Relu)
-            .or_insert_with(|| HashMap::default());
+        let table_lookup_map = gen.lookups.entry(TableType::Relu).or_default();
 
         merged_lookups
             .into_iter()
@@ -363,6 +359,12 @@ impl ActivationCtx {
 #[derive(Clone, Debug, Copy, Serialize, Deserialize)]
 pub struct Relu;
 
+impl Default for Relu {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Relu {
     pub fn new() -> Relu {
         Self
@@ -394,8 +396,46 @@ impl Relu {
     }
 }
 
+pub struct GELU<N> {
+    _n: PhantomData<N>,
+}
+
+impl<N> GELU<N> {
+    pub fn new() -> Self {
+        Self { _n: PhantomData }
+    }
+}
+
+impl Evaluate<f32> for GELU<f32> {
+    fn evaluate<E: ExtensionField>(
+        &self,
+        inputs: &[&Tensor<f32>],
+        _unpadded_input_shapes: Vec<Vec<usize>>,
+    ) -> anyhow::Result<LayerOut<f32, E>> {
+        let output_tensors: Vec<Tensor<f32>> = inputs
+            .par_iter()
+            .map(|t| {
+                let d = t.get_data();
+                let gelued = d
+                    .iter()
+                    .map(|&x| {
+                        let x_cubed = x * x * x;
+                        let inner_term =
+                            (2.0f32 / std::f32::consts::PI).sqrt() * (x + 0.044715 * x_cubed);
+                        0.5 * x * (1.0 + inner_term.tanh())
+                    })
+                    .collect::<Vec<_>>();
+                Tensor::new(t.get_shape(), gelued)
+            })
+            .collect();
+        Ok(LayerOut::from_vec(output_tensors))
+    }
+}
+
 #[cfg(test)]
 mod test {
+    use goldilocks::GoldilocksExt2;
+
     use crate::Element;
 
     use super::*;
@@ -420,5 +460,43 @@ mod test {
         ] {
             assert_eq!(Relu::apply(case.input), case.output);
         }
+    }
+
+    #[test]
+    fn test_activation_gelu_evaluate_f32() -> anyhow::Result<()> {
+        let gelu = GELU::<f32>::new();
+        let input_data = vec![-2.0, -1.0, 0.0, 1.0, 2.0, 3.0];
+        let input_tensor = Tensor::new(vec![1, input_data.len()], input_data.clone());
+
+        // Expected values calculated using the GELU approximation
+        // GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+        let expected_output_data = vec![
+            -0.045500278, // GELU(-2.0)
+            -0.15865526,  // GELU(-1.0)
+            0.0,          // GELU(0.0)
+            0.8413447,    // GELU(1.0)
+            1.9544997,    // GELU(2.0)
+            2.9963627,    // GELU(3.0)
+        ];
+
+        let layer_out = gelu.evaluate::<GoldilocksExt2>(&[&input_tensor], vec![])?;
+        assert_eq!(layer_out.outputs().len(), 1);
+        let output_tensor = &layer_out.outputs()[0];
+
+        assert_eq!(output_tensor.get_shape(), vec![1, input_data.len()]);
+        let actual_output_data = output_tensor.get_data();
+
+        actual_output_data
+            .iter()
+            .zip(expected_output_data.iter())
+            .for_each(|(actual, expected)| {
+                assert!(
+                    (actual - expected).abs() < 1e-3,
+                    "Actual: {}, Expected: {}",
+                    actual,
+                    expected
+                );
+            });
+        Ok(())
     }
 }

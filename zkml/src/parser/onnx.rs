@@ -81,13 +81,8 @@ pub fn from_path(path: &str) -> Result<Model<f32>> {
             )),
         })
         .collect::<Result<Vec<_>, _>>()?;
-    match model_type {
-        ModelType::CNN | ModelType::MLP => {
-            assert!(
-                input_shape[0] == 1,
-                "First dimension of the CNNs or MLP's input should 1."
-            );
-            // We force the input shape to be for a single inference and not a batch inference.
+    if model_type == ModelType::CNN || model_type == ModelType::MLP {
+        if input_shape[0] == 1 {
             input_shape.remove(0);
         }
     }
@@ -106,7 +101,7 @@ pub fn from_path(path: &str) -> Result<Model<f32>> {
         let desc = zkml_node.operation.describe();
         pmodel
             .add_node_with_id(id, zkml_node)
-            .context(format!("adding node {}:", desc))?;
+            .context(format!("adding node {desc}:"))?;
         first_node = false;
         last_node_id = id;
     }
@@ -151,7 +146,7 @@ impl<'a, I: Iterator<Item = &'a usize> + Sized> ParserFactory<'a, I> {
         let mut m = HashMap::new();
         m.insert("Conv", load_conv as LoadFn<'a, I>);
         m.insert("Gemm.ab", load_gemm as LoadFn<'a, I>);
-        m.insert("MatMul", load_gemm as LoadFn<'a, I>); //ToDo: currently MatMul is only used for dense layers without bias; 
+        m.insert("MatMul", load_gemm as LoadFn<'a, I>); //ToDo: currently MatMul is only used for dense layers without bias;
         // we would probably need an ad-hoc method when introducing general purpose matrix multiplication layer
         m.insert("Relu", load_relu as LoadFn<'a, I>);
         m.insert("Flatten", load_flatten as LoadFn<'a, I>);
@@ -196,7 +191,7 @@ impl<'a, I: Iterator<Item = &'a usize> + Sized> ParserFactory<'a, I> {
             );
             Ok((node_id, node))
         } else {
-            err(format!("Unknown node type: {}", op_name))
+            err(format!("Unknown node type: {op_name}"))
         }
     }
 }
@@ -336,6 +331,19 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
         return err(format!("Gemm {} has no constant input", node.name));
     };
     let mut weight = extract_const_tensor(model.node(weight_link.node))?;
+    // here maybe the weights are still in 3d shape, so we need to flatten the input portion
+    // since it's always [out, in...], we just take everything after the first dimension and flatten it
+    let mut weight_shape = weight.get_shape();
+    if weight_shape.len() > 2 {
+        let input_flattened = weight_shape[1..].iter().product::<usize>();
+        weight_shape = vec![weight_shape[0], input_flattened];
+        weight.shape = weight_shape.clone();
+    }
+    ensure_onnx!(
+        weight.is_matrix(),
+        "Weight for Gemm must be a matrix: {:?}",
+        weight.get_shape()
+    );
     // find the input node
     let Some(input_link) = node.inputs.iter().find(|&x| x.node != weight_link.node) else {
         return err(format!("Gemm {} has no input", node.name));
@@ -343,17 +351,24 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
 
     // check if the weight matrix needs to be transposed
     let input_node = model.node(input_link.node);
-    let mut input_shape = get_node_output_shape(input_node, input_link.slot)?;
-    assert!(
-        input_shape[0] == 1,
-        "First dimension of Gemm layer input should be 1."
-    );
-    input_shape.remove(0);
+    let input_shape = get_node_output_shape(input_node, input_link.slot)?;
+    // NOTE: flatten the input shape always because tract_onnx can skip the Flatten layer
+    let mut input_shape = vec![input_shape.iter().product::<usize>()];
+
+    if input_shape.len() != 1 {
+        assert!(
+            input_shape[0] == 1,
+            "First dimension of Gemm layer input should be 1. Input shape was: {:?}",
+            input_shape
+        );
+        input_shape.remove(0);
+    }
     ensure_onnx!(
         input_shape.len() == 1,
-        "Input shape for Gemm must be a vector"
+        "Input shape for Gemm must be a vector, found {:?}",
+        input_shape
     );
-    ensure_onnx!(weight.is_matrix(), "Weight for Gemm must be a matrix");
+
     let mut weight_shape = weight.get_shape();
     if weight_shape[1] != input_shape[0] {
         weight = weight.transpose();
@@ -365,6 +380,28 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
         input_shape,
         weight_shape,
     );
+    let mut weight_shape = weight.get_shape();
+    // If the weights are a 1D vector we insert a 1 in the shape after checking everything lines up
+    if weight_shape.len() == 1 {
+        ensure_onnx!(
+            weight_shape[0] == input_shape[0],
+            "Incompatible shapes found for Gemm node: input shape is {:?}, weight shape is {:?}",
+            input_shape,
+            weight_shape,
+        );
+        weight.shape.insert(0, 1);
+    } else {
+        if weight_shape[1] != input_shape[0] {
+            weight = weight.transpose();
+            weight_shape = weight.get_shape();
+        }
+        ensure_onnx!(
+            *weight_shape.last().unwrap() == input_shape[0],
+            "Incompatible shapes found for Gemm node: input shape is {:?}, weight shape is {:?}",
+            input_shape,
+            weight_shape,
+        );
+    }
 
     // also extract the bias if any. If there is one, that means the next node is a Add node and we
     // must make sure one of the inputs is the current matrix node. Otherwise that's just a normal add that we don't support.
@@ -584,6 +621,7 @@ fn downcast_to<T: Op>(node: &OnnxNode) -> Result<&T> {
 #[cfg(test)]
 mod tests {
 
+    use anyhow::Ok;
     use goldilocks::GoldilocksExt2;
 
     use super::*;
@@ -596,5 +634,33 @@ mod tests {
         let input_tensor = crate::tensor::Tensor::random(&input_shape);
         let trace = model.run::<GoldilocksExt2>(&[input_tensor]).unwrap();
         assert!(trace.steps.len() >= 1);
+    }
+
+    #[test]
+    #[ignore = "this test shows no gpt2 onnx out there are working with tract_onnx"]
+    fn test_parser_onnx_gpt2() -> anyhow::Result<()> {
+        // let path = "assets/scripts/llms/gpt2_simple.onnx";
+        // let path = "gpt2_export/gpt2_simple.onnx";
+        // let path = "assets/scripts/llms/gpt2_download1.onnx";
+        // let path = "assets/scripts/llms/gpt2_onnxcommunity.onnx";
+        let path = "assets/scripts/llms/gpt2_decoder.onnx";
+        let model = {
+            let pmodel = tract_onnx::onnx().model_for_path(path)?.into_typed()?;
+            //.into_decluttered()?;
+            pmodel
+            // so far we dont support batching
+            // let mut values = SymbolValues::default();
+            // let symbol = pmodel.sym("batch_size");
+            // values.set(&symbol, 1);
+            // pmodel.concretize_dims(&values)?
+        };
+
+        // let plan = SimplePlan::new(model)?;
+        // let onnx_model = plan.model();
+        // let inference_order = plan.order_without_consts();
+        for node_id in model.eval_order()? {
+            println!("node {}: {:?}", node_id, model.node(node_id));
+        }
+        Ok(())
     }
 }

@@ -465,19 +465,19 @@ impl<E: ExtensionField> fmt::Debug for Layer<E> {
         writeln!(f, "  max_previous_num_vars: {}", self.max_previous_num_vars)?;
         writeln!(f, "  add_consts: ")?;
         for add_const in self.add_consts.iter() {
-            writeln!(f, "    {:?}", add_const)?;
+            writeln!(f, "    {add_const:?}")?;
         }
         writeln!(f, "  adds: ")?;
         for add in self.adds.iter() {
-            writeln!(f, "    {:?}", add)?;
+            writeln!(f, "    {add:?}")?;
         }
         writeln!(f, "  mul2s: ")?;
         for mul2 in self.mul2s.iter() {
-            writeln!(f, "    {:?}", mul2)?;
+            writeln!(f, "    {mul2:?}")?;
         }
         writeln!(f, "  mul3s: ")?;
         for mul3 in self.mul3s.iter() {
-            writeln!(f, "    {:?}", mul3)?;
+            writeln!(f, "    {mul3:?}")?;
         }
         writeln!(f, "  copy_to: {:?}", self.copy_to)?;
         writeln!(f, "  paste_from: {:?}", self.paste_from)?;
@@ -490,7 +490,7 @@ impl<E: ExtensionField> fmt::Debug for Circuit<E> {
         writeln!(f, "Circuit {{")?;
         writeln!(f, "  layers: ")?;
         for layer in self.layers.iter() {
-            writeln!(f, "    {:?}", layer)?;
+            writeln!(f, "    {layer:?}")?;
         }
         writeln!(f, "  n_witness_in: {}", self.n_witness_in)?;
         writeln!(f, "  paste_from_wits_in: {:?}", self.paste_from_wits_in)?;
@@ -842,9 +842,10 @@ mod tests {
         circuit_builder.configure();
         let circuit = Circuit::new(&circuit_builder);
         assert_eq!(circuit.layers.len(), 1);
-        assert_eq!(circuit.layers[0].sumcheck_steps, vec![
-            SumcheckStepType::InputPhase2Step1
-        ]);
+        assert_eq!(
+            circuit.layers[0].sumcheck_steps,
+            vec![SumcheckStepType::InputPhase2Step1]
+        );
     }
 
     #[test]
@@ -882,19 +883,24 @@ mod tests {
 
         assert_eq!(circuit.layers.len(), 3);
         // Single input witness, therefore no input phase 2 steps.
-        assert_eq!(circuit.layers[2].sumcheck_steps, vec![
-            SumcheckStepType::Phase1Step1
-        ]);
+        assert_eq!(
+            circuit.layers[2].sumcheck_steps,
+            vec![SumcheckStepType::Phase1Step1]
+        );
         // There are only one incoming evals since the last layer is linear, and
         // no subset evals. Therefore, there are no phase1 steps.
-        assert_eq!(circuit.layers[1].sumcheck_steps, vec![
-            SumcheckStepType::Phase2Step1,
-            SumcheckStepType::Phase2Step2NoStep3,
-        ]);
+        assert_eq!(
+            circuit.layers[1].sumcheck_steps,
+            vec![
+                SumcheckStepType::Phase2Step1,
+                SumcheckStepType::Phase2Step2NoStep3,
+            ]
+        );
         // Output layer, single output witness, therefore no output phase 1 steps.
-        assert_eq!(circuit.layers[0].sumcheck_steps, vec![
-            SumcheckStepType::LinearPhase2Step1
-        ]);
+        assert_eq!(
+            circuit.layers[0].sumcheck_steps,
+            vec![SumcheckStepType::LinearPhase2Step1]
+        );
     }
 
     #[test]
@@ -908,13 +914,17 @@ mod tests {
 
         assert_eq!(circuit.layers.len(), 2);
         // Single input witness, therefore no input phase 2 steps.
-        assert_eq!(circuit.layers[1].sumcheck_steps, vec![
-            SumcheckStepType::Phase1Step1
-        ]);
+        assert_eq!(
+            circuit.layers[1].sumcheck_steps,
+            vec![SumcheckStepType::Phase1Step1]
+        );
         // Output layer, single output witness, therefore no output phase 1 steps.
-        assert_eq!(circuit.layers[0].sumcheck_steps, vec![
-            SumcheckStepType::Phase2Step1,
-            SumcheckStepType::Phase2Step2NoStep3
-        ]);
+        assert_eq!(
+            circuit.layers[0].sumcheck_steps,
+            vec![
+                SumcheckStepType::Phase2Step1,
+                SumcheckStepType::Phase2Step2NoStep3
+            ]
+        );
     }
 }

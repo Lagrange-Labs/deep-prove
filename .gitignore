@@ -13,4 +13,17 @@ proptest-regressions/
 zkml/bench
 zkml/data
 zkml/cifar_net.pth
+zkml/cnn_model.pth
+zkml/assets/scripts/covid/data*
+zkml/deepprove.csv
 .venv
+
+# Devenv
+.devenv*
+devenv.local.nix
+
+# direnv
+.direnv
+
+# pre-commit
+.pre-commit-config.yaml

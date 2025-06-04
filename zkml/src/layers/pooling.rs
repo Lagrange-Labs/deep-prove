@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::{
     Claim, Element, Prover,
     commit::{compute_betas_eval, identity_eval, precommit::PolyID, same_poly},
@@ -82,7 +80,7 @@ impl OpInfo for Pooling {
     ) -> Vec<Vec<usize>> {
         match self {
             Pooling::Maxpool2D(maxpool2_d) => input_shapes
-                .into_iter()
+                .iter()
                 .map(|shape| maxpool2_d.output_shape(shape))
                 .collect(),
         }
@@ -191,7 +189,7 @@ where
             prover,
             last_claims[0],
             &step_data.inputs[0],
-            &step_data.outputs.outputs()[0],
+            step_data.outputs.outputs()[0],
             ctx,
             id,
         )?])
@@ -213,10 +211,7 @@ where
         );
 
         gen.tables.insert(TableType::Range);
-        let table_lookup_map = gen
-            .lookups
-            .entry(TableType::Range)
-            .or_insert_with(|| HashMap::default());
+        let table_lookup_map = gen.lookups.entry(TableType::Range).or_default();
 
         let (merged_lookups, column_evals) = self.lookup_witness::<E>(&step_data.inputs[0]);
 
@@ -246,8 +241,8 @@ impl OpInfo for PoolingCtx {
         _padding_mode: PaddingMode,
     ) -> Vec<Vec<usize>> {
         input_shapes
-            .into_iter()
-            .map(|shape| self.poolinfo.output_shape(&shape))
+            .iter()
+            .map(|shape| self.poolinfo.output_shape(shape))
             .collect()
     }
 
@@ -378,7 +373,7 @@ impl Pooling {
             .get_and_append_challenge(b"batch_pooling")
             .elements;
 
-        let beta_eval = compute_betas_eval(&lookup_point);
+        let beta_eval = compute_betas_eval(lookup_point);
         let beta_poly: ArcDenseMultilinearExtension<E> =
             DenseMultilinearExtension::<E>::from_evaluations_ext_vec(info.num_vars, beta_eval)
                 .into();
@@ -640,13 +635,11 @@ impl Maxpool2D {
     pub fn op<T: Number>(&self, input: &Tensor<T>) -> Tensor<T> {
         assert!(
             self.kernel_size == MAXPOOL2D_KERNEL_SIZE,
-            "Maxpool2D works only for kernel size {}",
-            MAXPOOL2D_KERNEL_SIZE
+            "Maxpool2D works only for kernel size {MAXPOOL2D_KERNEL_SIZE}"
         );
         assert!(
             self.stride == MAXPOOL2D_KERNEL_SIZE,
-            "Maxpool2D works only for stride size {}",
-            MAXPOOL2D_KERNEL_SIZE
+            "Maxpool2D works only for stride size {MAXPOOL2D_KERNEL_SIZE}"
         );
         input.maxpool2d(self.kernel_size, self.stride)
     }
@@ -664,7 +657,7 @@ impl Maxpool2D {
     ) -> Vec<Vec<E::BaseField>> {
         let padded_input = input.pad_next_power_of_two();
 
-        let padded_output = self.op(&input).pad_next_power_of_two();
+        let padded_output = self.op(input).pad_next_power_of_two();
         let padded_input_shape = padded_input.get_shape();
 
         let new_fixed = (0..padded_input_shape[2] << 1)
@@ -972,10 +965,12 @@ mod tests {
                 .map(|chal| chal.elements)
                 .collect::<Vec<F>>();
 
-            let fixed_points = [[F::ZERO, F::ZERO], [F::ZERO, F::ONE], [F::ONE, F::ZERO], [
-                F::ONE,
-                F::ONE,
-            ]]
+            let fixed_points = [
+                [F::ZERO, F::ZERO],
+                [F::ZERO, F::ONE],
+                [F::ONE, F::ZERO],
+                [F::ONE, F::ONE],
+            ]
             .map(|pair| {
                 [
                     &[pair[0]],

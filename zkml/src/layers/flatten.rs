@@ -22,7 +22,7 @@ impl OpInfo for Flatten {
         _padding_mode: PaddingMode,
     ) -> Vec<Vec<usize>> {
         input_shapes
-            .into_iter()
+            .iter()
             .map(|s| vec![s.iter().product()])
             .collect()
     }

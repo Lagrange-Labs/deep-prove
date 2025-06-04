@@ -1,13 +1,20 @@
 pub mod activation;
+pub mod add;
+pub mod concat_matmul;
 pub mod convolution;
 pub mod dense;
 pub mod flatten;
 pub mod hadamard;
-pub mod matvec;
+pub mod matmul;
 pub mod matrix_mul;
+pub mod matvec;
+pub mod mul;
+pub mod permute;
 pub mod pooling;
 pub mod provable;
 pub mod requant;
+pub mod reshape;
+pub mod transformer;
 
 use std::fmt::Debug;
 

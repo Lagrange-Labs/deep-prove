@@ -89,9 +89,10 @@ impl<Ext: ExtensionField> CircuitBuilder<Ext> {
         let cells = self.create_ext_cells(num);
         cells.iter().for_each(|ext_cell| {
             // first base field is the constant
-            self.mark_cells(CellType::In(InType::Constant(constant)), &[
-                ext_cell.cells[0]
-            ]);
+            self.mark_cells(
+                CellType::In(InType::Constant(constant)),
+                &[ext_cell.cells[0]],
+            );
             // the rest fields are 0s
             self.mark_cells(CellType::In(InType::Constant(0)), &ext_cell.cells[1..]);
         });
@@ -144,12 +145,12 @@ impl<Ext: ExtensionField> CircuitBuilder<Ext> {
         out.cells
             .iter()
             .zip_eq(
-                in_0.cells.iter().zip_eq(
-                    [*in_1].iter().chain(
-                        std::iter::repeat(&MixedCell::Constant(Ext::BaseField::ZERO))
-                            .take(<Ext as ExtensionField>::DEGREE - 1),
-                    ),
-                ),
+                in_0.cells
+                    .iter()
+                    .zip_eq([*in_1].iter().chain(std::iter::repeat_n(
+                        &MixedCell::Constant(Ext::BaseField::ZERO),
+                        <Ext as ExtensionField>::DEGREE - 1,
+                    ))),
             )
             .for_each(|(&out, (&in0, &in1))| self.sel_mixed(out, in0.into(), in1, cond));
     }
@@ -170,12 +171,12 @@ impl<Ext: ExtensionField> CircuitBuilder<Ext> {
         out.cells
             .iter()
             .zip_eq(
-                in_1.cells.iter().zip_eq(
-                    [*in_0].iter().chain(
-                        std::iter::repeat(&MixedCell::Constant(Ext::BaseField::ZERO))
-                            .take(<Ext as ExtensionField>::DEGREE - 1),
-                    ),
-                ),
+                in_1.cells
+                    .iter()
+                    .zip_eq([*in_0].iter().chain(std::iter::repeat_n(
+                        &MixedCell::Constant(Ext::BaseField::ZERO),
+                        <Ext as ExtensionField>::DEGREE - 1,
+                    ))),
             )
             .for_each(|(&out, (&in1, &in0))| self.sel_mixed(out, in0, in1.into(), cond));
     }

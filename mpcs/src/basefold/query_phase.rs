@@ -894,7 +894,7 @@ where
                 // next_index here.
                 final_codeword[next_index]
             };
-            assert_eq!(res, next_oracle_value, "Failed at round {}", i);
+            assert_eq!(res, next_oracle_value, "Failed at round {i}");
             // end_timer!(round_timer);
         }
         // end_timer!(timer);
@@ -1118,7 +1118,7 @@ where
                 // next_index here.
                 final_codeword[next_index]
             };
-            assert_eq!(res, next_oracle_value, "Failed at round {}", i);
+            assert_eq!(res, next_oracle_value, "Failed at round {i}");
             // end_timer!(round_timer);
         }
         // end_timer!(timer);
@@ -1375,7 +1375,7 @@ where
                 // next_index here.
                 final_codeword[next_index]
             };
-            assert_eq!(res, next_oracle_value, "Failed at round {}", i);
+            assert_eq!(res, next_oracle_value, "Failed at round {i}");
             // end_timer!(round_timer);
         }
     }
