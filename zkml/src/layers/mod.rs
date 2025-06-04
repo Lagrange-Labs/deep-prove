@@ -465,7 +465,7 @@ impl QuantizeOp for Layer<f32> {
             Layer::Dense(dense) => {
                 let output = dense.quantize_op::<S>(data, node_id, input_scaling)?;
                 QuantizeOutput {
-                    quanzited_op: Layer::Dense(output.quanzited_op),
+                    quantized_op: Layer::Dense(output.quantized_op),
                     output_scalings: output.output_scalings,
                     requant_layer: output.requant_layer,
                 }
@@ -473,7 +473,7 @@ impl QuantizeOp for Layer<f32> {
             Layer::Convolution(convolution) => {
                 let output = convolution.quantize_op::<S>(data, node_id, input_scaling)?;
                 QuantizeOutput {
-                    quanzited_op: Layer::Convolution(output.quanzited_op),
+                    quantized_op: Layer::Convolution(output.quantized_op),
                     output_scalings: output.output_scalings,
                     requant_layer: output.requant_layer,
                 }
@@ -481,28 +481,28 @@ impl QuantizeOp for Layer<f32> {
             Layer::SchoolBookConvolution(school_book_conv) => {
                 let output = school_book_conv.quantize_op::<S>(data, node_id, input_scaling)?;
                 QuantizeOutput {
-                    quanzited_op: Layer::SchoolBookConvolution(output.quanzited_op),
+                    quantized_op: Layer::SchoolBookConvolution(output.quantized_op),
                     output_scalings: output.output_scalings,
                     requant_layer: output.requant_layer,
                 }
             }
             Layer::Activation(activation) => QuantizeOutput {
-                quanzited_op: Layer::Activation(activation),
+                quantized_op: Layer::Activation(activation),
                 output_scalings: input_scaling.to_vec(),
                 requant_layer: None,
             },
             Layer::Requant(requant) => QuantizeOutput {
-                quanzited_op: Layer::Requant(requant),
+                quantized_op: Layer::Requant(requant),
                 output_scalings: input_scaling.to_vec(),
                 requant_layer: None,
             },
             Layer::Pooling(pooling) => QuantizeOutput {
-                quanzited_op: Layer::Pooling(pooling),
+                quantized_op: Layer::Pooling(pooling),
                 output_scalings: input_scaling.to_vec(),
                 requant_layer: None,
             },
             Layer::Flatten(flatten) => QuantizeOutput {
-                quanzited_op: Layer::Flatten(flatten),
+                quantized_op: Layer::Flatten(flatten),
                 output_scalings: input_scaling.to_vec(),
                 requant_layer: None,
             },

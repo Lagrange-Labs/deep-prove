@@ -145,6 +145,35 @@ impl Default for ScalingFactor {
     }
 }
 
+/// Returns the scaling factors for the main tensor and for the bias tensor. These are the "model" scaling factors, or
+/// S2 in the formula S1 * S2 / S3.
+pub fn model_scaling_factor_from_tensor_and_bias(
+    input: &ScalingFactor,
+    output: &ScalingFactor,
+    main: &Tensor<f32>,
+    bias: &Tensor<f32>,
+) -> (ScalingFactor, ScalingFactor) {
+    let max_weight = main.max_abs_output();
+    let max_bias = bias.max_abs_output();
+    let distance = (max_weight - max_bias).abs() / max_weight;
+    if distance > 0.1 {
+        warn!(
+            "max_abs_weight DENSE: distance between max_weight and max_bias is too large: {:.2}%",
+            distance * 100.0
+        );
+    }
+    let main_sf = ScalingFactor::from_absolute_max(max_weight.max(max_bias), None);
+    let bias_sf = {
+        let min_quantized = -(1 << (2 * (*BIT_LEN) - 1)) + 1;
+        let max_quantized = (1 << (2 * (*BIT_LEN) - 1)) - 1;
+        ScalingFactor::from_scale(
+            input.scale() * output.scale(),
+            Some((min_quantized, max_quantized)),
+        )
+    };
+    (main_sf, bias_sf)
+}
+
 pub trait Fieldizer<F> {
     fn to_field(&self) -> F;
 }

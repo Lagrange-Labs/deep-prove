@@ -260,7 +260,7 @@ fn quantize_model<S: ScalingStrategy>(
                 requant_layers.push((node_id, requant));
             }
             let quantized_node =
-                Node::new_with_outputs(node.inputs, quantized_out.quanzited_op, node.outputs);
+                Node::new_with_outputs(node.inputs, quantized_out.quantized_op, node.outputs);
             Ok((node_id, quantized_node))
         })
         .collect::<Result<_>>()?;

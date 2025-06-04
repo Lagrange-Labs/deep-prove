@@ -1,6 +1,5 @@
 use anyhow::{Result, anyhow, bail, ensure};
 use ff_ext::ExtensionField;
-use mpcs::PolynomialCommitmentScheme;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -9,7 +8,8 @@ use std::{
 use transcript::Transcript;
 
 use crate::{
-    Claim, Context, Element, Prover, ScalingFactor, ScalingStrategy, Tensor,
+    Claim, Element, Prover, ScalingFactor, ScalingStrategy, Tensor,
+    commit::precommit::PolyID,
     iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
@@ -20,102 +20,9 @@ use crate::{
     tensor::{ConvData, Number},
 };
 
-use super::{
-    Layer, LayerCtx, LayerProof, convolution::ConvCtx, dense::DenseCtx, flatten::Flatten,
-    requant::Requant,
-};
+use super::{Layer, LayerCtx, LayerProof, flatten::Flatten, requant::Requant};
 
 pub(crate) type NodeId = usize;
-
-/// Represents a link between an input/output wire of a node with an input/output wire of
-/// another node.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Edge {
-    // Reference to the node linked to this wire, will be `None` if the wire is an input or
-    // output of the model
-    pub(crate) node: Option<NodeId>,
-    // The index of the wire of `node` which is linked to this wire
-    pub(crate) index: usize,
-}
-
-impl Edge {
-    pub fn new(node: NodeId, index: usize) -> Self {
-        Self {
-            node: Some(node),
-            index,
-        }
-    }
-
-    /// Edge when the node is an input or an output of the model
-    pub fn new_at_edge(index: usize) -> Self {
-        Self { node: None, index }
-    }
-}
-
-/// Represents all the edges that are connected to a node's output wire
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OutputWire {
-    // needs to be a vector because the output of a node can be used as input to multiple nodes
-    pub(crate) edges: Vec<Edge>,
-}
-
-/// Represents a node in a model
-#[derive(Clone, Debug)]
-pub struct Node<N> {
-    pub(crate) inputs: Vec<Edge>,
-    pub(crate) outputs: Vec<OutputWire>,
-    pub(crate) operation: Layer<N>,
-}
-
-pub trait NodeEgdes {
-    // Get input edges for a node
-    fn inputs(&self) -> &[Edge];
-    // Get output edges of a node
-    fn outputs(&self) -> &[OutputWire];
-}
-
-impl<N> NodeEgdes for Node<N> {
-    fn inputs(&self) -> &[Edge] {
-        &self.inputs
-    }
-
-    fn outputs(&self) -> &[OutputWire] {
-        &self.outputs
-    }
-}
-
-impl<E: ExtensionField + DeserializeOwned> NodeEgdes for NodeCtx<E>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-{
-    fn inputs(&self) -> &[Edge] {
-        &self.inputs
-    }
-
-    fn outputs(&self) -> &[OutputWire] {
-        &self.outputs
-    }
-}
-
-impl<N: Number> Node<N> {
-    // Create a new node, from the set of inputs edges and the operation performed by the node
-    pub fn new(inputs: Vec<Edge>, operation: Layer<N>) -> Self {
-        let num_outputs = operation.num_outputs(inputs.len());
-        Self::new_with_outputs(inputs, operation, vec![Default::default(); num_outputs])
-    }
-
-    pub(crate) fn new_with_outputs(
-        inputs: Vec<Edge>,
-        operation: Layer<N>,
-        outputs: Vec<OutputWire>,
-    ) -> Self {
-        Self {
-            inputs,
-            outputs,
-            operation,
-        }
-    }
-}
 
 /// Represents the output of the evaluation of a node operation
 #[derive(Clone, Debug)]
@@ -278,31 +185,24 @@ where
     E::BaseField: Serialize + DeserializeOwned,
 {
     /// Compute the proving context for the operation
-    fn step_info(&self, id: NodeId, aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)>;
+    fn step_info(&self, id: PolyID, aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)>;
+
+    /// Compute the data necessary to commit to the constant polynomials
+    /// associated to the operation. Returns `None` if there are no
+    /// constant polynomials to be committed for the given operation
+    fn commit_info(&self, _id: NodeId) -> Vec<Option<(PolyID, Vec<E>)>> {
+        vec![None]
+    }
 }
 
 /// Output of `QuantizeOp` method over a layer
 pub struct QuantizeOutput<Op> {
     /// The actual layer after quantization
-    pub(crate) quantized_op: Op,
+    pub(crate) quanzited_op: Op,
     /// The scaling factor of the output wires of the operation
     pub(crate) output_scalings: Vec<ScalingFactor>,
     /// The requant layer to be added to the model, if any
-    pub(crate) requant_layer: Option<Vec<Requant>>,
-}
-
-impl<Op> QuantizeOutput<Op> {
-    pub fn new(quantized_op: Op, output_scalings: Vec<ScalingFactor>) -> Self {
-        Self { quantized_op, output_scalings, requant_layer: None }
-    }
-    pub fn with_requant(self, requant: Requant) -> Self {
-        Self { quantized_op: self.quantized_op, output_scalings: self.output_scalings, requant_layer: Some(vec![requant]) }
-    }
-    pub fn with_requants(self, requants: Vec<Requant>) -> Self {
-        assert!(self.requant_layer.is_none(), "Requant layer already exists");
-        assert!(self.output_scalings.len() == requants.len(), "Number of output scalings and requants must be the same");
-        Self { quantized_op: self.quantized_op, output_scalings: self.output_scalings, requant_layer: Some(requants) }
-    }
+    pub(crate) requant_layer: Option<Requant>,
 }
 
 pub trait QuantizeOp {
@@ -328,14 +228,13 @@ pub trait PadOp {
     }
 }
 
-pub trait ProvableOp<E, PCS>: OpInfo + PadOp + ProveInfo<E>
+pub trait ProvableOp<E>: OpInfo + PadOp + ProveInfo<E>
 where
     E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
-    PCS: PolynomialCommitmentScheme<E>,
 {
-    type Ctx: VerifiableCtx<E, PCS>;
+    type Ctx: VerifiableCtx<E>;
 
     /// Produces a proof of correct execution for this operation.
     fn prove<T: Transcript<E>>(
@@ -344,7 +243,7 @@ where
         _ctx: &Self::Ctx,
         _last_claims: Vec<&Claim<E>>,
         _step_data: &StepData<E, E>,
-        _prover: &mut Prover<E, T, PCS>,
+        _prover: &mut Prover<E, T>,
     ) -> Result<Vec<Claim<E>>> {
         // Default implementation, to avoid having to implement this method in case `is_provable` is false
         assert!(
@@ -358,8 +257,7 @@ where
     fn gen_lookup_witness(
         &self,
         _id: NodeId,
-        _gen: &mut LookupWitnessGen<E, PCS>,
-        _ctx: &Context<E, PCS>,
+        _gen: &mut LookupWitnessGen<E>,
         _step_data: &StepData<Element, E>,
     ) -> Result<()> {
         // Default implementation for nodes that don't employ a lookup table
@@ -367,12 +265,11 @@ where
     }
 }
 
-pub trait VerifiableCtx<E, PCS>: Debug + OpInfo
+pub trait VerifiableCtx<E>: Debug + OpInfo
 where
     E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
-    PCS: PolynomialCommitmentScheme<E>,
 {
     type Proof: Sized;
 
@@ -381,7 +278,7 @@ where
         &self,
         proof: &Self::Proof,
         last_claims: &[&Claim<E>],
-        verifier: &mut Verifier<E, T, PCS>,
+        verifier: &mut Verifier<E, T>,
         shape_step: &ShapeStep,
     ) -> Result<Vec<Claim<E>>>;
 }
@@ -448,43 +345,31 @@ where
     }
 }
 
-impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> VerifiableCtx<E, PCS> for LayerCtx<E>
+impl<E: ExtensionField> VerifiableCtx<E> for LayerCtx<E>
 where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    type Proof = LayerProof<E, PCS>;
+    type Proof = LayerProof<E>;
 
     fn verify<T: Transcript<E>>(
         &self,
-        proof: &LayerProof<E, PCS>,
+        proof: &LayerProof<E>,
         last_claims: &[&Claim<E>],
-        verifier: &mut Verifier<E, T, PCS>,
+        verifier: &mut Verifier<E, T>,
         shape_step: &ShapeStep,
     ) -> Result<Vec<Claim<E>>> {
         match self {
             LayerCtx::Dense(dense_ctx) => {
                 if let LayerProof::Dense(proof) = proof {
-                    <DenseCtx<E> as VerifiableCtx<E, PCS>>::verify(
-                        dense_ctx,
-                        proof,
-                        last_claims,
-                        verifier,
-                        shape_step,
-                    )
+                    dense_ctx.verify(proof, last_claims, verifier, shape_step)
                 } else {
                     bail!("dense proof not found when verifying dense layer")
                 }
             }
             LayerCtx::Convolution(conv_ctx) => {
                 if let LayerProof::Convolution(proof) = proof {
-                    <ConvCtx<E> as VerifiableCtx<E, PCS>>::verify(
-                        conv_ctx,
-                        proof,
-                        last_claims,
-                        verifier,
-                        shape_step,
-                    )
+                    conv_ctx.verify(proof, last_claims, verifier, shape_step)
                 } else {
                     bail!("conv proof not found when verifying convolution layer")
                 }

@@ -1,16 +1,10 @@
 use std::{cmp::Ordering, collections::HashMap};
 
 use crate::{
-    Claim, NextPowerOfTwo, Prover, ScalingStrategy,
     iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
-    },
-    layers::{LayerCtx, LayerProof, requant::Requant},
-    model::StepData,
-    padding::{PaddingMode, ShapeInfo, pad_dense},
-    quantization::{self, BIT_LEN, ScalingFactor},
-    tensor::Number,
+    }, layers::{requant::Requant, LayerCtx, LayerProof}, model::StepData, padding::{pad_dense, PaddingMode, ShapeInfo}, quantization::{self, model_scaling_factor_from_tensor_and_bias, ScalingFactor, BIT_LEN}, tensor::Number, Claim, NextPowerOfTwo, Prover, ScalingStrategy
 };
 use anyhow::{Result, ensure};
 use ff_ext::ExtensionField;
@@ -247,23 +241,17 @@ impl Dense<f32> {
         input_scaling: &[ScalingFactor],
         output_scaling: ScalingFactor,
     ) -> anyhow::Result<QuantizeOutput<Dense<Element>>> {
-        let model_scaling = ScalingFactor::from_absolute_max(self.max_abs_weight(), None);
-        let num_inputs = input_scaling.len();
+        let (model_scaling, bias_scaling) = model_scaling_factor_from_tensor_and_bias(
+            &input_scaling[0],
+            &output_scaling,
+            &self.matrix,
+            &self.bias,
+        );
         ensure!(
-            num_inputs == 1,
+            input_scaling.len() == 1,
             "Number of input scaling factor for dense layer different from 1"
         );
         let input_scaling = &input_scaling[0];
-        let bias_scaling = {
-            // bias has to be quantized over integers with double bit length
-            let min_quantized = -(1 << (2 * (*BIT_LEN) - 1)) + 1;
-            let max_quantized = (1 << (2 * (*BIT_LEN) - 1)) - 1;
-            ScalingFactor::from_scale(
-                input_scaling.scale() * model_scaling.scale(),
-                Some((min_quantized, max_quantized)),
-            )
-        };
-
         let quantized_dense = self.quantize(&model_scaling, &bias_scaling);
         let intermediate_bit_size = quantized_dense.output_bitsize();
         let requant = Requant::from_scaling_factors(
@@ -273,11 +261,7 @@ impl Dense<f32> {
             intermediate_bit_size,
         );
 
-        Ok(QuantizeOutput {
-            quanzited_op: quantized_dense,
-            output_scalings: vec![output_scaling],
-            requant_layer: Some(requant),
-        })
+        Ok(QuantizeOutput::new(quantized_dense, vec![output_scaling]).with_requant(requant))
     }
 }
 

@@ -1,7 +1,9 @@
 use anyhow::ensure;
 use ff_ext::ExtensionField;
 
-use crate::{Tensor, layers::provable::LayerOut, tensor::Number};
+use crate::{
+    layers::{provable::{Evaluate, LayerOut, NodeId, OpInfo, QuantizeOp, QuantizeOutput}, requant::Requant}, padding::PaddingMode, quantization::model_scaling_factor_from_tensor_and_bias, tensor::Number, Element, NextPowerOfTwo, ScalingFactor, ScalingStrategy, Tensor
+};
 
 /// A layer that evaluates the tensor X against the matrices Q, K and V.
 /// NOTE: it performs optimizations with the cache, so it actually
@@ -16,7 +18,7 @@ pub struct QKV<N> {
     pub k_bias: Tensor<N>,
     pub v: Tensor<N>,
     pub v_bias: Tensor<N>,
-    //pub cache: Option<CacheQKV<N>>,
+    // pub cache: Option<CacheQKV<N>>,
 }
 
 impl<N: Number> QKV<N> {
@@ -48,21 +50,56 @@ impl<N: Number> QKV<N> {
             k_bias,
             v,
             v_bias,
-            //cache: None,
+            // cache: None,
+        }
+    }
+}
+
+impl<N> OpInfo for QKV<N> {
+    /// Returns the shapes of the outputs (in the same order)
+    fn output_shapes(
+        &self,
+        input_shapes: &[Vec<usize>],
+        padding_mode: PaddingMode,
+    ) -> Vec<Vec<usize>> {
+        let input_shape = input_shapes[0].clone();
+        let output_shapes = vec![
+            vec![input_shape[0], self.q.get_shape()[1]],
+            vec![input_shape[0], self.k.get_shape()[1]],
+            vec![input_shape[0], self.v.get_shape()[1]],
+        ];
+        match padding_mode {
+            PaddingMode::NoPadding => output_shapes,
+            PaddingMode::Padding => output_shapes
+                .into_iter()
+                .map(|shape| shape.next_power_of_two())
+                .collect::<Vec<_>>(),
         }
     }
 
-    //pub fn with_cache(self) -> Self {
-    //    Self {
-    //        cache: Some(CacheQKV::new()),
-    //        ..self
-    //    }
-    //}
+    /// Compute the number of output tensors, given the number of input tensors
+    /// `num_inputs`
+    fn num_outputs(&self, num_inputs: usize) -> usize {
+        num_inputs * 3
+    }
 
+    /// Textual description of the operation
+    fn describe(&self) -> String {
+        format!("QKV [{},{}]", self.q.get_shape()[0], self.q.get_shape()[1])
+    }
+
+    /// Specify whether the operation needs to be proven or not
+    fn is_provable(&self) -> bool {
+        true
+    }
+}
+
+impl<N: Number> Evaluate<N> for QKV<N> {
     /// Returns x[-1,..] * Q, X * K, X * V
-    pub fn evaluate<E: ExtensionField>(
+    fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
+        _unpadded_input_shapes: Vec<Vec<usize>>,
     ) -> anyhow::Result<LayerOut<N, E>> {
         ensure!(inputs.len() == 1, "QKV expects 1 input");
         let shape = inputs[0].get_shape();
@@ -76,7 +113,7 @@ impl<N: Number> QKV<N> {
             shape,
             self.q.get_shape()
         );
-        //if let Some(cache) = &self.cache {
+        // if let Some(cache) = &self.cache {
         //    // make sure the size of the input match the size of the cache + 1
         //    // as we only want to do the the matmul for the new token, not for the previously generated ones
         //    ensure!(
@@ -85,19 +122,66 @@ impl<N: Number> QKV<N> {
         //    );
         //}
         let input = inputs[0];
-        //if self.cache.is_some() {
+        // if self.cache.is_some() {
         //    &inputs[0].slice_2d(seq_len - 1, seq_len)
         //} else {
         // add row by row
         let q = input.matmul(&self.q).add_dim2(&self.q_bias);
         let k = input.matmul(&self.k).add_dim2(&self.k_bias);
         let v = input.matmul(&self.v).add_dim2(&self.v_bias);
-        //if let Some(cache) = &mut self.cache {
+        // if let Some(cache) = &mut self.cache {
         //    cache.stack(k, v);
         //    // vector Q, full K, full V
         //    Ok(LayerOut::from_vec(vec![q, cache.k(), cache.v()]))
         //} else {
         Ok(LayerOut::from_vec(vec![q, k, v]))
+    }
+}
+impl QuantizeOp for QKV<f32> {
+    type QuantizedOp = QKV<Element>;
+
+    /// Convert an operation into its quantized version
+    fn quantize_op<S: ScalingStrategy>(
+        self,
+        data: &S::AuxData,
+        node_id: NodeId,
+        input_scaling: &[ScalingFactor],
+    ) -> anyhow::Result<QuantizeOutput<Self::QuantizedOp>> {
+            let num_outputs = self.num_outputs(input_scaling.len());
+            let mut output_scalings = S::scaling_factors_for_node(data, node_id, num_outputs);
+            ensure!(
+                output_scalings.len() == 1,
+                "Output scaling for QKV layer different from 1"
+            );
+            self.quantize_from_scalings(input_scaling, &output_scalings)
+        }
+}
+
+impl QKV<f32> {
+    fn quantize_from_scalings(self, input_scaling: &[ScalingFactor], output_scaling: &[ScalingFactor]) -> anyhow::Result<QuantizeOutput<QKV<Element>>> {
+        ensure!(input_scaling.len() == 1, "QKV: input_scaling.len() != 1");
+        ensure!(output_scaling.len() == 3, "QKV: output_scaling.len() != 3");
+        // for each tensor, we look at the scaling factor and the scaling factor of the associated bias
+        let (matrices,(biases,requants)): (Vec<_>,(Vec<_>,Vec<_>)) = output_scaling.iter().zip(vec![(self.q, self.q_bias), (self.k, self.k_bias), (self.v, self.v_bias)].into_iter()).map(|(output_scaling, (tensor, bias))| {
+            let (model_scaling, bias_scaling) = model_scaling_factor_from_tensor_and_bias(
+                &input_scaling[0],
+                &output_scaling,
+                &tensor,
+                &bias,
+            );
+            let input_scaling = &input_scaling[0];
+            let quantized_matrix = tensor.quantize(&model_scaling);
+            let quantized_bias = bias.quantize(&bias_scaling);
+            let intermediate_bitsize = quantized_matrix.matmul_output_bitsize();
+            let requant = Requant::from_scaling_factors(*input_scaling,model_scaling,*output_scaling,intermediate_bitsize);
+            (quantized_matrix, (quantized_bias,requant))
+        }).unzip();
+        let mut matit = matrices.into_iter();
+        let (q,k,v) = (matit.next().unwrap(),matit.next().unwrap(),matit.next().unwrap());
+        let mut biasit = biases.into_iter();
+        let (q_bias,k_bias,v_bias) = (biasit.next().unwrap(),biasit.next().unwrap(),biasit.next().unwrap());
+        let quantized_op = QKV::new(q, q_bias, k, k_bias, v, v_bias);
+        Ok(QuantizeOutput::new( quantized_op, output_scaling.to_vec()).with_requants(requants))
     }
 }
 
@@ -174,7 +258,7 @@ mod tests {
     }
 
     //#[test]
-    //fn test_qkv_cache() {
+    // fn test_qkv_cache() {
     //    // first token
     //    let seq_len = 1;
     //    let emb_size = 2;
@@ -242,7 +326,7 @@ mod tests {
             v_bias.clone(),
         );
         let mut input = Tensor::<f32>::random(&[seq_len, emb_size]);
-        let output = qkv.evaluate::<GoldilocksExt2>(&[&input]).unwrap().outputs;
+        let output = qkv.evaluate::<GoldilocksExt2>(&[&input],vec![]).unwrap().outputs;
         assert_eq!(output.len(), 3);
         assert_eq!(output[0].get_shape(), vec![seq_len, hidden_size]);
         assert_eq!(output[1].get_shape(), vec![seq_len, hidden_size]);
@@ -255,7 +339,7 @@ mod tests {
         let seq_len = seq_len + 1;
         let new_token_emb = Tensor::<f32>::random(&[1, emb_size]);
         input.concat(new_token_emb.clone());
-        let output = qkv.evaluate::<GoldilocksExt2>(&[&input]).unwrap().outputs;
+        let output = qkv.evaluate::<GoldilocksExt2>(&[&input],vec![]).unwrap().outputs;
         assert_eq!(output.len(), 3);
         assert_eq!(output[0].get_shape(), vec![seq_len, hidden_size]);
         assert_eq!(output[1].get_shape(), vec![seq_len, hidden_size]);

@@ -138,8 +138,7 @@ mod test {
 
     impl FlatAttention<f32> {
         pub fn new_from_gguf(c: &gguf::LLMConfig, att: gguf::Attention<f32>) -> Self {
-            let qkv =
-                qkv::QKV::new(att.q, att.q_bias, att.k, att.k_bias, att.v, att.v_bias);
+            let qkv = qkv::QKV::new(att.q, att.q_bias, att.k, att.k_bias, att.v, att.v_bias);
             let reshape_qkt = reshape::Reshape::new_squeeze(1);
             let mha = mha::MhaQK::new(c.num_heads, c.head_dim());
             let ffn = FlatFFN::new_from_gguf(c, att.feedforward);

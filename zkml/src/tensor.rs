@@ -8,7 +8,7 @@ use ff::Field;
 use ff_ext::ExtensionField;
 use goldilocks::GoldilocksExt2;
 use itertools::Itertools;
-use multilinear_extensions::mle::DenseMultilinearExtension;
+use multilinear_extensions::{mle::DenseMultilinearExtension, util::ceil_log2};
 use rayon::{
     iter::{
         IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator,
@@ -346,6 +346,16 @@ pub struct Tensor<T> {
 }
 
 impl Tensor<Element> {
+    /// Returns the maximum size in bits possible if this tensor is treated as a matrix inside 
+    /// a matrix vector/matrix multiplication.
+    pub fn matmul_output_bitsize(&self) -> usize {
+        assert!(self.is_matrix(), "Tensor is not a matrix");
+        // formula is 2^{2 * BIT_LEN + log(c) + 1} where c is the number of columns and +1 because of the bias
+        let ncols = self.ncols_2d();
+        // - 1 because numbers are signed so only half of the range is used when doing multiplication
+        2 * (*quantization::BIT_LEN - 1) + ceil_log2(ncols) + 1
+    }
+
     pub fn dequantize(&self, s: &ScalingFactor) -> Tensor<f32> {
         let data = self
             .data
@@ -593,6 +603,7 @@ impl<T> Tensor<T> {
             og_shape: vec![0],
         }
     }
+    
 
     /// Is an empty tensor
     pub fn is_empty(&self) -> bool {
@@ -748,6 +759,7 @@ impl<T> Tensor<T>
 where
     T: Number,
 {
+    
     pub fn reshape(mut self, new_shape: Vec<usize>) -> Tensor<T> {
         assert!(
             self.shape.iter().product::<usize>() == new_shape.iter().product::<usize>(),
