@@ -25,7 +25,7 @@ pub struct QKV<N> {
     pub k_bias: Tensor<N>,
     pub v: Tensor<N>,
     pub v_bias: Tensor<N>,
-    // pub cache: Option<CacheQKV<N>>,
+    //pub cache: Option<CacheQKV<N>>,
 }
 
 impl<N: Number> QKV<N> {

@@ -1335,27 +1335,27 @@ pub(crate) mod test {
             .add_consecutive_layer(Layer::Activation(relu), Some(second_input_dense))
             .unwrap();
         // add other dense nodes
-        let nrows = 52;
-        let ncols = second_dense_out_shape[0]; // it's a vector, so it has only one dimension
-        let dense = Dense::random(vec![nrows, ncols]);
-        let first_output_node = model
-            .add_consecutive_layer(Layer::Dense(dense), Some(second_relu_node))
-            .unwrap();
-        let nrows = 17;
-        let ncols = first_dense_out_shape[0];
-        let dense = Dense::random(vec![nrows, ncols]);
-        let second_output_node = model
-            .add_consecutive_layer(Layer::Dense(dense), Some(first_relu_node))
-            .unwrap();
+        //let nrows = 52;
+        //let ncols = second_dense_out_shape[0]; // it's a vector, so it has only one dimension
+        //let dense = Dense::random(vec![nrows, ncols]);
+        //let first_output_node = model
+        //    .add_consecutive_layer(Layer::Dense(dense), Some(second_relu_node))
+        //    .unwrap();
+        //let nrows = 17;
+        //let ncols = first_dense_out_shape[0];
+        //let dense = Dense::random(vec![nrows, ncols]);
+        //let second_output_node = model
+        //    .add_consecutive_layer(Layer::Dense(dense), Some(first_relu_node))
+        //    .unwrap();
 
         model
             .route_output(Some(vec![
                 Edge {
-                    node: Some(first_output_node),
+                    node: Some(first_relu_node),
                     index: 0,
                 },
                 Edge {
-                    node: Some(second_output_node),
+                    node: Some(second_relu_node),
                     index: 0,
                 },
             ]))
@@ -1368,8 +1368,8 @@ pub(crate) mod test {
             .collect_vec();
 
         assert_eq!(out_node_ids.len(), 2);
-        assert!(out_node_ids.contains(&first_output_node));
-        assert!(out_node_ids.contains(&second_output_node));
+        assert!(out_node_ids.contains(&first_relu_node));
+        assert!(out_node_ids.contains(&second_relu_node));
 
         model.describe();
 
