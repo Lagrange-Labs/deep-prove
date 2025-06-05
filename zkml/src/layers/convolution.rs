@@ -13,7 +13,7 @@ use crate::{
     Claim, Prover,
     commit::{compute_betas_eval, identity_eval},
     iop::{context::ContextAux, verifier::Verifier},
-    layers::LayerProof,
+    layers::{LayerProof, provable::ProvingData},
     quantization::{self, ScalingFactor},
     tensor::{ConvData, Number, get_root_of_unity},
 };
@@ -301,7 +301,7 @@ impl Evaluate<Element> for Convolution<Element> {
         let (output, proving_data) = self.op(input, unpadded_input_shapes[0].as_slice());
         Ok(LayerOut {
             outputs: vec![output],
-            proving_data: Some(proving_data),
+            proving_data: ProvingData::Convolution(proving_data),
         })
     }
 }
@@ -628,7 +628,7 @@ where
             last_claims[0],
             step_data.outputs.outputs()[0],
             &step_data.unpadded_output_shapes[0],
-            step_data.outputs.proving_data.as_ref().unwrap(),
+            step_data.outputs.try_convdata().unwrap(),
             ctx,
             id,
         )?])

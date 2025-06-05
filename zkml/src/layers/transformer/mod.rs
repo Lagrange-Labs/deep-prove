@@ -264,7 +264,7 @@ mod test {
                 qkv,
                 qkt_v: concat_matmul::ConcatMatMul::new_with_permute(vec![1, 0, 2]),
                 softmax: softmax::Softmax::new_with_scale(
-                    N::from_f32((1.0 / (head_size as f32)).sqrt()).unwrap(),
+                    N::from_f32(1.0f32 / (head_size as f32).sqrt()).unwrap(),
                 ),
                 layernorm,
                 mha,
