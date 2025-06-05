@@ -1,6 +1,6 @@
 use crate::{
-    Claim, Element, Prover,
-    commit::{compute_betas_eval, identity_eval, precommit::PolyID, same_poly},
+    Claim, Context, Element, Prover,
+    commit::compute_betas_eval,
     iop::{context::ShapeStep, verifier::Verifier},
     layers::{ContextAux, LayerProof},
     lookup::{
@@ -9,18 +9,20 @@ use crate::{
             prover::batch_prove as logup_batch_prove, structs::LogUpProof,
             verifier::verify_logup_proof,
         },
+        witness::LogUpWitness,
     },
     model::StepData,
     padding::{PaddingMode, ShapeInfo, pooling},
     quantization::{Fieldizer, IntoElement},
     tensor::{Number, Tensor},
 };
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{Result, anyhow, ensure};
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
 use itertools::{Itertools, izip};
+use mpcs::{PolynomialCommitmentScheme, sum_check::eq_xy_eval};
 use multilinear_extensions::{
-    mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension, IntoMLE, MultilinearExtension},
+    mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension, IntoMLE},
     virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial},
 };
 use serde::de::DeserializeOwned;
@@ -46,13 +48,13 @@ pub enum Pooling {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PoolingCtx {
     pub poolinfo: Maxpool2D,
-    pub poly_id: PolyID,
+    pub node_id: NodeId,
     pub num_vars: usize,
 }
 
 /// Contains proof material related to one step of the inference
 #[derive(Clone, Serialize, Deserialize)]
-pub struct PoolingProof<E: ExtensionField>
+pub struct PoolingProof<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
@@ -60,14 +62,12 @@ where
     pub(crate) sumcheck: IOPProof<E>,
     /// The lookup proof showing that the diff is always in the correct range
     pub(crate) lookup: LogUpProof<E>,
-    /// proof for the accumulation of the claim from the zerocheck + claim from lookup for the same poly for both input and output
-    pub(crate) io_accumulation: same_poly::Proof<E>,
-    /// The claims that are accumulated for the output of this step
-    pub(crate) output_claims: Vec<Claim<E>>,
     /// The output evaluations of the diff polys produced by the zerocheck
     pub(crate) zerocheck_evals: Vec<E>,
     /// This tells the verifier how far apart the variables get fixed on the input MLE
     pub(crate) variable_gap: usize,
+    /// Commitments that are part of the commitment opening proof for this layer
+    pub(crate) commitments: Vec<PCS::Commitment>,
 }
 
 const IS_PROVABLE: bool = true;
@@ -127,7 +127,7 @@ where
     E: ExtensionField + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
 {
-    fn step_info(&self, id: PolyID, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
+    fn step_info(&self, id: NodeId, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         let info = match self {
             Pooling::Maxpool2D(info) => {
                 aux.tables.insert(TableType::Range);
@@ -148,10 +148,11 @@ where
                     }
                     Ok(Some(num_vars))
                 })?.expect("No input shape found for convolution layer?");
-
+                // Set the model polys to be empty
+                aux.model_polys = None;
                 LayerCtx::Pooling(PoolingCtx {
                     poolinfo: *info,
-                    poly_id: id,
+                    node_id: id,
                     num_vars,
                 })
             }
@@ -169,11 +170,11 @@ impl PadOp for Pooling {
     }
 }
 
-impl<E> ProvableOp<E> for Pooling
+impl<E, PCS> ProvableOp<E, PCS> for Pooling
 where
-    E: ExtensionField,
+    E: ExtensionField + Serialize + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
-    E: Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
 {
     type Ctx = PoolingCtx;
 
@@ -183,7 +184,7 @@ where
         ctx: &Self::Ctx,
         last_claims: Vec<&Claim<E>>,
         step_data: &StepData<E, E>,
-        prover: &mut Prover<E, T>,
+        prover: &mut Prover<E, T, PCS>,
     ) -> Result<Vec<Claim<E>>> {
         Ok(vec![self.prove_pooling(
             prover,
@@ -198,7 +199,8 @@ where
     fn gen_lookup_witness(
         &self,
         id: NodeId,
-        gen: &mut LookupWitnessGen<E>,
+        gen: &mut LookupWitnessGen<E, PCS>,
+        ctx: &Context<E, PCS>,
         step_data: &StepData<Element, E>,
     ) -> Result<()> {
         ensure!(
@@ -210,25 +212,44 @@ where
             "Found more than 1 output in inference step of pooling layer"
         );
 
-        gen.tables.insert(TableType::Range);
-        let table_lookup_map = gen.lookups.entry(TableType::Range).or_default();
-
         let (merged_lookups, column_evals) = self.lookup_witness::<E>(&step_data.inputs[0]);
+        // Commit to the witnes polys
+        let output_poly = step_data.outputs.outputs()[0]
+            .get_data()
+            .iter()
+            .map(|val| {
+                let f: E = val.to_field();
+                f.as_bases()[0]
+            })
+            .collect::<Vec<E::BaseField>>();
+        let num_vars = ceil_log2(output_poly.len());
+        let commit_evals = column_evals
+            .iter()
+            .chain(std::iter::once(&output_poly))
+            .collect::<Vec<_>>();
+        let commits = commit_evals
+            .into_par_iter()
+            .map(|evaluations| {
+                let mle =
+                    DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, evaluations);
+                let commit = ctx.commitment_ctx.commit(&mle)?;
+                Ok((commit, mle))
+            })
+            .collect::<Result<Vec<_>, anyhow::Error>>()?;
+        gen.logup_witnesses.insert(
+            id,
+            vec![LogUpWitness::<E, PCS>::new_lookup(
+                commits,
+                column_evals,
+                1,
+                TableType::Range,
+            )],
+        );
 
-        merged_lookups
-            .into_iter()
-            .for_each(|val| *table_lookup_map.entry(val).or_insert(0u64) += 1);
-
-        gen.polys_with_id.push((
-            id as PolyID,
-            step_data.outputs.outputs()[0]
-                .get_data()
-                .iter()
-                .map(Fieldizer::<E>::to_field)
-                .collect(),
-        ));
-        gen.lookups_no_challenges
-            .insert(id, (column_evals, 1, TableType::Range));
+        let lookups = gen.new_lookups.get_mut(&TableType::Range).ok_or(anyhow!(
+            "No table of type Range was expected, error occured during a MaxPool step"
+        ))?;
+        lookups.extend(merged_lookups);
 
         Ok(())
     }
@@ -262,25 +283,23 @@ impl OpInfo for PoolingCtx {
     }
 }
 
-impl<E> VerifiableCtx<E> for PoolingCtx
+impl<E, PCS> VerifiableCtx<E, PCS> for PoolingCtx
 where
-    E: ExtensionField,
+    E: ExtensionField + Serialize + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
-    E: Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
 {
-    type Proof = PoolingProof<E>;
+    type Proof = PoolingProof<E, PCS>;
 
     fn verify<T: Transcript<E>>(
         &self,
         proof: &Self::Proof,
         last_claims: &[&Claim<E>],
-        verifier: &mut Verifier<E, T>,
+        verifier: &mut Verifier<E, T, PCS>,
         _shape_step: &ShapeStep,
     ) -> Result<Vec<Claim<E>>> {
         let (constant_challenge, column_separation_challenge) = verifier
             .challenge_storage
-            .as_ref()
-            .unwrap()
             .get_challenges_by_name(&TableType::Range.name())
             .ok_or(anyhow!(
                 "Couldn't get challenges for LookupType: {}",
@@ -330,9 +349,9 @@ impl Pooling {
         }
     }
     #[timed::timed_instrument(name = "Prover::prove_pooling_step")]
-    pub fn prove_pooling<E: ExtensionField, T: Transcript<E>>(
+    pub fn prove_pooling<E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
-        prover: &mut Prover<E, T>,
+        prover: &mut Prover<E, T, PCS>,
         // last random claim made
         last_claim: &Claim<E>,
         // input to the dense layer
@@ -347,9 +366,19 @@ impl Pooling {
         E: Serialize + DeserializeOwned,
     {
         assert_eq!(input.get_shape().len(), 3, "Maxpool needs 3D inputs.");
-        // Create the range check proof for the diff
-        let prover_info = prover.lookup_witness(id)?;
+        // Should only be one prover_info for this step
+        let logup_witnesses = prover.lookup_witness(id)?;
+        if logup_witnesses.len() != 1 {
+            return Err(anyhow!(
+                "Pooling only requires a lookup into one table type, but node: {} had {} lookup witnesses",
+                id,
+                logup_witnesses.len()
+            ));
+        }
+        let logup_witness = &logup_witnesses[0];
 
+        let prover_info = logup_witness.get_logup_input(&prover.challenge_storage)?;
+        let commits = logup_witness.get_commitments();
         let logup_proof = logup_batch_prove(&prover_info, prover.transcript)?;
 
         // These are the polys that get passed to the zero check make sure their product is zero at every evaluation point
@@ -377,6 +406,13 @@ impl Pooling {
         let beta_poly: ArcDenseMultilinearExtension<E> =
             DenseMultilinearExtension::<E>::from_evaluations_ext_vec(info.num_vars, beta_eval)
                 .into();
+        let last_claim_beta_eval = compute_betas_eval(&last_claim.point);
+        let last_claim_beta: ArcDenseMultilinearExtension<E> =
+            DenseMultilinearExtension::<E>::from_evaluations_ext_vec(
+                info.num_vars,
+                last_claim_beta_eval,
+            )
+            .into();
         let mut challenge_combiner = batch_challenge;
         let lookup_parts = diff_polys
             .iter()
@@ -389,41 +425,42 @@ impl Pooling {
 
         diff_polys.push(beta_poly);
         vp.add_mle_list(diff_polys, E::ONE);
+
         lookup_parts
             .into_iter()
             .for_each(|(prod, coeff)| vp.add_mle_list(prod, coeff));
 
+        // We also batch in the smae poly proof for the output with the Zerocheck
+        let output_mle: ArcMultilinearExtension<E> = output.get_data().to_vec().into_mle().into();
+
+        vp.add_mle_list(
+            vec![output_mle.clone(), last_claim_beta],
+            challenge_combiner,
+        );
         #[allow(deprecated)]
         let (proof, sumcheck_state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
 
-        // We need to prove that the output of this step is the input to following activation function
-        let output_mle = output.get_data().to_vec().into_mle();
-        let mut same_poly_prover = same_poly::Prover::<E>::new(output_mle.clone());
-
+        // Extract all claims about committed witness polys
         let zerocheck_point = &proof.point;
-        let output_zerocheck_eval = output_mle.evaluate(zerocheck_point);
+        let sumcheck_evals = sumcheck_state.get_mle_final_evaluations();
+        let kernel_size = info.poolinfo.kernel_size * info.poolinfo.kernel_size;
 
-        // Accumulate claims about the output polynomial in each of the protocols we ran together with the final claim from the previous proof.
-        let mut output_claims = Vec::<Claim<E>>::new();
-        let same_poly_ctx = same_poly::Context::<E>::new(last_claim.point.len());
-        same_poly_prover.add_claim(last_claim.clone())?;
+        let output_eval = sumcheck_evals[kernel_size + 1];
 
-        let zerocheck_claim = Claim {
-            point: zerocheck_point.clone(),
-            eval: output_zerocheck_eval,
-        };
-        same_poly_prover.add_claim(zerocheck_claim.clone())?;
-        output_claims.push(zerocheck_claim);
+        let commitments = sumcheck_evals[..kernel_size]
+            .iter()
+            .chain(std::iter::once(&output_eval))
+            .zip(commits)
+            .map(|(&eval, comm_with_wit)| {
+                let commit = PCS::get_pure_commitment(&comm_with_wit.0);
+                prover.commit_prover.add_witness_claim(
+                    comm_with_wit,
+                    Claim::<E>::new(zerocheck_point.clone(), eval),
+                )?;
+                Ok(commit)
+            })
+            .collect::<Result<Vec<PCS::Commitment>, anyhow::Error>>()?;
 
-        // This is the proof for the output poly
-        let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, prover.transcript)?;
-
-        let output_claim = claim_acc_proof.extract_claim();
-
-        prover
-            .witness_prover
-            .add_claim(info.poly_id, output_claim)
-            .context("unable to add claim")?;
         // Now we must do the samething accumulating evals for the input poly as we fix variables on the input poly.
         // The point length is 2 longer because for now we only support MaxPool2D.
 
@@ -450,11 +487,12 @@ impl Pooling {
 
         let zc_in_claim = izip!(
             multiplicands.iter(),
-            sumcheck_state.get_mle_final_evaluations().iter(),
+            sumcheck_state
+                .get_mle_final_evaluations()
+                .iter()
+                .take(kernel_size),
         )
-        .fold(E::ZERO, |zc_acc, (m, zc)| {
-            zc_acc + *m * (output_zerocheck_eval - *zc)
-        });
+        .fold(E::ZERO, |zc_acc, (m, zc)| zc_acc + *m * (output_eval - *zc));
 
         let point_1 = [
             &[r1],
@@ -471,17 +509,20 @@ impl Pooling {
 
         // We don't need the last eval of the the sumcheck state as it is the beta poly
 
-        let zerocheck_evals = sumcheck_state.get_mle_final_evaluations()[..4].to_vec();
+        let zerocheck_evals = [
+            &sumcheck_state.get_mle_final_evaluations()[..kernel_size],
+            &[output_eval],
+        ]
+        .concat();
         // Push the step proof to the list
         prover.push_proof(
             id,
             LayerProof::Pooling(PoolingProof {
                 sumcheck: proof,
                 lookup: logup_proof,
-                io_accumulation: claim_acc_proof,
-                output_claims,
                 zerocheck_evals,
                 variable_gap: padded_input_row_length_log - 1,
+                commitments,
             }),
         );
         Ok(next_claim)
@@ -492,11 +533,15 @@ impl PoolingCtx {
     pub fn output_shape(&self, input_shape: &[usize]) -> Vec<usize> {
         maxpool2d_shape(input_shape)
     }
-    pub(crate) fn verify_pooling<E: ExtensionField, T: Transcript<E>>(
+    pub(crate) fn verify_pooling<
+        E: ExtensionField,
+        T: Transcript<E>,
+        PCS: PolynomialCommitmentScheme<E>,
+    >(
         &self,
-        verifier: &mut Verifier<E, T>,
+        verifier: &mut Verifier<E, T, PCS>,
         last_claim: &Claim<E>,
-        proof: &PoolingProof<E>,
+        proof: &PoolingProof<E, PCS>,
         constant_challenge: E,
         column_separation_challenge: E,
     ) -> anyhow::Result<Claim<E>>
@@ -519,13 +564,14 @@ impl PoolingCtx {
             .transcript
             .get_and_append_challenge(b"batch_pooling")
             .elements;
-        let initial_value = verifier_claims
+        let (initial_value_no_last_claim, final_batching_challenge) = verifier_claims
             .claims()
             .iter()
             .fold((E::ZERO, batching_challenge), |(acc, comb), claim| {
                 (acc + claim.eval * comb, comb * batching_challenge)
-            })
-            .0;
+            });
+        let initial_value =
+            initial_value_no_last_claim + final_batching_challenge * last_claim.eval;
         let subclaim = IOPVerifierState::<E>::verify(
             initial_value,
             &proof.sumcheck,
@@ -533,25 +579,48 @@ impl PoolingCtx {
             verifier.transcript,
         );
 
-        // Run the same poly verifier for the output claims
-        let sp_ctx = same_poly::Context::<E>::new(self.num_vars);
-        let mut sp_verifier = same_poly::Verifier::<E>::new(&sp_ctx);
+        // Verify the sumcheck output claim and add commitment claims to the commit verifier
+        let zerocheck_point = subclaim.point_flat();
+        let beta_eval = eq_xy_eval(&verifier_claims.point(), &zerocheck_point);
 
-        sp_verifier.add_claim(last_claim.clone())?;
+        let last_claim_beta_eval = eq_xy_eval(&last_claim.point, &zerocheck_point);
 
-        let output_claims = &proof.output_claims;
-        output_claims
+        let kernel_size = proof.zerocheck_evals.len() - 1;
+
+        let (prod_claim, sum_claim, batch_chal) =
+            proof.zerocheck_evals.iter().take(kernel_size).fold(
+                (beta_eval, E::ZERO, batching_challenge),
+                |(prod_acc, sum_acc, challenge_comb), &eval| {
+                    (
+                        prod_acc * eval,
+                        sum_acc + challenge_comb * eval,
+                        challenge_comb * batching_challenge,
+                    )
+                },
+            );
+
+        let output_eval = proof.zerocheck_evals[kernel_size];
+
+        let expected_eval =
+            prod_claim + sum_claim * beta_eval + output_eval * last_claim_beta_eval * batch_chal;
+
+        ensure!(
+            expected_eval == subclaim.expected_evaluation,
+            "Expected pooling zerocheck claim did not equal the verifier claim, expected: {:?}, got: {:?}",
+            expected_eval,
+            subclaim.expected_evaluation
+        );
+
+        proof
+            .zerocheck_evals
             .iter()
-            .try_for_each(|claim| sp_verifier.add_claim(claim.clone()))?;
-
-        let output_proof = &proof.io_accumulation;
-
-        let commit_claim = sp_verifier.verify(output_proof, verifier.transcript)?;
-
-        // Add the result of the same poly verifier to the commitment verifier.
-        verifier
-            .witness_verifier
-            .add_claim(self.poly_id, commit_claim)?;
+            .zip(proof.commitments.iter())
+            .try_for_each(|(&eval, commit)| {
+                verifier.commit_verifier.add_witness_claim(
+                    commit.clone(),
+                    Claim::<E>::new(zerocheck_point.clone(), eval),
+                )
+            })?;
 
         // Challenegs used to batch input poly claims together and link them with zerocheck and lookup verification output
         let [r1, r2] = [verifier
@@ -567,49 +636,27 @@ impl PoolingCtx {
             r1 * one_minus_r2,
             r1 * r2,
         ];
-        let zc_point = subclaim
-            .point
-            .iter()
-            .map(|chal| chal.elements)
-            .collect::<Vec<E>>();
+
         let zerocheck_point = [
             &[r1],
-            &zc_point[..proof.variable_gap],
+            &zerocheck_point[..proof.variable_gap],
             &[r2],
-            &zc_point[proof.variable_gap..],
+            &zerocheck_point[proof.variable_gap..],
         ]
         .concat();
 
-        let zerocheck_input_eval = izip!(proof.zerocheck_evals.iter(), eval_multiplicands.iter())
-            .fold(E::ZERO, |zerocheck_acc, (&ze, &me)| {
-                zerocheck_acc + (output_claims[0].eval - ze) * me
-            });
+        let zerocheck_input_eval = izip!(
+            proof.zerocheck_evals.iter().take(kernel_size),
+            eval_multiplicands.iter()
+        )
+        .fold(E::ZERO, |zerocheck_acc, (&ze, &me)| {
+            zerocheck_acc + (output_eval - ze) * me
+        });
 
         let out_claim = Claim {
             point: zerocheck_point,
             eval: zerocheck_input_eval,
         };
-
-        // Now we check consistency between the lookup/sumcheck proof claims and the claims passed to the same poly verifiers.
-        let beta_eval = identity_eval(&output_claims[0].point, &verifier_claims.claims()[0].point);
-
-        let computed_zerocheck_claim = proof
-            .zerocheck_evals
-            .iter()
-            .chain(std::iter::once(&beta_eval))
-            .product::<E>()
-            + proof
-                .zerocheck_evals
-                .iter()
-                .fold((E::ZERO, batching_challenge), |(acc, comb), v| {
-                    (acc + *v * beta_eval * comb, comb * batching_challenge)
-                })
-                .0;
-
-        ensure!(
-            computed_zerocheck_claim == subclaim.expected_evaluation,
-            "Computed zerocheck claim did not line up with output of sumcheck verification"
-        );
 
         Ok(out_claim)
     }

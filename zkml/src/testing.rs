@@ -1,9 +1,10 @@
-use crate::quantization;
+use crate::{Element, quantization};
 use ark_std::rand::{self, Rng, SeedableRng, rngs::StdRng, thread_rng};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
+use mpcs::{Basefold, BasefoldRSParams};
 
-use crate::Element;
+pub(crate) type Pcs<E> = Basefold<E, BasefoldRSParams>;
 
 pub fn _random_vector<E: ExtensionField>(n: usize) -> Vec<E> {
     let mut rng = thread_rng();

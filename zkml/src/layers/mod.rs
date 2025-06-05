@@ -20,16 +20,17 @@ use std::fmt::Debug;
 use anyhow::{Result, bail};
 use ff_ext::ExtensionField;
 use flatten::Flatten;
+use mpcs::PolynomialCommitmentScheme;
 use pooling::{PoolingCtx, PoolingProof};
 use provable::{
-    Evaluate, LayerOut, Node, OpInfo, PadOp, ProvableOp, ProveInfo, QuantizeOp, QuantizeOutput,
+    Evaluate, LayerOut, Node, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, QuantizeOp,
+    QuantizeOutput,
 };
 use requant::RequantCtx;
 use transcript::Transcript;
 
 use crate::{
-    Element, ScalingStrategy,
-    commit::precommit::PolyID,
+    Context, Element, ScalingStrategy,
     iop::context::{ContextAux, ShapeStep, TableCtx},
     layers::{
         activation::{Activation, ActivationProof},
@@ -91,16 +92,18 @@ where
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub enum LayerProof<E: ExtensionField>
+pub enum LayerProof<E, PCS>
 where
+    E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
 {
     Dense(DenseProof<E>),
     MatMul(MatMulProof<E>),
     Convolution(ConvProof<E>),
-    Activation(ActivationProof<E>),
-    Requant(RequantProof<E>),
-    Pooling(PoolingProof<E>),
+    Activation(ActivationProof<E, PCS>),
+    Requant(RequantProof<E, PCS>),
+    Pooling(PoolingProof<E, PCS>),
     Dummy, // To be used for non-provable layers
 }
 
@@ -177,7 +180,7 @@ where
 
     pub(crate) fn step_info<E>(
         &self,
-        id: PolyID,
+        id: NodeId,
         aux: ContextAux,
     ) -> Result<(LayerCtx<E>, ContextAux)>
     where
@@ -308,7 +311,7 @@ where
     E: ExtensionField + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
 {
-    fn step_info(&self, id: PolyID, aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
+    fn step_info(&self, id: NodeId, aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         match self {
             Layer::Dense(dense) => dense.step_info(id, aux),
             Layer::MatMul(mat) => mat.step_info(id, aux),
@@ -318,19 +321,6 @@ where
             Layer::Requant(requant) => requant.step_info(id, aux),
             Layer::Pooling(pooling) => pooling.step_info(id, aux),
             Layer::Flatten(reshape) => reshape.step_info(id, aux),
-        }
-    }
-
-    fn commit_info(&self, id: provable::NodeId) -> Vec<Option<(PolyID, Vec<E>)>> {
-        match self {
-            Layer::Dense(dense) => dense.commit_info(id),
-            Layer::Convolution(convolution) => convolution.commit_info(id),
-            Layer::MatMul(mat) => mat.commit_info(id),
-            Layer::SchoolBookConvolution(school_book_conv) => school_book_conv.commit_info(id),
-            Layer::Activation(activation) => activation.commit_info(id),
-            Layer::Requant(requant) => requant.commit_info(id),
-            Layer::Pooling(pooling) => pooling.commit_info(id),
-            Layer::Flatten(reshape) => reshape.commit_info(id),
         }
     }
 }
@@ -355,10 +345,11 @@ impl PadOp for Layer<Element> {
     }
 }
 
-impl<E: ExtensionField> ProvableOp<E> for Layer<Element>
+impl<E, PCS> ProvableOp<E, PCS> for Layer<Element>
 where
     E::BaseField: Serialize + DeserializeOwned,
-    E: Serialize + DeserializeOwned,
+    E: ExtensionField + Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
 {
     type Ctx = LayerCtx<E>;
 
@@ -368,7 +359,7 @@ where
         ctx: &Self::Ctx,
         last_claims: Vec<&crate::Claim<E>>,
         step_data: &StepData<E, E>,
-        prover: &mut crate::Prover<E, T>,
+        prover: &mut crate::Prover<E, T, PCS>,
     ) -> Result<Vec<crate::Claim<E>>> {
         match self {
             Layer::Dense(dense) => {
@@ -425,21 +416,24 @@ where
     fn gen_lookup_witness(
         &self,
         id: provable::NodeId,
-        gen: &mut LookupWitnessGen<E>,
+        gen: &mut LookupWitnessGen<E, PCS>,
+        ctx: &Context<E, PCS>,
         step_data: &StepData<Element, E>,
     ) -> Result<()> {
         match self {
-            Layer::Dense(dense) => dense.gen_lookup_witness(id, gen, step_data),
-            Layer::Convolution(convolution) => convolution.gen_lookup_witness(id, gen, step_data),
-            Layer::MatMul(m) => m.gen_lookup_witness(id, gen, step_data),
+            Layer::Dense(dense) => dense.gen_lookup_witness(id, gen, ctx, step_data),
+            Layer::Convolution(convolution) => {
+                convolution.gen_lookup_witness(id, gen, ctx, step_data)
+            },
+            Layer::MatMul(m) => m.gen_lookup_witness(id, gen, ctx, step_data),
             Layer::SchoolBookConvolution(school_book_conv) => {
                 // check that the layer is not provable, so we don't need to call the method
                 assert!(!school_book_conv.is_provable());
                 Ok(())
             }
-            Layer::Activation(activation) => activation.gen_lookup_witness(id, gen, step_data),
-            Layer::Requant(requant) => requant.gen_lookup_witness(id, gen, step_data),
-            Layer::Pooling(pooling) => pooling.gen_lookup_witness(id, gen, step_data),
+            Layer::Activation(activation) => activation.gen_lookup_witness(id, gen, ctx, step_data),
+            Layer::Requant(requant) => requant.gen_lookup_witness(id, gen, ctx, step_data),
+            Layer::Pooling(pooling) => pooling.gen_lookup_witness(id, gen, ctx, step_data),
             Layer::Flatten(reshape) => {
                 // check that the layer is not provable, so we don't need to call the method
                 assert!(!reshape.is_provable());
@@ -515,9 +509,11 @@ impl QuantizeOp for Layer<f32> {
     }
 }
 
-impl<E: ExtensionField> LayerProof<E>
+impl<E, PCS> LayerProof<E, PCS>
 where
+    E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
 {
     pub fn variant_name(&self) -> String {
         match self {
@@ -538,8 +534,19 @@ where
             LayerProof::Convolution(..) => None,
             LayerProof::Dummy => None,
             LayerProof::Activation(ActivationProof { lookup, .. })
-            | LayerProof::Requant(RequantProof { lookup, .. })
             | LayerProof::Pooling(PoolingProof { lookup, .. }) => Some(lookup.fractional_outputs()),
+            LayerProof::Requant(RequantProof {
+                clamping_lookup,
+                shifted_lookup,
+                ..
+            }) => {
+                let (clamp_nums, clamp_denoms) = clamping_lookup.fractional_outputs();
+                let (shift_nums, shift_denoms) = shifted_lookup.fractional_outputs();
+                Some((
+                    [clamp_nums, shift_nums].concat(),
+                    [clamp_denoms, shift_denoms].concat(),
+                ))
+            }
         }
     }
 }

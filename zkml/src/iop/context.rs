@@ -1,16 +1,10 @@
 use crate::{
-    Element,
-    iop::precommit::{self, PolyID},
-    layers::{
-        LayerCtx,
-        provable::{NodeCtx, NodeId, OpInfo},
-    },
-    lookup::context::{LookupContext, TableType},
-    model::{Model, ModelCtx, ToIterator},
+    commit::context::{CommitmentContext, PolyId}, layers::provable::{NodeCtx, NodeId, OpInfo}, lookup::context::{LookupContext, TableType}, model::{Model, ModelCtx, ToIterator}, quantization::Fieldizer, Element
 };
-use anyhow::{Context as CC, anyhow, ensure};
+use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
-use mpcs::BasefoldCommitment;
+use mpcs::{BasefoldCommitment, PolynomialCommitmentScheme};
+use multilinear_extensions::{mle::DenseMultilinearExtension, util::ceil_log2};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeSet, HashMap};
 use tracing::{debug, trace};
@@ -25,7 +19,6 @@ where
     E: ExtensionField + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
 {
-    pub poly_id: PolyID,
     pub num_vars: usize,
     pub table_commitment: BasefoldCommitment<E>,
 }
@@ -35,7 +28,7 @@ pub const RESHAPE_FS_ID: u64 = 0xdeadbeef;
 /// Common information between prover and verifier
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
-pub struct Context<E: ExtensionField>
+pub struct Context<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>
 where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
@@ -44,9 +37,8 @@ where
     /// needs to know from the setup to avoid the prover being able to cheat.
     /// in REVERSED order already since proving goes from last layer to first layer.
     pub steps_info: ModelCtx<E>,
-    /// Context related to the commitment and accumulation of claims related to the weights of model.
-    /// This part contains the commitment of the weights.
-    pub weights: precommit::Context<E>,
+    /// The commitment context used to generate both model commitments and witness commitments
+    pub commitment_ctx: CommitmentContext<E, PCS>,
     /// Context holding all the different table types we use in lookups
     pub lookup: LookupContext,
     /// unpadded shape of the first initial input
@@ -95,9 +87,10 @@ impl ShapeStep {
 pub struct ContextAux {
     pub tables: BTreeSet<TableType>,
     pub last_output_shape: Vec<Vec<usize>>,
+    pub model_polys: Option<HashMap<PolyId, Vec<Element>>>,
 }
 
-impl<E: ExtensionField> Context<E>
+impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> Context<E, PCS>
 where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
@@ -118,7 +111,12 @@ where
         let mut ctx_aux = ContextAux {
             tables,
             last_output_shape: input_shapes.clone(),
+            model_polys: None,
         };
+        let mut max_poly_len = input_shapes.iter().fold(0usize, |acc, shapes| {
+            acc.max(shapes.iter().product::<usize>())
+        });
+        let mut model_polys = Vec::<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>::new();
         let mut step_infos = HashMap::new();
         let mut shapes: HashMap<NodeId, Vec<Vec<usize>>> = HashMap::new();
         debug!("Context : layer info generation ...");
@@ -127,6 +125,10 @@ where
                 "Context : {}-th layer {}info generation ...",
                 id,
                 node.operation.describe()
+            );
+            println!(
+                "Generating context node with id {id}: {:?}",
+                node.describe()
             );
             // compute input shapes for this node
             let node_input_shapes = node
@@ -163,7 +165,35 @@ where
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
             ctx_aux.last_output_shape = node_input_shapes;
-            let (info, new_aux) = node.step_info(id as PolyID, ctx_aux)?;
+            let (info, mut new_aux) = node.step_info(id, ctx_aux)?;
+            // Retrieve any model polynomials that need to be committed
+            if new_aux.model_polys.is_some() {
+                model_polys.push((
+                    id,
+                    new_aux
+                        .model_polys
+                        .as_mut()
+                        .unwrap()
+                        .drain()
+                        .map(|(poly_id, evals)| {
+                            let num_vars = ceil_log2(evals.len());
+                            (
+                                poly_id,
+                                DenseMultilinearExtension::<E>::from_evaluations_vec(
+                                    num_vars,
+                                    evals
+                                        .iter()
+                                        .map(|v| {
+                                            let f: E = v.to_field();
+                                            f.as_bases()[0]
+                                        })
+                                        .collect::<Vec<E::BaseField>>(),
+                                )
+                            )
+                        })
+                        .collect::<HashMap<PolyId, DenseMultilinearExtension<E>>>(),
+                ));
+            }
             step_infos.insert(
                 id,
                 NodeCtx {
@@ -172,72 +202,35 @@ where
                     ctx: info,
                 },
             );
+            max_poly_len = new_aux
+                .last_output_shape
+                .iter()
+                .fold(max_poly_len, |acc, shapes| {
+                    acc.max(shapes.iter().product::<usize>())
+                });
             ctx_aux = new_aux;
             shapes.insert(id, ctx_aux.last_output_shape.clone());
         }
-
+        // Check to see if we use a lookup table alrger than any of the individual polynomials
+        ctx_aux.tables.iter().for_each(|table_type| {
+            let multiplicity_vars = table_type.multiplicity_poly_vars();
+            max_poly_len = max_poly_len.max(1 << multiplicity_vars)
+        });
         debug!("Context : commitment generating ...");
-        let commit_ctx = precommit::Context::generate_from_model(model)
-            .context("can't generate context for commitment part")?;
+        let commitment_ctx = CommitmentContext::<E, PCS>::new(max_poly_len, model_polys)?;
+
         debug!("Context : lookup generation ...");
         let lookup_ctx = LookupContext::new(&ctx_aux.tables);
         Ok(Self {
             steps_info: ModelCtx { nodes: step_infos },
-            weights: commit_ctx,
+            commitment_ctx,
             lookup: lookup_ctx,
             unpadded_input_shapes: model.unpadded_input_shapes(),
         })
     }
 
     pub fn write_to_transcript<T: Transcript<E>>(&self, t: &mut T) -> anyhow::Result<()> {
-        for (_, step_ctx) in self.steps_info.to_backward_iterator() {
-            match &step_ctx.ctx {
-                LayerCtx::Dense(info) => {
-                    t.append_field_element(&E::BaseField::from(info.matrix_poly_id as u64));
-                    info.matrix_poly_aux.write_to_transcript(t);
-                }
-                LayerCtx::MatMul(info) => {
-                    t.append_field_element(&E::BaseField::from(info.matrix_poly_id as u64));
-                    info.matrix_poly_aux.write_to_transcript(t);
-                }
-                LayerCtx::Requant(info) => {
-                    t.append_field_element(&E::BaseField::from(info.poly_id as u64));
-                    t.append_field_element(&E::BaseField::from(info.num_vars as u64));
-                }
-                LayerCtx::Activation(info) => {
-                    t.append_field_element(&E::BaseField::from(info.poly_id as u64));
-                    t.append_field_element(&E::BaseField::from(info.num_vars as u64));
-                }
-                LayerCtx::Pooling(info) => {
-                    t.append_field_element(&E::BaseField::from(info.poolinfo.kernel_size as u64));
-                    t.append_field_element(&E::BaseField::from(info.poolinfo.stride as u64));
-                }
-                LayerCtx::Table(info) => {
-                    t.append_field_element(&E::BaseField::from(info.poly_id as u64));
-                    t.append_field_element(&E::BaseField::from(info.num_vars as u64));
-                    t.append_field_elements(info.table_commitment.root().0.as_slice());
-                }
-                LayerCtx::Convolution(info) => {
-                    t.append_field_element(&E::BaseField::from(info.poly_id as u64));
-                    t.append_field_element(&E::BaseField::from(info.bias_poly_id as u64));
-
-                    for i in 0..info.delegation_fft.len() {
-                        info.delegation_fft[i].write_to_transcript(t);
-                    }
-                    for i in 0..info.delegation_ifft.len() {
-                        info.delegation_ifft[i].write_to_transcript(t);
-                    }
-                    info.fft_aux.write_to_transcript(t);
-                    info.ifft_aux.write_to_transcript(t);
-                    info.hadamard.write_to_transcript(t);
-                }
-                LayerCtx::SchoolBookConvolution(_info) => {}
-                LayerCtx::Flatten => {
-                    t.append_field_element(&E::BaseField::from(RESHAPE_FS_ID));
-                }
-            }
-        }
-        self.weights.write_to_transcript(t)?;
+        self.commitment_ctx.write_to_transcript(t)?;
         Ok(())
     }
 }

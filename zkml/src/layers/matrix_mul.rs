@@ -1,7 +1,10 @@
+use std::collections::HashMap;
+
 use anyhow::{Context, Result, anyhow, ensure};
 
 use ff_ext::ExtensionField;
 use itertools::Itertools;
+use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::{
     mle::{DenseMultilinearExtension, MultilinearExtension},
     virtual_poly::{VPAuxInfo, VirtualPolynomial},
@@ -12,7 +15,7 @@ use tracing::debug;
 use transcript::Transcript;
 
 use crate::{
-    commit::precommit::{CommitProver, CommitVerifier, PolyID}, iop::{context::ContextAux, verifier::Verifier}, layers::LayerProof, model::StepData, padding::{pad_matmul, PaddingMode, ShapeInfo}, quantization, tensor::{Number, Tensor}, Claim, Element, Prover, ScalingFactor, ScalingStrategy
+    iop::{context::ContextAux, verifier::Verifier}, layers::LayerProof, model::StepData, padding::{pad_matmul, PaddingMode, ShapeInfo}, quantization, tensor::{Number, Tensor}, Claim, Element, Prover, ScalingFactor, ScalingStrategy
 };
 
 use super::{provable::{Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, QuantizeOp, QuantizeOutput, VerifiableCtx}, requant::Requant, LayerCtx};
@@ -114,7 +117,7 @@ pub struct MatMul<T> {
 /// Information stored in the context (setup phase) for this layer.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MatMulCtx<E> {
-    pub(crate) matrix_poly_id: PolyID,
+    pub(crate) node_id: NodeId,
     pub(crate) matrix_poly_aux: VPAuxInfo<E>,
     // Number of variables of the MLE polynomial for each dimension of the output matrix
     pub(crate) output_mle_num_vars: (usize, usize),
@@ -423,7 +426,7 @@ where
 {
     fn step_info(
         &self,
-        id: PolyID,
+        id: NodeId,
         mut ctx_aux: ContextAux,
     ) -> Result<(LayerCtx<E>, ContextAux)> {
         let info = self.ctx(id, &mut ctx_aux)?;
@@ -432,19 +435,6 @@ where
         let info = LayerCtx::MatMul(info);
 
         Ok((info, ctx_aux))
-    }
-
-    fn commit_info(&self, id: NodeId) -> Vec<Option<(PolyID, Vec<E>)>> {
-        if let Some(evals) = self.eval_constant_matrix() {
-            debug!(
-                "Commitment : mat mul layer ID {}: size {}",
-                id,
-                evals.len().ilog2()
-            );
-            vec![Some((id, evals))]
-        } else {
-            vec![None]
-        }
     }
 }
 
@@ -513,10 +503,13 @@ impl MatMul<f32> {
                 anyhow!("Trying to quantize a layer with 2 constant matrices")
             )?,
         }; 
-        let shift = left_matrix_scaling.shift(&right_matrix_scaling, &output_scaling);
+        let multiplier = left_matrix_scaling.m(&right_matrix_scaling, &output_scaling);
         let quantized = self.quantize(&left_matrix_scaling, &right_matrix_scaling);
-        let (quantized_min, _) = quantized.output_range(*quantization::MIN, *quantization::MAX);
-        let requant = Requant::new(quantized_min.abs() as usize, shift);
+        let output_bitsize = quantized.output_bitsize(*quantization::MIN, *quantization::MAX);
+        let requant = Requant::from_multiplier(
+            multiplier,
+            output_bitsize,
+        );
 
         Ok(QuantizeOutput {
             quanzited_op: quantized,
@@ -556,38 +549,40 @@ impl PadOp for MatMul<Element> {
     }
 } 
 
-impl<E> ProvableOp<E> for MatMul<Element>
+impl<E, PCS> ProvableOp<E, PCS> for MatMul<Element>
 where
     E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
 {
     type Ctx = MatMulCtx<E>;
 
     fn prove<T: Transcript<E>>(
             &self,
             node_id: NodeId,
-            ctx: &Self::Ctx,
+            _ctx: &Self::Ctx,
             last_claims: Vec<&Claim<E>>,
             step_data: &StepData<E, E>,
-            prover: &mut Prover<E, T>,
+            prover: &mut Prover<E, T, PCS>,
         ) -> Result<Vec<Claim<E>>> {
         Ok(self.prove_step(
             node_id, 
             prover, 
             last_claims[0], 
             step_data.inputs.iter().collect(), 
-            step_data.outputs.outputs()[0], 
-            ctx
+            step_data.outputs.outputs()[0],
         )?)
     }
 }
 
-const MAX_BITS: u32 = 40;
+const MAX_BITS: u32 = 30;
+
+const MATRIX_POLY_ID: &str = "MatMulWieght";
 
 impl MatMul<Element> {
-    /// Returns the (min,max) output range of the layer for a given input range.
-    pub fn output_range(&self, min_input: Element, max_input: Element) -> (Element, Element) {
+    /// Returns the maximum bit size of the output, given the provided bounds on the inputs
+    pub fn output_bitsize(&self, min_input: Element, max_input: Element) -> usize {
         // Get either the number of columns of the left matrix or the number of rows of the right matrix,
         // which corresponds to the number of additions performed in a matrix multiplication. 
         // If neither of the 2 matrices is constant in the model, then this number
@@ -599,46 +594,44 @@ impl MatMul<Element> {
                 self.right_matrix.nrows()
             }
         );
-        let power = ncols.map(|ncols| {
+        ncols.map(|ncols| {
             // Number of addition is defined, so we return the number of bits as 
             // min_bits + max_bits + log(ncols) + 1, where `min_bit` and `max_bit` are the
             // number of inputs necessary to represent `min_input` and `max_input`, respectively. 
             let min_bits = min_input.abs().ilog2() + 1;
             let max_bits = max_input.abs().ilog2() + 1;
             min_bits + max_bits + ncols.ilog2() + 1
-        }).unwrap_or(MAX_BITS);
-        let min = -(2u64.pow(power as u32) as Element);
-        let max = 2u64.pow(power as u32) as Element;
-        return (min, max);
+        }).unwrap_or(MAX_BITS) as usize
     }
 
     // Return evaluations for the constant matrix employed in the layer.
     // If there is no constant matrix in the layer, `None` is returned
-    pub(crate) fn eval_constant_matrix<E: ExtensionField>(&self) -> Option<Vec<E>> {
+    pub(crate) fn eval_constant_matrix(&self) -> Option<Vec<Element>> {
         match (&self.left_matrix, &self.right_matrix) {
             (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => panic!(
                 "Found layer with 2 constant matrices, which is useless as the 
                 product can be directly used instead"
             ),
-            (OperandMatrix::Weigth(mat), OperandMatrix::Input) => Some(mat.tensor.evals_2d()),
-            (OperandMatrix::Input, OperandMatrix::Weigth(mat)) => Some(mat.tensor.evals_2d()),
+            (OperandMatrix::Weigth(mat), OperandMatrix::Input) => Some(mat.tensor.pad_next_power_of_two().data),
+            (OperandMatrix::Input, OperandMatrix::Weigth(mat)) => Some(mat.tensor.pad_next_power_of_two().data),
             (OperandMatrix::Input, OperandMatrix::Input) => None,
         }
     }
 
-    fn prove<E, T>(
+    /// Prove the layer
+    pub fn prove_step<E, T, PCS>(
         &self,
-        commit_prover: &mut CommitProver<E>,
-        transcript: &mut T,
+        node_id: NodeId,
+        prover: &mut Prover<E, T, PCS>,
         last_claim: &Claim<E>,
         mut inputs: Vec<&Tensor<E>>,
         output: &Tensor<E>,
-        info: &MatMulCtx<E>,
-    ) -> Result<(Vec<Claim<E>>, MatMulProof<E>)>
+    ) -> Result<Vec<Claim<E>>>
     where
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
         T: Transcript<E>,
+        PCS: PolynomialCommitmentScheme<E>,
     {
         let num_inputs = inputs.len();
         let (right_matrix, is_right_constant) = match &self.right_matrix {
@@ -734,7 +727,7 @@ impl MatMul<Element> {
         let mut vp = VirtualPolynomial::<E>::new(num_vars);
         vp.add_mle_list(vec![left_mat_mle.into(), right_mat_mle.into()], E::ONE);
         #[allow(deprecated)]
-        let (proof, state) = IOPProverState::<E>::prove_parallel(vp, transcript);
+        let (proof, state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
 
         // PCS part: here we need to create an opening proof for the final evaluation of the polynomial for
         // the matrix with no input-dependent values (if any)
@@ -748,6 +741,8 @@ impl MatMul<Element> {
             Self::full_points(&last_claim, &proof.point, num_vars_2d, transposed);
         // collection of claims to be returned as output
         let mut output_claims = vec![];
+        // claims to be bound to a committed polynomial via opening proof
+        let mut common_claims = HashMap::new();
         // compute the claim for the left matrix polynomial. It will be either accumulated in the
         // evaluation claims being opened with the polynomial commitment, or returned as output,
         // depending on whether the left matrix is constant or not
@@ -755,9 +750,7 @@ impl MatMul<Element> {
         let left_claim = Claim::new(point_for_left, eval);
         if is_left_constant {
             // add a claim for the constant polynomial of the left matrix
-            commit_prover
-                .add_claim(info.matrix_poly_id, left_claim)
-                .context("unable to add matrix claim")?;
+            common_claims.insert(MATRIX_POLY_ID.to_string(), left_claim);
         } else {
             // append the claim to output claims
             output_claims.push(left_claim);
@@ -768,49 +761,26 @@ impl MatMul<Element> {
         let right_claim = Claim::new(point_for_right, eval);
         if is_right_constant {
             // add a claim for the constant polynomial of the left matrix
-            commit_prover
-                .add_claim(info.matrix_poly_id, right_claim)
-                .context("unable to add matrix claim")?;
+            common_claims.insert(MATRIX_POLY_ID.to_string(), right_claim);
         } else {
             // append the claim to output claims
             output_claims.push(right_claim);
         }
 
+        prover
+                .add_common_claims(node_id, common_claims)
+                .context("unable to add weight matrix claims")?;
+
         let proof = MatMulProof {
             sumcheck: proof,
             individual_claims: state.get_mle_final_evaluations(),
         };
-        Ok((output_claims, proof))
-    }
-    /// Prove the layer
-    pub fn prove_step<E, T>(
-        &self,
-        node_id: NodeId,
-        prover: &mut Prover<E, T>,
-        last_claim: &Claim<E>,
-        inputs: Vec<&Tensor<E>>,
-        output: &Tensor<E>,
-        info: &MatMulCtx<E>,
-    ) -> Result<Vec<Claim<E>>>
-    where
-        E: ExtensionField + Serialize + DeserializeOwned,
-        E::BaseField: Serialize + DeserializeOwned,
-        T: Transcript<E>,
-    {
-        let (output_claims, proof) = self.prove(
-            &mut prover.commit_prover,
-            prover.transcript,
-            &last_claim,
-            inputs,
-            output,
-            info,
-        )?;
 
         prover.push_proof(node_id, LayerProof::MatMul(proof));
         Ok(output_claims)
     }
 
-    fn ctx<E: ExtensionField>(&self, id: PolyID, ctx_aux: &mut ContextAux) -> Result<MatMulCtx<E>>
+    fn ctx<E: ExtensionField>(&self, id: NodeId, ctx_aux: &mut ContextAux) -> Result<MatMulCtx<E>>
     where
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
@@ -859,7 +829,7 @@ impl MatMul<Element> {
     
         // there is only one product (i.e. quadratic sumcheck)
         let info = MatMulCtx {
-            matrix_poly_id: id,
+            node_id: id,
             matrix_poly_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![
                 num_vars, num_vars,
             ]]),
@@ -868,6 +838,20 @@ impl MatMul<Element> {
             right_matrix_shapes,
             config: self.config.clone(),
         };
+
+        ctx_aux.model_polys = self.eval_constant_matrix().map(|evals| {
+                debug!(
+                    "Commitment : mat mul layer ID {}: size {}",
+                    id,
+                    evals.len().ilog2()
+                );
+                let mut model_polys = HashMap::new();
+                model_polys.insert(
+                    MATRIX_POLY_ID.to_string(), 
+                    evals,
+                );
+                model_polys   
+            });
 
         Ok(info)
     }
@@ -921,11 +905,12 @@ where
     }
 }
 
-impl<E> VerifiableCtx<E> for MatMulCtx<E>
+impl<E, PCS> VerifiableCtx<E, PCS> for MatMulCtx<E>
 where
     E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
 {
     type Proof = MatMulProof<E>;
 
@@ -933,7 +918,7 @@ where
         &self,
         proof: &Self::Proof,
         last_claims: &[&Claim<E>],
-        verifier: &mut Verifier<E, T>,
+        verifier: &mut Verifier<E, T, PCS>,
         _shape_step: &crate::iop::context::ShapeStep,
     ) -> Result<Vec<Claim<E>>> {
         Ok(self.verify_matmul(
@@ -952,11 +937,10 @@ where
     fn is_right_transposed(&self) -> bool {
         matches!(self.config, Some(Config::TransposeB))
     }
-    
-    fn verify<T: Transcript<E>>(
+
+    pub(crate) fn verify_matmul<T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
-        commit_verifier: &mut CommitVerifier<E>,
-        transcript: &mut T,
+        verifier: &mut Verifier<E, T, PCS>,
         last_claim: &Claim<E>,
         proof: &MatMulProof<E>,
     ) -> Result<Vec<Claim<E>>> {
@@ -964,7 +948,7 @@ where
             last_claim.eval,
             &proof.sumcheck,
             &self.matrix_poly_aux,
-            transcript,
+            verifier.transcript,
         );
         let is_left_matrix_constant = self.left_matrix_shapes.is_some();
         let is_right_matrix_constant = self.right_matrix_shapes.is_some();
@@ -973,6 +957,8 @@ where
         // while claims about non-constant matrices are returned as output to be verified in
         // the next layer
         let mut output_claims = vec![];
+        // claims to be verified with opening proofs
+        let mut common_claims = HashMap::new();
         // check that there is at most 1 constant matrix
         ensure!(
             !(is_left_matrix_constant && is_right_matrix_constant),
@@ -990,7 +976,7 @@ where
         let left_claim = Claim::new(point_for_left, eval_left);
         if is_left_matrix_constant {
             // we need to verify the polynomial commitment opening
-            commit_verifier.add_claim(self.matrix_poly_id, left_claim)?
+            common_claims.insert(MATRIX_POLY_ID.to_string(), left_claim);
         } else {
             // add the claim to the output claims, to be verified in the next layer
             output_claims.push(left_claim)
@@ -1000,11 +986,13 @@ where
         let right_claim = Claim::new(point_for_right, eval_right);
         if is_right_matrix_constant {
             // we need to verify the polynomial commitment opening
-            commit_verifier.add_claim(self.matrix_poly_id, right_claim)?
+            common_claims.insert(MATRIX_POLY_ID.to_string(), right_claim);
         } else {
             // add the claim to the output claims, to be verified in the next layer
             output_claims.push(right_claim)
         }
+
+        verifier.add_common_claims(self.node_id, common_claims)?;
 
         // SUMCHECK verification part
         // Instead of computing the polynomial at the random point requested like this
@@ -1026,20 +1014,6 @@ where
         // the output claim for this step that is going to be verified at next step
         Ok(output_claims)
     }
-
-    pub(crate) fn verify_matmul<T: Transcript<E>>(
-        &self,
-        verifier: &mut Verifier<E, T>,
-        last_claim: &Claim<E>,
-        proof: &MatMulProof<E>,
-    ) -> Result<Vec<Claim<E>>> {
-        self.verify(
-            &mut verifier.commit_verifier,
-            verifier.transcript,
-            last_claim,
-            proof,
-        )
-    }
 }
 
 impl<E: ExtensionField> MatMulProof<E> {
@@ -1055,10 +1029,9 @@ mod tests {
     use ark_std::rand::{Rng, thread_rng};
     use goldilocks::GoldilocksExt2;
     use itertools::Itertools;
-    use multilinear_extensions::mle::MultilinearExtension;
 
     use crate::{
-        commit::precommit::{CommitProver, CommitVerifier}, default_transcript, iop::context::ContextAux, layers::{matrix_mul::{Config, MatMul, OperandMatrix}, provable::Evaluate, Layer}, model::{test::prove_model, Model}, padding::PaddingMode, tensor::Tensor, testing::{random_field_vector, random_vector}, Claim, Element, ScalingFactor
+        layers::{matrix_mul::{Config, MatMul, OperandMatrix}, provable::Evaluate, Layer}, model::{test::prove_model, Model}, padding::PaddingMode, tensor::Tensor, Element, ScalingFactor
     };
 
     fn test_matmul_padding(transpose: bool) {
@@ -1349,77 +1322,5 @@ mod tests {
         model.route_output(None).unwrap();
         model.describe();
         prove_model(model).unwrap();
-    }
-
-    #[test]
-    fn test_matmul_with_input_dependent_matrices() {
-        type F = GoldilocksExt2;
-        let l_shape = vec![1000, 2000];
-        let l = random_vector(l_shape[0] * l_shape[1]);
-        let tensor_l = Tensor::new(l_shape.clone(), l).pad_next_power_of_two_2d();
-        let r_shape = vec![l_shape[1], 789];
-        let r = random_vector(r_shape[0] * r_shape[1]);
-        let tensor_r = Tensor::new(r_shape.clone(), r).pad_next_power_of_two_2d();
-        let matmul_layer = MatMul::new(
-            OperandMatrix::Input,
-            OperandMatrix::Input,
-        )
-        .unwrap();
-        let padded_layer = matmul_layer.pad_next_power_of_two().unwrap();
-
-        let output = padded_layer.op(vec![&tensor_l, &tensor_r]).unwrap();
-
-        let mut prover = CommitProver::<F>::new();
-        let mut transcript = default_transcript();
-        let mut ctx_aux = ContextAux {
-            tables: Default::default(),
-            last_output_shape: vec![tensor_l.get_shape(), tensor_r.get_shape()],
-        };
-
-        let info = padded_layer.ctx(0, &mut ctx_aux).unwrap();
-        let tensor_l = Tensor::<F>::from(&tensor_l);
-        let tensor_r = Tensor::<F>::from(&tensor_r);
-        let output = Tensor::<F>::from(&output);
-        let last_claim = {
-            let mle = output.to_mle_2d();
-            let num_vars = mle.num_vars();
-            let point = random_field_vector(num_vars);
-            let eval = mle.evaluate(&point);
-            Claim::new(point, eval)
-        };
-        let inputs = vec![&tensor_l, &tensor_r];
-        let (_claims, proof) = padded_layer
-            .prove(
-                &mut prover,
-                &mut transcript,
-                &last_claim,
-                inputs,
-                &output,
-                &info,
-            )
-            .unwrap();
-
-        let mut verifier = CommitVerifier::<F>::new();
-        let mut transcript = default_transcript();
-        let input_claims = info
-            .verify(&mut verifier, &mut transcript, &last_claim, &proof)
-            .unwrap();
-
-        // check input claims
-        assert!(
-            vec![&tensor_l, &tensor_r]
-                .into_iter()
-                .zip(&input_claims)
-                .all(|(t, claim)| {
-                    let mle = t.to_mle_2d();
-                    let eval = mle.evaluate(&claim.point);
-                    eval == claim.eval
-                })
-        );
-        assert_eq!(input_claims.len(), _claims.len());
-        input_claims.into_iter().zip(_claims).for_each(|(vc, pc)| {
-            assert_eq!(vc.point, pc.point);
-            assert_eq!(vc.eval, pc.eval);
-        });
     }
 }

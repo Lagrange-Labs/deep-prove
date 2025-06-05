@@ -1,17 +1,18 @@
 use crate::{
-    Claim, Element, Prover,
+    Claim, Context, Element, Prover,
     commit::same_poly,
     iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
     },
-    layers::{LayerCtx, LayerProof, PolyID},
+    layers::{LayerCtx, LayerProof},
     lookup::{
         context::{COLUMN_SEPARATOR, LookupWitnessGen, TableType},
         logup_gkr::{
             prover::batch_prove as logup_batch_prove, structs::LogUpProof,
             verifier::verify_logup_proof,
         },
+        witness::LogUpWitness,
     },
     model::StepData,
     padding::PaddingMode,
@@ -20,8 +21,9 @@ use crate::{
 };
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
-use multilinear_extensions::mle::IntoMLE;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use mpcs::PolynomialCommitmentScheme;
+use multilinear_extensions::mle::{DenseMultilinearExtension, IntoMLE};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::marker::PhantomData;
 use transcript::Transcript;
@@ -43,12 +45,12 @@ pub enum Activation {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ActivationCtx {
     pub op: Activation,
-    pub poly_id: PolyID,
+    pub node_id: NodeId,
     pub num_vars: usize,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct ActivationProof<E: ExtensionField>
+pub struct ActivationProof<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
@@ -57,6 +59,8 @@ where
     pub(crate) io_accumulation: same_poly::Proof<E>,
     /// the lookup proof for the relu
     pub(crate) lookup: LogUpProof<E>,
+    /// The witness commitments from this function
+    pub(crate) commits: Vec<PCS::Commitment>,
 }
 
 impl OpInfo for Activation {
@@ -104,7 +108,7 @@ where
     E: ExtensionField + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
 {
-    fn step_info(&self, id: PolyID, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
+    fn step_info(&self, id: NodeId, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         aux.tables.insert(TableType::Relu);
         let num_vars = aux
             .last_output_shape
@@ -120,10 +124,12 @@ where
                 Ok(Some(num_vars))
             })?
             .expect("No input shape found for activation layer?");
+        // Set the model polys to be empty
+        aux.model_polys = None;
         let info = match self {
             Activation::Relu(relu) => LayerCtx::Activation(ActivationCtx {
                 op: Activation::Relu(*relu),
-                poly_id: id,
+                node_id: id,
                 num_vars,
             }),
         };
@@ -133,11 +139,12 @@ where
 
 impl PadOp for Activation {}
 
-impl<E> ProvableOp<E> for Activation
+impl<E, PCS> ProvableOp<E, PCS> for Activation
 where
     E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
 {
     type Ctx = ActivationCtx;
 
@@ -147,7 +154,7 @@ where
         ctx: &Self::Ctx,
         last_claims: Vec<&Claim<E>>,
         step_data: &StepData<E, E>,
-        prover: &mut Prover<E, T>,
+        prover: &mut Prover<E, T, PCS>,
     ) -> Result<Vec<Claim<E>>> {
         Ok(vec![self.prove_step(
             prover,
@@ -161,11 +168,10 @@ where
     fn gen_lookup_witness(
         &self,
         id: NodeId,
-        gen: &mut LookupWitnessGen<E>,
+        gen: &mut LookupWitnessGen<E, PCS>,
+        ctx: &Context<E, PCS>,
         step_data: &StepData<Element, E>,
     ) -> Result<()> {
-        gen.tables.insert(TableType::Relu);
-
         ensure!(
             step_data.inputs.len() == 1,
             "Found more than 1 input tensor in inference step of activation layer"
@@ -192,22 +198,39 @@ where
             .unzip();
 
         let (col_one, col_two): (Vec<E::BaseField>, Vec<E::BaseField>) = field.into_iter().unzip();
-        let table_lookup_map = gen.lookups.entry(TableType::Relu).or_default();
 
-        merged_lookups
+        let num_vars = ceil_log2(col_one.len());
+
+        // Add the witness polynomials that we need to commit to
+        let (commits, column_evals): (
+            Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
+            Vec<Vec<E::BaseField>>,
+        ) = [col_one, col_two]
+            .into_par_iter()
+            .map(|evaluations| {
+                let mle =
+                    DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, &evaluations);
+                let commit = ctx.commitment_ctx.commit(&mle)?;
+                Ok(((commit, mle), evaluations))
+            })
+            .collect::<Result<Vec<_>, anyhow::Error>>()?
             .into_iter()
-            .for_each(|lookup| *table_lookup_map.entry(lookup).or_insert(0u64) += 1);
+            .unzip();
+        gen.logup_witnesses.insert(
+            id,
+            vec![LogUpWitness::<E, PCS>::new_lookup(
+                commits,
+                column_evals,
+                2,
+                TableType::Relu,
+            )],
+        );
 
-        gen.polys_with_id.push((
-            id as PolyID,
-            step_data.outputs.outputs()[0]
-                .get_data()
-                .iter()
-                .map(Fieldizer::<E>::to_field)
-                .collect(),
-        ));
-        gen.lookups_no_challenges
-            .insert(id, (vec![col_one, col_two], 2, TableType::Relu));
+        let lookups = gen
+            .new_lookups
+            .get_mut(&TableType::Relu)
+            .ok_or(anyhow!("No table of type Relu was expected"))?;
+        lookups.extend(merged_lookups);
 
         Ok(())
     }
@@ -235,25 +258,24 @@ impl OpInfo for ActivationCtx {
     }
 }
 
-impl<E> VerifiableCtx<E> for ActivationCtx
+impl<E, PCS> VerifiableCtx<E, PCS> for ActivationCtx
 where
     E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
 {
-    type Proof = ActivationProof<E>;
+    type Proof = ActivationProof<E, PCS>;
 
     fn verify<T: Transcript<E>>(
         &self,
         proof: &Self::Proof,
         last_claims: &[&Claim<E>],
-        verifier: &mut Verifier<E, T>,
+        verifier: &mut Verifier<E, T, PCS>,
         _shape_step: &ShapeStep,
     ) -> Result<Vec<Claim<E>>> {
         let (constant_challenge, column_separation_challenge) = verifier
             .challenge_storage
-            .as_ref()
-            .unwrap()
             .get_challenges_by_name(&TableType::Relu.name())
             .ok_or(anyhow!(
                 "Couldn't get challenges for LookupType: {}",
@@ -271,20 +293,36 @@ where
 
 impl Activation {
     #[timed::timed_instrument(name = "Prover::prove_activation_step")]
-    pub(crate) fn prove_step<E: ExtensionField, T: Transcript<E>>(
+    pub(crate) fn prove_step<
+        E: ExtensionField,
+        T: Transcript<E>,
+        PCS: PolynomialCommitmentScheme<E>,
+    >(
         &self,
-        prover: &mut Prover<E, T>,
+        prover: &mut Prover<E, T, PCS>,
         last_claim: &Claim<E>,
         output: &[E],
-        step: &ActivationCtx,
+        _step: &ActivationCtx,
         node_id: NodeId,
     ) -> anyhow::Result<Claim<E>>
     where
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
-        let prover_info = prover.lookup_witness(node_id)?;
+        // Should only be one prover_info for this step
+        let logup_witnesses = prover.lookup_witness(node_id)?;
+        if logup_witnesses.len() != 1 {
+            return Err(anyhow!(
+                "Activation only requires a lookup into one table type, but node: {} had {} lookup witnesses",
+                node_id,
+                logup_witnesses.len()
+            ));
+        }
+        let logup_witness = &logup_witnesses[0];
+        // Run the lookup protocol and return the lookup proof
+        let prover_info = logup_witness.get_logup_input(&prover.challenge_storage)?;
 
+        let commits = logup_witness.get_commitments();
         // Run the lookup protocol and return the lookup proof
         let logup_proof = logup_batch_prove(&prover_info, prover.transcript)?;
 
@@ -298,10 +336,19 @@ impl Activation {
 
         same_poly_prover.add_claim(output_claim)?;
         let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, prover.transcript)?;
-        // order is (output,mult)
-        prover
-            .witness_prover
-            .add_claim(step.poly_id, claim_acc_proof.extract_claim())?;
+
+        // Add commitment claims to prover
+        let commits = [input_claim.clone(), claim_acc_proof.extract_claim()]
+            .into_iter()
+            .zip(commits)
+            .map(|(claim, comm_with_wit)| {
+                let comm = PCS::get_pure_commitment(&comm_with_wit.0);
+                prover
+                    .commit_prover
+                    .add_witness_claim(comm_with_wit, claim)?;
+                Ok(comm)
+            })
+            .collect::<Result<Vec<PCS::Commitment>, anyhow::Error>>()?;
 
         // Add the proof in
         prover.push_proof(
@@ -309,6 +356,7 @@ impl Activation {
             LayerProof::Activation(ActivationProof {
                 io_accumulation: claim_acc_proof,
                 lookup: logup_proof,
+                commits,
             }),
         );
         Ok(input_claim)
@@ -316,11 +364,15 @@ impl Activation {
 }
 
 impl ActivationCtx {
-    pub(crate) fn verify_activation<E: ExtensionField, T: Transcript<E>>(
+    pub(crate) fn verify_activation<
+        E: ExtensionField,
+        T: Transcript<E>,
+        PCS: PolynomialCommitmentScheme<E>,
+    >(
         &self,
-        verifier: &mut Verifier<E, T>,
+        verifier: &mut Verifier<E, T, PCS>,
         last_claim: &Claim<E>,
-        proof: &ActivationProof<E>,
+        proof: &ActivationProof<E, PCS>,
         constant_challenge: E,
         column_separation_challenge: E,
     ) -> anyhow::Result<Claim<E>>
@@ -347,9 +399,18 @@ impl ActivationCtx {
 
         let new_output_claim = sp_verifier.verify(&proof.io_accumulation, verifier.transcript)?;
         // 3. Accumulate the new claim into the witness commitment protocol
-        verifier
-            .witness_verifier
-            .add_claim(self.poly_id, new_output_claim)?;
+        verifier_claims
+            .claims()
+            .iter()
+            .take(1)
+            .cloned()
+            .chain(std::iter::once(new_output_claim))
+            .zip(proof.commits.iter())
+            .try_for_each(|(claim, commit)| {
+                verifier
+                    .commit_verifier
+                    .add_witness_claim(commit.clone(), claim)
+            })?;
 
         // 4. return the input claim for to be proven at subsequent step
         Ok(verifier_claims.claims()[0].clone())

@@ -11,7 +11,7 @@ use crate::{
 };
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use multilinear_extensions::mle::FieldType;
+use multilinear_extensions::mle::{FieldType, MultilinearExtension};
 use serde::{Deserialize, Serialize};
 use std::{fmt::Debug, iter, ops::AddAssign};
 use transcript::Transcript;
@@ -212,6 +212,7 @@ impl<E: ExtensionField> ClassicSumCheckProver<E> for CoefficientsProver<E> {
                 assert_eq!(coeffs[0].double() + coeffs[1] + coeffs[2], state.sum);
             } else {
                 coeffs[1] = state.sum - coeffs[0].double() - coeffs[2];
+                assert_eq!(coeffs[0].double() + coeffs[1] + coeffs[2], state.sum);
             }
         } else {
             unimplemented!()
@@ -235,6 +236,7 @@ impl<E: ExtensionField> CoefficientsProver<E> {
         rhs: &Expression<E>,
     ) -> Coefficients<E> {
         let mut coeffs = [E::ZERO; 3];
+        // let mut new_coeffs = [E::ZERO; 3];
         match (lhs, rhs) {
             (
                 Expression::CommonPolynomial(CommonPolynomial::EqXY(idx)),
@@ -253,54 +255,85 @@ impl<E: ExtensionField> CoefficientsProver<E> {
                 // that the evaluation representations are of the full sizes, by repeating the
                 // existing evaluations.
 
-                let evaluate_serial = |coeffs: &mut [E; 3], start: usize, n: usize| {
-                    zip_self!(
-                        iter::repeat(lhs).flat_map(|x| poly_iter_ext(x)),
-                        2,
-                        start * 2
-                    )
-                    .zip(zip_self!(
-                        iter::repeat(rhs).flat_map(|x| poly_iter_ext(x)),
-                        2,
-                        start * 2
-                    ))
-                    .take(n)
-                    .for_each(|((lhs_0, lhs_1), (rhs_0, rhs_1))| {
-                        let coeff_0 = lhs_0 * rhs_0;
-                        let coeff_2 = (lhs_1 - lhs_0) * (rhs_1 - rhs_0);
-                        coeffs[0] += &coeff_0;
-                        coeffs[2] += &coeff_2;
-                        if !LAZY {
-                            coeffs[1] += &(lhs_1 * rhs_1 - coeff_0 - coeff_2);
-                        }
-                    });
-                };
-
-                let num_threads = num_threads();
-                if state.size() < num_threads {
-                    evaluate_serial(&mut coeffs, 0, state.size());
+                let poly_len = 1usize << lhs.num_vars();
+                if poly_len == 1 {
+                    let mul = state.size();
+                    let mul_field = E::from(mul as u64);
+                    let lhs_eval = poly_index_ext(lhs, 0);
+                    let rhs_eval = poly_index_ext(rhs, 0);
+                    coeffs[0] = lhs_eval * rhs_eval * mul_field;
                 } else {
-                    let chunk_size = div_ceil(state.size(), num_threads);
-                    let mut partials = vec![[E::ZERO; 3]; num_threads];
-                    parallelize_iter(
-                        partials.iter_mut().zip((0..).step_by(chunk_size)),
-                        |(partial, start)| {
-                            // It is possible that the previous chunks already covers all
-                            // the positions
-                            if state.size() > start {
-                                let chunk_size = chunk_size.min(state.size() - start);
-                                evaluate_serial(partial, start, chunk_size);
+                    let (poly_size, multiple) = if state.size() < poly_len || state.size() == 1 {
+                        (state.size(), 1)
+                    } else if state.size() == poly_len {
+                        let shifted = poly_len >> 1;
+                        (shifted, 2)
+                    } else {
+                        let shifted = poly_len >> 1;
+                        let multiple = if shifted != 0 {
+                            state.size() / shifted
+                        } else {
+                            1
+                        };
+                        (shifted, multiple)
+                    };
+
+                    let evaluate_serial = |coeffs: &mut [E; 3], start: usize, n: usize| {
+                        zip_self!(poly_iter_ext(lhs), 2, start * 2)
+                            .zip(zip_self!(poly_iter_ext(rhs), 2, start * 2))
+                            .take(n)
+                            .for_each(|((lhs_0, lhs_1), (rhs_0, rhs_1))| {
+                                let coeff_0 = lhs_0 * rhs_0;
+                                let coeff_2 = (lhs_1 - lhs_0) * (rhs_1 - rhs_0);
+                                coeffs[0] += &coeff_0;
+                                coeffs[2] += &coeff_2;
+                                if !LAZY {
+                                    coeffs[1] += &(lhs_1 * rhs_1 - coeff_0 - coeff_2);
+                                }
+                            });
+                    };
+
+                    let num_threads = num_threads();
+                    let multiple_field = E::from(multiple as u64);
+                    if poly_size < num_threads {
+                        evaluate_serial(&mut coeffs, 0, poly_size);
+                        if multiple != 1 {
+                            coeffs[0] *= multiple_field;
+                            coeffs[2] *= multiple_field;
+                            if !LAZY {
+                                coeffs[1] *= multiple_field;
                             }
-                        },
-                    );
-                    partials.iter().for_each(|partial| {
-                        coeffs[0] += partial[0];
-                        coeffs[2] += partial[2];
-                        if !LAZY {
-                            coeffs[1] += partial[1];
                         }
-                    })
-                };
+                    } else {
+                        let chunk_size = div_ceil(poly_size, num_threads);
+                        let mut partials = vec![[E::ZERO; 3]; num_threads];
+                        parallelize_iter(
+                            partials.iter_mut().zip((0..).step_by(chunk_size)),
+                            |(partial, start)| {
+                                // It is possible that the previous chunks already covers all
+                                // the positions
+                                if poly_size > start {
+                                    let chunk_size = chunk_size.min(poly_size - start);
+                                    evaluate_serial(partial, start, chunk_size);
+                                }
+                            },
+                        );
+                        partials.iter().for_each(|partial| {
+                            coeffs[0] += partial[0];
+                            coeffs[2] += partial[2];
+                            if !LAZY {
+                                coeffs[1] += partial[1];
+                            }
+                        });
+                        if multiple != 1 {
+                            coeffs[0] *= multiple_field;
+                            coeffs[2] *= multiple_field;
+                            if !LAZY {
+                                coeffs[1] *= multiple_field;
+                            }
+                        }
+                    };
+                }
             }
             _ => unimplemented!(),
         }

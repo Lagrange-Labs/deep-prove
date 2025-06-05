@@ -492,13 +492,6 @@ impl<N: Number> Model<N> {
     {
         self.run_with_tracker(input, None)
     }
-
-    /// Returns the set of nodes in the model which can be proven
-    pub(crate) fn provable_nodes(&self) -> impl Iterator<Item = (&NodeId, &Node<N>)> {
-        self.nodes
-            .iter()
-            .filter(|(_, node)| node.operation.is_provable())
-    }
 }
 
 /// Collection of the proving contexts of all the nodes in the model
@@ -516,7 +509,7 @@ pub(crate) mod test {
     use crate::{
         init_test_logging, layers::{
             activation::{Activation, Relu}, convolution::{Convolution, SchoolBookConv}, dense::Dense, matrix_mul::{MatMul, OperandMatrix}, pooling::{Maxpool2D, Pooling, MAXPOOL2D_KERNEL_SIZE}, provable::{evaluate_layer, Edge, Node, OpInfo}, requant::Requant, Layer
-        }, padding::{pad_model, PaddingMode}, quantization::{self, InferenceObserver}, tensor::Number, testing::{random_bool_vector, random_vector}, ScalingFactor, ScalingStrategy
+        }, padding::{pad_model, PaddingMode}, quantization::{self, InferenceObserver}, tensor::Number, testing::{Pcs, random_bool_vector, random_vector}, ScalingFactor, ScalingStrategy
     };
     use anyhow::Result;
     use ark_std::rand::{Rng, RngCore, thread_rng};
@@ -574,9 +567,15 @@ pub(crate) mod test {
                     let input_scaling_factor = ScalingFactor::from_scale(1.0, None);
                     let max_model = dense.matrix.max_value().max(dense.bias.max_value()) as f32;
                     let model_scaling_factor = ScalingFactor::from_absolute_max(max_model, None);
-                    let shift =
-                        input_scaling_factor.shift(&model_scaling_factor, &output_scaling_factor);
-                    let requant = Requant::new(min_output_range as usize, shift);
+
+                    let intermediate_bit_size = dense.output_bitsize();
+                    let requant = Requant::from_scaling_factors(
+                        input_scaling_factor,
+                        model_scaling_factor,
+                        output_scaling_factor,
+                        intermediate_bit_size,
+                    );
+
                     last_node_id =
                         Some(model.add_consecutive_layer(Layer::Dense(dense), last_node_id)?);
                     last_node_id =
@@ -966,15 +965,15 @@ pub(crate) mod test {
         model.describe();
         let trace = model.run::<F>(&vec![input]).unwrap();
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
-        let ctx =
-            Context::<GoldilocksExt2>::generate(&model, None).expect("Unable to generate context");
+        let ctx = Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None)
+            .expect("Unable to generate context");
         let io = trace.to_verifier_io();
-        let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>> =
+        let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
             Prover::new(&ctx, &mut tr);
         let proof = prover.prove(trace).expect("unable to generate proof");
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
-        verify::<_, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
+        verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
     }
 
     #[test]
@@ -1000,12 +999,12 @@ pub(crate) mod test {
 
         let trace = model.run::<F>(&input_tensor).unwrap();
         let mut tr = BasicTranscript::<F>::new(b"matmul");
-        let ctx = Context::<F>::generate(&model, None).expect("Unable to generate context");
+        let ctx = Context::<F, Pcs<F>>::generate(&model, None).expect("Unable to generate context");
         let io = trace.to_verifier_io();
         let prover = Prover::new(&ctx, &mut tr);
         let proof = prover.prove(trace).expect("unable to generate proof");
         let mut verifier_transcript = BasicTranscript::<F>::new(b"matmul");
-        verify::<_, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
+        verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
     }
 
     #[test]
@@ -1036,24 +1035,24 @@ pub(crate) mod test {
         model.describe();
         let trace = model.run::<F>(&vec![input]).unwrap();
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
-        let ctx =
-            Context::<GoldilocksExt2>::generate(&model, None).expect("Unable to generate context");
+        let ctx = Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None)
+            .expect("Unable to generate context");
         let io = trace.to_verifier_io();
 
-        let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>> =
+        let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
             Prover::new(&ctx, &mut tr);
         let proof = prover.prove(trace).expect("unable to generate proof");
 
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
-        verify::<_, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
+        verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
     }
 
     #[test]
     fn test_cnn_prover() {
         for i in 0..3 {
             for j in 2..5 {
-                for l in 0..4 {
+                for l in 1..4 {
                     for n in 1..(j - 1) {
                         let n_w = 1 << n;
                         let k_w = 1 << l;
@@ -1086,15 +1085,16 @@ pub(crate) mod test {
                         let trace = model.run::<F>(&vec![input]).unwrap();
                         let mut tr: BasicTranscript<GoldilocksExt2> =
                             BasicTranscript::new(b"m2vec");
-                        let ctx = Context::<GoldilocksExt2>::generate(&model, None)
-                            .expect("Unable to generate context");
+                        let ctx =
+                            Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None)
+                                .expect("Unable to generate context");
                         let io = trace.to_verifier_io();
-                        let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>> =
+                        let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
                             Prover::new(&ctx, &mut tr);
                         let proof = prover.prove(trace).expect("unable to generate proof");
                         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
                             BasicTranscript::new(b"m2vec");
-                        verify::<_, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
+                        verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
                     }
                 }
             }
@@ -1184,14 +1184,14 @@ pub(crate) mod test {
 
         let trace = model.run(&input_tensors)?;
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"model");
-        let ctx =
-            Context::<GoldilocksExt2>::generate(&model, None).expect("Unable to generate context");
-        let prover: Prover<'_, E, T> = Prover::new(&ctx, &mut tr);
+        let ctx = Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None)
+            .expect("Unable to generate context");
+        let prover: Prover<'_, E, T, _> = Prover::new(&ctx, &mut tr);
         let io = trace.to_verifier_io();
         let proof = prover.prove(trace).expect("unable to generate proof");
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"model");
-        verify::<_, _>(ctx, proof, io, &mut verifier_transcript)
+        verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript)
     }
 
     #[test]

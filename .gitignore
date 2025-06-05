@@ -16,6 +16,7 @@ zkml/cifar_net.pth
 zkml/cnn_model.pth
 zkml/assets/scripts/covid/data*
 zkml/deepprove.csv
+zkml/bench.csv
 .venv
 
 # Devenv

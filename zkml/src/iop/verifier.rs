@@ -1,22 +1,15 @@
 use std::collections::HashMap;
 
 use crate::{
-    Claim, VectorTranscript,
-    commit::{self, precommit},
-    iop::{ChallengeStorage, context::ShapeStep},
-    layers::{
-        LayerProof,
-        provable::{NodeCtx, NodeId, OpInfo, VerifiableCtx},
-    },
-    lookup::{context::TableType, logup_gkr::verifier::verify_logup_proof},
-    model::ToIterator,
-    tensor::Tensor,
-    try_unzip,
+    commit::context::{CommitmentVerifier, PolyId}, iop::{context::ShapeStep, ChallengeStorage}, layers::{
+        provable::{NodeCtx, NodeId, OpInfo, VerifiableCtx}, LayerProof
+    }, lookup::{context::TableType, logup_gkr::verifier::verify_logup_proof}, model::ToIterator, tensor::Tensor, try_unzip, Claim, VectorTranscript
 };
 use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
 
 use itertools::Itertools;
+use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 
 use serde::{Serialize, de::DeserializeOwned};
@@ -38,31 +31,36 @@ impl<E> IO<E> {
     }
 }
 
-pub struct Verifier<'a, E: ExtensionField, T: Transcript<E>> {
-    pub(crate) commit_verifier: precommit::CommitVerifier<E>,
-    pub(crate) witness_verifier: precommit::CommitVerifier<E>,
+pub struct Verifier<'a, E: ExtensionField, T: Transcript<E>, PCS>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+    E: Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
+{
+    pub(crate) commit_verifier: CommitmentVerifier<E, PCS>,
     pub(crate) transcript: &'a mut T,
-    pub(crate) challenge_storage: Option<ChallengeStorage<E>>,
+    pub(crate) challenge_storage: ChallengeStorage<E>,
 }
 
-impl<'a, E: ExtensionField, T: Transcript<E>> Verifier<'a, E, T>
+impl<'a, E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>
+    Verifier<'a, E, T, PCS>
 where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    pub(crate) fn new(transcript: &'a mut T) -> Self {
+    pub(crate) fn new(ctx: &Context<E, PCS>, transcript: &'a mut T) -> Self {
+        let commit_verifier = CommitmentVerifier::<E, PCS>::new(&ctx.commitment_ctx);
         Self {
-            commit_verifier: precommit::CommitVerifier::new(),
-            witness_verifier: precommit::CommitVerifier::new(),
+            commit_verifier,
             transcript,
-            challenge_storage: None,
+            challenge_storage: ChallengeStorage::<E>::default(),
         }
     }
 
     pub(crate) fn verify(
         mut self,
-        ctx: Context<E>,
-        proof: Proof<E>,
+        ctx: Context<E, PCS>,
+        proof: Proof<E, PCS>,
         io: IO<E>,
     ) -> anyhow::Result<()> {
         // 1. Instatiate everything and append relevant info to the transcript
@@ -73,12 +71,11 @@ where
 
         // Here we generate and store all lookup related challenges
         // TODO: make this part of verifier struct
-        self.challenge_storage = Some(if let Some((_, witness_context)) = proof.witness {
-            witness_context.write_to_transcript(self.transcript)?;
-            ChallengeStorage::<E>::initialise(&ctx, self.transcript)
+        self.challenge_storage = if ctx.lookup.is_empty() {
+            ChallengeStorage::<E>::default()
         } else {
-            ChallengeStorage::default()
-        });
+            ChallengeStorage::<E>::initialise(&ctx, self.transcript)
+        };
 
         // iterate over the step proofs in inference order
         for (node_id, node) in ctx.steps_info.to_forward_iterator() {
@@ -205,19 +202,16 @@ where
             .try_for_each(|(table_proof, table_type)| {
                 let (constant_challenge, column_separation_challenge) = self
                     .challenge_storage
-                    .as_ref()
-                    .unwrap()
                     .get_challenges_by_name(&table_type.name())
                     .ok_or(anyhow!(
                         "No challenges found for table of type: {:?} during verification",
                         table_type.name()
                     ))?;
 
-                verify_table::<_, _>(
+                verify_table::<_, _, _>(
                     table_proof,
                     *table_type,
-                    table_poly_id,
-                    &mut self.witness_verifier,
+                    &mut self.commit_verifier,
                     self.transcript,
                     constant_challenge,
                     column_separation_challenge,
@@ -247,7 +241,7 @@ where
 
         // 7. verify the opening of the accumulation of claims
         self.commit_verifier
-            .verify(&ctx.weights, proof.commit, self.transcript)?;
+            .verify(&ctx.commitment_ctx, &proof.commit, self.transcript)?;
 
         // 8. verify that the accumulated numerator is zero and accumulated denominator is non-zero
         let (final_num, final_denom) = numerators.into_iter().zip(denominators).fold(
@@ -269,12 +263,22 @@ where
 
         Ok(())
     }
+
+    pub(crate) fn add_common_claims(
+        &mut self,
+        node_id: NodeId,
+        claims: HashMap<PolyId, Claim<E>>,
+    ) -> anyhow::Result<()> {
+        self.commit_verifier
+            .add_common_claims(node_id, claims)
+            .map_err(|e| e.into())
+    }
 }
 
 /// Verifies an inference proof given a context, a proof and the input / output of the model.
-pub fn verify<E: ExtensionField, T: Transcript<E>>(
-    ctx: Context<E>,
-    proof: Proof<E>,
+pub fn verify<E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
+    ctx: Context<E, PCS>,
+    proof: Proof<E, PCS>,
     io: IO<E>,
     transcript: &mut T,
 ) -> anyhow::Result<()>
@@ -282,15 +286,14 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    let verifier = Verifier::new(transcript);
+    let verifier = Verifier::new(&ctx, transcript);
     verifier.verify(ctx, proof, io)
 }
 
-fn verify_table<E: ExtensionField, T: Transcript<E>>(
-    proof: &TableProof<E>,
+fn verify_table<E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
+    proof: &TableProof<E, PCS>,
     table_type: TableType,
-    poly_id: usize,
-    witness_verifier: &mut commit::precommit::CommitVerifier<E>,
+    witness_verifier: &mut CommitmentVerifier<E, PCS>,
     t: &mut T,
     constant_challenge: E,
     column_separation_challenge: E,
@@ -310,13 +313,15 @@ where
 
     // 2. Accumulate the multiplicity poly claim into the witness commitment protocol
     let poly_claims = verifier_claims.claims();
-    witness_verifier.add_claim(
-        poly_id,
+
+    witness_verifier.add_witness_claim(
+        proof.get_commitment().clone(),
         poly_claims
             .first()
             .ok_or(anyhow!("Claims was empty in table verification!"))?
             .clone(),
     )?;
+
     // Hard indexing is okay here because we checked above that at least one claim exists
     let expected_claim_evals = table_type.evaluate_table_columns::<E>(&poly_claims[0].point)?;
 
