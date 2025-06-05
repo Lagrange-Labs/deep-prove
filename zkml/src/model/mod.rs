@@ -5,7 +5,7 @@ use ff_ext::ExtensionField;
 use goldilocks::GoldilocksExt2;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use trace::Trace;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::{
     Tensor,
@@ -186,42 +186,14 @@ where
         let requant_nodes = input_node
             .outputs
             .iter()
+            .enumerate()
             .zip(requants.into_iter())
-            .map(|(wire, requant)| {
-                // INPUT EDGES: we look at the output nodes designated by this wire, and for each such node, we look at all the input edges that
-                // come from `input_node_id`. For those, we just copy the index of the wire.
+            .map(|((i, wire), requant)| {
+                // INPUT EDGES: for each output wire, we simply copy the index i, and set the node to be input_node_id
                 let input_edges = wire
                     .edges
                     .iter()
-                    .map(|edge| {
-                        let Some(output_node_id) = edge.node else {
-                            // this edge signals this is an input node so we can't insert a requant "before"
-                            return Ok(vec![]);
-                        };
-                        let output_node = self
-                            .nodes
-                            .get(&output_node_id)
-                            .ok_or(anyhow!("Node {output_node_id} not found in the model"))?;
-                        Ok(output_node
-                            .inputs
-                            .iter()
-                            .flat_map(|input_edge| {
-                                if input_edge.node.is_some()
-                                    && input_edge.node.unwrap() == input_node_id
-                                {
-                                    Some(Edge::new(input_node_id, input_edge.index))
-                                } else {
-                                    // that edge is referring to another node that input_node_id so we don't care, since requant layer
-                                    // only deals with the outputs of input_node_id
-                                    None
-                                }
-                            })
-                            .collect::<Vec<_>>())
-                        // flatten because there may be empty vectors
-                    })
-                    .collect::<Result<Vec<_>>>()?
-                    .into_iter()
-                    .flatten()
+                    .map(|edge| Edge::new(input_node_id, i))
                     .collect();
                 // OUTPUT EDGES: We simply copy the output wires of input_node since they are the same.
                 // NOTE here we enforce that one requant  == one output wire. Later we might want to revisit that assumption if needed.
@@ -233,6 +205,12 @@ where
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
+        debug!(
+            "Requant insertion: from input node {}: inputs: {:?}, outputs: {:?}",
+            input_node_id,
+            self.nodes.get(&input_node_id).unwrap().inputs,
+            self.nodes.get(&input_node_id).unwrap().outputs
+        );
         // remove edges from outputs of `input_node` - BEFORE adding the requant nodes to the model, since
         // that action will append to the input_node.outputs.
         // safe unwrap because already did it before - redo it here for borrowing safety reasons
@@ -241,6 +219,20 @@ where
             .into_iter()
             .map(|node| self.add_node(node))
             .collect::<Result<Vec<_>>>()?;
+        debug!(
+            "Requant insertion: requant nodes: {:?}",
+            requant_ids
+                .iter()
+                .map(|id| {
+                    let requant_node = self.nodes.get(&id).unwrap();
+                    format!(
+                        "id: {:?}, inputs: {:?}, outputs: {:?}",
+                        id, requant_node.inputs, requant_node.outputs
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         // route inputs of the nodes using outputs of `input_node_id` to the newly inserted
         // requant node
         for requant_id in requant_ids.iter() {
@@ -496,9 +488,12 @@ impl<N: Number> Model<N> {
                 .get_step(&id)
                 .ok_or(anyhow!("Output node {} not found in trace", id))?
                 .outputs();
-            ensure!(node_outputs.len() == out_node.outputs.len(),
-                "Number of outputs found in trace for node {id} is different from the number of expected outputs
-                for the node");
+            ensure!(
+                node_outputs.len() == out_node.outputs.len(),
+                "Number of outputs found in trace ({}) for node {id} is different from number of expected outputs ({})",
+                node_outputs.len(),
+                out_node.outputs.len()
+            );
             for (i, wire) in out_node.outputs.iter().enumerate() {
                 if let Some(out_index) = wire.edges.iter().find_map(|edge| {
                     if edge.node.is_none() {
@@ -557,7 +552,7 @@ where
 #[cfg(test)]
 pub(crate) mod test {
     use crate::{
-        ScalingFactor, ScalingStrategy, init_test_logging,
+        ScalingFactor, ScalingStrategy, init_test_logging, init_test_logging_default,
         layers::{
             Layer,
             activation::{Activation, Relu},
@@ -1226,7 +1221,7 @@ pub(crate) mod test {
 
     #[test]
     fn test_model_proving() {
-        init_test_logging();
+        init_test_logging_default();
         const INPUT_SIZE: usize = 57;
         let model = build_test_model::<f32, INPUT_SIZE>();
         prove_model(model).unwrap();
@@ -1246,23 +1241,41 @@ pub(crate) mod test {
     ///    R1  R2  <-- distinct requant layers !
     ///    /    \\   
     ///   B      C
-    ///
     #[test]
     fn test_model_insert_requant() {
-        init_test_logging();
+        init_test_logging_default();
         const FIRST_INPUT_SIZE: usize = 27;
         const SECOND_INPUT_SIZE: usize = 49;
         let input_shapes = vec![vec![FIRST_INPUT_SIZE], vec![SECOND_INPUT_SIZE]];
-        let mut model = Model::<Element>::new_from_input_shapes(input_shapes.clone(), PaddingMode::NoPadding);
-        let relu1 = model.add_node(Node::new(vec![Edge::new_at_edge(0),Edge::new_at_edge(1)], Layer::Activation(Activation::Relu(Relu)))).unwrap();
+        let mut model =
+            Model::<Element>::new_from_input_shapes(input_shapes.clone(), PaddingMode::NoPadding);
+        let relu1 = model
+            .add_node(Node::new(
+                vec![Edge::new_at_edge(0), Edge::new_at_edge(1)],
+                Layer::Activation(Activation::Relu(Relu)),
+            ))
+            .unwrap();
         // here we take the first two inputs of relu1
-        let relu2 = model.add_node(Node::new(vec![Edge::new(relu1,0),Edge::new(relu1,1)], Layer::Activation(Activation::Relu(Relu)))).unwrap();
+        let relu2 = model
+            .add_node(Node::new(
+                vec![Edge::new(relu1, 0), Edge::new(relu1, 1)],
+                Layer::Activation(Activation::Relu(Relu)),
+            ))
+            .unwrap();
         // here we only want to take the first input of relu1
-        let relu3 = model.add_node(Node::new(vec![Edge::new(relu1,0)], Layer::Activation(Activation::Relu(Relu)))).unwrap();
-        let input_tensor = vec![Tensor::random(&input_shapes[0]),Tensor::random(&input_shapes[1])];
+        let relu3 = model
+            .add_node(Node::new(
+                vec![Edge::new(relu1, 0)],
+                Layer::Activation(Activation::Relu(Relu)),
+            ))
+            .unwrap();
+        let input_tensor = vec![
+            Tensor::random(&input_shapes[0]),
+            Tensor::random(&input_shapes[1]),
+        ];
         let test_sf = ScalingFactor::from_scale(1.0, None);
         // 2 requants, one for each outgoing output wire (one for relu2 and one for relu3)
-        let requants = vec![Requant::from_scaling_factors( test_sf,test_sf, test_sf, 10); 2];
+        let requants = vec![Requant::from_scaling_factors(test_sf, test_sf, test_sf, 10); 2];
         let requants_ids = model.add_requant_nodes(requants, relu1).unwrap();
         assert_eq!(requants_ids.len(), 2);
         model
@@ -1286,7 +1299,7 @@ pub(crate) mod test {
 
     #[test]
     fn test_model_multiple_outputs() {
-        init_test_logging();
+        init_test_logging("debug");
         const FIRST_INPUT_SIZE: usize = 27;
         const SECOND_INPUT_SIZE: usize = 49;
         let input_shapes = vec![vec![FIRST_INPUT_SIZE], vec![SECOND_INPUT_SIZE]];
@@ -1335,27 +1348,27 @@ pub(crate) mod test {
             .add_consecutive_layer(Layer::Activation(relu), Some(second_input_dense))
             .unwrap();
         // add other dense nodes
-        //let nrows = 52;
-        //let ncols = second_dense_out_shape[0]; // it's a vector, so it has only one dimension
-        //let dense = Dense::random(vec![nrows, ncols]);
-        //let first_output_node = model
-        //    .add_consecutive_layer(Layer::Dense(dense), Some(second_relu_node))
-        //    .unwrap();
-        //let nrows = 17;
-        //let ncols = first_dense_out_shape[0];
-        //let dense = Dense::random(vec![nrows, ncols]);
-        //let second_output_node = model
-        //    .add_consecutive_layer(Layer::Dense(dense), Some(first_relu_node))
-        //    .unwrap();
+        let nrows = 52;
+        let ncols = second_dense_out_shape[0]; // it's a vector, so it has only one dimension
+        let dense = Dense::random(vec![nrows, ncols]);
+        let first_output_node = model
+            .add_consecutive_layer(Layer::Dense(dense), Some(second_relu_node))
+            .unwrap();
+        let nrows = 17;
+        let ncols = first_dense_out_shape[0];
+        let dense = Dense::random(vec![nrows, ncols]);
+        let second_output_node = model
+            .add_consecutive_layer(Layer::Dense(dense), Some(first_relu_node))
+            .unwrap();
 
         model
             .route_output(Some(vec![
                 Edge {
-                    node: Some(first_relu_node),
+                    node: Some(first_output_node),
                     index: 0,
                 },
                 Edge {
-                    node: Some(second_relu_node),
+                    node: Some(second_output_node),
                     index: 0,
                 },
             ]))
@@ -1368,8 +1381,8 @@ pub(crate) mod test {
             .collect_vec();
 
         assert_eq!(out_node_ids.len(), 2);
-        assert!(out_node_ids.contains(&first_relu_node));
-        assert!(out_node_ids.contains(&second_relu_node));
+        assert!(out_node_ids.contains(&first_output_node));
+        assert!(out_node_ids.contains(&second_output_node));
 
         model.describe();
 

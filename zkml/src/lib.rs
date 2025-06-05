@@ -253,11 +253,22 @@ use std::sync::Once;
 static INIT: Once = Once::new();
 
 #[cfg(test)]
-pub fn init_test_logging() {
+pub fn init_test_logging_default() {
     use tracing_subscriber::EnvFilter;
 
     INIT.call_once(|| {
         let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    });
+}
+
+#[cfg(test)]
+pub fn init_test_logging(default_level: &str) {
+    use tracing_subscriber::EnvFilter;
+
+    INIT.call_once(|| {
+        let filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
         tracing_subscriber::fmt().with_env_filter(filter).init();
     });
 }

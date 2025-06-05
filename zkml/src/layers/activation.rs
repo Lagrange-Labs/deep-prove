@@ -92,7 +92,10 @@ impl<N: Number> Evaluate<N> for Activation {
         _unpadded_input_shapes: Vec<Vec<usize>>,
     ) -> Result<LayerOut<N, E>> {
         let outputs = match self {
-            Activation::Relu(relu) => inputs.iter().map(|input| relu.op(input)).collect::<Vec<_>>(),
+            Activation::Relu(relu) => inputs
+                .iter()
+                .map(|input| relu.op(input))
+                .collect::<Vec<_>>(),
         };
         Ok(LayerOut::from_vec(outputs))
     }

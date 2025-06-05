@@ -63,6 +63,8 @@ pub struct OutputWire {
 #[derive(Clone, Debug)]
 pub struct Node<N> {
     pub(crate) inputs: Vec<Edge>,
+    /// Vector of outgoing wires. The index in this vector means that the corresponding OutputWire
+    /// is linking the i-th output of this node to the designated output node.
     pub(crate) outputs: Vec<OutputWire>,
     pub(crate) operation: Layer<N>,
 }

@@ -242,7 +242,7 @@ mod tests {
     use super::*;
 
     use crate::{
-        Context, Prover, ScalingFactor, init_test_logging, quantization::InferenceObserver,
+        Context, Prover, ScalingFactor, init_test_logging_default, quantization::InferenceObserver,
         testing::Pcs, verify,
     };
     use goldilocks::GoldilocksExt2;
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn test_mlp_model_run() {
-        init_test_logging();
+        init_test_logging_default();
         let filepath = "assets/scripts/MLP/mlp-iris-01.onnx";
         let (model, md) = FloatOnnxLoader::new(&filepath)
             .with_model_type(ModelType::MLP)
@@ -344,7 +344,7 @@ mod tests {
     }
     #[test]
     fn test_load_cnn() {
-        init_test_logging();
+        init_test_logging_default();
         let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
         ModelType::CNN.validate(filepath).unwrap();
         let result =
