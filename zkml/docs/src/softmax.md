@@ -55,6 +55,11 @@ The Softmax layer is used to inside a transformer to map a tensor of weighted va
  
  Using the formula provided by [zkLLM][1] we can find a suitable bound for the error in normalisation. This error occurs due to rounding in quantisation which can mean the final sum does not always equal $`\frac{1}{\theta}`$. To prove we are in an acceptable range during setup an error bound is determined and we range check the difference between the sum of $`Y`$ and $`\frac{1}{\theta}`$ to be within this range.
 
+### Diagram
+
+Below is a diagram of how everything ties together (The error range check is omitted for space). Boxes with a green Background are values calculated by the prover, yellow background indicates a lookup table, blue background indicates a claim from an already proven step and no background is information the prover and the verifier can calculate independently. In addition the boxes higlighted in orange are committed to and opening proofs are provided for them.
+
+![Softmax Flow](./img/Softmax-Flow.png)
 
 
  [1]: https://arxiv.org/pdf/2404.16109
