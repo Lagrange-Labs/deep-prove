@@ -25,7 +25,7 @@ The Softmax layer is used to inside a transformer to map a tensor of weighted va
 
  ## Proving the Layer
 
- Due to the highly non-linear nature, and the fact that the $`\exp`$ function has no natural analogue over a finite field $`\mathbb{F}`$, we employ lookups to prove correct execution of softmax. The technique is largely based on that proposed in [zkLLM](https://arxiv.org/pdf/2404.16109), the notable differences being due to Deep Proves use of the Goldilocks field we perform quantisation differently. 
+ Due to the highly non-linear nature, and the fact that the $`\exp`$ function has no natural analogue over a finite field $`\mathbb{F}`$, we employ lookups to prove correct execution of softmax. The technique is largely based on that proposed in [zkLLM][1], the notable differences being due to Deep Proves use of the Goldilocks field we perform quantisation differently. 
 
   ### Exponential Tables
 
@@ -52,8 +52,9 @@ The Softmax layer is used to inside a transformer to map a tensor of weighted va
  So if $`Y`$ has been computed correctly then its entries should sum to $`\frac{1}{\theta}`$. We choose our scaling factor $`\frac{1}{\theta}`$ to be $`2^{8}`$, hence we just have to check that the entries of $`Y`$ sum to $`256`$ plus or minus some error.
 
  ### Allowable Error
- TODO
-
-
-
  
+ Using the formula provided by [zkLLM][1] we can find a suitable bound for the error in normalisation. This error occurs due to rounding in quantisation which can mean the final sum does not always equal $`\frac{1}{\theta}`$. To prove we are in an acceptable range during setup an error bound is determined and we range check the difference between the sum of $`Y`$ and $`\frac{1}{\theta}`$ to be within this range.
+
+
+
+ [1]: https://arxiv.org/pdf/2404.16109
