@@ -15,10 +15,23 @@ use tracing::debug;
 use transcript::Transcript;
 
 use crate::{
-    iop::{context::ContextAux, verifier::Verifier}, layers::LayerProof, model::StepData, padding::{pad_matmul, PaddingMode, ShapeInfo}, quantization, tensor::{Number, Tensor}, Claim, Element, Prover, ScalingFactor, ScalingStrategy
+    Claim, Element, Prover, ScalingFactor, ScalingStrategy,
+    iop::{context::ContextAux, verifier::Verifier},
+    layers::LayerProof,
+    model::StepData,
+    padding::{PaddingMode, ShapeInfo, pad_matmul},
+    quantization,
+    tensor::{Number, Tensor},
 };
 
-use super::{provable::{Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, QuantizeOp, QuantizeOutput, VerifiableCtx}, requant::Requant, LayerCtx};
+use super::{
+    LayerCtx,
+    provable::{
+        Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, QuantizeOp,
+        QuantizeOutput, VerifiableCtx,
+    },
+    requant::Requant,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Config {
@@ -62,11 +75,13 @@ impl<T> OperandMatrix<T> {
         match self {
             OperandMatrix::Weigth(mat) => match padding_mode {
                 PaddingMode::NoPadding => Some(mat.unpadded_shape.clone()),
-                PaddingMode::Padding => Some(mat.tensor
-                    .get_shape()
-                    .into_iter()
-                    .map(|dim| dim.next_power_of_two())
-                    .collect())
+                PaddingMode::Padding => Some(
+                    mat.tensor
+                        .get_shape()
+                        .into_iter()
+                        .map(|dim| dim.next_power_of_two())
+                        .collect(),
+                ),
             },
             OperandMatrix::Input => None,
         }
@@ -93,13 +108,14 @@ impl<T> OperandMatrix<T> {
         }
     }
 
-    pub(crate) fn pad_next_power_of_two(self) -> Self 
-    where T: Number
+    pub(crate) fn pad_next_power_of_two(self) -> Self
+    where
+        T: Number,
     {
         match self {
-            OperandMatrix::Weigth(mat) => OperandMatrix::Weigth(WeightMatrix { 
-                tensor: mat.tensor.pad_next_power_of_two(), 
-                unpadded_shape: mat.unpadded_shape, 
+            OperandMatrix::Weigth(mat) => OperandMatrix::Weigth(WeightMatrix {
+                tensor: mat.tensor.pad_next_power_of_two(),
+                unpadded_shape: mat.unpadded_shape,
             }),
             OperandMatrix::Input => OperandMatrix::Input,
         }
@@ -157,10 +173,7 @@ impl<T> MatMul<T> {
             right_matrix.is_matrix(),
             "right matrix for MatMul layer is not a matrix"
         );
-        if let (Some(left_cols), Some(right_rows)) = (
-            left_matrix.ncols(),
-            right_matrix.nrows(),
-        ) {
+        if let (Some(left_cols), Some(right_rows)) = (left_matrix.ncols(), right_matrix.nrows()) {
             ensure!(
                 left_cols == right_rows,
                 "Number of columns in left matrix different from number of rows of right matrix: {} != {}",
@@ -190,8 +203,9 @@ impl<T> MatMul<T> {
         Self::new_internal(left_matrix, right_matrix, Some(config))
     }
 
-    pub fn op(&self, inputs: Vec<&Tensor<T>>) -> Result<Tensor<T>> 
-    where T: Number
+    pub fn op(&self, inputs: Vec<&Tensor<T>>) -> Result<Tensor<T>>
+    where
+        T: Number,
     {
         Ok(match (&self.left_matrix, &self.right_matrix) {
             (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => panic!(
@@ -207,14 +221,18 @@ impl<T> MatMul<T> {
                 } else {
                     None
                 };
-                let nrows = transposed_matrix.as_ref().unwrap_or(right_matrix).nrows_2d();
+                let nrows = transposed_matrix
+                    .as_ref()
+                    .unwrap_or(right_matrix)
+                    .nrows_2d();
                 ensure!(
                     nrows == mat.tensor.ncols_2d(),
                     "Incompatible shape found for input matrix: expected {:?} rows, found {:?}",
                     mat.tensor.ncols_2d(),
                     nrows,
                 );
-                mat.tensor.matmul(transposed_matrix.as_ref().unwrap_or(&right_matrix))
+                mat.tensor
+                    .matmul(transposed_matrix.as_ref().unwrap_or(&right_matrix))
             }
             (OperandMatrix::Input, OperandMatrix::Weigth(mat)) => {
                 let left_matrix = inputs
@@ -261,8 +279,9 @@ impl<T> MatMul<T> {
         matches!(self.config, Some(Config::TransposeB))
     }
 
-    pub fn pad_next_power_of_two(self) -> Result<Self> 
-    where T: Number
+    pub fn pad_next_power_of_two(self) -> Result<Self>
+    where
+        T: Number,
     {
         let left_matrix = self.left_matrix.pad_next_power_of_two();
         let right_matrix = self.right_matrix.pad_next_power_of_two();
@@ -321,7 +340,8 @@ impl<T> MatMul<T> {
             [proof_point, claim_point_for_right]
         } else {
             [claim_point_for_right, proof_point]
-        }.concat();
+        }
+        .concat();
         let point_for_left = [proof_point, claim_point_for_left].concat();
         (point_for_left, point_for_right)
     }
@@ -343,33 +363,46 @@ fn compute_output_shapes(
     config: &Option<Config>,
 ) -> Vec<Vec<usize>> {
     let (left_shape, right_shape) = match (left_matrix_shape, right_matrix_shape) {
-            (None, None) => {
-                assert_eq!(input_shapes.len(), 2, "Expected 2 inputs for MatMul layer found {}", input_shapes.len());
-                (&input_shapes[0], &input_shapes[1])
-            },
-            (None, Some(shape)) => {
-                assert_eq!(input_shapes.len(), 1, "Expected 1 input for MatMul layer found {}", input_shapes.len());
-                (&input_shapes[0], shape)
-            },
-            (Some(shape), None) => {
-                assert_eq!(input_shapes.len(), 1, "Expected 1 input for MatMul layer found {}", input_shapes.len());
-                (shape, &input_shapes[0])
-            },
-            (Some(_), Some(_)) => unreachable!("Both matrices are constant, this should not happen"),
-        };
-        let right_shape = if let Some(Config::TransposeB) = config {
-            right_shape.iter().rev().copied().collect()
-        } else {
-            right_shape.clone()
-        };
-        assert_eq!(
-            left_shape[1],
-            right_shape[0],
-            "Incompatible shapes for MatMul layer: left matrix has {} columns, right matrix has {} rows",
-            left_shape[1],
-            right_shape[0],
-        );
-        vec![vec![left_shape[0], right_shape[1]]]
+        (None, None) => {
+            assert_eq!(
+                input_shapes.len(),
+                2,
+                "Expected 2 inputs for MatMul layer found {}",
+                input_shapes.len()
+            );
+            (&input_shapes[0], &input_shapes[1])
+        }
+        (None, Some(shape)) => {
+            assert_eq!(
+                input_shapes.len(),
+                1,
+                "Expected 1 input for MatMul layer found {}",
+                input_shapes.len()
+            );
+            (&input_shapes[0], shape)
+        }
+        (Some(shape), None) => {
+            assert_eq!(
+                input_shapes.len(),
+                1,
+                "Expected 1 input for MatMul layer found {}",
+                input_shapes.len()
+            );
+            (shape, &input_shapes[0])
+        }
+        (Some(_), Some(_)) => unreachable!("Both matrices are constant, this should not happen"),
+    };
+    let right_shape = if let Some(Config::TransposeB) = config {
+        right_shape.iter().rev().copied().collect()
+    } else {
+        right_shape.clone()
+    };
+    assert_eq!(
+        left_shape[1], right_shape[0],
+        "Incompatible shapes for MatMul layer: left matrix has {} columns, right matrix has {} rows",
+        left_shape[1], right_shape[0],
+    );
+    vec![vec![left_shape[0], right_shape[1]]]
 }
 const IS_PROVABLE: bool = true;
 
@@ -381,7 +414,12 @@ impl<N: Number> OpInfo for MatMul<N> {
     ) -> Vec<Vec<usize>> {
         let left_matrix_shape = self.left_matrix.get_shape(padding_mode);
         let right_matrix_shape = self.right_matrix.get_shape(padding_mode);
-        compute_output_shapes(input_shapes, left_matrix_shape.as_ref(), right_matrix_shape.as_ref(), &self.config)
+        compute_output_shapes(
+            input_shapes,
+            left_matrix_shape.as_ref(),
+            right_matrix_shape.as_ref(),
+            &self.config,
+        )
     }
 
     fn num_outputs(&self, num_inputs: usize) -> usize {
@@ -392,13 +430,13 @@ impl<N: Number> OpInfo for MatMul<N> {
         format!(
             "Matrix multiplication: left = {:?}, right = {:?}",
             self.left_matrix.get_actual_shape(),
-            self.right_matrix.get_actual_shape().map(|shape| 
-                if self.is_right_transposed() {
+            self.right_matrix
+                .get_actual_shape()
+                .map(|shape| if self.is_right_transposed() {
                     shape.iter().rev().copied().collect()
                 } else {
                     shape.clone()
-                }
-            ),
+                }),
         )
     }
 
@@ -418,17 +456,13 @@ impl<N: Number> Evaluate<N> for MatMul<N> {
     }
 }
 
-impl<E> ProveInfo<E> for MatMul<Element> 
+impl<E> ProveInfo<E> for MatMul<Element>
 where
     E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    fn step_info(
-        &self,
-        id: NodeId,
-        mut ctx_aux: ContextAux,
-    ) -> Result<(LayerCtx<E>, ContextAux)> {
+    fn step_info(&self, id: NodeId, mut ctx_aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         let info = self.ctx(id, &mut ctx_aux)?;
 
         // there is only one product (i.e. quadratic sumcheck)
@@ -439,7 +473,6 @@ where
 }
 
 impl MatMul<f32> {
-
     pub fn quantize(
         self,
         left_scaling: &ScalingFactor,
@@ -450,16 +483,20 @@ impl MatMul<f32> {
                 tensor: mat.tensor.quantize(left_scaling),
                 unpadded_shape: mat.unpadded_shape,
             }),
-            OperandMatrix::Input => OperandMatrix::Input, // No need to quantize since it's an input, not a constant in the model
+            OperandMatrix::Input => OperandMatrix::Input, /* No need to quantize since it's an input, not a constant in the model */
         };
         let right_matrix = match self.right_matrix {
             OperandMatrix::Weigth(mat) => OperandMatrix::Weigth(WeightMatrix {
                 tensor: mat.tensor.quantize(right_scaling),
                 unpadded_shape: mat.unpadded_shape,
             }),
-            OperandMatrix::Input => OperandMatrix::Input, // No need to quantize since it's an input, not a constant in the model
+            OperandMatrix::Input => OperandMatrix::Input, /* No need to quantize since it's an input, not a constant in the model */
         };
-        MatMul { left_matrix, right_matrix, config: self.config }
+        MatMul {
+            left_matrix,
+            right_matrix,
+            config: self.config,
+        }
     }
 
     // Quantize a mat mul layer using scaling factor of input and output
@@ -468,55 +505,52 @@ impl MatMul<f32> {
         input_scaling: &[ScalingFactor],
         output_scaling: ScalingFactor,
     ) -> anyhow::Result<QuantizeOutput<MatMul<Element>>> {
-        let (left_matrix_scaling, right_matrix_scaling) = match (&self.left_matrix, &self.right_matrix) {
-            (OperandMatrix::Weigth(mat), OperandMatrix::Input) => {
-                ensure!(
-                    input_scaling.len() == 1,
-                    "Expected 1 input scaling factor for MatMul layer, found {}", input_scaling.len(),
-                );
-                (
-                    ScalingFactor::from_absolute_max(mat.tensor.max_abs_output(), None),
-                    input_scaling[0].clone(),
-                )
-            },
-            (OperandMatrix::Input, OperandMatrix::Weigth(mat)) => {
-                ensure!(
-                    input_scaling.len() == 1,
-                    "Expected 1 input scaling factor for MatMul layer, found {}", input_scaling.len(),
-                );
-                (
-                    input_scaling[0].clone(),
-                    ScalingFactor::from_absolute_max(mat.tensor.max_abs_output(), None),
-                )
-            },
-            (OperandMatrix::Input, OperandMatrix::Input) => {
-                ensure!(
-                    input_scaling.len() == 2,
-                    "Expected 2 input scaling factors for MatMul layer, found {}", input_scaling.len(),
-                );
-                (
-                    input_scaling[0].clone(),
-                    input_scaling[1].clone(),
-                )
-            },
-            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => Err(
-                anyhow!("Trying to quantize a layer with 2 constant matrices")
-            )?,
-        }; 
+        let (left_matrix_scaling, right_matrix_scaling) =
+            match (&self.left_matrix, &self.right_matrix) {
+                (OperandMatrix::Weigth(mat), OperandMatrix::Input) => {
+                    ensure!(
+                        input_scaling.len() == 1,
+                        "Expected 1 input scaling factor for MatMul layer, found {}",
+                        input_scaling.len(),
+                    );
+                    (
+                        ScalingFactor::from_absolute_max(mat.tensor.max_abs_output(), None),
+                        input_scaling[0].clone(),
+                    )
+                }
+                (OperandMatrix::Input, OperandMatrix::Weigth(mat)) => {
+                    ensure!(
+                        input_scaling.len() == 1,
+                        "Expected 1 input scaling factor for MatMul layer, found {}",
+                        input_scaling.len(),
+                    );
+                    (
+                        input_scaling[0].clone(),
+                        ScalingFactor::from_absolute_max(mat.tensor.max_abs_output(), None),
+                    )
+                }
+                (OperandMatrix::Input, OperandMatrix::Input) => {
+                    ensure!(
+                        input_scaling.len() == 2,
+                        "Expected 2 input scaling factors for MatMul layer, found {}",
+                        input_scaling.len(),
+                    );
+                    (input_scaling[0].clone(), input_scaling[1].clone())
+                }
+                (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => Err(anyhow!(
+                    "Trying to quantize a layer with 2 constant matrices"
+                ))?,
+            };
         let multiplier = left_matrix_scaling.m(&right_matrix_scaling, &output_scaling);
         let quantized = self.quantize(&left_matrix_scaling, &right_matrix_scaling);
         let output_bitsize = quantized.output_bitsize(*quantization::MIN, *quantization::MAX);
-        let requant = Requant::from_multiplier(
-            multiplier,
-            output_bitsize,
-        );
+        let requant = Requant::from_multiplier(multiplier, output_bitsize);
 
         Ok(QuantizeOutput {
             quanzited_op: quantized,
             output_scalings: vec![output_scaling],
             requant_layer: Some(requant),
         })
-        
     }
 }
 
@@ -547,7 +581,7 @@ impl PadOp for MatMul<Element> {
     {
         pad_matmul(self, si)
     }
-} 
+}
 
 impl<E, PCS> ProvableOp<E, PCS> for MatMul<Element>
 where
@@ -559,18 +593,18 @@ where
     type Ctx = MatMulCtx<E>;
 
     fn prove<T: Transcript<E>>(
-            &self,
-            node_id: NodeId,
-            _ctx: &Self::Ctx,
-            last_claims: Vec<&Claim<E>>,
-            step_data: &StepData<E, E>,
-            prover: &mut Prover<E, T, PCS>,
-        ) -> Result<Vec<Claim<E>>> {
+        &self,
+        node_id: NodeId,
+        _ctx: &Self::Ctx,
+        last_claims: Vec<&Claim<E>>,
+        step_data: &StepData<E, E>,
+        prover: &mut Prover<E, T, PCS>,
+    ) -> Result<Vec<Claim<E>>> {
         Ok(self.prove_step(
-            node_id, 
-            prover, 
-            last_claims[0], 
-            step_data.inputs.iter().collect(), 
+            node_id,
+            prover,
+            last_claims[0],
+            step_data.inputs.iter().collect(),
             step_data.outputs.outputs()[0],
         )?)
     }
@@ -584,24 +618,24 @@ impl MatMul<Element> {
     /// Returns the maximum bit size of the output, given the provided bounds on the inputs
     pub fn output_bitsize(&self, min_input: Element, max_input: Element) -> usize {
         // Get either the number of columns of the left matrix or the number of rows of the right matrix,
-        // which corresponds to the number of additions performed in a matrix multiplication. 
+        // which corresponds to the number of additions performed in a matrix multiplication.
         // If neither of the 2 matrices is constant in the model, then this number
         // will be undefined, and in this case the default value of MAX_BITS is used.
-        let ncols = self.left_matrix.ncols().or(
-            if self.is_right_transposed() {
-                self.right_matrix.ncols()
-            } else {
-                self.right_matrix.nrows()
-            }
-        );
-        ncols.map(|ncols| {
-            // Number of addition is defined, so we return the number of bits as 
-            // min_bits + max_bits + log(ncols) + 1, where `min_bit` and `max_bit` are the
-            // number of inputs necessary to represent `min_input` and `max_input`, respectively. 
-            let min_bits = min_input.abs().ilog2() + 1;
-            let max_bits = max_input.abs().ilog2() + 1;
-            min_bits + max_bits + ncols.ilog2() + 1
-        }).unwrap_or(MAX_BITS) as usize
+        let ncols = self.left_matrix.ncols().or(if self.is_right_transposed() {
+            self.right_matrix.ncols()
+        } else {
+            self.right_matrix.nrows()
+        });
+        ncols
+            .map(|ncols| {
+                // Number of addition is defined, so we return the number of bits as
+                // min_bits + max_bits + log(ncols) + 1, where `min_bit` and `max_bit` are the
+                // number of inputs necessary to represent `min_input` and `max_input`, respectively.
+                let min_bits = min_input.abs().ilog2() + 1;
+                let max_bits = max_input.abs().ilog2() + 1;
+                min_bits + max_bits + ncols.ilog2() + 1
+            })
+            .unwrap_or(MAX_BITS) as usize
     }
 
     // Return evaluations for the constant matrix employed in the layer.
@@ -612,8 +646,12 @@ impl MatMul<Element> {
                 "Found layer with 2 constant matrices, which is useless as the 
                 product can be directly used instead"
             ),
-            (OperandMatrix::Weigth(mat), OperandMatrix::Input) => Some(mat.tensor.pad_next_power_of_two().data),
-            (OperandMatrix::Input, OperandMatrix::Weigth(mat)) => Some(mat.tensor.pad_next_power_of_two().data),
+            (OperandMatrix::Weigth(mat), OperandMatrix::Input) => {
+                Some(mat.tensor.pad_next_power_of_two().data)
+            }
+            (OperandMatrix::Input, OperandMatrix::Weigth(mat)) => {
+                Some(mat.tensor.pad_next_power_of_two().data)
+            }
             (OperandMatrix::Input, OperandMatrix::Input) => None,
         }
     }
@@ -710,7 +748,7 @@ impl MatMul<Element> {
         // corresponding to a row, so we must fix the HIGH variables
         left_mat_mle.fix_high_variables_in_place(point_for_left);
         if transposed {
-            // fix the variables for the right matrix; since it is transposed, we need to 
+            // fix the variables for the right matrix; since it is transposed, we need to
             // fix the variables corresponding to a row, so we must fix the high variables
             right_mat_mle.fix_high_variables_in_place(point_for_right);
         } else {
@@ -718,7 +756,7 @@ impl MatMul<Element> {
             // corresponding to a column, so we must fix the low variables
             right_mat_mle.fix_variables_in_place(point_for_right);
         }
-        
+
         // check that after fixing the variables in both matrices the number of free
         // variables is the same
         assert_eq!(left_mat_mle.num_vars(), right_mat_mle.num_vars());
@@ -768,8 +806,8 @@ impl MatMul<Element> {
         }
 
         prover
-                .add_common_claims(node_id, common_claims)
-                .context("unable to add weight matrix claims")?;
+            .add_common_claims(node_id, common_claims)
+            .context("unable to add weight matrix claims")?;
 
         let proof = MatMulProof {
             sumcheck: proof,
@@ -786,21 +824,19 @@ impl MatMul<Element> {
         E::BaseField: Serialize + DeserializeOwned,
     {
         let (left_shape, right_shape) = match (&self.left_matrix, &self.right_matrix) {
-            (OperandMatrix::Weigth(mat), OperandMatrix::Input) => (
-                mat.tensor.get_shape(),
-                ctx_aux.last_output_shape[0].clone(),
-            ),
-            (OperandMatrix::Input, OperandMatrix::Weigth(mat)) => (
-                ctx_aux.last_output_shape[0].clone(),
-                mat.tensor.get_shape(),
-            ),
+            (OperandMatrix::Weigth(mat), OperandMatrix::Input) => {
+                (mat.tensor.get_shape(), ctx_aux.last_output_shape[0].clone())
+            }
+            (OperandMatrix::Input, OperandMatrix::Weigth(mat)) => {
+                (ctx_aux.last_output_shape[0].clone(), mat.tensor.get_shape())
+            }
             (OperandMatrix::Input, OperandMatrix::Input) => (
                 ctx_aux.last_output_shape[0].clone(),
                 ctx_aux.last_output_shape[1].clone(),
             ),
-            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => 
-                unreachable!("Found Matmul layer with 2 constant matrices, which is useless"),
-            
+            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => {
+                unreachable!("Found Matmul layer with 2 constant matrices, which is useless")
+            }
         };
         // construct dimension of the polynomial given to the sumcheck
         let transposed_right_shape = if self.is_right_transposed() {
@@ -808,25 +844,37 @@ impl MatMul<Element> {
         } else {
             None
         };
-        let (nrows, ncols) = (left_shape[0], transposed_right_shape.as_ref().unwrap_or(&right_shape)[1]);
+        let (nrows, ncols) = (
+            left_shape[0],
+            transposed_right_shape.as_ref().unwrap_or(&right_shape)[1],
+        );
         ctx_aux.last_output_shape = vec![vec![nrows, ncols]];
 
         // number of variables of the MLE polynomials is the number of row
         // variables in in layer matrix
-        let num_vars = Tensor::<Element>::new_from_shape(transposed_right_shape.unwrap_or(right_shape.clone())).num_vars_2d().0;
+        let num_vars = Tensor::<Element>::new_from_shape(
+            transposed_right_shape.unwrap_or(right_shape.clone()),
+        )
+        .num_vars_2d()
+        .0;
         // check that the number of variables is the same as the number of
         // column variables for left matrix
-        ensure!(num_vars == Tensor::<Element>::new_from_shape(left_shape.clone()).num_vars_2d().1);
+        ensure!(
+            num_vars
+                == Tensor::<Element>::new_from_shape(left_shape.clone())
+                    .num_vars_2d()
+                    .1
+        );
 
-        let left_matrix_shapes = self.left_matrix.get_shape(PaddingMode::NoPadding)
-            .map(|unpadded_shape| 
-                (unpadded_shape, left_shape)
-            );
-        let right_matrix_shapes = self.right_matrix.get_shape(PaddingMode::NoPadding)
-            .map(|unpadded_shape| 
-                (unpadded_shape, right_shape)
-            );
-    
+        let left_matrix_shapes = self
+            .left_matrix
+            .get_shape(PaddingMode::NoPadding)
+            .map(|unpadded_shape| (unpadded_shape, left_shape));
+        let right_matrix_shapes = self
+            .right_matrix
+            .get_shape(PaddingMode::NoPadding)
+            .map(|unpadded_shape| (unpadded_shape, right_shape));
+
         // there is only one product (i.e. quadratic sumcheck)
         let info = MatMulCtx {
             node_id: id,
@@ -840,18 +888,15 @@ impl MatMul<Element> {
         };
 
         ctx_aux.model_polys = self.eval_constant_matrix().map(|evals| {
-                debug!(
-                    "Commitment : mat mul layer ID {}: size {}",
-                    id,
-                    evals.len().ilog2()
-                );
-                let mut model_polys = HashMap::new();
-                model_polys.insert(
-                    MATRIX_POLY_ID.to_string(), 
-                    evals,
-                );
-                model_polys   
-            });
+            debug!(
+                "Commitment : mat mul layer ID {}: size {}",
+                id,
+                evals.len().ilog2()
+            );
+            let mut model_polys = HashMap::new();
+            model_polys.insert(MATRIX_POLY_ID.to_string(), evals);
+            model_polys
+        });
 
         Ok(info)
     }
@@ -867,19 +912,26 @@ where
         input_shapes: &[Vec<usize>],
         padding_mode: PaddingMode,
     ) -> Vec<Vec<usize>> {
-        let left_matrix_shape = self.left_matrix_shapes.as_ref().map(|s| 
-            match padding_mode {
+        let left_matrix_shape = self
+            .left_matrix_shapes
+            .as_ref()
+            .map(|s| match padding_mode {
                 PaddingMode::NoPadding => &s.0,
                 PaddingMode::Padding => &s.1,
-            }
-        );
-        let right_matrix_shape = self.right_matrix_shapes.as_ref().map(|s| 
-            match padding_mode {
+            });
+        let right_matrix_shape = self
+            .right_matrix_shapes
+            .as_ref()
+            .map(|s| match padding_mode {
                 PaddingMode::NoPadding => &s.0,
                 PaddingMode::Padding => &s.1,
-            }
-        );
-        compute_output_shapes(input_shapes, left_matrix_shape, right_matrix_shape, &self.config)
+            });
+        compute_output_shapes(
+            input_shapes,
+            left_matrix_shape,
+            right_matrix_shape,
+            &self.config,
+        )
     }
 
     fn num_outputs(&self, num_inputs: usize) -> usize {
@@ -890,13 +942,13 @@ where
         format!(
             "Matrix multiplication ctx: left = {:?}, right = {:?}",
             self.left_matrix_shapes.as_ref().map(|s| s.1.clone()),
-            self.right_matrix_shapes.as_ref().map(|s| 
-                if self.is_right_transposed() {
+            self.right_matrix_shapes
+                .as_ref()
+                .map(|s| if self.is_right_transposed() {
                     s.1.iter().rev().copied().collect()
                 } else {
                     s.1.clone()
-                }
-            ),
+                }),
         )
     }
 
@@ -921,11 +973,7 @@ where
         verifier: &mut Verifier<E, T, PCS>,
         _shape_step: &crate::iop::context::ShapeStep,
     ) -> Result<Vec<Claim<E>>> {
-        Ok(self.verify_matmul(
-            verifier, 
-            last_claims[0], 
-            proof
-        )?)
+        Ok(self.verify_matmul(verifier, last_claims[0], proof)?)
     }
 }
 
@@ -1031,7 +1079,15 @@ mod tests {
     use itertools::Itertools;
 
     use crate::{
-        layers::{matrix_mul::{Config, MatMul, OperandMatrix}, provable::Evaluate, Layer}, model::{test::prove_model, Model}, padding::PaddingMode, tensor::Tensor, Element, ScalingFactor
+        Element, ScalingFactor,
+        layers::{
+            Layer,
+            matrix_mul::{Config, MatMul, OperandMatrix},
+            provable::Evaluate,
+        },
+        model::{Model, test::prove_model},
+        padding::PaddingMode,
+        tensor::Tensor,
     };
 
     fn test_matmul_padding(transpose: bool) {
@@ -1065,7 +1121,7 @@ mod tests {
 
         // Check padded right matrix has the padded shape of right matrix in layer
         assert_eq!(
-            padded_dims, 
+            padded_dims,
             layer.right_matrix.get_shape(PaddingMode::Padding).unwrap(),
         );
 
@@ -1115,7 +1171,10 @@ mod tests {
         let padded = layer.clone().pad_next_power_of_two().unwrap();
 
         // Check dimensions remain the same
-        assert_eq!(matrix.get_shape(), padded.left_matrix.get_actual_shape().unwrap());
+        assert_eq!(
+            matrix.get_shape(),
+            padded.left_matrix.get_actual_shape().unwrap()
+        );
 
         // Check right matrix has no shape, since it's an input one
         assert!(padded.right_matrix.get_actual_shape().is_none());
@@ -1137,11 +1196,12 @@ mod tests {
     #[test]
     fn test_matmul_pad_mixed_dimensions() {
         // Create a Dense layer with one power-of-two dimension and one non-power-of-two
-        let matrix =
-            Tensor::<Element>::matix_from_coeffs(vec![vec![1, 2, 3, 4], vec![5, 6, 7, 8], vec![
-                9, 10, 11, 12,
-            ]])
-            .unwrap();
+        let matrix = Tensor::<Element>::matix_from_coeffs(vec![
+            vec![1, 2, 3, 4],
+            vec![5, 6, 7, 8],
+            vec![9, 10, 11, 12],
+        ])
+        .unwrap();
 
         let layer = MatMul::new(
             OperandMatrix::Input,
@@ -1251,10 +1311,7 @@ mod tests {
 
     #[test]
     fn test_matmul() {
-        let matmul = MatMul::new(
-            OperandMatrix::Input,
-            OperandMatrix::Input,
-        ).unwrap();
+        let matmul = MatMul::new(OperandMatrix::Input, OperandMatrix::Input).unwrap();
         let a = Tensor::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let b = Tensor::new(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let result = matmul
@@ -1268,8 +1325,9 @@ mod tests {
         let matmul = MatMul::new_with_config(
             OperandMatrix::Input,
             OperandMatrix::Input,
-            Config::TransposeB
-        ).unwrap();
+            Config::TransposeB,
+        )
+        .unwrap();
         let a = Tensor::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let b = Tensor::new(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).transpose();
         let result = matmul
@@ -1283,18 +1341,23 @@ mod tests {
         let first_input_shape = vec![100, 200];
         let second_input_shape = vec![200, 300];
         let matrix_shape = vec![300, 100];
-        let mut model = Model::new_from_input_shapes(vec![first_input_shape, second_input_shape], PaddingMode::NoPadding);
-        
-        let matmul = MatMul::new(
-            OperandMatrix::Input,
-            OperandMatrix::Input,
-        ).unwrap();
-        let first_matmul_id = model.add_consecutive_layer(Layer::MatMul(matmul), None).unwrap();
+        let mut model = Model::new_from_input_shapes(
+            vec![first_input_shape, second_input_shape],
+            PaddingMode::NoPadding,
+        );
+
+        let matmul = MatMul::new(OperandMatrix::Input, OperandMatrix::Input).unwrap();
+        let first_matmul_id = model
+            .add_consecutive_layer(Layer::MatMul(matmul), None)
+            .unwrap();
         let matmul = MatMul::new(
             OperandMatrix::new_weight_matrix(Tensor::random(&matrix_shape)),
             OperandMatrix::Input,
-        ).unwrap();
-        model.add_consecutive_layer(Layer::MatMul(matmul), Some(first_matmul_id)).unwrap();
+        )
+        .unwrap();
+        model
+            .add_consecutive_layer(Layer::MatMul(matmul), Some(first_matmul_id))
+            .unwrap();
         model.route_output(None).unwrap();
         model.describe();
         prove_model(model).unwrap();
@@ -1305,20 +1368,29 @@ mod tests {
         let first_input_shape = vec![100, 200];
         let second_input_shape = vec![300, 200];
         let matrix_shape = vec![100, 300];
-        let mut model = Model::new_from_input_shapes(vec![first_input_shape, second_input_shape], PaddingMode::NoPadding);
-        
+        let mut model = Model::new_from_input_shapes(
+            vec![first_input_shape, second_input_shape],
+            PaddingMode::NoPadding,
+        );
+
         let matmul = MatMul::new_with_config(
             OperandMatrix::Input,
             OperandMatrix::Input,
             Config::TransposeB,
-        ).unwrap();
-        let first_matmul_id = model.add_consecutive_layer(Layer::MatMul(matmul), None).unwrap();
+        )
+        .unwrap();
+        let first_matmul_id = model
+            .add_consecutive_layer(Layer::MatMul(matmul), None)
+            .unwrap();
         let matmul = MatMul::new_with_config(
             OperandMatrix::Input,
             OperandMatrix::new_weight_matrix(Tensor::random(&matrix_shape)),
             Config::TransposeB,
-        ).unwrap();
-        model.add_consecutive_layer(Layer::MatMul(matmul), Some(first_matmul_id)).unwrap();
+        )
+        .unwrap();
+        model
+            .add_consecutive_layer(Layer::MatMul(matmul), Some(first_matmul_id))
+            .unwrap();
         model.route_output(None).unwrap();
         model.describe();
         prove_model(model).unwrap();

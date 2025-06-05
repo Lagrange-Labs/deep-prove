@@ -1,5 +1,10 @@
 use crate::{
-    commit::context::{CommitmentContext, PolyId}, layers::provable::{NodeCtx, NodeId, OpInfo}, lookup::context::{LookupContext, TableType}, model::{Model, ModelCtx, ToIterator}, quantization::Fieldizer, Element
+    Element,
+    commit::context::{CommitmentContext, PolyId},
+    layers::provable::{NodeCtx, NodeId, OpInfo},
+    lookup::context::{LookupContext, TableType},
+    model::{Model, ModelCtx, ToIterator},
+    quantization::Fieldizer,
 };
 use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
@@ -188,7 +193,7 @@ where
                                             f.as_bases()[0]
                                         })
                                         .collect::<Vec<E::BaseField>>(),
-                                )
+                                ),
                             )
                         })
                         .collect::<HashMap<PolyId, DenseMultilinearExtension<E>>>(),

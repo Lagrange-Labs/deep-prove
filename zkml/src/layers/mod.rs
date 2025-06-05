@@ -134,8 +134,10 @@ where
     }
 
     pub fn next_shape_step(&self, last_step: &ShapeStep) -> ShapeStep {
-        let unpadded_output = self.output_shapes(&last_step.unpadded_output_shape, PaddingMode::NoPadding);
-        let padded_output = self.output_shapes(&last_step.padded_output_shape, PaddingMode::Padding);
+        let unpadded_output =
+            self.output_shapes(&last_step.unpadded_output_shape, PaddingMode::NoPadding);
+        let padded_output =
+            self.output_shapes(&last_step.padded_output_shape, PaddingMode::Padding);
         ShapeStep::next_step(last_step, unpadded_output, padded_output)
     }
     pub fn shape_step(
@@ -380,9 +382,7 @@ where
                 if let LayerCtx::MatMul(info) = ctx {
                     m.prove(node_id, info, last_claims, step_data, prover)
                 } else {
-                    bail!(
-                        "No mat mul ctx found for when proving MatMul layer".to_string(),
-                    )
+                    bail!("No mat mul ctx found for when proving MatMul layer".to_string(),)
                 }
             }
             Layer::SchoolBookConvolution(_) => {
@@ -424,7 +424,7 @@ where
             Layer::Dense(dense) => dense.gen_lookup_witness(id, gen, ctx, step_data),
             Layer::Convolution(convolution) => {
                 convolution.gen_lookup_witness(id, gen, ctx, step_data)
-            },
+            }
             Layer::MatMul(m) => m.gen_lookup_witness(id, gen, ctx, step_data),
             Layer::SchoolBookConvolution(school_book_conv) => {
                 // check that the layer is not provable, so we don't need to call the method

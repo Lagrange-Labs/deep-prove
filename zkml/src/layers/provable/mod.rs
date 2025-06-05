@@ -484,7 +484,8 @@ where
                     matmul_ctx.verify(proof, last_claims, verifier, shape_step)
                 } else {
                     bail!(
-                        "MatMul proof not found when verifying matrix multiplication layer".to_string(),
+                        "MatMul proof not found when verifying matrix multiplication layer"
+                            .to_string(),
                     )
                 }
             }
@@ -509,7 +510,9 @@ where
                     bail!("pooling proof not found when verifying pooling layer")
                 }
             }
-            LayerCtx::SchoolBookConvolution(_) | LayerCtx::Table(_) | LayerCtx::Flatten => unreachable!("Trying to verify a non-provable layer"),
+            LayerCtx::SchoolBookConvolution(_) | LayerCtx::Table(_) | LayerCtx::Flatten => {
+                unreachable!("Trying to verify a non-provable layer")
+            }
         }
     }
 }

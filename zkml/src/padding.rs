@@ -3,9 +3,18 @@ use std::collections::HashMap;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 
 use crate::{
+    Element,
     layers::{
-        convolution::Convolution, dense::Dense, flatten::Flatten, matrix_mul::{MatMul, OperandMatrix}, pooling::Pooling, provable::{Node, NodeId, OpInfo}
-    }, model::{Model, ToIterator}, parser::{check_filter, safe_conv2d_shape, safe_maxpool2d_shape}, try_unzip, Element
+        convolution::Convolution,
+        dense::Dense,
+        flatten::Flatten,
+        matrix_mul::{MatMul, OperandMatrix},
+        pooling::Pooling,
+        provable::{Node, NodeId, OpInfo},
+    },
+    model::{Model, ToIterator},
+    parser::{check_filter, safe_conv2d_shape, safe_maxpool2d_shape},
+    try_unzip,
 };
 type GarbagePad = Option<(Vec<usize>, Vec<usize>)>;
 type Shape = Vec<usize>;
@@ -209,30 +218,33 @@ pub(crate) fn pad_dense(mut d: Dense<Element>, si: &mut ShapeInfo) -> Result<Den
     Ok(d)
 }
 
-pub(crate) fn pad_matmul( 
-    mut mat: MatMul<Element>,
-    si: &mut ShapeInfo,
-) -> Result<MatMul<Element>> {
+pub(crate) fn pad_matmul(mut mat: MatMul<Element>, si: &mut ShapeInfo) -> Result<MatMul<Element>> {
     let expected_num_inputs = mat.num_inputs();
-    ensure!(si.shapes.len() == expected_num_inputs, 
+    ensure!(
+        si.shapes.len() == expected_num_inputs,
         "Expected {expected_num_inputs} input shapes when padding MatMul, found {}",
         si.shapes.len(),
     );
-    
-    let (unpadded_input_shapes, mut padded_input_shapes): (Vec<_>, Vec<_>) = try_unzip(si.shapes.iter().map(|s| {
-        ensure!(s.input_shape_og.len() == 2, 
+
+    let (unpadded_input_shapes, mut padded_input_shapes): (Vec<_>, Vec<_>) =
+        try_unzip(si.shapes.iter().map(|s| {
+            ensure!(
+                s.input_shape_og.len() == 2,
                 "Unpadded input shape for MatMul is not 2D"
-        );
-        ensure!(s.input_shape_padded.len() == 2, 
+            );
+            ensure!(
+                s.input_shape_padded.len() == 2,
                 "Padded input shape for MatMul is not 2D"
-        );
-        Ok((s.input_shape_og.clone(), s.input_shape_padded.clone()))
-    }))?;
+            );
+            Ok((s.input_shape_og.clone(), s.input_shape_padded.clone()))
+        }))?;
 
-
-    let mut unpadded_output_shapes = mat.output_shapes(&unpadded_input_shapes, PaddingMode::NoPadding);
-    ensure!(unpadded_output_shapes.len() == 1, 
-        "Expected 1 unpadded output shape for MatMul, found {}", unpadded_output_shapes.len(),
+    let mut unpadded_output_shapes =
+        mat.output_shapes(&unpadded_input_shapes, PaddingMode::NoPadding);
+    ensure!(
+        unpadded_output_shapes.len() == 1,
+        "Expected 1 unpadded output shape for MatMul, found {}",
+        unpadded_output_shapes.len(),
     );
     let unpadded_output_shape = unpadded_output_shapes.pop().unwrap();
     let (left_shape, mut right_shape) = match (&mut mat.left_matrix, &mut mat.right_matrix) {
@@ -242,39 +254,36 @@ pub(crate) fn pad_matmul(
             m.tensor.reshape_to_fit_inplace_2d(vec![nrows, ncols]);
             (
                 m.tensor.get_shape(),
-                padded_input_shapes.pop().unwrap(), // safe to unwrap since we checked the number of inputs at the beginning
+                padded_input_shapes.pop().unwrap(), /* safe to unwrap since we checked the number of inputs at the beginning */
             )
-        },
+        }
         (OperandMatrix::Input, OperandMatrix::Weigth(m)) => {
             let nrows = padded_input_shapes[0][1];
             let ncols = pad_minimum(m.tensor.ncols_2d());
             m.tensor.reshape_to_fit_inplace_2d(vec![nrows, ncols]);
-            (
-                padded_input_shapes.pop().unwrap(),
-                m.tensor.get_shape(),
-            )
-        },
+            (padded_input_shapes.pop().unwrap(), m.tensor.get_shape())
+        }
         (OperandMatrix::Input, OperandMatrix::Input) => {
             let right_shape = padded_input_shapes.pop().unwrap();
             let left_shape = padded_input_shapes.pop().unwrap();
-            (
-                left_shape,
-                right_shape,
-            )
+            (left_shape, right_shape)
         }
-        (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => unreachable!("Found MatMul layer with 2 weight matrices"),  
+        (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => {
+            unreachable!("Found MatMul layer with 2 weight matrices")
+        }
     };
     if mat.is_right_transposed() {
         right_shape.reverse();
     }
-    ensure!(left_shape[1] == right_shape[0], 
+    ensure!(
+        left_shape[1] == right_shape[0],
         "While padding MatMul layer. number of columns in left matrix ({}) does not match with number of rows in right matrix ({})",
-                left_shape[1],
-                right_shape[0],
-        );
-    ensure!(si.shapes.iter().all(|sd| 
-            sd.ignore_garbage_pad.is_none()
-        ), "MatMul layer has garbage padding to be removed",
+        left_shape[1],
+        right_shape[0],
+    );
+    ensure!(
+        si.shapes.iter().all(|sd| sd.ignore_garbage_pad.is_none()),
+        "MatMul layer has garbage padding to be removed",
     );
     si.shapes = vec![ShapeData {
         input_shape_og: unpadded_output_shape,

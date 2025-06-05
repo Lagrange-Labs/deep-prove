@@ -416,10 +416,7 @@ impl Requant {
     /// Method used to instantiate a new [`Requant`] from the multiplier employed to requantize the layer.
     /// The `intermediate_bit_size` is layer dependant and so should be passed as input. It can be calculated based on how many times you need to multiply and add
     /// to get each value in the output tensor.
-    pub(crate) fn from_multiplier(
-        multiplier: f32,
-        intermediate_bit_size: usize,
-    ) -> Requant {
+    pub(crate) fn from_multiplier(multiplier: f32, intermediate_bit_size: usize) -> Requant {
         let log_m = multiplier.log2();
         // This is the right shift
         let int_part = log_m.trunc().abs() as usize;

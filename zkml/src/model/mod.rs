@@ -507,9 +507,21 @@ where
 #[cfg(test)]
 pub(crate) mod test {
     use crate::{
-        init_test_logging, layers::{
-            activation::{Activation, Relu}, convolution::{Convolution, SchoolBookConv}, dense::Dense, matrix_mul::{MatMul, OperandMatrix}, pooling::{Maxpool2D, Pooling, MAXPOOL2D_KERNEL_SIZE}, provable::{evaluate_layer, Edge, Node, OpInfo}, requant::Requant, Layer
-        }, padding::{pad_model, PaddingMode}, quantization::{self, InferenceObserver}, tensor::Number, testing::{Pcs, random_bool_vector, random_vector}, ScalingFactor, ScalingStrategy
+        ScalingFactor, ScalingStrategy, init_test_logging,
+        layers::{
+            Layer,
+            activation::{Activation, Relu},
+            convolution::{Convolution, SchoolBookConv},
+            dense::Dense,
+            matrix_mul::{MatMul, OperandMatrix},
+            pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
+            provable::{Edge, Node, OpInfo, evaluate_layer},
+            requant::Requant,
+        },
+        padding::{PaddingMode, pad_model},
+        quantization::{self, InferenceObserver},
+        tensor::Number,
+        testing::{Pcs, random_bool_vector, random_vector},
     };
     use anyhow::Result;
     use ark_std::rand::{Rng, RngCore, thread_rng};
@@ -983,19 +995,24 @@ pub(crate) mod test {
         let m = random_vector_quant(m_shape[0] * m_shape[1]);
         let tensor_m = Tensor::new(m_shape, m);
         let input_shape = vec![768, tensor_m.nrows_2d()];
-        let mut model = Model::new_from_input_shapes(vec![input_shape.clone()], PaddingMode::Padding);
+        let mut model =
+            Model::new_from_input_shapes(vec![input_shape.clone()], PaddingMode::Padding);
         let matmul_layer = MatMul::new(
             OperandMatrix::Input,
             OperandMatrix::new_weight_matrix(tensor_m),
         )
         .unwrap();
         let padded_layer = matmul_layer.pad_next_power_of_two().unwrap();
-        model.add_consecutive_layer(Layer::MatMul(padded_layer), None).unwrap();
+        model
+            .add_consecutive_layer(Layer::MatMul(padded_layer), None)
+            .unwrap();
         model.route_output(None).unwrap();
         model.describe();
 
         let input = random_vector_quant(input_shape[0] * input_shape[1]);
-        let input_tensor = model.prepare_inputs(vec![Tensor::new(input_shape, input)]).unwrap();
+        let input_tensor = model
+            .prepare_inputs(vec![Tensor::new(input_shape, input)])
+            .unwrap();
 
         let trace = model.run::<F>(&input_tensor).unwrap();
         let mut tr = BasicTranscript::<F>::new(b"matmul");

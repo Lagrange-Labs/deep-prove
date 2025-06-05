@@ -9,7 +9,10 @@
 //! NOTE: it does NOT Perform the softmax per head neither the subsequent projection with the V matrix.
 //! THis is done in subsequent layers due to proving logic proving these operation separately.
 use crate::{
-    layers::{matrix_mul::{self as matmul, OperandMatrix}, provable::Evaluate},
+    layers::{
+        matrix_mul::{self as matmul, OperandMatrix},
+        provable::Evaluate,
+    },
     tensor::Number,
 };
 use anyhow::ensure;
@@ -81,11 +84,11 @@ impl MhaQK {
                     matmul::MatMul::new_with_config(
                         OperandMatrix::Input,
                         OperandMatrix::Input,
-                        matmul::Config::TransposeB
+                        matmul::Config::TransposeB,
                     )?
-                        .evaluate::<E>(&[&mini_q, &mini_k], vec![])?
-                        .outputs
-                        .remove(0),
+                    .evaluate::<E>(&[&mini_q, &mini_k], vec![])?
+                    .outputs
+                    .remove(0),
                     mini_v,
                 ])
             })

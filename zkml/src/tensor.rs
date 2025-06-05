@@ -529,7 +529,7 @@ impl Tensor<Element> {
             conv_data,
         )
     }
-    
+
     /// Returns the evaluation point, in order for (row,col) addressing
     pub fn evals_2d<F: ExtensionField>(&self) -> Vec<F> {
         assert!(self.is_matrix(), "Tensor is not a matrix");
@@ -720,8 +720,9 @@ impl<T> Tensor<T> {
         self.shape[2] * self.shape[2]
     }
 
-    pub fn get_conv_weights<F: ExtensionField>(&self) -> Vec<F> 
-    where T: Fieldizer<F>
+    pub fn get_conv_weights<F: ExtensionField>(&self) -> Vec<F>
+    where
+        T: Fieldizer<F>,
     {
         let mut data = vec![F::ZERO; self.data.len()];
         for i in 0..data.len() {
