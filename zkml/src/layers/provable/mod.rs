@@ -22,7 +22,7 @@ use crate::{
 
 use super::{
     Layer, LayerCtx, LayerProof, convolution::ConvCtx, dense::DenseCtx, flatten::Flatten,
-    requant::Requant,
+    requant::Requant, transformer::softmax::SoftmaxData,
 };
 
 pub(crate) type NodeId = usize;
@@ -115,6 +115,18 @@ impl<N: Number> Node<N> {
             operation,
         }
     }
+}
+
+/// Enum if the output of evaluating a layer returns extra data needed during proving.
+/// This should only be implemented for quantised layers.
+#[derive(Clone, Debug)]
+pub enum ProvingData<E: ExtensionField> {
+    /// Variant for extra data used in proving that we compute during evalaution of quantised convolution.
+    Convolution(ConvData<E>),
+    /// Variant for extra data used to prove [`Softmax`] that we compute anyway during quantised evaluation.
+    Softmax(SoftmaxData<E>),
+    /// Variant used when no extra data is returned.
+    None,
 }
 
 /// Represents the output of the evaluation of a node operation
