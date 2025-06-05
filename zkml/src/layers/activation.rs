@@ -91,15 +91,10 @@ impl<N: Number> Evaluate<N> for Activation {
         inputs: &[&Tensor<N>],
         _unpadded_input_shapes: Vec<Vec<usize>>,
     ) -> Result<LayerOut<N, E>> {
-        ensure!(
-            inputs.len() == 1,
-            "Found more than 1 input when evaluating activation layer"
-        );
-        let input = inputs[0];
-        let output = match self {
-            Activation::Relu(relu) => relu.op(input),
+        let outputs = match self {
+            Activation::Relu(relu) => inputs.iter().map(|input| relu.op(input)).collect::<Vec<_>>(),
         };
-        Ok(LayerOut::from_vec(vec![output]))
+        Ok(LayerOut::from_vec(outputs))
     }
 }
 

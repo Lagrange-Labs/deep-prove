@@ -346,7 +346,7 @@ pub struct Tensor<T> {
 }
 
 impl Tensor<Element> {
-    /// Returns the maximum size in bits possible if this tensor is treated as a matrix inside 
+    /// Returns the maximum size in bits possible if this tensor is treated as a matrix inside
     /// a matrix vector/matrix multiplication.
     pub fn matmul_output_bitsize(&self) -> usize {
         assert!(self.is_matrix(), "Tensor is not a matrix");
@@ -603,7 +603,6 @@ impl<T> Tensor<T> {
             og_shape: vec![0],
         }
     }
-    
 
     /// Is an empty tensor
     pub fn is_empty(&self) -> bool {
@@ -759,7 +758,6 @@ impl<T> Tensor<T>
 where
     T: Number,
 {
-    
     pub fn reshape(mut self, new_shape: Vec<usize>) -> Tensor<T> {
         assert!(
             self.shape.iter().product::<usize>() == new_shape.iter().product::<usize>(),

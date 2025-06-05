@@ -2,7 +2,14 @@ use anyhow::ensure;
 use ff_ext::ExtensionField;
 
 use crate::{
-    layers::{provable::{Evaluate, LayerOut, NodeId, OpInfo, QuantizeOp, QuantizeOutput}, requant::Requant}, padding::PaddingMode, quantization::model_scaling_factor_from_tensor_and_bias, tensor::Number, Element, NextPowerOfTwo, ScalingFactor, ScalingStrategy, Tensor
+    Element, NextPowerOfTwo, ScalingFactor, ScalingStrategy, Tensor,
+    layers::{
+        provable::{Evaluate, LayerOut, NodeId, OpInfo, QuantizeOp, QuantizeOutput},
+        requant::Requant,
+    },
+    padding::PaddingMode,
+    quantization::model_scaling_factor_from_tensor_and_bias,
+    tensor::Number,
 };
 
 /// A layer that evaluates the tensor X against the matrices Q, K and V.
@@ -147,41 +154,69 @@ impl QuantizeOp for QKV<f32> {
         node_id: NodeId,
         input_scaling: &[ScalingFactor],
     ) -> anyhow::Result<QuantizeOutput<Self::QuantizedOp>> {
-            let num_outputs = self.num_outputs(input_scaling.len());
-            let mut output_scalings = S::scaling_factors_for_node(data, node_id, num_outputs);
-            ensure!(
-                output_scalings.len() == 1,
-                "Output scaling for QKV layer different from 1"
-            );
-            self.quantize_from_scalings(input_scaling, &output_scalings)
-        }
+        let num_outputs = self.num_outputs(input_scaling.len());
+        let mut output_scalings = S::scaling_factors_for_node(data, node_id, num_outputs);
+        ensure!(
+            output_scalings.len() == 1,
+            "Output scaling for QKV layer different from 1"
+        );
+        self.quantize_from_scalings(input_scaling, &output_scalings)
+    }
 }
 
 impl QKV<f32> {
-    fn quantize_from_scalings(self, input_scaling: &[ScalingFactor], output_scaling: &[ScalingFactor]) -> anyhow::Result<QuantizeOutput<QKV<Element>>> {
+    fn quantize_from_scalings(
+        self,
+        input_scaling: &[ScalingFactor],
+        output_scaling: &[ScalingFactor],
+    ) -> anyhow::Result<QuantizeOutput<QKV<Element>>> {
         ensure!(input_scaling.len() == 1, "QKV: input_scaling.len() != 1");
         ensure!(output_scaling.len() == 3, "QKV: output_scaling.len() != 3");
         // for each tensor, we look at the scaling factor and the scaling factor of the associated bias
-        let (matrices,(biases,requants)): (Vec<_>,(Vec<_>,Vec<_>)) = output_scaling.iter().zip(vec![(self.q, self.q_bias), (self.k, self.k_bias), (self.v, self.v_bias)].into_iter()).map(|(output_scaling, (tensor, bias))| {
-            let (model_scaling, bias_scaling) = model_scaling_factor_from_tensor_and_bias(
-                &input_scaling[0],
-                &output_scaling,
-                &tensor,
-                &bias,
-            );
-            let input_scaling = &input_scaling[0];
-            let quantized_matrix = tensor.quantize(&model_scaling);
-            let quantized_bias = bias.quantize(&bias_scaling);
-            let intermediate_bitsize = quantized_matrix.matmul_output_bitsize();
-            let requant = Requant::from_scaling_factors(*input_scaling,model_scaling,*output_scaling,intermediate_bitsize);
-            (quantized_matrix, (quantized_bias,requant))
-        }).unzip();
+        let (matrices, (biases, requants)): (Vec<_>, (Vec<_>, Vec<_>)) = output_scaling
+            .iter()
+            .zip(
+                vec![
+                    (self.q, self.q_bias),
+                    (self.k, self.k_bias),
+                    (self.v, self.v_bias),
+                ]
+                .into_iter(),
+            )
+            .map(|(output_scaling, (tensor, bias))| {
+                let (model_scaling, bias_scaling) = model_scaling_factor_from_tensor_and_bias(
+                    &input_scaling[0],
+                    &output_scaling,
+                    &tensor,
+                    &bias,
+                );
+                let input_scaling = &input_scaling[0];
+                let quantized_matrix = tensor.quantize(&model_scaling);
+                let quantized_bias = bias.quantize(&bias_scaling);
+                let intermediate_bitsize = quantized_matrix.matmul_output_bitsize();
+                let requant = Requant::from_scaling_factors(
+                    *input_scaling,
+                    model_scaling,
+                    *output_scaling,
+                    intermediate_bitsize,
+                );
+                (quantized_matrix, (quantized_bias, requant))
+            })
+            .unzip();
         let mut matit = matrices.into_iter();
-        let (q,k,v) = (matit.next().unwrap(),matit.next().unwrap(),matit.next().unwrap());
+        let (q, k, v) = (
+            matit.next().unwrap(),
+            matit.next().unwrap(),
+            matit.next().unwrap(),
+        );
         let mut biasit = biases.into_iter();
-        let (q_bias,k_bias,v_bias) = (biasit.next().unwrap(),biasit.next().unwrap(),biasit.next().unwrap());
+        let (q_bias, k_bias, v_bias) = (
+            biasit.next().unwrap(),
+            biasit.next().unwrap(),
+            biasit.next().unwrap(),
+        );
         let quantized_op = QKV::new(q, q_bias, k, k_bias, v, v_bias);
-        Ok(QuantizeOutput::new( quantized_op, output_scaling.to_vec()).with_requants(requants))
+        Ok(QuantizeOutput::new(quantized_op, output_scaling.to_vec()).with_requants(requants))
     }
 }
 
@@ -326,7 +361,10 @@ mod tests {
             v_bias.clone(),
         );
         let mut input = Tensor::<f32>::random(&[seq_len, emb_size]);
-        let output = qkv.evaluate::<GoldilocksExt2>(&[&input],vec![]).unwrap().outputs;
+        let output = qkv
+            .evaluate::<GoldilocksExt2>(&[&input], vec![])
+            .unwrap()
+            .outputs;
         assert_eq!(output.len(), 3);
         assert_eq!(output[0].get_shape(), vec![seq_len, hidden_size]);
         assert_eq!(output[1].get_shape(), vec![seq_len, hidden_size]);
@@ -339,7 +377,10 @@ mod tests {
         let seq_len = seq_len + 1;
         let new_token_emb = Tensor::<f32>::random(&[1, emb_size]);
         input.concat(new_token_emb.clone());
-        let output = qkv.evaluate::<GoldilocksExt2>(&[&input],vec![]).unwrap().outputs;
+        let output = qkv
+            .evaluate::<GoldilocksExt2>(&[&input], vec![])
+            .unwrap()
+            .outputs;
         assert_eq!(output.len(), 3);
         assert_eq!(output[0].get_shape(), vec![seq_len, hidden_size]);
         assert_eq!(output[1].get_shape(), vec![seq_len, hidden_size]);

@@ -173,7 +173,9 @@ mod test {
             if let Some(gpt2_output) = gpt2_output {
                 gpt2_output.is_layernorm_close(normed.outputs());
             }
-            let qkv = self.qkv.evaluate::<GoldilocksExt2>(&normed.outputs())?;
+            let qkv = self
+                .qkv
+                .evaluate::<GoldilocksExt2>(&normed.outputs(), vec![])?;
             if let Some(gpt2_output) = gpt2_output {
                 println!("input to qkv: {:?}", normed.outputs()[0].get_data());
                 println!("W_q weights: {:?}", self.qkv.q.get_data());

@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 use crate::{Claim, default_transcript, layers::provable::NodeId};
 use ff_ext::ExtensionField;
 
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{Context, Result, anyhow, ensure};
 use mpcs::{Evaluation, PolynomialCommitmentScheme};
 use multilinear_extensions::mle::{DenseMultilinearExtension, MultilinearExtension};
 use rayon::prelude::*;
@@ -30,8 +30,10 @@ where
     /// Verifier parameters for the [`PolynomialCommitmentScheme`]
     verifier_params: PCS::VerifierParam,
     /// This field contains a [`HashMap`] where the key is a [`NodeId`] and the value is a vector of tuples of [`PolynomialCommitmentScheme::CommitmentWithWitness`]  and [`DenseMultilinearExtension<E>`] corresponding to that ID.
-    model_comms_map:
-        BTreeMap<NodeId, BTreeMap<PolyId, (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>>,
+    model_comms_map: BTreeMap<
+        NodeId,
+        BTreeMap<PolyId, (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
+    >,
 }
 
 impl<E, PCS> CommitmentContext<E, PCS>
@@ -62,23 +64,25 @@ where
         let model_comms_map = polys
             .into_par_iter()
             .map(|(node_id, polys_vec)| {
-                let model_comms =
-                    polys_vec
-                        .into_iter()
-                        .map(|(id, poly)| {
-                            let commit = PCS::commit(&prover_params, &poly)?;
-                            Result::<(_, _), anyhow::Error>::Ok((id, (commit, poly)))
-                        })
-                        .collect::<Result<
-                            BTreeMap<PolyId, (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
-                            _,
-                        >>()?;
-                Result::<(NodeId, BTreeMap<PolyId, (_, _)>), anyhow::Error>::Ok((node_id, model_comms))
+                let model_comms = polys_vec
+                    .into_iter()
+                    .map(|(id, poly)| {
+                        let commit = PCS::commit(&prover_params, &poly)?;
+                        Result::<(_, _), anyhow::Error>::Ok((id, (commit, poly)))
+                    })
+                    .collect::<Result<
+                        BTreeMap<
+                            PolyId,
+                            (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>),
+                        >,
+                        _,
+                    >>()?;
+                Result::<(NodeId, BTreeMap<PolyId, (_, _)>), anyhow::Error>::Ok((
+                    node_id,
+                    model_comms,
+                ))
             })
-            .collect::<Result<
-                BTreeMap<NodeId, _>,
-                _,
-            >>()?;
+            .collect::<Result<BTreeMap<NodeId, _>, _>>()?;
         Ok(CommitmentContext {
             prover_params,
             verifier_params,
@@ -103,15 +107,17 @@ where
 
     /// Write the commitment context to the transcript
     pub fn write_to_transcript<T: Transcript<E>>(&self, transcript: &mut T) -> Result<()> {
-        self.model_comms_map.iter().try_for_each(|(node_id, comms_vec)| {
-            comms_vec.iter().try_for_each(|(id, (comm, _))| {
-                let v_comm = PCS::get_pure_commitment(comm);
-                PCS::write_commitment(&v_comm, transcript).context(format!(
-                    "Could not write commitment for polynomial {} of node {}",
-                    id, node_id
-                ))
+        self.model_comms_map
+            .iter()
+            .try_for_each(|(node_id, comms_vec)| {
+                comms_vec.iter().try_for_each(|(id, (comm, _))| {
+                    let v_comm = PCS::get_pure_commitment(comm);
+                    PCS::write_commitment(&v_comm, transcript).context(format!(
+                        "Could not write commitment for polynomial {} of node {}",
+                        id, node_id
+                    ))
+                })
             })
-        })
     }
 }
 
@@ -243,9 +249,9 @@ where
         node_commitments
             .into_iter()
             .try_for_each(|(id, comm_with_wit)| {
-                let claim = claims
-                    .remove(&id)
-                    .ok_or_else(|| anyhow!("No claim found for poly id {} in node {}", id, node_id))?;
+                let claim = claims.remove(&id).ok_or_else(|| {
+                    anyhow!("No claim found for poly id {} in node {}", id, node_id)
+                })?;
                 self.add_witness_claim(comm_with_wit, claim)
             })
     }
@@ -372,7 +378,11 @@ where
     }
 
     /// Add claims about model weights and biases for a certain node
-    pub fn add_common_claims(&mut self, node_id: NodeId, mut claims: HashMap<PolyId, Claim<E>>) -> Result<()> {
+    pub fn add_common_claims(
+        &mut self,
+        node_id: NodeId,
+        mut claims: HashMap<PolyId, Claim<E>>,
+    ) -> Result<()> {
         let node_commitments = self.model_comms_map.remove(&node_id).ok_or(anyhow!(
             "No commitments stored for node with id: {}",
             node_id
@@ -381,9 +391,9 @@ where
         node_commitments
             .into_iter()
             .try_for_each(|(id, comm_with_wit)| {
-                let claim = claims
-                    .remove(&id)
-                    .ok_or_else(|| anyhow!("No claim found for poly id {} in node {}", id, node_id))?;
+                let claim = claims.remove(&id).ok_or_else(|| {
+                    anyhow!("No claim found for poly id {} in node {}", id, node_id)
+                })?;
                 self.add_witness_claim(comm_with_wit, claim)
             })
     }

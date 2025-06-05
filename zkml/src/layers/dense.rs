@@ -1,10 +1,16 @@
 use std::{cmp::Ordering, collections::HashMap};
 
 use crate::{
+    Claim, NextPowerOfTwo, Prover, ScalingStrategy,
     iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
-    }, layers::{requant::Requant, LayerCtx, LayerProof}, model::StepData, padding::{pad_dense, PaddingMode, ShapeInfo}, quantization::{self, model_scaling_factor_from_tensor_and_bias, ScalingFactor, BIT_LEN}, tensor::Number, Claim, NextPowerOfTwo, Prover, ScalingStrategy
+    },
+    layers::{LayerCtx, LayerProof, requant::Requant},
+    model::StepData,
+    padding::{PaddingMode, ShapeInfo, pad_dense},
+    quantization::{self, BIT_LEN, ScalingFactor, model_scaling_factor_from_tensor_and_bias},
+    tensor::Number,
 };
 use anyhow::{Result, ensure};
 use ff_ext::ExtensionField;
@@ -211,14 +217,8 @@ where
 
         aux.model_polys = {
             let mut model_polys = HashMap::new();
-            model_polys.insert(
-                WEIGHT_POLY_ID.to_string(),
-                weights_evals,
-            );
-            model_polys.insert(
-                BIAS_POLY_ID.to_string(),
-                bias_evals,
-            );
+            model_polys.insert(WEIGHT_POLY_ID.to_string(), weights_evals);
+            model_polys.insert(BIAS_POLY_ID.to_string(), bias_evals);
             Some(model_polys)
         };
         Ok((dense_info, aux))
@@ -541,14 +541,8 @@ impl Dense<Element> {
         // Add common commitment claims to be proven
         let common_claims = {
             let mut claims = HashMap::new();
-            claims.insert(
-                WEIGHT_POLY_ID.to_string(),
-                weights_claim,
-            );
-            claims.insert(
-                BIAS_POLY_ID.to_string(),
-                bias_claim,
-            );
+            claims.insert(WEIGHT_POLY_ID.to_string(), weights_claim);
+            claims.insert(BIAS_POLY_ID.to_string(), bias_claim);
             claims
         };
         prover.add_common_claims(id, common_claims)?;
@@ -619,14 +613,8 @@ where
         // add the common commitment claims to be verified
         let common_claims = {
             let mut claims = HashMap::new();
-            claims.insert(
-                WEIGHT_POLY_ID.to_string(),
-                weights_claim,
-            );
-            claims.insert(
-                BIAS_POLY_ID.to_string(),
-                bias_claim,
-            );
+            claims.insert(WEIGHT_POLY_ID.to_string(), weights_claim);
+            claims.insert(BIAS_POLY_ID.to_string(), bias_claim);
             claims
         };
         verifier.add_common_claims(self.node_id, common_claims)?;

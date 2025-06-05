@@ -293,15 +293,35 @@ pub struct QuantizeOutput<Op> {
 
 impl<Op> QuantizeOutput<Op> {
     pub fn new(quantized_op: Op, output_scalings: Vec<ScalingFactor>) -> Self {
-        Self { quantized_op, output_scalings, requant_layer: None }
+        Self {
+            quantized_op,
+            output_scalings,
+            requant_layer: None,
+        }
     }
     pub fn with_requant(self, requant: Requant) -> Self {
-        Self { quantized_op: self.quantized_op, output_scalings: self.output_scalings, requant_layer: Some(vec![requant]) }
+        assert!(self.requant_layer.is_none(), "Requant layer already exists");
+        assert!(
+            self.output_scalings.len() == 1,
+            "Number of output scalings must be 1"
+        );
+        Self {
+            quantized_op: self.quantized_op,
+            output_scalings: self.output_scalings,
+            requant_layer: Some(vec![requant]),
+        }
     }
     pub fn with_requants(self, requants: Vec<Requant>) -> Self {
         assert!(self.requant_layer.is_none(), "Requant layer already exists");
-        assert!(self.output_scalings.len() == requants.len(), "Number of output scalings and requants must be the same");
-        Self { quantized_op: self.quantized_op, output_scalings: self.output_scalings, requant_layer: Some(requants) }
+        assert!(
+            self.output_scalings.len() == requants.len(),
+            "Number of output scalings and requants must be the same"
+        );
+        Self {
+            quantized_op: self.quantized_op,
+            output_scalings: self.output_scalings,
+            requant_layer: Some(requants),
+        }
     }
 }
 

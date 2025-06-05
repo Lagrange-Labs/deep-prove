@@ -1,5 +1,10 @@
 use crate::{
-    iop::context::ShapeStep, layers::{hadamard, requant::Requant}, model::StepData, padding::{pad_conv, PaddingMode, ShapeInfo}, quantization::{TensorFielder, BIT_LEN}, ScalingStrategy, VectorTranscript
+    ScalingStrategy, VectorTranscript,
+    iop::context::ShapeStep,
+    layers::{hadamard, requant::Requant},
+    model::StepData,
+    padding::{PaddingMode, ShapeInfo, pad_conv},
+    quantization::{BIT_LEN, TensorFielder},
 };
 use core::f32;
 use std::collections::HashMap;
@@ -530,10 +535,7 @@ where
         aux.model_polys = {
             let mut model_polys = HashMap::new();
             model_polys.insert(FILTER_POLY_ID.to_string(), filter_poly);
-            model_polys.insert(
-                BIAS_POLY_ID.to_string(),
-                bias_poly,
-            );
+            model_polys.insert(BIAS_POLY_ID.to_string(), bias_poly);
             Some(model_polys)
         };
         Ok((conv_info, aux))
@@ -993,14 +995,8 @@ impl Convolution<Element> {
         // Add common polynomial commitment claims to the commitment prover
         let common_claims = {
             let mut claims = HashMap::new();
-            claims.insert(
-                FILTER_POLY_ID.to_string(),
-                filter_claim,
-            );
-            claims.insert(
-                BIAS_POLY_ID.to_string(),
-                bias_claim,
-            );
+            claims.insert(FILTER_POLY_ID.to_string(), filter_claim);
+            claims.insert(BIAS_POLY_ID.to_string(), bias_claim);
             claims
         };
         prover.add_common_claims(id, common_claims)?;
@@ -1341,14 +1337,8 @@ where
         // Add the common commitment claims to be verified
         let common_claims = {
             let mut claims = HashMap::new();
-            claims.insert(
-                FILTER_POLY_ID.to_string(),
-                filter_claim,
-            );
-            claims.insert(
-                BIAS_POLY_ID.to_string(),
-                bias_claim,
-            );
+            claims.insert(FILTER_POLY_ID.to_string(), filter_claim);
+            claims.insert(BIAS_POLY_ID.to_string(), bias_claim);
             claims
         };
         verifier.add_common_claims(self.node_id, common_claims)?;

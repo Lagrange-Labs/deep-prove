@@ -128,12 +128,12 @@ impl Evaluate<Element> for Requant {
         inputs: &[&Tensor<Element>],
         _unpadded_input_shapes: Vec<Vec<usize>>,
     ) -> Result<LayerOut<Element, E>> {
-        ensure!(
-            inputs.len() == 1,
-            "Found more than 1 input when evaluating requant layer"
-        );
-        let input = inputs[0];
-        Ok(LayerOut::from_vec(vec![self.op(input)?]))
+        Ok(LayerOut::from_vec(
+            inputs
+                .iter()
+                .map(|input| self.op(input))
+                .collect::<Result<Vec<_>>>()?,
+        ))
     }
 }
 

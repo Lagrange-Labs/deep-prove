@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use ff_ext::ExtensionField;
 use goldilocks::GoldilocksExt2;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -169,61 +169,111 @@ where
         }
     }
 
-    /// Add a re-quantization node to the model after the node with id `input_node_id`
-    pub(crate) fn add_requant_node(
+    /// Add re-quantization nodes to the model after the node with id `input_node_id`
+    /// It creates as many requant layers as there are output wires of the input node
+    pub(crate) fn add_requant_nodes(
         &mut self,
-        requant: Requant,
+        requants: Vec<Requant>,
         input_node_id: NodeId,
-    ) -> anyhow::Result<NodeId> {
+    ) -> anyhow::Result<Vec<NodeId>> {
         let input_node = self
             .nodes
-            .get_mut(&input_node_id)
+            .get(&input_node_id)
             .ok_or(anyhow!("Node {input_node_id} not found in the model"))?;
         let num_outputs = input_node.outputs.len();
-        let requant_node = Node::new_with_outputs(
-            (0..num_outputs)
-                .map(|i| Edge {
-                    node: Some(input_node_id),
-                    index: i,
-                })
-                .collect(),
-            Layer::Requant(requant),
-            input_node.outputs.clone(), // copy output wires of `input_node` to requant node
-        );
-        // remove edges from outputs of `input_node`
-        input_node.outputs = vec![Default::default(); num_outputs];
-        let requant_id = self.add_node(requant_node)?;
+        // we want to create new requant nodes for each output of the input node. That means we need to
+        // create one output edge from input_node to new requant_node and need to copy the associated output wire
+        let requant_nodes = input_node
+            .outputs
+            .iter()
+            .zip(requants.into_iter())
+            .map(|(wire, requant)| {
+                // INPUT EDGES: we look at the output nodes designated by this wire, and for each such node, we look at all the input edges that
+                // come from `input_node_id`. For those, we just copy the index of the wire.
+                let input_edges = wire
+                    .edges
+                    .iter()
+                    .map(|edge| {
+                        let Some(output_node_id) = edge.node else {
+                            // this edge signals this is an input node so we can't insert a requant "before"
+                            return Ok(vec![]);
+                        };
+                        let output_node = self
+                            .nodes
+                            .get(&output_node_id)
+                            .ok_or(anyhow!("Node {output_node_id} not found in the model"))?;
+                        Ok(output_node
+                            .inputs
+                            .iter()
+                            .flat_map(|input_edge| {
+                                if input_edge.node.is_some()
+                                    && input_edge.node.unwrap() == input_node_id
+                                {
+                                    Some(Edge::new(input_node_id, input_edge.index))
+                                } else {
+                                    // that edge is referring to another node that input_node_id so we don't care, since requant layer
+                                    // only deals with the outputs of input_node_id
+                                    None
+                                }
+                            })
+                            .collect::<Vec<_>>())
+                        // flatten because there may be empty vectors
+                    })
+                    .collect::<Result<Vec<_>>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                // OUTPUT EDGES: We simply copy the output wires of input_node since they are the same.
+                // NOTE here we enforce that one requant  == one output wire. Later we might want to revisit that assumption if needed.
+                let output_wires = wire.clone();
+                Ok(Node::new_with_outputs(
+                    input_edges,
+                    Layer::Requant(requant),
+                    vec![output_wires],
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        // remove edges from outputs of `input_node` - BEFORE adding the requant nodes to the model, since
+        // that action will append to the input_node.outputs.
+        // safe unwrap because already did it before - redo it here for borrowing safety reasons
+        self.nodes.get_mut(&input_node_id).unwrap().outputs = vec![Default::default(); num_outputs];
+        let requant_ids = requant_nodes
+            .into_iter()
+            .map(|node| self.add_node(node))
+            .collect::<Result<Vec<_>>>()?;
         // route inputs of the nodes using outputs of `input_node_id` to the newly inserted
         // requant node
-        let requant_node = self.nodes.get(&requant_id).ok_or(anyhow!(
-            "Requant node {requant_id} just inserted not found in the model"
-        ))?;
-        for (i, wire) in requant_node.outputs.clone().iter().enumerate() {
-            // change inputs of each node using this output wire
-            wire.edges.iter().filter(|edge| edge.node.is_some()).try_for_each(|edge|{
-                let node_id = edge.node.unwrap();
-                let node = self.nodes.get_mut(&node_id).ok_or(
-                    anyhow!("Node {node_id}, which should use an output of requant node {requant_id}, not found in model")
-                )?;
-                ensure!(edge.index < node.inputs.len(),
-                    "Node {node_id} has {} inputs, so cannot access input {}",
-                    node.inputs.len(),
-                    edge.index,
-                );
-                // check that this input was indeed referring to an output of input_node_id
-                let input_edge = &mut node.inputs[edge.index];
-                ensure!(input_edge.node.ok_or(
-                    anyhow!("{} input of node {node_id} should not be an input of the model", edge.index)
-                )? == input_node_id,
-                    "{} input of node {node_id} should be {input_node_id}", edge.index
-                );
-                // replace `input_node_id` with `requant_id`
-                input_edge.node = Some(requant_id);
-                input_edge.index = i;
-                Ok(())
-            })?;
+        for requant_id in requant_ids.iter() {
+            let requant_node = self.nodes.get(&requant_id).ok_or(anyhow!(
+                "Requant node {requant_id} just inserted not found in the model"
+            ))?;
+            for (i, wire) in requant_node.outputs.clone().iter().enumerate() {
+                // change inputs of each node using this output wire
+                wire.edges.iter().filter(|edge| edge.node.is_some()).try_for_each(|edge|{
+                    let node_id = edge.node.unwrap();
+                    let node = self.nodes.get_mut(&node_id).ok_or(
+                        anyhow!("Node {node_id}, which should use an output of requant node {requant_id}, not found in model")
+                    )?;
+                    ensure!(edge.index < node.inputs.len(),
+                        "Node {node_id} has {} inputs, so cannot access input {}",
+                        node.inputs.len(),
+                        edge.index,
+                    );
+                    // check that this input was indeed referring to an output of input_node_id
+                    let input_edge = &mut node.inputs[edge.index];
+                    ensure!(input_edge.node.ok_or(
+                        anyhow!("{} input of node {node_id} should not be an input of the model", edge.index)
+                    )? == input_node_id,
+                        "{} input of node {node_id} should be {input_node_id}", edge.index
+                    );
+                    // replace `input_node_id` with `requant_id`
+                    input_edge.node = Some(*requant_id);
+                    input_edge.index = i;
+                    Ok(())
+                })?;
+            }
         }
-        Ok(requant_id)
+        Ok(requant_ids)
     }
 
     /// Corner-case method to add a node whose inputs correspond to the outputs of a node already inserted in the model
@@ -272,21 +322,21 @@ where
     pub fn add_node_with_id(&mut self, node_id: NodeId, node: Node<N>) -> anyhow::Result<()> {
         // iterate over the inputs of the node and add the edges to the outputs of
         // corresponding nodes already in the model
-        for (i, input) in node.inputs.iter().enumerate() {
-            if let Some(input_node_id) = &input.node {
+        for (i, input_edge) in node.inputs.iter().enumerate() {
+            if let Some(input_node_id) = &input_edge.node {
                 let input_node = self.nodes.get_mut(input_node_id).ok_or(anyhow!(
                     "Node {} for input {} of new node not found in model",
                     input_node_id,
                     i,
                 ))?;
                 ensure!(
-                    input.index < input_node.outputs.len(),
+                    input_edge.index < input_node.outputs.len(),
                     "Specified output number {} for node {}, which has only {} outputs",
-                    input.index,
+                    input_edge.index,
                     input_node_id,
                     input_node.outputs.len(),
                 );
-                input_node.outputs[input.index].edges.push(Edge {
+                input_node.outputs[input_edge.index].edges.push(Edge {
                     node: Some(node_id),
                     index: i,
                 });
@@ -1180,6 +1230,58 @@ pub(crate) mod test {
         const INPUT_SIZE: usize = 57;
         let model = build_test_model::<f32, INPUT_SIZE>();
         prove_model(model).unwrap();
+    }
+
+    /// 2 relus connected. First relu receives two inputs and pass that to the second relu
+    /// This test checks that when inserting a requant layer in between, the inputs and output edges
+    /// are still correct.
+    /// Relu is easy since in inference, it can support many inputs.
+    /// Graph wise:
+    ///      A
+    ///     / \\  <-- double inputs for C
+    ///    B   C
+    /// should become:
+    ///       A
+    ///     /  \\
+    ///    R1  R2  <-- distinct requant layers !
+    ///    /    \\   
+    ///   B      C
+    ///
+    #[test]
+    fn test_model_insert_requant() {
+        init_test_logging();
+        const FIRST_INPUT_SIZE: usize = 27;
+        const SECOND_INPUT_SIZE: usize = 49;
+        let input_shapes = vec![vec![FIRST_INPUT_SIZE], vec![SECOND_INPUT_SIZE]];
+        let mut model = Model::<Element>::new_from_input_shapes(input_shapes.clone(), PaddingMode::NoPadding);
+        let relu1 = model.add_node(Node::new(vec![Edge::new_at_edge(0),Edge::new_at_edge(1)], Layer::Activation(Activation::Relu(Relu)))).unwrap();
+        // here we take the first two inputs of relu1
+        let relu2 = model.add_node(Node::new(vec![Edge::new(relu1,0),Edge::new(relu1,1)], Layer::Activation(Activation::Relu(Relu)))).unwrap();
+        // here we only want to take the first input of relu1
+        let relu3 = model.add_node(Node::new(vec![Edge::new(relu1,0)], Layer::Activation(Activation::Relu(Relu)))).unwrap();
+        let input_tensor = vec![Tensor::random(&input_shapes[0]),Tensor::random(&input_shapes[1])];
+        let test_sf = ScalingFactor::from_scale(1.0, None);
+        // 2 requants, one for each outgoing output wire (one for relu2 and one for relu3)
+        let requants = vec![Requant::from_scaling_factors( test_sf,test_sf, test_sf, 10); 2];
+        let requants_ids = model.add_requant_nodes(requants, relu1).unwrap();
+        assert_eq!(requants_ids.len(), 2);
+        model
+            .route_output(Some(vec![
+                Edge {
+                    node: Some(relu2),
+                    index: 0,
+                },
+                Edge {
+                    node: Some(relu2),
+                    index: 1,
+                },
+                Edge {
+                    node: Some(relu3),
+                    index: 0,
+                },
+            ]))
+            .unwrap();
+        model.run::<GoldilocksExt2>(&input_tensor).unwrap();
     }
 
     #[test]

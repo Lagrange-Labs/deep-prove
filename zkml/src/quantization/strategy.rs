@@ -266,14 +266,19 @@ fn quantize_model<S: ScalingStrategy>(
         .collect::<Result<_>>()?;
     let mut model = Model::new_from_shapes(input_not_padded_shapes, input_shapes, nodes);
     for (input_node_id, requant) in requant_layers {
-        let node_id = model.add_requant_node(requant, input_node_id)?;
+        let requant_ids = model.add_requant_nodes(requant, input_node_id)?;
         // add scaling factor to `md` for requant layers: the scaling factors of the inputs correspond to
         // the scaling factors of the outputs of the previous node
         let input_scaling = md.get_output_layer_scaling(&input_node_id).ok_or(anyhow!(
             "Scaling factors not found for node {input_node_id}"
         ))?;
-        let output_scaling = input_scaling.to_vec(); // output scaling factors are the same as input ones for requant
-        md.set_layers_scaling(node_id, output_scaling, input_scaling.to_vec());
+        ensure!(
+            requant_ids.len() == input_scaling.len(),
+            "Number of requant layers must match number of output scalings"
+        );
+        for (node_id, scaling_factor) in requant_ids.into_iter().zip(input_scaling.to_vec()) {
+            md.set_layers_scaling(node_id, vec![scaling_factor], vec![scaling_factor]);
+        }
     }
     let out_nodes = model.output_nodes();
     let md = md.build(out_nodes)?;
