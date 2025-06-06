@@ -1,8 +1,6 @@
 //! This layer applies the softmax function to the last dimension of the input tensor
 use crate::{
-    Tensor,
-    layers::provable::{Evaluate, LayerOut},
-    tensor::Number,
+    layers::provable::{Evaluate, LayerOut, OpInfo, QuantizeOp}, tensor::Number, Element, Tensor
 };
 
 #[derive(Debug, Clone)]
@@ -38,6 +36,51 @@ impl Evaluate<f32> for Softmax<f32> {
             .collect::<Vec<_>>();
         let output_tensor = Tensor::new(input.get_shape(), output);
         Ok(LayerOut::from_vec(vec![output_tensor]))
+    }
+}
+
+impl Evaluate<Element> for Softmax<Element> {
+    fn evaluate<E: ff_ext::ExtensionField>(
+        &self,
+        _inputs: &[&crate::Tensor<Element>],
+        _unpadded_input_shapes: Vec<Vec<usize>>,
+    ) -> anyhow::Result<LayerOut<Element, E>> {
+        unimplemented!()
+    }
+}
+
+impl<N: Number> OpInfo for Softmax<N> {
+    fn output_shapes(
+        &self,
+        input_shapes: &[Vec<usize>],
+        _padding_mode: crate::padding::PaddingMode,
+    ) -> Vec<Vec<usize>> {
+        input_shapes.to_vec()
+    }
+
+    fn num_outputs(&self, num_inputs: usize) -> usize {
+        num_inputs
+    }
+
+    fn describe(&self) -> String {
+        "Softmax".to_string()
+    }
+
+    fn is_provable(&self) -> bool {
+        true
+    }
+}
+
+impl QuantizeOp for Softmax<f32> {
+    type QuantizedOp = Softmax<Element>;
+
+    fn quantize_op<S: crate::ScalingStrategy>(
+        self,
+        _data: &S::AuxData,
+        _node_id: crate::layers::provable::NodeId,
+        _input_scaling: &[crate::ScalingFactor],
+    ) -> anyhow::Result<crate::layers::provable::QuantizeOutput<Self::QuantizedOp>> {
+        unimplemented!()
     }
 }
 

@@ -37,7 +37,7 @@ use crate::{
         dense::Dense,
         pooling::Pooling,
         requant::{Requant, RequantProof},
-        transformer::{layernorm::LayerNorm, mha::MhaQK, qkv::QKV},
+        transformer::{layernorm::LayerNorm, mha::MhaQK, qkv::QKV, softmax::Softmax},
     }, lookup::context::LookupWitnessGen, model::StepData, padding::{PaddingMode, ShapeInfo}, quantization::ScalingFactor, tensor::{Number, Tensor}, Context, Element, ScalingStrategy
 };
 use activation::ActivationCtx;
@@ -66,6 +66,7 @@ pub enum Layer<T> {
     MhaQK(MhaQK),
     ConcatMatMul(ConcatMatMul),
     LayerNorm(LayerNorm<T>),
+    Softmax(Softmax<T>),
 }
 
 /// Describes a steps wrt the polynomial to be proven/looked at. Verifier needs to know
@@ -92,6 +93,7 @@ where
     ConcatMatMul,
     LayerNorm,
     Flatten,
+    Softmax,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -111,6 +113,7 @@ where
     MhaQK,
     ConcatMatMul,
     LayerNorm,
+    Softmax,
     Dummy, // To be used for non-provable layers
 }
 
@@ -127,6 +130,7 @@ where
             Self::MhaQK => "MHA_QK".to_string(),
             Self::ConcatMatMul => "ConcatMatMul".to_string(),
             Self::LayerNorm => "LayerNorm".to_string(),
+            Self::Softmax => "Softmax".to_string(),
             Self::SchoolBookConvolution(_) => "Traditional Convolution".to_string(),
             Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
@@ -233,6 +237,7 @@ impl<N: Number> OpInfo for Layer<N> {
             }
             Layer::QKV(qkv) => qkv.output_shapes(input_shapes, padding_mode),
             Layer::LayerNorm(layernorm) => layernorm.output_shapes(input_shapes, padding_mode),
+            Layer::Softmax(softmax) => softmax.output_shapes(input_shapes, padding_mode),
             Layer::SchoolBookConvolution(convolution) => {
                 convolution.output_shapes(input_shapes, padding_mode)
             }
@@ -252,6 +257,7 @@ impl<N: Number> OpInfo for Layer<N> {
             Layer::MhaQK(mha) => mha.num_outputs(num_inputs),
             Layer::ConcatMatMul(concat_matmul) => concat_matmul.num_outputs(num_inputs),
             Layer::LayerNorm(layernorm) => layernorm.num_outputs(num_inputs),
+            Layer::Softmax(softmax) => softmax.num_outputs(num_inputs),
             Layer::SchoolBookConvolution(convolution) => convolution.num_outputs(num_inputs),
             Layer::Activation(activation) => activation.num_outputs(num_inputs),
             Layer::Requant(requant) => requant.num_outputs(num_inputs),
@@ -269,6 +275,7 @@ impl<N: Number> OpInfo for Layer<N> {
             Layer::MhaQK(mha) => mha.describe(),
             Layer::ConcatMatMul(concat_matmul) => concat_matmul.describe(),
             Layer::LayerNorm(layernorm) => layernorm.describe(),
+            Layer::Softmax(softmax) => softmax.describe(),
             Layer::SchoolBookConvolution(convolution) => convolution.describe(),
             Layer::Activation(activation) => activation.describe(),
             Layer::Requant(requant) => requant.describe(),
@@ -286,6 +293,7 @@ impl<N: Number> OpInfo for Layer<N> {
             Layer::MhaQK(mha) => mha.is_provable(),
             Layer::ConcatMatMul(concat_matmul) => concat_matmul.is_provable(),
             Layer::LayerNorm(layernorm) => layernorm.is_provable(),
+            Layer::Softmax(softmax) => softmax.is_provable(),
             Layer::SchoolBookConvolution(school_book_conv) => !school_book_conv.is_provable(),
             Layer::Activation(activation) => activation.is_provable(),
             Layer::Requant(requant) => requant.is_provable(),
@@ -311,6 +319,7 @@ impl Evaluate<f32> for Layer<f32> {
                 concat_matmul.evaluate(inputs, unpadded_input_shapes)
             }
             Layer::LayerNorm(layernorm) => layernorm.evaluate(inputs, unpadded_input_shapes),
+            Layer::Softmax(softmax) => softmax.evaluate(inputs, unpadded_input_shapes),
             Layer::SchoolBookConvolution(school_book_conv) => {
                 school_book_conv.evaluate(inputs, unpadded_input_shapes)
             }
@@ -338,6 +347,7 @@ impl Evaluate<Element> for Layer<Element> {
                 concat_matmul.evaluate(inputs, unpadded_input_shapes)
             }
             Layer::LayerNorm(layernorm) => layernorm.evaluate(inputs, unpadded_input_shapes),
+            Layer::Softmax(softmax) => softmax.evaluate(inputs, unpadded_input_shapes),
             Layer::SchoolBookConvolution(school_book_conv) => {
                 school_book_conv.evaluate(inputs, unpadded_input_shapes)
             }
@@ -363,6 +373,7 @@ where
                 unimplemented!("ConcatMatMul proving layer not implemented")
             }
             Layer::LayerNorm(_layernorm) => unimplemented!("LayerNorm proving layer not implemented"),
+            Layer::Softmax(_softmax) => unimplemented!("Softmax proving layer not implemented"),
             Layer::MatMul(mat) => mat.step_info(id, aux),
             Layer::Convolution(conv) => conv.step_info(id, aux),
             Layer::SchoolBookConvolution(conv) => conv.step_info(id, aux),
@@ -388,6 +399,7 @@ impl PadOp for Layer<Element> {
                 unimplemented!("ConcatMatMul layer not implemented")
             }
             Layer::LayerNorm(_layernorm) => unimplemented!("LayerNorm layer not implemented"),
+            Layer::Softmax(_softmax) => unimplemented!("Softmax layer not implemented"),
             Layer::MatMul(mat) => Layer::MatMul(mat.pad_node(si)?),
             Layer::SchoolBookConvolution(school_book_conv) => {
                 Layer::SchoolBookConvolution(school_book_conv.pad_node(si)?)
@@ -479,6 +491,7 @@ where
                 unimplemented!("ConcatMatMul layer not implemented")
             }
             Layer::LayerNorm(_layernorm) => unimplemented!("LayerNorm layer not implemented"),
+            Layer::Softmax(_softmax) => unimplemented!("Softmax layer not implemented"),
             Layer::SchoolBookConvolution(school_book_conv) => {
                 // check that the layer is not provable, so we don't need to call the method
                 assert!(!school_book_conv.is_provable());
@@ -547,6 +560,11 @@ impl QuantizeOp for Layer<f32> {
                 QuantizeOutput::new(Layer::LayerNorm(output.quantized_op), output.output_scalings)
                     .maybe_requants(output.requant_layer)
             }
+            Layer::Softmax(softmax) => {
+                let output = softmax.quantize_op::<S>(data, node_id, input_scaling)?;
+                QuantizeOutput::new(Layer::Softmax(output.quantized_op), output.output_scalings)
+                    .maybe_requants(output.requant_layer)
+            }
             Layer::SchoolBookConvolution(school_book_conv) => {
                 let output = school_book_conv.quantize_op::<S>(data, node_id, input_scaling)?;
                 QuantizeOutput::new(
@@ -585,6 +603,7 @@ where
             Self::MhaQK => "MHA_QK".to_string(),
             Self::ConcatMatMul => "ConcatMatMul".to_string(),
             Self::LayerNorm => "LayerNorm".to_string(),
+            Self::Softmax => "Softmax".to_string(),
             Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
             Self::Requant(_) => "Requant".to_string(),
@@ -601,6 +620,7 @@ where
             LayerProof::MhaQK => None,
             LayerProof::ConcatMatMul => None,
             LayerProof::LayerNorm => None,
+            LayerProof::Softmax => None,
             LayerProof::Convolution(..) => None,
             LayerProof::Dummy => None,
             LayerProof::Activation(ActivationProof { lookup, .. })
