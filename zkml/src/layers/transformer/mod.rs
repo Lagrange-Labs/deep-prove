@@ -148,7 +148,7 @@ mod test {
                 num_heads: c.num_heads,
                 head_dim: c.head_dim(),
                 qkv,
-                qkt_v: concat_matmul::ConcatMatMul::new_with_transpose(vec![1, 0, 2]),
+                qkt_v: concat_matmul::ConcatMatMul::new_with_permute(vec![1, 0, 2]),
                 softmax: softmax::Softmax::new_with_scale((1.0 / (c.head_dim() as f32)).sqrt()),
                 layernorm: att.norm,
                 mha,
@@ -186,7 +186,9 @@ mod test {
                 println!("b_v bias: {:?}", self.qkv.v_bias.get_data());
                 gpt2_output.is_qkv_close(qkv.outputs());
             }
-            let mha = self.mha.evaluate::<GoldilocksExt2>(&qkv.outputs(), vec![])?;
+            let mha = self
+                .mha
+                .evaluate::<GoldilocksExt2>(&qkv.outputs(), vec![])?;
             // apply softmax + rescale on the first output, Q @ K^T
             // NOTE that we apply softmax row by row
             let softmaxed = self
@@ -207,10 +209,10 @@ mod test {
                 .evaluate::<GoldilocksExt2>(&softmaxed.outputs(), vec![])?;
             // now we can project back with V
             // We go from [num_heads, 1, head_dim] → transpose back to [1, h, head_dim]
-            let qkt_v = self.qkt_v.evaluate::<_, GoldilocksExt2>(&vec![
-                qkt_reshaped.outputs()[0],
-                mha.outputs()[1],
-            ])?;
+            let qkt_v = self.qkt_v.evaluate::<GoldilocksExt2>(
+                &vec![qkt_reshaped.outputs()[0], mha.outputs()[1]],
+                vec![],
+            )?;
             // → and reshape to [1, hidden_size]
             let merged = self
                 .reshape_merged
@@ -254,7 +256,7 @@ mod test {
                 num_heads,
                 head_dim: head_size,
                 qkv,
-                qkt_v: concat_matmul::ConcatMatMul::new_with_transpose(vec![1, 0, 2]),
+                qkt_v: concat_matmul::ConcatMatMul::new_with_permute(vec![1, 0, 2]),
                 softmax: softmax::Softmax::new_with_scale(
                     N::from_f32((1.0 / (head_size as f32)).sqrt()).unwrap(),
                 ),

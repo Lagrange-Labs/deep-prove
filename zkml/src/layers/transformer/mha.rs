@@ -12,7 +12,9 @@ use crate::{
     layers::{
         matrix_mul::{self as matmul, OperandMatrix},
         provable::{Evaluate, OpInfo, QuantizeOp, QuantizeOutput},
-    }, padding::PaddingMode, tensor::Number 
+    },
+    padding::PaddingMode,
+    tensor::Number,
 };
 use anyhow::ensure;
 use ff_ext::ExtensionField;
@@ -35,20 +37,30 @@ impl MhaQK {
 }
 
 impl OpInfo for MhaQK {
- fn output_shapes(
+    fn output_shapes(
         &self,
         input_shapes: &[Vec<usize>],
         padding_mode: PaddingMode,
     ) -> Vec<Vec<usize>> {
-       // // qk is now of shape [num_heads,seq_len]
-       // // v is of shape [num_heads, seq_len, head_dim].
-       match padding_mode {
+        // // qk is now of shape [num_heads,seq_len]
+        // // v is of shape [num_heads, seq_len, head_dim].
+        match padding_mode {
             PaddingMode::NoPadding => {
-                vec![vec![self.num_heads, input_shapes[0][1]], vec![self.num_heads, input_shapes[0][1], self.head_dim]]
+                vec![
+                    vec![self.num_heads, input_shapes[0][1]],
+                    vec![self.num_heads, input_shapes[0][1], self.head_dim],
+                ]
             }
-            PaddingMode::Padding=> {
-                vec![vec![self.num_heads, input_shapes[0][1].next_power_of_two()], vec![self.num_heads, input_shapes[0][1].next_power_of_two(), self.head_dim.next_power_of_two()]]
-        }
+            PaddingMode::Padding => {
+                vec![
+                    vec![self.num_heads, input_shapes[0][1].next_power_of_two()],
+                    vec![
+                        self.num_heads,
+                        input_shapes[0][1].next_power_of_two(),
+                        self.head_dim.next_power_of_two(),
+                    ],
+                ]
+            }
         }
     }
 
@@ -174,7 +186,10 @@ impl QuantizeOp for MhaQK {
             "MHA_QK should have 2 outputs scaling"
         );
         // there is no requant layers after that, softmax takes care of it.
-        Ok(QuantizeOutput::new(MhaQK::new(self.num_heads, self.head_dim), output_scalings))
+        Ok(QuantizeOutput::new(
+            MhaQK::new(self.num_heads, self.head_dim),
+            output_scalings,
+        ))
     }
 }
 

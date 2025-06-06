@@ -1,5 +1,5 @@
 use crate::{
-    ScalingFactor,
+    NextPowerOfTwo, ScalingFactor,
     quantization::{self, MAX_FLOAT, MIN_FLOAT},
 };
 use anyhow::{bail, ensure};
@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     cmp::{Ordering, PartialEq},
     fmt::{self, Debug},
+    ops::{Bound, RangeBounds},
 };
 
 use crate::{
@@ -350,10 +351,8 @@ impl Tensor<Element> {
     /// a matrix vector/matrix multiplication.
     pub fn matmul_output_bitsize(&self) -> usize {
         assert!(self.is_matrix(), "Tensor is not a matrix");
-        // formula is 2^{2 * BIT_LEN + log(c) + 1} where c is the number of columns and +1 because of the bias
-        let ncols = self.ncols_2d();
-        // - 1 because numbers are signed so only half of the range is used when doing multiplication
-        2 * (*quantization::BIT_LEN - 1) + ceil_log2(ncols) + 1
+        // TODO: make the shape of tensor a Shape object
+        Shape::from_it(&self.shape).matmul_output_bitsize()
     }
 
     pub fn dequantize(&self, s: &ScalingFactor) -> Tensor<f32> {
@@ -1767,6 +1766,73 @@ impl<T> Tensor<T> {
     }
 }
 
+/// Structure that holds a shape of a tensor.
+/// NOTE: it is currently being phased in incrementally the codebase currently. There will be places where we still use Vec<usize>
+#[derive(Debug, Clone, derive_more::From)]
+pub struct Shape(Vec<usize>);
+
+impl Shape {
+    pub fn from_it<V: std::borrow::Borrow<usize>, I: IntoIterator<Item = V>>(iter: I) -> Self {
+        Self(iter.into_iter().map(|v| *v.borrow()).collect())
+    }
+    pub fn new(shape: Vec<usize>) -> Self {
+        Self(shape)
+    }
+    pub fn slice<R: RangeBounds<usize>>(&self, range: R) -> Shape {
+        let len = self.0.len();
+        let start = match range.start_bound() {
+            Bound::Included(&s) => s,
+            Bound::Excluded(&s) => s + 1,
+            Bound::Unbounded => 0,
+        };
+        let end = match range.end_bound() {
+            Bound::Included(&e) => e + 1,
+            Bound::Excluded(&e) => e,
+            Bound::Unbounded => len,
+        };
+        Shape(self.0[start..end].to_vec())
+    }
+
+    pub fn dim(&self, index: usize) -> usize {
+        self.0[index]
+    }
+
+    pub fn permute(&self, permutation: &[usize]) -> Self {
+        let mut new_shape = vec![0; self.0.len()];
+        for (i, j) in permutation.iter().enumerate() {
+            new_shape[i] = self.0[*j];
+        }
+        Self(new_shape)
+    }
+    pub fn next_power_of_two(&self) -> Self {
+        Self(self.0.next_power_of_two())
+    }
+    pub fn concat(&self, other: &Self) -> Self {
+        let mut new_shape = self.0.clone();
+        new_shape.extend(other.0.clone());
+        Self(new_shape)
+    }
+    pub fn into_vec(self) -> Vec<usize> {
+        self.0
+    }
+    pub fn rank(&self) -> usize {
+        self.0.len()
+    }
+    pub fn is_matrix(&self) -> bool {
+        self.0.len() == 2
+    }
+    pub fn ncols(&self) -> usize {
+        self.0[1]
+    }
+    pub fn matmul_output_bitsize(&self) -> usize {
+        assert!(self.is_matrix(), "Tensor is not a matrix");
+        // formula is 2^{2 * BIT_LEN + log(c) + 1} where c is the number of columns and +1 because of the bias
+        let ncols = self.ncols();
+        // - 1 because numbers are signed so only half of the range is used when doing multiplication
+        2 * (*quantization::BIT_LEN - 1) + ceil_log2(ncols) + 1
+    }
+}
+
 #[cfg(test)]
 mod test {
 
@@ -2291,5 +2357,12 @@ mod test {
         assert_eq!(slices.next().unwrap(), &[16, 17, 18]);
         // No more slices
         assert_eq!(slices.next(), None);
+    }
+
+    #[test]
+    fn test_shape() {
+        let shape = Shape(vec![2, 3, 4]);
+        let permuted = shape.permute(&[1, 0, 2]);
+        assert_eq!(permuted.0, vec![3, 2, 4]);
     }
 }

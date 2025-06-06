@@ -425,6 +425,7 @@ where
             LayerCtx::MatMul(mat_ctx) => mat_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
             LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
+            LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
             LayerCtx::Activation(activation_ctx) => {
                 activation_ctx.output_shapes(input_shapes, padding_mode)
             }
@@ -444,6 +445,7 @@ where
             LayerCtx::MatMul(mat_ctx) => mat_ctx.num_outputs(num_inputs),
             LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
             LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
+            LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
             LayerCtx::Activation(activation_ctx) => activation_ctx.num_outputs(num_inputs),
             LayerCtx::Requant(requant_ctx) => requant_ctx.num_outputs(num_inputs),
             LayerCtx::Pooling(pooling_ctx) => pooling_ctx.num_outputs(num_inputs),
@@ -459,6 +461,7 @@ where
             LayerCtx::MatMul(mat_ctx) => mat_ctx.describe(),
             LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
             LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
+            LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
             LayerCtx::Activation(activation_ctx) => activation_ctx.describe(),
             LayerCtx::Requant(requant_ctx) => requant_ctx.describe(),
             LayerCtx::Pooling(pooling_ctx) => pooling_ctx.describe(),
@@ -474,6 +477,7 @@ where
             LayerCtx::MatMul(mat_ctx) => mat_ctx.is_provable(),
             LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
             LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
+            LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
             LayerCtx::Activation(activation_ctx) => activation_ctx.is_provable(),
             LayerCtx::Requant(requant_ctx) => requant_ctx.is_provable(),
             LayerCtx::Pooling(pooling_ctx) => pooling_ctx.is_provable(),
