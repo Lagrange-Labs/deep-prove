@@ -426,6 +426,7 @@ where
             LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
             LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
             LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
+            LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Activation(activation_ctx) => {
                 activation_ctx.output_shapes(input_shapes, padding_mode)
             }
@@ -446,6 +447,7 @@ where
             LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
             LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
             LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
+            LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Activation(activation_ctx) => activation_ctx.num_outputs(num_inputs),
             LayerCtx::Requant(requant_ctx) => requant_ctx.num_outputs(num_inputs),
             LayerCtx::Pooling(pooling_ctx) => pooling_ctx.num_outputs(num_inputs),
@@ -462,6 +464,7 @@ where
             LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
             LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
             LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
+            LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Activation(activation_ctx) => activation_ctx.describe(),
             LayerCtx::Requant(requant_ctx) => requant_ctx.describe(),
             LayerCtx::Pooling(pooling_ctx) => pooling_ctx.describe(),
@@ -479,6 +482,7 @@ where
             LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
             LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
             LayerCtx::Activation(activation_ctx) => activation_ctx.is_provable(),
+            LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Requant(requant_ctx) => requant_ctx.is_provable(),
             LayerCtx::Pooling(pooling_ctx) => pooling_ctx.is_provable(),
             LayerCtx::Flatten => Flatten.is_provable(),
@@ -531,6 +535,9 @@ where
             }
             (LayerCtx::Activation(activation_ctx), LayerProof::Activation(proof)) => {
                 activation_ctx.verify(proof, last_claims, verifier, shape_step)
+            }
+            (LayerCtx::LayerNorm, LayerProof::LayerNorm) => {
+                unimplemented!("LayerNorm layer not implemented")
             }
             (LayerCtx::Requant(requant_ctx), LayerProof::Requant(proof)) => {
                 requant_ctx.verify(proof, last_claims, verifier, shape_step)
