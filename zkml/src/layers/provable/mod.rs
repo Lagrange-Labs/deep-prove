@@ -423,6 +423,7 @@ where
             LayerCtx::Dense(dense_ctx) => dense_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::MatMul(mat_ctx) => mat_ctx.output_shapes(input_shapes, padding_mode),
+            LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
             LayerCtx::Activation(activation_ctx) => {
                 activation_ctx.output_shapes(input_shapes, padding_mode)
             }
@@ -440,6 +441,7 @@ where
             LayerCtx::Dense(dense_ctx) => dense_ctx.num_outputs(num_inputs),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.num_outputs(num_inputs),
             LayerCtx::MatMul(mat_ctx) => mat_ctx.num_outputs(num_inputs),
+            LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
             LayerCtx::Activation(activation_ctx) => activation_ctx.num_outputs(num_inputs),
             LayerCtx::Requant(requant_ctx) => requant_ctx.num_outputs(num_inputs),
             LayerCtx::Pooling(pooling_ctx) => pooling_ctx.num_outputs(num_inputs),
@@ -453,6 +455,7 @@ where
             LayerCtx::Dense(dense_ctx) => dense_ctx.describe(),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.describe(),
             LayerCtx::MatMul(mat_ctx) => mat_ctx.describe(),
+            LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
             LayerCtx::Activation(activation_ctx) => activation_ctx.describe(),
             LayerCtx::Requant(requant_ctx) => requant_ctx.describe(),
             LayerCtx::Pooling(pooling_ctx) => pooling_ctx.describe(),
@@ -466,6 +469,7 @@ where
             LayerCtx::Dense(dense_ctx) => dense_ctx.is_provable(),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.is_provable(),
             LayerCtx::MatMul(mat_ctx) => mat_ctx.is_provable(),
+            LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
             LayerCtx::Activation(activation_ctx) => activation_ctx.is_provable(),
             LayerCtx::Requant(requant_ctx) => requant_ctx.is_provable(),
             LayerCtx::Pooling(pooling_ctx) => pooling_ctx.is_provable(),
@@ -489,9 +493,8 @@ where
         verifier: &mut Verifier<E, T, PCS>,
         shape_step: &ShapeStep,
     ) -> Result<Vec<Claim<E>>> {
-        match self {
-            LayerCtx::Dense(dense_ctx) => {
-                if let LayerProof::Dense(proof) = proof {
+        match (self,proof) {
+            (LayerCtx::Dense(dense_ctx), LayerProof::Dense(proof)) => {
                     <DenseCtx<E> as VerifiableCtx<E, PCS>>::verify(
                         dense_ctx,
                         proof,
@@ -499,12 +502,8 @@ where
                         verifier,
                         shape_step,
                     )
-                } else {
-                    bail!("dense proof not found when verifying dense layer")
-                }
             }
-            LayerCtx::Convolution(conv_ctx) => {
-                if let LayerProof::Convolution(proof) = proof {
+            (LayerCtx::Convolution(conv_ctx), LayerProof::Convolution(proof)) => {
                     <ConvCtx<E> as VerifiableCtx<E, PCS>>::verify(
                         conv_ctx,
                         proof,
@@ -512,44 +511,26 @@ where
                         verifier,
                         shape_step,
                     )
-                } else {
-                    bail!("conv proof not found when verifying convolution layer")
-                }
             }
-            LayerCtx::MatMul(matmul_ctx) => {
-                if let LayerProof::MatMul(proof) = proof {
+            (LayerCtx::MatMul(matmul_ctx), LayerProof::MatMul(proof)) => {
                     matmul_ctx.verify(proof, last_claims, verifier, shape_step)
-                } else {
-                    bail!(
-                        "MatMul proof not found when verifying matrix multiplication layer"
-                            .to_string(),
-                    )
-                }
             }
-            LayerCtx::Activation(activation_ctx) => {
-                if let LayerProof::Activation(proof) = proof {
-                    activation_ctx.verify(proof, last_claims, verifier, shape_step)
-                } else {
-                    bail!("activation proof not found when verifying activation layer")
-                }
+            (LayerCtx::QKV, LayerProof::QKV) => {
+                unimplemented!("QKV layer not implemented")
             }
-            LayerCtx::Requant(requant_ctx) => {
-                if let LayerProof::Requant(proof) = proof {
-                    requant_ctx.verify(proof, last_claims, verifier, shape_step)
-                } else {
-                    bail!("requant proof not found when verifying requantization layer")
-                }
+            (LayerCtx::Activation(activation_ctx), LayerProof::Activation(proof)) => {
+                activation_ctx.verify(proof, last_claims, verifier, shape_step)
             }
-            LayerCtx::Pooling(pooling_ctx) => {
-                if let LayerProof::Pooling(proof) = proof {
-                    pooling_ctx.verify(proof, last_claims, verifier, shape_step)
-                } else {
-                    bail!("pooling proof not found when verifying pooling layer")
-                }
+            (LayerCtx::Requant(requant_ctx), LayerProof::Requant(proof)) => {
+                requant_ctx.verify(proof, last_claims, verifier, shape_step)
             }
-            LayerCtx::SchoolBookConvolution(_) | LayerCtx::Table(_) | LayerCtx::Flatten => {
+            (LayerCtx::Pooling(pooling_ctx), LayerProof::Pooling(proof)) => {
+                pooling_ctx.verify(proof, last_claims, verifier, shape_step)
+            }
+            (LayerCtx::SchoolBookConvolution(_),_) | (LayerCtx::Table(_),_) | (LayerCtx::Flatten,_) => {
                 unreachable!("Trying to verify a non-provable layer")
-            }
+            },
+            _ => bail!("Incompatible layer {} and proof {} found", self.describe(), proof.variant_name())
         }
     }
 }
