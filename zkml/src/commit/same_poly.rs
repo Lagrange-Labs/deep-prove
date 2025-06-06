@@ -35,7 +35,7 @@ impl<E: ExtensionField> Context<E> {
         }
     }
 }
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Proof<E: ExtensionField> {
     sumcheck: IOPProof<E>,
     // [0] about the betas, [1] about the poly
