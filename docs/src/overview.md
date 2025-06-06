@@ -4,7 +4,7 @@ This document surveys the different techniques deep-prove uses.
 
 ## Supported Architecture
 
-Currently, deep-prove supports [Multi Layer Percreptrons](https://en.wikipedia.org/wiki/Multilayer_perceptron) and [Convolutional Neural Networks](https://en.wikipedia.org/wiki/Convolutional_neural_network).
+Currently, deep-prove supports [Multi Layer Perceptrons](https://en.wikipedia.org/wiki/Multilayer_perceptron) and [Convolutional Neural Networks](https://en.wikipedia.org/wiki/Convolutional_neural_network).
 
 Specifically, we support the following layer:
 * [Dense layer](https://keras.io/api/layers/core_layers/dense/)
