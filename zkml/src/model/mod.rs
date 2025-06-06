@@ -1262,7 +1262,7 @@ pub(crate) mod test {
                 Layer::Activation(Activation::Relu(Relu)),
             ))
             .unwrap();
-        // here we only want to take the first input of relu1
+        // here we only want to take the first output of relu1
         let relu3 = model
             .add_node(Node::new(
                 vec![Edge::new(relu1, 0)],
