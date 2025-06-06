@@ -2,7 +2,7 @@ use anyhow::{bail, ensure};
 use ff_ext::ExtensionField;
 use serde::{Deserialize, Serialize};
 
-use crate::{Tensor, tensor::Number};
+use crate::{layers::provable::{Evaluate, NodeId, OpInfo, QuantizeOp, QuantizeOutput}, padding::PaddingMode, tensor::Number, Element, NextPowerOfTwo, ScalingFactor, ScalingStrategy, Tensor};
 
 use super::provable::LayerOut;
 
@@ -20,10 +20,11 @@ impl<N: Number> Add<N> {
     }
 }
 
-impl<N: Number> Add<N> {
-    pub fn evaluate<E: ExtensionField>(
+impl<N: Number> Evaluate<N> for Add<N> {
+    fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
+        _unpadded_input_shapes: Vec<Vec<usize>>,
     ) -> anyhow::Result<LayerOut<N, E>> {
         let result = if inputs.len() == 2 {
             ensure!(
@@ -57,6 +58,44 @@ impl<N: Number> Add<N> {
             bail!("Add layer expects 1 or 2 inputs, got {}", inputs.len());
         };
         Ok(LayerOut::from_vec(vec![result]))
+    }
+}
+
+impl<N> OpInfo for Add<N> {
+    fn output_shapes(
+        &self,
+        input_shapes: &[Vec<usize>],
+        padding_mode: PaddingMode,
+    ) -> Vec<Vec<usize>> {
+        match padding_mode {
+            PaddingMode::NoPadding => input_shapes.to_vec(),
+            PaddingMode::Padding => input_shapes.iter().map(|shape| shape.next_power_of_two()).collect(),
+        }
+    }
+
+    fn num_outputs(&self, _num_inputs: usize) -> usize {
+        1
+    }
+
+    fn describe(&self) -> String {
+        "Add".to_string()
+    }
+
+    fn is_provable(&self) -> bool {
+        true
+    }
+}
+
+impl QuantizeOp for Add<f32> {
+    type QuantizedOp = Add<Element>;
+
+    fn quantize_op<S: ScalingStrategy>(
+        self,
+        _data: &S::AuxData,
+        _node_id: NodeId,
+        _input_scaling: &[ScalingFactor],
+    ) -> anyhow::Result<QuantizeOutput<Self::QuantizedOp>> {
+        todo!()
     }
 }
 
