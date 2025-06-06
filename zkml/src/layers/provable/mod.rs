@@ -133,23 +133,30 @@ pub enum ProvingData<E: ExtensionField> {
 #[derive(Clone, Debug)]
 pub struct LayerOut<T, E: ExtensionField> {
     pub(crate) outputs: Vec<Tensor<T>>,
-    pub(crate) proving_data: Option<ConvData<E>>,
+    pub(crate) proving_data: ProvingData<E>,
 }
 
 impl<T, E: ExtensionField> LayerOut<T, E> {
     pub(crate) fn from_vec(out: Vec<Tensor<T>>) -> Self {
         Self {
             outputs: out,
-            proving_data: None,
+            proving_data: ProvingData::None,
         }
-    }
-
-    pub(crate) fn from_tensor(out: Tensor<T>) -> Self {
-        Self::from_vec(vec![out])
     }
 
     pub fn outputs(&self) -> Vec<&Tensor<T>> {
         self.outputs.iter().collect()
+    }
+
+    pub fn from_tensor(out: Tensor<T>) -> Self {
+        Self::from_vec(vec![out])
+    }
+
+    pub fn try_convdata(&self) -> Option<&ConvData<E>> {
+        match self.proving_data {
+            ProvingData::Convolution(ref conv_data) => Some(conv_data),
+            _ => None,
+        }
     }
 }
 /// Represents the proving context for a given node, altogether with the input

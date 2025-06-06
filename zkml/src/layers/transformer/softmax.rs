@@ -1,7 +1,9 @@
 //! This layer applies the softmax function to the last dimension of the input tensor
+use std::marker::PhantomData;
+
 use crate::{
     Element, Tensor,
-    layers::provable::{Evaluate, LayerOut},
+    layers::provable::{Evaluate, LayerOut, ProvingData},
     quantization::{self, ScalingFactor},
     tensor::Number,
 };
@@ -10,10 +12,11 @@ use anyhow::{Result, anyhow, ensure};
 
 use ff_ext::ExtensionField;
 
+use multilinear_extensions::util::ceil_log2;
 use serde::{Deserialize, Serialize};
 
 /// The base 2 logarithm of the scale factor used in exponential lookup tables
-const LOG_SCALE_FACTOR: usize = 32;
+const LOG_SCALE_FACTOR: usize = 24;
 /// The scale factor for our fixed point arithmetic
 const SCALE_FACTOR: usize = 1 << LOG_SCALE_FACTOR;
 
@@ -21,135 +24,107 @@ const SCALE_FACTOR: usize = 1 << LOG_SCALE_FACTOR;
 /// Stores data about the Softmax operation, which is used to map a tensor of values to a tensor of probability distributions.
 /// This is done by picking a dimension to normalise over and calculating
 ///             `x -> exp(scale * x) / (\sum_{i \in dim} exp(scale * x_{i}))`.
-pub struct Softmax {
-    /// The information needed to perform the quantised version of Softmax, defaults to [`None`]
-    quant_info: Option<QuantisedSoftmaxInfo>,
+pub struct Softmax<N> {
     /// This is the factor we divide by before exponentiating, when thought of as a Boltzmann distribution this is
     /// often referred to as the "Temperature".
-    scalar: f32,
+    scalar: N,
     /// This is the maximum size of dimension that we will normalise over. For example in an Attention layer this would be the maximum context size.
     max_size: usize,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-/// This struct stores information relating to performing the quantised version of the softmax operation.
-pub struct QuantisedSoftmaxInfo {
-    /// Scaling factor for the input, only needed for quantised version and proving
-    input_scaling: ScalingFactor,
-    /// Scaling factor for the output, only needed for quantised version and proving,
-    output_scaling: ScalingFactor,
-    /// This is the smallest possible value the input can be, we use this in the lookup tables as an indicator that a value
-    /// should map to zero (so in a sense this is negative infinity)
-    minimum_input: Element,
-    /// The lookup table output columns, these are arranged in little endian, so the least significant chunk (that does not map to 1) is the lookup at index 0.
-    luts: Vec<Vec<Element>>,
-    /// The number of least significant chunks, these are chunks that get mapped to 1 by the exponential function.
-    no_least_sig_chunks: usize,
-    /// The size of the error as a float
-    attn_error: f32,
+    /// This is the extra information required to compute the quantised version, it defaults to [`None`].
+    quant_info: Option<QuantisedSoftmaxData>,
 }
 
-impl Default for Softmax {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+/// This struct is used to store information used when evaluating the quantised version of [`Softmax`] on
+/// [`Element`]s.
+struct QuantisedSoftmaxData {
+    /// The [`ScalingFactor`] of the inputs
+    input_scale_factor: ScalingFactor,
+    /// This stores the output column of the `exp` lookup
+    lut: Vec<Element>,
+}
+
+impl<N: Number> Default for Softmax<N> {
     fn default() -> Self {
         Softmax {
-            quant_info: None,
-            scalar: 1.0f32,
+            scalar: N::unit(),
             max_size: 1024usize,
+            quant_info: None,
         }
     }
 }
 
-impl Softmax {
-    pub fn new_with_scale(scale: f32) -> Softmax {
+impl<N: Number> Softmax<N> {
+    pub fn new_with_scale(scale: N) -> Softmax<N> {
         Softmax {
-            quant_info: None,
             scalar: scale,
             max_size: 1024usize,
+            quant_info: None,
         }
     }
-    pub fn quantise(&self, input_scaling: ScalingFactor, output_scaling: ScalingFactor) -> Self {
-        if self.quant_info.is_some() {
-            self.clone()
-        } else {
-            // First we work out what we need to multiply by to get the input scale factor to be 2^32
-            let input_scale_factor = input_scaling.scale();
-            let multiplier = 1.0f32 / input_scale_factor;
+    pub fn quantise(&self, input_scaling: ScalingFactor) -> Result<Softmax<Element>> {
+        // First we work out what we need to multiply by to get the input scale factor to be 2^32
+        let input_scale_factor = input_scaling.scale();
+        let temperature = self.scalar.to_f32()?;
+        let multiplier =
+            (SCALE_FACTOR as f32 * input_scale_factor * temperature).round() as Element;
 
-            let log_mult = multiplier.log2();
-            let diff = 16.0 - log_mult;
+        // minimum_input is calculated as `(input_min - sqrt(d) * ln_n - d * input_max)/sqrt(d)` and then quantised
+        let input_min = input_scaling.min();
+        let input_max = input_scaling.max();
 
-            // This value is the floating point number we need to multiply by to get the scale factor to be 2^16, then we
-            // multiply this by 2^16 so the end result is scaled by 2^32.
-            let diff_multiplier = 2.0f32.powf(diff);
+        let min_input_float =
+            input_min * temperature - (self.max_size as f32 * (input_max * temperature).exp()).ln();
+        // Now that we have the minimum possible input as a float we need to work out how many integral bits we need to account for
+        // We know that the minimum input is negative so first we take the absoloute value
+        let min_input_abs = min_input_float.abs();
+        let int = min_input_abs.round() as usize;
+        let integral_bits = ceil_log2(int);
 
-            let scaled = (diff_multiplier * (1u64 << 16) as f32).round();
+        let table_size = 1i128 << (integral_bits + 8);
+        let base = 1i128 << (LOG_SCALE_FACTOR - 8);
 
-            // minimum_input is calculated as `(input_min - sqrt(d) * ln_n - d * input_max)/sqrt(d)` and then quantised
-            let input_min = input_scaling.min();
-            let input_max = input_scaling.max();
+        let lut = (0i128..table_size)
+            .map(|j| {
+                let prod = base * j;
+                let float_exp = (-prod as f32 / SCALE_FACTOR as f32).exp();
+                (float_exp * 256.0f32).round() as Element
+            })
+            .collect::<Vec<Element>>();
 
-            let d = self.scalar * self.scalar;
+        let float_error = calc_softmax_error(
+            base * (table_size),
+            base,
+            2.0f32.powf(16.0f32),
+            SCALE_FACTOR as f32,
+            3.0f32,
+            0.0f32,
+            2.0f32,
+            1.0f32 / temperature,
+        )
+        .abs();
+        println!(
+            "float error: {}, 1 quant: {}, 1+e quant: {}, 1-e quant: {}",
+            float_error,
+            2.0f32.powf(16.0f32),
+            ((1.0f32 + float_error) * 2.0f32.powf(16.0f32)).round(),
+            ((1.0f32 - float_error) * 2.0f32.powf(16.0f32)).round()
+        );
 
-            let ln_n = (self.max_size as f32).ln();
+        let quant_info = QuantisedSoftmaxData {
+            input_scale_factor: input_scaling,
+            lut,
+        };
 
-            let min_input_float = (input_min - self.scalar * ln_n - d * input_max) / self.scalar;
+        Ok(Softmax::<Element> {
+            scalar: multiplier,
+            max_size: self.max_size,
+            quant_info: Some(quant_info),
+        })
+    }
 
-            let minimum_input_element = (min_input_float * scaled * multiplier).round() as Element;
-
-            // The B(k)s are fixed as 1, 1 << BIT_LEN, 1 << 2*BIT_LEN, ... until we reach at least 2^32, then we have one more for the case
-            // that the input is < -1.
-            let no_of_blocks = (LOG_SCALE_FACTOR / *quantization::BIT_LEN) + 1;
-            let bks = (0..no_of_blocks)
-                .map(|i| 1i128 << i * *quantization::BIT_LEN)
-                .collect::<Vec<Element>>();
-
-            // The input is at most a 40 bit number with 32 fractional bits, anything smaller than 1/2^8 is essentially equal to 1 so we need to
-            // find how many "least significant" chunks we have
-            let least_sig_chunks =
-                ((LOG_SCALE_FACTOR - *quantization::BIT_LEN - 8) / *quantization::BIT_LEN) + 1;
-
-            // calculate the error in softmax
-            let attn_error = calc_softmax_error(
-                -bks[no_of_blocks - 1],
-                -bks[least_sig_chunks],
-                (1u64 << (2 * *quantization::BIT_LEN)) as f32,
-                SCALE_FACTOR as f32,
-                no_of_blocks as f32,
-                0.0f32,
-                least_sig_chunks as f32,
-                self.scalar,
-            );
-
-            let table_size = 1i128 << *quantization::BIT_LEN;
-
-            let table_columns = (least_sig_chunks..no_of_blocks)
-                .map(|i| {
-                    let base = 1i128 << (i * *quantization::BIT_LEN);
-                    let mult = (1usize << *quantization::BIT_LEN) as f32;
-                    (0i128..table_size)
-                        .map(|j| {
-                            let prod = base * j;
-                            let float_exp = (-prod as f32 / 2.0f32.powf(32.0)).exp();
-                            (float_exp * mult).round() as Element
-                        })
-                        .collect::<Vec<Element>>()
-                })
-                .collect::<Vec<Vec<Element>>>();
-
-            let quant_info = QuantisedSoftmaxInfo {
-                input_scaling,
-                output_scaling,
-                minimum_input: minimum_input_element,
-                luts: table_columns,
-                no_least_sig_chunks: least_sig_chunks,
-                attn_error,
-            };
-
-            Softmax {
-                quant_info: Some(quant_info),
-                scalar: self.scalar,
-                max_size: self.max_size,
-            }
-        }
+    fn quant_info(&self) -> Option<&QuantisedSoftmaxData> {
+        self.quant_info.as_ref()
     }
 }
 
@@ -167,12 +142,24 @@ fn calc_softmax_error(
     let kml = k - m - l;
     let common_denom = kml * input_sf * temp;
     let first_term = (bl as f32 / common_denom).exp();
+    println!("first term: {}", first_term);
     let second_term = (bkm as f32 / common_denom).exp() / (2.0f32 * output_sf.powf(1.0 / kml));
-
-    (first_term + second_term).powf(kml) - 1.0f32
+    println!("second term: {}", second_term);
+    let c = (first_term + second_term).powf(kml) - 1.0f32;
+    println!("c: {}", c);
+    let term_one = c * (1.0f32 / (2.0f32 * input_sf * temp)).exp();
+    let term_two = -1023.0f32 * ((-bkm as f32) / input_sf * temp).exp();
+    println!(
+        "optimal BKM: {}",
+        (input_sf * temp / (kml + 1.0)) * (kml * 2048.0f32.ln() + output_sf.ln())
+    );
+    println!("Actual bkm: {}", bkm);
+    println!("first term in error: {}", term_one);
+    println!("second term in error: {}", term_two);
+    term_one + term_two
 }
 
-impl Evaluate<f32> for Softmax {
+impl Evaluate<f32> for Softmax<f32> {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<f32>],
@@ -186,9 +173,9 @@ impl Evaluate<f32> for Softmax {
             .get_data()
             .chunks(chunk_size)
             .map(|vec| {
-                let sum = vec.iter().map(|x| (x / self.scalar).exp()).sum::<f32>();
+                let sum = vec.iter().map(|x| (x * self.scalar).exp()).sum::<f32>();
                 vec.iter()
-                    .map(|x| (x / self.scalar).exp() / sum)
+                    .map(|x| (x * self.scalar).exp() / sum)
                     .collect::<Vec<_>>()
             })
             .flatten()
@@ -203,10 +190,13 @@ pub struct SoftmaxData<E>
 where
     E: Clone + ExtensionField,
 {
-    shift_evals: Vec<E::BaseField>,
+    low_range_check: Vec<Element>,
+    high_range_check: Vec<Element>,
+    exp_lookup: (Vec<Element>, Vec<Element>),
+    _phantom: PhantomData<E>,
 }
 
-impl Evaluate<Element> for Softmax {
+impl Evaluate<Element> for Softmax<Element> {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<Element>],
@@ -225,14 +215,10 @@ impl Evaluate<Element> for Softmax {
         );
 
         // Since we have checked that quant info exists this unwrap is safe
-        let QuantisedSoftmaxInfo {
-            input_scaling,
-            output_scaling,
-            minimum_input,
-            luts,
-            no_least_sig_chunks,
-            attn_error,
-        } = self.quant_info.as_ref().unwrap();
+        let QuantisedSoftmaxData {
+            input_scale_factor,
+            lut,
+        } = self.quant_info().unwrap();
 
         let input = inputs[0];
         let chunk_size = *input.shape.last().ok_or(anyhow!(
@@ -243,6 +229,10 @@ impl Evaluate<Element> for Softmax {
             "Could not evaluate Softmax, unpadded input shape was empty for input"
         ))?;
 
+        // The temperature is now stored as an Element so we need to convert back to float here
+        let float_temp = self.scalar as f32 / (SCALE_FACTOR as f32 * input_scale_factor.scale());
+
+        // Calculate the shift chunk by chunk
         let shift_data = input
             .get_data()
             .chunks(chunk_size)
@@ -250,16 +240,50 @@ impl Evaluate<Element> for Softmax {
                 let sum = vec
                     .iter()
                     .take(unpadded_chunk_size)
-                    .map(|x| (input_scaling.dequantize(x) / self.scalar).exp())
+                    .map(|x| (input_scale_factor.dequantize(x) * float_temp).exp())
                     .sum::<f32>();
                 let log_sum = sum.ln();
-                let shift = -(SCALE_FACTOR as f32 * self.scalar * log_sum).round() as Element;
+                let shift = -(SCALE_FACTOR as f32 * log_sum).round() as Element;
                 vec![shift; chunk_size]
             })
             .flatten()
             .collect::<Vec<_>>();
 
-        todo!()
+        let mask = 255i128;
+        // Now we rescale and chunk the `softmax_input`
+        let ((lookups, outputs), (high_range_check, low_range_check)): (
+            (Vec<Element>, Vec<Element>),
+            (Vec<Element>, Vec<Element>),
+        ) = input
+            .get_data()
+            .iter()
+            .zip(shift_data.iter())
+            .map(|(&input_elem, &shift)| {
+                let rescaled = (input_elem * self.scalar + shift).abs();
+                // The lest significant chunk (fractional bits 17 to 24)
+                let lsc = rescaled & mask;
+                // The second lest significant chunk (fractional bits 9 to 16)
+                let lsc2 = (rescaled >> 8) & mask;
+                // The most significant chunk (all the integral bits (usually around 7 for GPT2) + fractional bits 1 to 8)
+                let lookup = rescaled >> 16;
+
+                ((lookup, lut[lookup as usize]), (lsc2, lsc))
+            })
+            .unzip();
+
+        let proving_data = ProvingData::Softmax(SoftmaxData {
+            low_range_check,
+            high_range_check,
+            exp_lookup: (lookups, outputs.clone()),
+            _phantom: PhantomData::<E>,
+        });
+
+        let output = Tensor::<Element>::new(input.get_shape(), outputs);
+
+        Ok(LayerOut {
+            outputs: vec![output],
+            proving_data,
+        })
     }
 }
 
@@ -293,13 +317,82 @@ mod tests {
 
     #[test]
     fn test_quantise() {
-        let softmax = Softmax::default();
-        println!("1/e: {}", (-1.0f32).exp());
-        println!("ln(x) = 0.01, x = {}", 0.01f32.ln());
-        let input_scaling = ScalingFactor::default();
-        let output_scaling = ScalingFactor::default();
+        // For now we test with GPT2 like parameters
+        let scale = 1.0f32 / 768.0f32.sqrt();
+        let softmax = Softmax::<f32>::new_with_scale(scale);
 
-        let _ = softmax.quantise(input_scaling, output_scaling);
+        for num_tokens in 1020..1024 {
+            // Make random q and k vectors
+            let test_q = Tensor::<f32>::random(&[num_tokens, 768]);
+            let test_k = Tensor::<f32>::random(&[768, num_tokens]);
+
+            let q_scaling = ScalingFactor::from_tensor(&test_q, None);
+            let k_scaling = ScalingFactor::from_tensor(&test_k, None);
+
+            // Pick the quantised domain to be Some((-1i128 << 24, 1i128 << 24)) since matrix multiplication on 768 columns adds at most 10 to the bit size
+            // (already at bit size 14 before this due to multiplication of two 8 bit quant integers)
+            let qk_scaling = ScalingFactor::from_scale(
+                q_scaling.scale() * k_scaling.scale(),
+                Some((-1i128 << 24, 1i128 << 24)),
+            );
+
+            let test_q_quant = test_q.clone().quantize(&q_scaling);
+            let test_k_quant = test_k.clone().quantize(&k_scaling);
+            let test_qk = test_q.matmul(&test_k);
+            let test_qk_quant = test_q_quant.matmul(&test_k_quant);
+
+            let test_qk_dequant = test_qk_quant.dequantize(&qk_scaling);
+
+            // Now to test the quantised softmax we quantise `float_input` and run the quantised evaluation.
+            // We also quantise and dequantise `float_input` and run this data through the float evaluation and then compare the two results.
+
+            let quant_softmax = softmax.quantise(qk_scaling).unwrap();
+
+            // Obtain the quantised output
+            let quant_output = quant_softmax
+                .evaluate::<GoldilocksExt2>(&[&test_qk_quant], vec![vec![num_tokens, num_tokens]])
+                .unwrap();
+            // The result of running the quantised input as floats
+            let dequant_output = softmax
+                .evaluate::<GoldilocksExt2>(&[&test_qk_dequant], vec![vec![num_tokens, num_tokens]])
+                .unwrap();
+            // The full float output
+            let float_output = softmax
+                .evaluate::<GoldilocksExt2>(&[&test_qk], vec![vec![num_tokens, num_tokens]])
+                .unwrap();
+
+            for ((&q, f), real) in quant_output.outputs[0]
+                .get_data()
+                .iter()
+                .zip(dequant_output.outputs[0].get_data().iter())
+                .zip(float_output.outputs[0].get_data())
+            {
+                let float_q = q as f32 / 2.0f32.powf(8.0f32);
+
+                let quant_dequant_diff = (float_q - f).abs();
+                let quant_float_diff = (float_q - real).abs();
+
+                // Make sure we are always withing 1/100 th of the actual value
+                // assert!(quant_dequant_diff < 0.01f32);
+                // assert!(quant_float_diff < 0.01f32);
+                // Uncomment to see all the results
+                // println!(
+                //     "quantised result: {}, q dequantised: {}, dequant result: {}, real result: {}",
+                //     q, float_q, f, real
+                // );
+            }
+
+            quant_output.outputs[0]
+                .get_data()
+                .chunks(num_tokens)
+                .for_each(|chunk| {
+                    let row_sum = chunk.iter().sum::<Element>();
+                    let diff_from_one = (row_sum - 256).abs();
+                    // assert!(diff_from_one <= 1);
+                    // Uncomment to see the row sum
+                    // println!("row sum: {}", row_sum)
+                })
+        }
     }
 
     #[test]
@@ -312,12 +405,12 @@ mod tests {
         assert_eq!(
             output.outputs[0].get_data(),
             vec![
-                1.0 / 3.0,
-                1.0 / 3.0,
-                1.0 / 3.0,
-                1.0 / 3.0,
-                1.0 / 3.0,
-                1.0 / 3.0
+                1.0 / 6.0,
+                1.0 / 6.0,
+                1.0 / 6.0,
+                1.0 / 6.0,
+                1.0 / 6.0,
+                1.0 / 6.0
             ]
         );
     }
