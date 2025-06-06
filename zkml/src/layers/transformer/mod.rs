@@ -186,7 +186,7 @@ mod test {
                 println!("b_v bias: {:?}", self.qkv.v_bias.get_data());
                 gpt2_output.is_qkv_close(qkv.outputs());
             }
-            let mha = self.mha.evaluate::<_, GoldilocksExt2>(&qkv.outputs())?;
+            let mha = self.mha.evaluate::<GoldilocksExt2>(&qkv.outputs(), vec![])?;
             // apply softmax + rescale on the first output, Q @ K^T
             // NOTE that we apply softmax row by row
             let softmaxed = self

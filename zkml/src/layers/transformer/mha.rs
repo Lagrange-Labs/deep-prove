@@ -11,9 +11,8 @@
 use crate::{
     layers::{
         matrix_mul::{self as matmul, OperandMatrix},
-        provable::Evaluate,
-    },
-    tensor::Number,
+        provable::{Evaluate, OpInfo, QuantizeOp, QuantizeOutput},
+    }, padding::PaddingMode, tensor::Number 
 };
 use anyhow::ensure;
 use ff_ext::ExtensionField;
@@ -33,10 +32,44 @@ impl MhaQK {
             head_dim,
         }
     }
+}
 
-    pub fn evaluate<N: Number, E: ExtensionField>(
+impl OpInfo for MhaQK {
+ fn output_shapes(
+        &self,
+        input_shapes: &[Vec<usize>],
+        padding_mode: PaddingMode,
+    ) -> Vec<Vec<usize>> {
+       // // qk is now of shape [num_heads,seq_len]
+       // // v is of shape [num_heads, seq_len, head_dim].
+       match padding_mode {
+            PaddingMode::NoPadding => {
+                vec![vec![self.num_heads, input_shapes[0][1]], vec![self.num_heads, input_shapes[0][1], self.head_dim]]
+            }
+            PaddingMode::Padding=> {
+                vec![vec![self.num_heads, input_shapes[0][1].next_power_of_two()], vec![self.num_heads, input_shapes[0][1].next_power_of_two(), self.head_dim.next_power_of_two()]]
+        }
+        }
+    }
+
+    fn num_outputs(&self, _num_inputs: usize) -> usize {
+        2
+    }
+
+    fn describe(&self) -> String {
+        format!("MHA_QK({},{})", self.num_heads, self.head_dim).to_string()
+    }
+
+    fn is_provable(&self) -> bool {
+        true
+    }
+}
+
+impl<N: Number> Evaluate<N> for MhaQK {
+    fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
+        _unpadded_input_shapes: Vec<Vec<usize>>,
     ) -> anyhow::Result<LayerOut<N, E>> {
         ensure!(inputs.len() == 3, "MHA_QK expects 3 inputs");
         let head_prod = self.num_heads * self.head_dim;
@@ -122,6 +155,29 @@ impl MhaQK {
     }
 }
 
+impl QuantizeOp for MhaQK {
+    type QuantizedOp = MhaQK;
+
+    // NOTE: no requant layers after that, softmax takes care of it.
+    fn quantize_op<S: crate::ScalingStrategy>(
+        self,
+        data: &S::AuxData,
+        node_id: crate::layers::provable::NodeId,
+        input_scaling: &[crate::ScalingFactor],
+    ) -> anyhow::Result<QuantizeOutput<Self::QuantizedOp>> {
+        let num_outputs = self.num_outputs(input_scaling.len());
+        // it will return a scaling factors for all heads merged together, but that's what we want since we don't want
+        // to have one requant layer _per head_ it would be too costly. So we take the min/max accross all the heads concatenated.
+        let output_scalings = S::scaling_factors_for_node(data, node_id, num_outputs);
+        ensure!(
+            output_scalings.len() == 2,
+            "MHA_QK should have 2 outputs scaling"
+        );
+        // there is no requant layers after that, softmax takes care of it.
+        Ok(QuantizeOutput::new(MhaQK::new(self.num_heads, self.head_dim), output_scalings))
+    }
+}
+
 #[cfg(test)]
 mod test {
     use goldilocks::GoldilocksExt2;
@@ -141,7 +197,7 @@ mod test {
         let k = Tensor::<Element>::random(&vec![seq_len, hidden_size]);
         let v = Tensor::<Element>::random(&vec![seq_len, hidden_size]);
         let mut output = mha_qk
-            .evaluate::<_, GoldilocksExt2>(&[&q, &k, &v])
+            .evaluate::<GoldilocksExt2>(&[&q, &k, &v], vec![])
             .expect("mha_qk should not fail");
         assert_eq!(output.outputs.len(), 2);
         let (qk, v) = (output.outputs.remove(0), output.outputs.remove(0));
