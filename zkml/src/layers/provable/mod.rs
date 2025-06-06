@@ -493,27 +493,27 @@ where
         verifier: &mut Verifier<E, T, PCS>,
         shape_step: &ShapeStep,
     ) -> Result<Vec<Claim<E>>> {
-        match (self,proof) {
+        match (self, proof) {
             (LayerCtx::Dense(dense_ctx), LayerProof::Dense(proof)) => {
-                    <DenseCtx<E> as VerifiableCtx<E, PCS>>::verify(
-                        dense_ctx,
-                        proof,
-                        last_claims,
-                        verifier,
-                        shape_step,
-                    )
+                <DenseCtx<E> as VerifiableCtx<E, PCS>>::verify(
+                    dense_ctx,
+                    proof,
+                    last_claims,
+                    verifier,
+                    shape_step,
+                )
             }
             (LayerCtx::Convolution(conv_ctx), LayerProof::Convolution(proof)) => {
-                    <ConvCtx<E> as VerifiableCtx<E, PCS>>::verify(
-                        conv_ctx,
-                        proof,
-                        last_claims,
-                        verifier,
-                        shape_step,
-                    )
+                <ConvCtx<E> as VerifiableCtx<E, PCS>>::verify(
+                    conv_ctx,
+                    proof,
+                    last_claims,
+                    verifier,
+                    shape_step,
+                )
             }
             (LayerCtx::MatMul(matmul_ctx), LayerProof::MatMul(proof)) => {
-                    matmul_ctx.verify(proof, last_claims, verifier, shape_step)
+                matmul_ctx.verify(proof, last_claims, verifier, shape_step)
             }
             (LayerCtx::QKV, LayerProof::QKV) => {
                 unimplemented!("QKV layer not implemented")
@@ -527,10 +527,16 @@ where
             (LayerCtx::Pooling(pooling_ctx), LayerProof::Pooling(proof)) => {
                 pooling_ctx.verify(proof, last_claims, verifier, shape_step)
             }
-            (LayerCtx::SchoolBookConvolution(_),_) | (LayerCtx::Table(_),_) | (LayerCtx::Flatten,_) => {
+            (LayerCtx::SchoolBookConvolution(_), _)
+            | (LayerCtx::Table(_), _)
+            | (LayerCtx::Flatten, _) => {
                 unreachable!("Trying to verify a non-provable layer")
-            },
-            _ => bail!("Incompatible layer {} and proof {} found", self.describe(), proof.variant_name())
+            }
+            _ => bail!(
+                "Incompatible layer {} and proof {} found",
+                self.describe(),
+                proof.variant_name()
+            ),
         }
     }
 }

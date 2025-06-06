@@ -30,13 +30,21 @@ use requant::RequantCtx;
 use transcript::Transcript;
 
 use crate::{
-    iop::context::{ContextAux, ShapeStep, TableCtx}, layers::{
+    Context, Element, ScalingStrategy,
+    iop::context::{ContextAux, ShapeStep, TableCtx},
+    layers::{
         activation::{Activation, ActivationProof},
         convolution::Convolution,
         dense::Dense,
         pooling::Pooling,
-        requant::{Requant, RequantProof}, transformer::qkv::QKV,
-    }, lookup::context::LookupWitnessGen, model::StepData, padding::{PaddingMode, ShapeInfo}, quantization::ScalingFactor, tensor::{Number, Tensor}, Context, Element, ScalingStrategy
+        requant::{Requant, RequantProof},
+        transformer::qkv::QKV,
+    },
+    lookup::context::LookupWitnessGen,
+    model::StepData,
+    padding::{PaddingMode, ShapeInfo},
+    quantization::ScalingFactor,
+    tensor::{Number, Tensor},
 };
 use activation::ActivationCtx;
 use convolution::{ConvCtx, ConvProof, SchoolBookConv, SchoolBookConvCtx};
@@ -368,7 +376,7 @@ where
         step_data: &StepData<E, E>,
         prover: &mut crate::Prover<E, T, PCS>,
     ) -> Result<Vec<crate::Claim<E>>> {
-        match (self,ctx) {
+        match (self, ctx) {
             (Layer::Dense(dense), LayerCtx::Dense(info)) => {
                 dense.prove(node_id, info, last_claims, step_data, prover)
             }
@@ -380,7 +388,7 @@ where
             }
             (Layer::QKV(_qkv), LayerCtx::QKV) => {
                 unimplemented!("QKV layer not implemented")
-                //qkv.prove(node_id, info, last_claims, step_data, prover)
+                // qkv.prove(node_id, info, last_claims, step_data, prover)
             }
             (Layer::SchoolBookConvolution(_), LayerCtx::SchoolBookConvolution(_)) => {
                 unreachable!("prove cannot be called for school book convolution")
@@ -394,8 +402,15 @@ where
             (Layer::Pooling(pooling), LayerCtx::Pooling(info)) => {
                 pooling.prove(node_id, info, last_claims, step_data, prover)
             }
-            (Layer::Flatten(_), LayerCtx::Flatten) => unreachable!("prove cannot be called for reshape"),
-            _ => bail!("Incompatible layer {} and ctx {} found for node id {}", self.describe(), ctx.variant_name(), node_id)
+            (Layer::Flatten(_), LayerCtx::Flatten) => {
+                unreachable!("prove cannot be called for reshape")
+            }
+            _ => bail!(
+                "Incompatible layer {} and ctx {} found for node id {}",
+                self.describe(),
+                ctx.variant_name(),
+                node_id
+            ),
         }
     }
 
