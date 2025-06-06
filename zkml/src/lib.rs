@@ -1,6 +1,3 @@
-#![feature(iter_next_chunk)]
-#![feature(exact_size_is_empty)]
-
 use ff_ext::ExtensionField;
 use gkr::structs::PointAndEval;
 use itertools::Itertools;

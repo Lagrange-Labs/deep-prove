@@ -93,11 +93,10 @@ pub fn from_path(path: &str) -> Result<Model<f32>> {
     let mut first_node = true;
     let mut last_node_id = 0;
     let parser = ParserFactory::init();
-    while !it.is_empty() {
-        let (id, zkml_node) = parser
-            .parse_node(onnx_model, &mut it, first_node)
-            .context("Error parsing node")?;
-        // let (id, zkml_node) = parse_node(onnx_model, &mut it, first_node)?;
+    while let Some((id, zkml_node)) = parser
+        .parse_node(onnx_model, &mut it, first_node)
+        .transpose()?
+    {
         let desc = zkml_node.operation.describe();
         pmodel
             .add_node_with_id(id, zkml_node)
@@ -159,8 +158,8 @@ impl<'a, I: Iterator<Item = &'a usize> + Sized> ParserFactory<'a, I> {
         model: &OnnxModel,
         iter: &mut Peekable<I>,
         first_node: bool,
-    ) -> Result<(NodeId, CustomNode)> {
-        let curr_node_id = iter.next().ok_or(anyhow::anyhow!("No nodes left"))?;
+    ) -> Option<Result<(NodeId, CustomNode)>> {
+        let curr_node_id = iter.next()?;
         let curr_node = model.node(*curr_node_id);
         debug!(
             "curr_node id {}: {:?} : {:?} <- inputs: {:?}",
@@ -174,24 +173,29 @@ impl<'a, I: Iterator<Item = &'a usize> + Sized> ParserFactory<'a, I> {
             .find(|&&layer_name| op_name.contains(layer_name))
         {
             let parser = self.0.get(layer_name).unwrap();
-            let (node_id, mut node) = parser(model, *curr_node_id, curr_node, iter)?;
-            if first_node {
-                // if the node is the first one, we need to add the input edge as an input to the node
-                node.inputs = node
-                    .inputs
-                    .into_iter()
-                    .map(|x| Edge::new_at_edge(x.index))
-                    .collect();
-            }
-            debug!(
-                "parsed node id: {:?} : {:?} <- inputs: {:?}",
-                curr_node_id,
-                node.operation.describe(),
-                node.inputs
-            );
-            Ok((node_id, node))
+
+            Some(
+                parser(model, *curr_node_id, curr_node, iter).map(|(node_id, mut node)| {
+                    if first_node {
+                        // if the node is the first one, we need to add the
+                        // input edge as an input to the node
+                        node.inputs = node
+                            .inputs
+                            .into_iter()
+                            .map(|x| Edge::new_at_edge(x.index))
+                            .collect();
+                    }
+                    debug!(
+                        "parsed node id: {:?} : {:?} <- inputs: {:?}",
+                        curr_node_id,
+                        node.operation.describe(),
+                        node.inputs
+                    );
+                    (node_id, node)
+                }),
+            )
         } else {
-            err(format!("Unknown node type: {op_name}"))
+            Some(err(format!("Unknown node type: {op_name}")))
         }
     }
 }
