@@ -1,6 +1,6 @@
 # Commitments
 
-In any layer with auxilliary information (e.g. a layer with a lookup argument) we must commit to the auxilliary information before proving commences and provide an opening proof for any claims made by layer proofs about this information.
+In any layer with auxiliary information (e.g. a layer with a lookup argument) we must commit to the auxiliary information before proving commences and provide an opening proof for any claims made by layer proofs about this information.
 
 We make use of the [Basefold](https://eprint.iacr.org/2023/1705.pdf) multilinear polynomial commitment scheme as it provides a good trade-off between prover time and proof size.
 
@@ -8,18 +8,18 @@ We make use of the [Basefold](https://eprint.iacr.org/2023/1705.pdf) multilinear
 
 There are two "types" of commitment used in Deep Prove. The first are *Model Commitments*, which are commitments to things like weights and biases and are the same for every inference proof. The second are *Witness Commitments*, these differ for every inference proof and represent things like non-linear activations that need to be verified via lookup argument.
 
-The large number of non-linear operations present in most neural networks leads to having to open many different commitments at many different points. To improve effeciency we make use of batch opening in this scenario. The batch opening protocol used is the one descibed in Section 3.8 of the [Hyperplonk paper](https://eprint.iacr.org/2022/1355.pdf).
+The large number of non-linear operations present in most neural networks leads to having to open many different commitments at many different points. To improve efficiency we make use of batch opening in this scenario. The batch opening protocol used is the one described in Section 3.8 of the [Hyperplonk paper](https://eprint.iacr.org/2022/1355.pdf).
 
 We make use of two additional optimistaions. The first is that if a multilinear polynomial has 7 or fewer variables it is more efficient to send the polynomial directly than to supply an opening proof. The second is that we make use of sumcheck to reduce multiple claims about a single polynomial  to one claim, this way in the batch opening protocol each polynomial is opened at a single point.
 
 ## Prover Flow
 
 During proving commitments are handled in the following way:
-1. The prover generates the provable inference trace and any auxilliary information needed for proving
-2. The prover commits to all auxilliary information
+1. The prover generates the provable inference trace and any auxiliary information needed for proving
+2. The prover commits to all auxiliary information
 3. Model Commitments are fed into the transcript, followed by Witness commitments
 4. Initial randomness is sampled from the transcript
-5. Layer proofs are generated, in any layer proof that required auxilliary information commitments to this information are included in the proof. Additionally the layer proof adds any claims about committed information to the [CommitmentProver][1]
+5. Layer proofs are generated, in any layer proof that required auxiliary information commitments to this information are included in the proof. Additionally the layer proof adds any claims about committed information to the [CommitmentProver][1]
 6. Once all layer proofs and table proofs are generated, the [CommitmentProver][1] runs the batch opening protocol generating a PCS::Proof
     
 

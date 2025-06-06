@@ -741,7 +741,7 @@ impl<E: ExtensionField> MultilinearExtension<E> for DenseMultilinearExtension<E>
         }
     }
 
-    /// get ranged multiliear extention
+    /// get ranged multiliear extension
     fn get_ranged_mle(
         &self,
         num_range: usize,

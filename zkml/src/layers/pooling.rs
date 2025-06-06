@@ -247,7 +247,7 @@ where
         );
 
         let lookups = gen.new_lookups.get_mut(&TableType::Range).ok_or(anyhow!(
-            "No table of type Range was expected, error occured during a MaxPool step"
+            "No table of type Range was expected, error occurred during a MaxPool step"
         ))?;
         lookups.extend(merged_lookups);
 
@@ -396,7 +396,7 @@ impl Pooling {
         // We reuse the logup point here for the zerocheck challenge
         let lookup_point = &logup_proof.output_claims()[0].point;
 
-        // Comput the identity poly
+        // Compute the identity poly
         let batch_challenge = prover
             .transcript
             .get_and_append_challenge(b"batch_pooling")
@@ -430,7 +430,7 @@ impl Pooling {
             .into_iter()
             .for_each(|(prod, coeff)| vp.add_mle_list(prod, coeff));
 
-        // We also batch in the smae poly proof for the output with the Zerocheck
+        // We also batch in the same poly proof for the output with the Zerocheck
         let output_mle: ArcMultilinearExtension<E> = output.get_data().to_vec().into_mle().into();
 
         vp.add_mle_list(

@@ -13,7 +13,7 @@ use sumcheck::util::ceil_log2;
 use transcript::Transcript;
 
 use crate::{
-    izip_parallizable,
+    izip_parallelizable,
     prover::SumcheckStateV2,
     structs::{Circuit, CircuitWitness, IOPProverState, IOPProverStepMessage, PointAndEval},
 };
@@ -51,7 +51,7 @@ impl<E: ExtensionField> IOPProverState<E> {
         let (mut f_vec, mut g_vec): (
             Vec<ArcDenseMultilinearExtension<E>>,
             Vec<ArcDenseMultilinearExtension<E>>,
-        ) = izip_parallizable!(paste_from_wit_in)
+        ) = izip_parallelizable!(paste_from_wit_in)
             .enumerate()
             .map(|(j, (l, r))| {
                 let wit_in = circuit_witness.witness_in_ref()[j].get_base_field_vec();
@@ -87,7 +87,7 @@ impl<E: ExtensionField> IOPProverState<E> {
         let (f_vec_counter_in, g_vec_counter_in): (
             Vec<ArcDenseMultilinearExtension<E>>,
             Vec<ArcDenseMultilinearExtension<E>>,
-        ) = izip_parallizable!(paste_from_counter_in)
+        ) = izip_parallelizable!(paste_from_counter_in)
             .map(|(num_vars, (l, r))| {
                 let mut f = vec![0.into(); 1 << (max_lo_in_num_vars + hi_num_vars)];
                 let mut g = vec![E::ZERO; 1 << max_lo_in_num_vars];

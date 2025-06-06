@@ -6,7 +6,7 @@ use ff_ext::ExtensionField;
 use crate::{Challenge, Transcript};
 
 #[derive(Clone)]
-pub struct TranscriptSyncronized<E: ExtensionField> {
+pub struct TranscriptSynchronized<E: ExtensionField> {
     ef_append_tx: [Sender<Vec<E>>; 2],
     ef_append_rx: [Receiver<Vec<E>>; 2],
     bf_append_tx: [Sender<Vec<E::BaseField>>; 2],
@@ -16,7 +16,7 @@ pub struct TranscriptSyncronized<E: ExtensionField> {
     rolling_index: usize,
 }
 
-impl<E: ExtensionField> TranscriptSyncronized<E> {
+impl<E: ExtensionField> TranscriptSynchronized<E> {
     /// Create a new IOP transcript.
     pub fn new(max_thread_id: usize) -> Self {
         let (bf_append_tx, bf_append_rx) = array::from_fn::<_, 2, _>(|_| bounded(max_thread_id))
@@ -41,7 +41,7 @@ impl<E: ExtensionField> TranscriptSyncronized<E> {
     }
 }
 
-impl<E: ExtensionField> Transcript<E> for TranscriptSyncronized<E> {
+impl<E: ExtensionField> Transcript<E> for TranscriptSynchronized<E> {
     fn append_field_element(&mut self, element: &E::BaseField) {
         self.bf_append_tx[self.rolling_index]
             .send(vec![*element])

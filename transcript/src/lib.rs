@@ -5,10 +5,10 @@
 
 pub mod basic;
 mod statistics;
-pub mod syncronized;
+pub mod synchronized;
 pub use basic::BasicTranscript;
 pub use statistics::{BasicTranscriptWithStat, StatisticRecorder};
-pub use syncronized::TranscriptSyncronized;
+pub use synchronized::TranscriptSynchronized;
 
 #[derive(Default, Copy, Clone, Eq, PartialEq, Debug)]
 pub struct Challenge<F> {
@@ -19,7 +19,7 @@ use ff_ext::ExtensionField;
 use goldilocks::SmallField;
 /// The Transcript trait
 pub trait Transcript<E: ExtensionField>: Clone {
-    /// Append a slice of base field elemets to the transcript.
+    /// Append a slice of base field elements to the transcript.
     ///
     /// An implementation has to provide at least one of
     /// `append_field_elements` / `append_field_element`

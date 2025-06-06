@@ -19,7 +19,7 @@ pub enum LogUpLayer<E: ExtensionField> {
         denominator: Vec<E>,
     },
     /// This is the first layer of the GKR protocol when proving a fractional sumcheck for a table.
-    /// The numerator is the multiplicity polynomial nd the denominator is the merged table polynomial.
+    /// The numerator is the multiplicity polynomial and the denominator is the merged table polynomial.
     InitialTable {
         numerator: Vec<E>,
         denominator: Vec<E>,
@@ -274,7 +274,8 @@ impl<E: ExtensionField> LogUpCircuit<E> {
         self.layers.last().map(|layer| layer.flat_evals()).unwrap()
     }
 
-    /// Works out the total number of variables the [`LogUpCircuit`] has in its larget (aka input) layer.
+    /// Works out the total number of variables the [`LogUpCircuit`] has in its
+    /// largest (aka input) layer.
     pub fn num_vars(&self) -> usize {
         self.layers[0].num_vars()
     }

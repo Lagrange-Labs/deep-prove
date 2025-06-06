@@ -21,7 +21,7 @@ macro_rules! exit_span {
 
 #[macro_export]
 #[cfg(feature = "parallel")]
-macro_rules! izip_parallizable {
+macro_rules! izip_parallelizable {
     (@closure $p:pat => $tup:expr) => {
         |$p| $tup
     };
@@ -32,10 +32,10 @@ macro_rules! izip_parallizable {
         rayon::iter::IntoParallelIterator::into_par_iter($first)
     };
     ($first:expr, $second:expr $(,)*) => {
-        $crate::izip_parallizable!($first).zip($second)
+        $crate::izip_parallelizable!($first).zip($second)
     };
     ($first:expr $(, $rest:expr)* $(,)*) => {
-        $crate::izip_parallizable!($first)
+        $crate::izip_parallelizable!($first)
             $(.zip($rest))*
             .map($crate::izip_parallizable!(@closure a => (a) $(, $rest)*))
     };
@@ -43,7 +43,7 @@ macro_rules! izip_parallizable {
 
 #[macro_export]
 #[cfg(not(feature = "parallel"))]
-macro_rules! izip_parallizable {
+macro_rules! izip_parallelizable {
     (@closure $p:pat => $tup:expr) => {
         |$p| $tup
     };
@@ -54,10 +54,10 @@ macro_rules! izip_parallizable {
         $first.into_iter()
     };
     ($first:expr, $second:expr $(,)*) => {
-        $crate::izip_parallizable!($first).zip($second)
+        $crate::izip_parallelizable!($first).zip($second)
     };
     ($first:expr $(, $rest:expr)* $(,)*) => {
-        $crate::izip_parallizable!($first)
+        $crate::izip_parallelizable!($first)
             $(.zip($rest))*
             .map($crate::izip_parallizable!(@closure a => (a) $(, $rest)*))
     };

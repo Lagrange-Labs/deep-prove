@@ -57,7 +57,7 @@ pub struct DenseProof<E: ExtensionField> {
     /// the actual sumcheck proof proving the mat2vec protocol
     pub(crate) sumcheck: IOPProof<E>,
     /// The evaluation of the bias at the previous claims in the proving flow.
-    /// The verifier substracts this from the previous claim to end up with one claim only
+    /// The verifier subtracts this from the previous claim to end up with one claim only
     /// about the matrix, without the bias.
     bias_eval: E,
     /// The individual evaluations of the individual polynomial for the last random part of the
@@ -217,14 +217,8 @@ where
 
         aux.model_polys = {
             let mut model_polys = HashMap::new();
-            model_polys.insert(
-                WEIGHT_POLY_ID.to_string(),
-                weights_evals,
-            );
-            model_polys.insert(
-                BIAS_POLY_ID.to_string(),
-                bias_evals,
-            );
+            model_polys.insert(WEIGHT_POLY_ID.to_string(), weights_evals);
+            model_polys.insert(BIAS_POLY_ID.to_string(), bias_evals);
             Some(model_polys)
         };
         Ok((dense_info, aux))
@@ -474,7 +468,7 @@ impl Dense<Element> {
             input.get_data().len(),
             "something's wrong with the input"
         );
-        // Evaluates the bias at the random point so verifier can substract the evaluation
+        // Evaluates the bias at the random point so verifier can subtract the evaluation
         // from the sumcheck claim that is only about the matrix2vec product.
         assert_eq!(
             self.bias.get_data().len().ilog2() as usize,
@@ -486,7 +480,7 @@ impl Dense<Element> {
             .evals_flat::<E>()
             .into_mle()
             .evaluate(&last_claim.point);
-        // contruct the MLE combining the input and the matrix
+        // construct the MLE combining the input and the matrix
         let mut mat_mle = matrix.to_mle_2d();
         // fix the variables from the random input
         // NOTE: here we must fix the HIGH variables because the MLE is addressing in little
@@ -557,14 +551,8 @@ impl Dense<Element> {
         // Add common commitment claims to be proven
         let common_claims = {
             let mut claims = HashMap::new();
-            claims.insert(
-                WEIGHT_POLY_ID.to_string(),
-                weights_claim,
-            );
-            claims.insert(
-                BIAS_POLY_ID.to_string(),
-                bias_claim,
-            );
+            claims.insert(WEIGHT_POLY_ID.to_string(), weights_claim);
+            claims.insert(BIAS_POLY_ID.to_string(), bias_claim);
             claims
         };
         prover.add_common_claims(id, common_claims)?;
@@ -635,14 +623,8 @@ where
         // add the common commitment claims to be verified
         let common_claims = {
             let mut claims = HashMap::new();
-            claims.insert(
-                WEIGHT_POLY_ID.to_string(),
-                weights_claim,
-            );
-            claims.insert(
-                BIAS_POLY_ID.to_string(),
-                bias_claim,
-            );
+            claims.insert(WEIGHT_POLY_ID.to_string(), weights_claim);
+            claims.insert(BIAS_POLY_ID.to_string(), bias_claim);
             claims
         };
         verifier.add_common_claims(self.node_id, common_claims)?;
@@ -705,9 +687,12 @@ mod test {
     #[test]
     fn test_dense_pad_next_power_of_two() {
         // Create a Dense layer with non-power-of-two dimensions
-        let matrix =
-            Tensor::<Element>::matix_from_coeffs(vec![vec![1, 2, 3], vec![4, 5, 6], vec![7, 8, 9]])
-                .unwrap();
+        let matrix = Tensor::<Element>::matrix_from_coeffs(vec![
+            vec![1, 2, 3],
+            vec![4, 5, 6],
+            vec![7, 8, 9],
+        ])
+        .unwrap();
 
         let bias = Tensor::<Element>::new(vec![3], vec![10, 11, 12]);
 
@@ -747,7 +732,7 @@ mod test {
     #[test]
     fn test_dense_pad_already_power_of_two() {
         // Create a Dense layer with power-of-two dimensions
-        let matrix = Tensor::<Element>::matix_from_coeffs(vec![
+        let matrix = Tensor::<Element>::matrix_from_coeffs(vec![
             vec![1, 2, 3, 4],
             vec![5, 6, 7, 8],
             vec![9, 10, 11, 12],
@@ -784,7 +769,7 @@ mod test {
     #[test]
     fn test_dense_pad_mixed_dimensions() {
         // Create a Dense layer with one power-of-two dimension and one non-power-of-two
-        let matrix = Tensor::<Element>::matix_from_coeffs(vec![
+        let matrix = Tensor::<Element>::matrix_from_coeffs(vec![
             vec![1, 2, 3, 4],
             vec![5, 6, 7, 8],
             vec![9, 10, 11, 12],
@@ -833,7 +818,7 @@ mod test {
 
         // Create a Dense layer
         let matrix =
-            Tensor::<Element>::matix_from_coeffs(vec![vec![1, 2, 3], vec![4, 5, 6]]).unwrap();
+            Tensor::<Element>::matrix_from_coeffs(vec![vec![1, 2, 3], vec![4, 5, 6]]).unwrap();
 
         let bias = Tensor::<Element>::new(vec![2], vec![10, 11]);
 

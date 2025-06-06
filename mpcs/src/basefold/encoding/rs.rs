@@ -416,7 +416,7 @@ where
         // The coefficients are for the bit-reversed codeword, so reverse the
         // bits before providing the coefficients.
         let index = reverse_bits(index, level);
-        // The same as prover_folding_coeffs, exept that the powers of
+        // The same as prover_folding_coeffs, except that the powers of
         // g is computed on the fly for levels exceeding the root table.
         let x0 = if level < Spec::get_basecode_msg_size_log() + Spec::get_rate_log() {
             if index < (1 << level) {
@@ -807,7 +807,7 @@ mod tests {
             E::ONE
         );
         // The three points (x0, c0), (x1, c_mid), (challenge, c_fold) should
-        // be colinear
+        // be collinear
         assert_eq!(
             (c_mid - c_fold) * (folding_coeffs.0 - challenge),
             (c0 - c_fold) * (folding_coeffs.1 - challenge),
@@ -847,7 +847,7 @@ mod tests {
         // The folded codeword is the linear combination of the left+right and the
         // twisted left-right vectors.
         // The coefficients are respectively 1/2 and gamma^{-1}/2 * alpha.
-        // In another word, the folded codeword multipled by 2 is the linear
+        // In another word, the folded codeword multiplied by 2 is the linear
         // combination by coeffs: 1 and gamma^{-1} * alpha
         let gamma_inv = F::MULTIPLICATIVE_GENERATOR.invert().unwrap();
         let b = challenge * gamma_inv;

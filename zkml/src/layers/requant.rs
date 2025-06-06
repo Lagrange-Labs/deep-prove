@@ -41,11 +41,11 @@ use super::{
     provable::{Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, VerifiableCtx},
 };
 
-/// Constnat used in fixed point multiplication for normalised [`f32`] values
+/// Constant used in fixed point multiplication for normalised [`f32`] values
 const FIXED_POINT_SCALE: usize = 25;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Copy, PartialOrd)]
-/// This struct contains the infomation used in requantisation (i.e. rescaling and clamping)
+/// This struct contains the information used in requantisation (i.e. rescaling and clamping)
 /// The fields are:
 /// - `multiplier`: This is the actual [`f32`] value calculated as `S1 * S2 / S3` and in traditional quantisation is what we would multiply by and then round to requantise
 /// - `right_shift`: This is `multiplier.log2().trunc().abs()`
@@ -62,7 +62,7 @@ pub struct Requant {
     pub fp_scale: usize,
     /// THe actual multiplier, this is mainly used to compare accuracy, it has no purpose in actual proving
     pub multiplier: f32,
-    /// This field represents how many bits the max absoloute value can be
+    /// This field represents how many bits the max absolute value can be
     pub(crate) intermediate_bit_size: usize,
 }
 
@@ -209,7 +209,7 @@ where
             "Found more than 1 output in inference step of requant layer"
         );
 
-        // We take the input, mutliply by the fixed point multiplier and add the rounding constant. Then we split the resulting values into
+        // We take the input, multiply by the fixed point multiplier and add the rounding constant. Then we split the resulting values into
         // parts that are either shifted away (these get range checked) or passed to the clamping table.
         let shift = self.shift();
         let rounding_constant = 1i128 << (shift - 1);
@@ -338,7 +338,7 @@ where
             ],
         );
         let lookups = gen.new_lookups.get_mut(&TableType::Range).ok_or(anyhow!(
-            "No table of type Range was expected, error occured during requant step"
+            "No table of type Range was expected, error occurred during requant step"
         ))?;
         lookups.extend(merged_shifted);
         let lookups = gen
@@ -632,7 +632,7 @@ impl Requant {
 
         // Run the sumcheck prover for the claims
         // This sumcheck checks that the polynomial `last_claim` relates to is the clamping output while simultaneously providing us with claimns for clamping input and
-        // the shifted chunks at the same point (we need them all evalauted at the same point so we can recombine the evaluations and produce the next claim).
+        // the shifted chunks at the same point (we need them all evaluated at the same point so we can recombine the evaluations and produce the next claim).
         #[allow(deprecated)]
         let (claim_acc_proof, state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
 

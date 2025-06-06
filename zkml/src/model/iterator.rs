@@ -3,11 +3,11 @@ use std::collections::{BTreeSet, HashMap};
 use ff_ext::ExtensionField;
 use serde::{Serialize, de::DeserializeOwned};
 
-use crate::layers::provable::{Node, NodeCtx, NodeEgdes, NodeId};
+use crate::layers::provable::{Node, NodeCtx, NodeEdges, NodeId};
 
 use super::{Model, ModelCtx};
 
-pub trait ToIterator<E: NodeEgdes> {
+pub trait ToIterator<E: NodeEdges> {
     /// Produces an iterator over a set of nodes in a model, starting from the inputs
     /// and yielding nodes in order according to whether their inputs all come from
     /// nodes already visited by the iterator  
@@ -78,7 +78,7 @@ impl<N> ToIterator<Node<N>> for Model<N> {
 }
 
 /// A trait representing a collections of nodes with their input/output edges
-pub trait NodeCollection<E: NodeEgdes> {
+pub trait NodeCollection<E: NodeEdges> {
     fn nodes(self) -> HashMap<NodeId, E>;
 }
 
@@ -94,19 +94,19 @@ pub type ModelCtxForwardIterator<'a, E> = NodeIterator<'a, NodeCtx<E>, true>;
 pub type ModelCtxBackwardIterator<'a, E> = NodeIterator<'a, NodeCtx<E>, false>;
 
 /// Structure employed to implemented forward and backward iterators
-pub struct NodeIterator<'a, E: NodeEgdes, const FORWARD: bool> {
+pub struct NodeIterator<'a, E: NodeEdges, const FORWARD: bool> {
     pub(crate) unvisited_nodes: BTreeSet<NodeId>, /* Use BTreeSet to make the iterator deterministic */
     pub(crate) nodes: &'a HashMap<NodeId, E>,
 }
 
 /// Structure employed to implement forward and backward iterators that
 /// take ownership of the set of nodes
-pub struct IntoNodeIterator<E: NodeEgdes, const FORWARD: bool> {
+pub struct IntoNodeIterator<E: NodeEdges, const FORWARD: bool> {
     pub(crate) node_ids: Vec<NodeId>,
     pub(crate) nodes: HashMap<NodeId, E>,
 }
 
-impl<E: NodeEgdes, const FORWARD: bool> IntoNodeIterator<E, FORWARD> {
+impl<E: NodeEdges, const FORWARD: bool> IntoNodeIterator<E, FORWARD> {
     fn new<I: ToIterator<E> + NodeCollection<E>>(iter: I) -> Self {
         let mut node_ids: Vec<_> = if FORWARD {
             iter.to_forward_iterator()
@@ -126,7 +126,7 @@ impl<E: NodeEgdes, const FORWARD: bool> IntoNodeIterator<E, FORWARD> {
     }
 }
 
-impl<'a, E: NodeEgdes, const FORWARD: bool> Iterator for NodeIterator<'a, E, FORWARD> {
+impl<'a, E: NodeEdges, const FORWARD: bool> Iterator for NodeIterator<'a, E, FORWARD> {
     type Item = (NodeId, &'a E);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -160,7 +160,7 @@ impl<'a, E: NodeEgdes, const FORWARD: bool> Iterator for NodeIterator<'a, E, FOR
     }
 }
 
-impl<E: NodeEgdes, const FORWARD: bool> Iterator for IntoNodeIterator<E, FORWARD> {
+impl<E: NodeEdges, const FORWARD: bool> Iterator for IntoNodeIterator<E, FORWARD> {
     type Item = (NodeId, E);
 
     fn next(&mut self) -> Option<Self::Item> {

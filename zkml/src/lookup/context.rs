@@ -1,4 +1,4 @@
-//! File containg code for lookup witness generation.
+//! File containing code for lookup witness generation.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -273,7 +273,7 @@ where
     E: ExtensionField + Serialize + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
 {
-    // If the lookup context is empty then there are no lookup witnesses to generate so we return defaut values
+    // If the lookup context is empty then there are no lookup witnesses to generate so we return default values
     if ctx.lookup.is_empty() {
         warn!("Lookup witness generation: no tables found, returning empty context TEST?");
         return Ok((
@@ -299,7 +299,7 @@ where
         step.op
             .gen_lookup_witness(node_id, &mut witness_gen, ctx, &step.step_data)
             .map_err(|e| {
-                LogUpError::ParamterError(format!(
+                LogUpError::ParameterError(format!(
                     "Error generating lookup witness for node {} with error: {}",
                     node_id,
                     e.to_string()
@@ -338,7 +338,7 @@ where
                 DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, &multiplicities);
             let commit = ctx.commitment_ctx.commit(&mle).map_err(|e| {
                 LogUpError::PolynomialError(format!(
-                    "Error while commiting to {} table multiplicity polynomial: {:?}",
+                    "Error while committing to {} table multiplicity polynomial: {:?}",
                     table_type.name(),
                     e
                 ))

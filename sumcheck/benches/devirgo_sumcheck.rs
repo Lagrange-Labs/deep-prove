@@ -153,12 +153,12 @@ fn devirgo_sumcheck_fn(c: &mut Criterion) {
                     let mut time = Duration::new(0, 0);
                     for _ in 0..iters {
                         let mut prover_transcript = Transcript::<E>::new(b"test");
-                        let (_, _, virtual_poly_splitted) = { prepare_input(nv) };
+                        let (_, _, virtual_poly_split) = { prepare_input(nv) };
 
                         let instant = std::time::Instant::now();
                         let (_sumcheck_proof_v2, _) = IOPProverState::<E>::prove_batch_polys(
                             threads,
-                            virtual_poly_splitted,
+                            virtual_poly_split,
                             &mut prover_transcript,
                         );
                         let elapsed = instant.elapsed();

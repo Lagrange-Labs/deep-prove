@@ -10,7 +10,7 @@ Let $\textbf{w} = [\textbf{w}_1,...,\textbf{w}_k] \in \mathbb{F}^n$ be a vector 
 
 Given a set of evaluation claim pairs $S = \{(y_1,\textbf{r}_1),...,(y_k,\textbf{r}_k)\}$*, we want to accumulate them in a single pair* $(y,\textbf{w})$ *such that* $y = f_{\textbf{w}}(\textbf{r})$ if and only if all claims are correct. We achieve this using the following protocol:
 
-**1. Verifier**: Given the set $S$ samples $k$ random points $a_1,a_2,...,a_n$ and computes $y_{aggr} = \sum_{i \in [k]}a_iy_i$. Finally sends the random points to the prover.
+**1. Verifier**: Given the set $S$ samples $k$ random points $a_1,a_2,...,a_n$ and computes $y_{aggr} = \sum_{i \in [k]}a_it_i$. Finally sends the random points to the prover.
 
 **2. Prover**: Let $\textbf{b}_i \in \mathbb{F}^{|\textbf{w}_i|}$ be the vector such that $\textbf{b}_i[j] = \beta(j,\textbf{r}_i)$ (the $eq()$ polynomial often defined in sumcheck and GKR related papers).
 

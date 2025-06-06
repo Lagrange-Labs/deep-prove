@@ -13,7 +13,7 @@ The size of the Relu table depends on the quantisation bit size. It has two colu
 |       2      |       2       |
 |       3      |       3       |
 
-At each Relu layer we take the MLE that is the output of the previous layer $` \mathrm{ReluInput}(x) `$ and compute the MLE representing the output after appling Relu element wise, $` \mathrm{ReluOutput}(x) `$. Both of these are then passed to the GKR circuit along with column separation challenges which produces a proof attesting to the fact 
+At each Relu layer we take the MLE that is the output of the previous layer $` \mathrm{ReluInput}(x) `$ and compute the MLE representing the output after applying Relu element wise, $` \mathrm{ReluOutput}(x) `$. Both of these are then passed to the GKR circuit along with column separation challenges which produces a proof attesting to the fact
 
 $$ \begin{align} \sum_{b\in\mathcal{B}} \frac{-1}{\alpha + \mathrm{ReluInput}(b) + \beta\cdot\mathrm{ReluOutput}(b)} = \frac{p}{q}. \end{align}$$
 

@@ -246,7 +246,7 @@ fn quantize_model<S: ScalingStrategy>(
     let input_shapes = model.input_shapes();
     let input_not_padded_shapes = model.unpadded_input_shapes();
     let mut md = MetadataBuilder::new(input_scaling);
-    // 2. Create the requant layers from the infered data
+    // 2. Create the requant layers from the inferred data
     let mut requant_layers = vec![];
     let nodes = model
         .into_forward_iterator()

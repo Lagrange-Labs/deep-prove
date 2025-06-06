@@ -90,7 +90,7 @@ const RC: [u64; ROUNDS] = [
     0x8000000080008008u64,
 ];
 
-/// Bits of a word in big-endianess
+/// Bits of a word in big-endianness
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Word([usize; 64]);
 
@@ -559,9 +559,9 @@ pub fn verify_keccak256<E: ExtensionField>(
     proof: IOPProof<E>,
     circuit: &Circuit<E>,
 ) -> Result<GKRInputClaims<E>, GKRError> {
-    let mut verifer_transcript = BasicTranscript::<E>::new(b"test");
+    let mut verifier_transcript = BasicTranscript::<E>::new(b"test");
     let output_point = iter::repeat_with(|| {
-        verifer_transcript
+        verifier_transcript
             .get_and_append_challenge(b"output point")
             .elements
     })
@@ -575,6 +575,6 @@ pub fn verify_keccak256<E: ExtensionField>(
         vec![PointAndEval::new(output_point, output_eval)],
         proof,
         instance_num_vars,
-        &mut verifer_transcript,
+        &mut verifier_transcript,
     )
 }

@@ -628,7 +628,7 @@ pub(crate) mod test {
 
             // If maxpool input matrix has dimensions w x h then output has width and height
             // out_w = (w - kernel_size) / stride + 1
-            // out_h = (h - kenrel_size) / stride + 1
+            // out_h = (h - kernel_size) / stride + 1
             // Hence to make sure we have a large enough tensor for the last step
             // we need to have that w_first > 2^{num_layers + 1} + 2^{num_layers}
             // and likewise for h_first.

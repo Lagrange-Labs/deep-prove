@@ -684,7 +684,7 @@ where
             og_shape: vec![0],
         }
     }
-    pub fn matix_from_coeffs(data: Vec<Vec<T>>) -> anyhow::Result<Self> {
+    pub fn matrix_from_coeffs(data: Vec<Vec<T>>) -> anyhow::Result<Self> {
         let n_rows = data.len();
         let n_cols = data.first().expect("at least one row in a matrix").len();
         let data = data.into_iter().flatten().collect::<Vec<_>>();
@@ -1048,7 +1048,7 @@ where
         });
         m
     }
-    // Implementation of the stadard convolution algorithm.
+    // Implementation of the standard convolution algorithm.
     // This is needed mostly for debugging purposes
     pub fn cnn_naive_convolution(&self, xt: &Tensor<T>) -> Tensor<T> {
         let k_w = self.shape[0];

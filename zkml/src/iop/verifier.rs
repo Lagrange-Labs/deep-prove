@@ -1,9 +1,17 @@
 use std::collections::HashMap;
 
 use crate::{
-    commit::context::{CommitmentVerifier, PolyId}, iop::{context::ShapeStep, ChallengeStorage}, layers::{
-        provable::{NodeCtx, NodeId, OpInfo, VerifiableCtx}, LayerProof
-    }, lookup::{context::TableType, logup_gkr::verifier::verify_logup_proof}, model::ToIterator, tensor::Tensor, try_unzip, Claim, VectorTranscript
+    Claim, VectorTranscript,
+    commit::context::{CommitmentVerifier, PolyId},
+    iop::{ChallengeStorage, context::ShapeStep},
+    layers::{
+        LayerProof,
+        provable::{NodeCtx, NodeId, OpInfo, VerifiableCtx},
+    },
+    lookup::{context::TableType, logup_gkr::verifier::verify_logup_proof},
+    model::ToIterator,
+    tensor::Tensor,
+    try_unzip,
 };
 use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
@@ -63,7 +71,7 @@ where
         proof: Proof<E, PCS>,
         io: IO<E>,
     ) -> anyhow::Result<()> {
-        // 1. Instatiate everything and append relevant info to the transcript
+        // 1. Instantiate everything and append relevant info to the transcript
         let mut numerators = Vec::<E>::new();
         let mut denominators = Vec::<E>::new();
 

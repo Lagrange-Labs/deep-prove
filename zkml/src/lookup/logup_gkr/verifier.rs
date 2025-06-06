@@ -26,10 +26,10 @@ pub fn verify_logup_proof<E: ExtensionField, T: Transcript<E>>(
     let (numerators, denominators): (Vec<E>, Vec<E>) = proof.fractional_outputs();
 
     let batching_challenge = transcript
-        .get_and_append_challenge(b"inital_batching")
+        .get_and_append_challenge(b"initial_batching")
         .elements;
     let mut alpha = transcript
-        .get_and_append_challenge(b"inital_alpha")
+        .get_and_append_challenge(b"initial_alpha")
         .elements;
     let mut lambda = transcript
         .get_and_append_challenge(b"initial_lambda")
@@ -74,7 +74,7 @@ pub fn verify_logup_proof<E: ExtensionField, T: Transcript<E>>(
             .get_and_append_challenge(b"logup_lambda")
             .elements;
 
-        // Now we tak the round evals and check their consistency with the sumcheck claim
+        // Now we take the round evals and check their consistency with the sumcheck claim
         let evals_per_instance = round_evaluations.len() / num_instances;
 
         current_claim = if evals_per_instance == 4 {

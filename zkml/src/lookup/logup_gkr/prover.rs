@@ -52,10 +52,10 @@ pub fn batch_prove<E: ExtensionField, T: Transcript<E>>(
         .for_each(|evals| transcript.append_field_element_exts(evals));
 
     let batching_challenge = transcript
-        .get_and_append_challenge(b"inital_batching")
+        .get_and_append_challenge(b"initial_batching")
         .elements;
     let mut alpha = transcript
-        .get_and_append_challenge(b"inital_alpha")
+        .get_and_append_challenge(b"initial_alpha")
         .elements;
     let mut lambda = transcript
         .get_and_append_challenge(b"initial_lambda")

@@ -111,7 +111,7 @@ where
             } => {
                 let (constant_challenge, column_separation_challenge) = challenge_storage
                     .get_challenges_by_name(&table_type.name())
-                    .ok_or(LogUpError::ParamterError(format!(
+                    .ok_or(LogUpError::ParameterError(format!(
                         "No challenges for table type: {}",
                         table_type.name()
                     )))?;
@@ -130,7 +130,7 @@ where
             } => {
                 let (constant_challenge, column_separation_challenge) = challenge_storage
                     .get_challenges_by_name(&table_type.name())
-                    .ok_or(LogUpError::ParamterError(format!(
+                    .ok_or(LogUpError::ParameterError(format!(
                         "No challenges for table type: {}",
                         table_type.name()
                     )))?;

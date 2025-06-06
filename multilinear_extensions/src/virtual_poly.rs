@@ -220,13 +220,13 @@ impl<'a, E: ExtensionField> VirtualPolynomial<'a, E> {
     /// in-place merge with another virtual polynomial
     pub fn merge(&mut self, other: &VirtualPolynomial<'a, E>) {
         let start = start_timer!(|| "virtual poly add");
-        for (coeffient, products) in other.products.iter() {
+        for (coefficient, products) in other.products.iter() {
             let cur: Vec<_> = products
                 .iter()
                 .map(|&x| other.flattened_ml_extensions[x].clone())
                 .collect();
 
-            self.add_mle_list(cur, *coeffient);
+            self.add_mle_list(cur, *coefficient);
         }
         end_timer!(start);
     }
@@ -371,7 +371,7 @@ fn build_eq_x_r_helper_sequential<E: ExtensionField>(r: &[E], buf: &mut [MaybeUn
         let next_size = 1 << (i + 1);
         // suppose at the previous step we processed buf [0..size]
         // for the current step we are populating new buf[0..2*size]
-        // for j travese 0..size
+        // for j traverse 0..size
         // buf[2*j + 1] = r * buf[j]
         // buf[2*j] = (1 - r) * buf[j]
         (0..next_size).step_by(2).rev().for_each(|index| {

@@ -2,13 +2,22 @@ use std::collections::HashMap;
 
 use super::{ChallengeStorage, Context, Proof, TableProof};
 use crate::{
-    commit::{compute_betas_eval, context::{self, PolyId}}, layers::{
-        provable::{NodeId, OpInfo, ProvableOp}, LayerProof
-    }, lookup::{
-        context::{generate_lookup_witnesses, TABLE_POLY_ID_OFFSET},
+    Claim, Element, VectorTranscript,
+    commit::{
+        compute_betas_eval,
+        context::{self, PolyId},
+    },
+    layers::{
+        LayerProof,
+        provable::{NodeId, OpInfo, ProvableOp},
+    },
+    lookup::{
+        context::{TABLE_POLY_ID_OFFSET, generate_lookup_witnesses},
         logup_gkr::prover::batch_prove as logup_batch_prove,
         witness::LogUpWitness,
-    }, model::{InferenceStep, InferenceTrace, ToIterator}, tensor::get_root_of_unity, Claim, Element, VectorTranscript
+    },
+    model::{InferenceStep, InferenceTrace, ToIterator},
+    tensor::get_root_of_unity,
 };
 use anyhow::anyhow;
 use ff_ext::ExtensionField;
@@ -125,7 +134,7 @@ where
 
     // Protocol for proving the correct computation of the FFT/iFFT matrix.
     // For more details look at the zkCNN paper.
-    // F_middle : all intermidiate evaluations retrieved by the phiGinit algorithm
+    // F_middle : all intermediate evaluations retrieved by the phiGinit algorithm
     // r1: the initial random point used to reduce the matrix into vector
     // r2: the random point produced by the sumcheck
     pub fn delegate_matrix_evaluation(
