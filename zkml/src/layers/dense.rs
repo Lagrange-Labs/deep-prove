@@ -9,7 +9,7 @@ use crate::{
     layers::{LayerCtx, LayerProof, requant::Requant},
     model::StepData,
     padding::{PaddingMode, ShapeInfo, pad_dense},
-    quantization::{self, BIT_LEN, ScalingFactor, model_scaling_factor_from_tensor_and_bias},
+    quantization::{self, ScalingFactor, model_scaling_factor_from_tensor_and_bias},
     tensor::Number,
 };
 use anyhow::{Result, ensure};
@@ -471,7 +471,7 @@ impl Dense<Element> {
             .into_mle()
             .evaluate(&last_claim.point);
         // contruct the MLE combining the input and the matrix
-        let mut mat_mle = matrix.to_mle_2d();
+        let mut mat_mle = matrix.to_2d_mle();
         // fix the variables from the random input
         // NOTE: here we must fix the HIGH variables because the MLE is addressing in little
         // endian so (rows,cols) is actually given in (cols, rows)

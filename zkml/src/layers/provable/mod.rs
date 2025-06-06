@@ -320,6 +320,12 @@ impl<Op> QuantizeOutput<Op> {
             requant_layer: Some(requants),
         }
     }
+    pub fn maybe_requants(self, requant: Option<Vec<Requant>>) -> Self {
+        match requant {
+            Some(requant) => self.with_requants(requant),
+            None => self,
+        }
+    }
 }
 
 pub trait QuantizeOp {
@@ -416,6 +422,7 @@ where
         match self {
             LayerCtx::Dense(dense_ctx) => dense_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.output_shapes(input_shapes, padding_mode),
+            LayerCtx::MatMul(mat_ctx) => mat_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Activation(activation_ctx) => {
                 activation_ctx.output_shapes(input_shapes, padding_mode)
             }
@@ -424,7 +431,7 @@ where
             LayerCtx::Flatten => {
                 <Flatten as OpInfo>::output_shapes(&Flatten, input_shapes, padding_mode)
             }
-            _ => unreachable!(),
+            LayerCtx::SchoolBookConvolution(_) | LayerCtx::Table(_) => unreachable!(),
         }
     }
 
@@ -432,11 +439,12 @@ where
         match self {
             LayerCtx::Dense(dense_ctx) => dense_ctx.num_outputs(num_inputs),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.num_outputs(num_inputs),
+            LayerCtx::MatMul(mat_ctx) => mat_ctx.num_outputs(num_inputs),
             LayerCtx::Activation(activation_ctx) => activation_ctx.num_outputs(num_inputs),
             LayerCtx::Requant(requant_ctx) => requant_ctx.num_outputs(num_inputs),
             LayerCtx::Pooling(pooling_ctx) => pooling_ctx.num_outputs(num_inputs),
             LayerCtx::Flatten => <Flatten as OpInfo>::num_outputs(&Flatten, num_inputs),
-            _ => unreachable!(),
+            LayerCtx::SchoolBookConvolution(_) | LayerCtx::Table(_) => unreachable!(),
         }
     }
 
@@ -444,11 +452,12 @@ where
         match self {
             LayerCtx::Dense(dense_ctx) => dense_ctx.describe(),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.describe(),
+            LayerCtx::MatMul(mat_ctx) => mat_ctx.describe(),
             LayerCtx::Activation(activation_ctx) => activation_ctx.describe(),
             LayerCtx::Requant(requant_ctx) => requant_ctx.describe(),
             LayerCtx::Pooling(pooling_ctx) => pooling_ctx.describe(),
             LayerCtx::Flatten => Flatten.describe(),
-            _ => unreachable!(),
+            LayerCtx::SchoolBookConvolution(_) | LayerCtx::Table(_) => unreachable!(),
         }
     }
 
@@ -456,11 +465,12 @@ where
         match self {
             LayerCtx::Dense(dense_ctx) => dense_ctx.is_provable(),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.is_provable(),
+            LayerCtx::MatMul(mat_ctx) => mat_ctx.is_provable(),
             LayerCtx::Activation(activation_ctx) => activation_ctx.is_provable(),
             LayerCtx::Requant(requant_ctx) => requant_ctx.is_provable(),
             LayerCtx::Pooling(pooling_ctx) => pooling_ctx.is_provable(),
             LayerCtx::Flatten => Flatten.is_provable(),
-            _ => unreachable!(),
+            LayerCtx::SchoolBookConvolution(_) | LayerCtx::Table(_) => unreachable!(),
         }
     }
 }
@@ -506,6 +516,16 @@ where
                     bail!("conv proof not found when verifying convolution layer")
                 }
             }
+            LayerCtx::MatMul(matmul_ctx) => {
+                if let LayerProof::MatMul(proof) = proof {
+                    matmul_ctx.verify(proof, last_claims, verifier, shape_step)
+                } else {
+                    bail!(
+                        "MatMul proof not found when verifying matrix multiplication layer"
+                            .to_string(),
+                    )
+                }
+            }
             LayerCtx::Activation(activation_ctx) => {
                 if let LayerProof::Activation(proof) = proof {
                     activation_ctx.verify(proof, last_claims, verifier, shape_step)
@@ -527,7 +547,9 @@ where
                     bail!("pooling proof not found when verifying pooling layer")
                 }
             }
-            _ => unreachable!("Trying to verify a non-provable layer"),
+            LayerCtx::SchoolBookConvolution(_) | LayerCtx::Table(_) | LayerCtx::Flatten => {
+                unreachable!("Trying to verify a non-provable layer")
+            }
         }
     }
 }

@@ -5,7 +5,7 @@ pub mod convolution;
 pub mod dense;
 pub mod flatten;
 pub mod hadamard;
-pub mod matmul;
+pub mod matrix_mul;
 pub mod matvec;
 pub mod mul;
 pub mod permute;
@@ -48,11 +48,13 @@ use crate::{
 use activation::ActivationCtx;
 use convolution::{ConvCtx, ConvProof, SchoolBookConv, SchoolBookConvCtx};
 use dense::{DenseCtx, DenseProof};
+use matrix_mul::{MatMul, MatMulCtx, MatMulProof};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 #[derive(Clone, Debug)]
 pub enum Layer<T> {
     Dense(Dense<T>),
+    MatMul(MatMul<T>),
     // TODO: replace this with a Tensor based implementation
     Convolution(Convolution<T>),
     // Traditional convolution is used for debug purposes. That is because the actual convolution
@@ -79,6 +81,7 @@ where
     E::BaseField: Serialize + DeserializeOwned,
 {
     Dense(DenseCtx<E>),
+    MatMul(MatMulCtx<E>),
     Convolution(ConvCtx<E>),
     SchoolBookConvolution(SchoolBookConvCtx),
     Activation(ActivationCtx),
@@ -96,6 +99,7 @@ where
     PCS: PolynomialCommitmentScheme<E>,
 {
     Dense(DenseProof<E>),
+    MatMul(MatMulProof<E>),
     Convolution(ConvProof<E>),
     Activation(ActivationProof<E, PCS>),
     Requant(RequantProof<E, PCS>),
@@ -111,6 +115,7 @@ where
     pub fn variant_name(&self) -> String {
         match self {
             Self::Dense(_) => "Dense".to_string(),
+            Self::MatMul(_) => "Matrix Multiplication".to_string(),
             Self::SchoolBookConvolution(_) => "Traditional Convolution".to_string(),
             Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
@@ -128,35 +133,11 @@ where
         }
     }
 
-    pub fn output_shape(&self, input_shape: &[usize], padding_mode: PaddingMode) -> Vec<usize> {
-        match self {
-            Self::Dense(ref dense) => dense.output_shape(input_shape, padding_mode),
-            Self::Convolution(ref filter) => filter.output_shape(input_shape, padding_mode),
-            Self::SchoolBookConvolution(ref _filter) => {
-                panic!("SchoolBookConvolution should NOT be used in proving")
-            }
-            Self::Activation(..) => input_shape.to_vec(),
-            Self::Requant(..) => input_shape.to_vec(),
-            Self::Pooling(ref pooling) => pooling.output_shape(input_shape),
-            Self::Flatten => {
-                <Flatten as OpInfo>::output_shapes(&Flatten, &[input_shape.to_vec()], padding_mode)
-                    [0]
-                .clone()
-            }
-            Self::Table(..) => panic!("Table should NOT be used in proving"),
-        }
-    }
     pub fn next_shape_step(&self, last_step: &ShapeStep) -> ShapeStep {
-        let unpadded_output = last_step
-            .unpadded_output_shape
-            .iter()
-            .map(|shape| self.output_shape(shape, PaddingMode::NoPadding))
-            .collect();
-        let padded_output = last_step
-            .padded_output_shape
-            .iter()
-            .map(|shape| self.output_shape(shape, PaddingMode::Padding))
-            .collect();
+        let unpadded_output =
+            self.output_shapes(&last_step.unpadded_output_shape, PaddingMode::NoPadding);
+        let padded_output =
+            self.output_shapes(&last_step.padded_output_shape, PaddingMode::Padding);
         ShapeStep::next_step(last_step, unpadded_output, padded_output)
     }
     pub fn shape_step(
@@ -164,14 +145,8 @@ where
         unpadded_input: &[Vec<usize>],
         padded_input: &[Vec<usize>],
     ) -> ShapeStep {
-        let unpadded_output = unpadded_input
-            .iter()
-            .map(|shape| self.output_shape(shape, PaddingMode::NoPadding))
-            .collect();
-        let padded_output = padded_input
-            .iter()
-            .map(|shape| self.output_shape(shape, PaddingMode::Padding))
-            .collect();
+        let unpadded_output = self.output_shapes(unpadded_input, PaddingMode::NoPadding);
+        let padded_output = self.output_shapes(padded_input, PaddingMode::Padding);
         ShapeStep::new(
             unpadded_input.to_vec(),
             padded_input.to_vec(),
@@ -240,6 +215,7 @@ impl<N: Number> OpInfo for Layer<N> {
             Layer::Convolution(convolution) => {
                 convolution.output_shapes(input_shapes, padding_mode)
             }
+            Layer::MatMul(mat) => mat.output_shapes(input_shapes, padding_mode),
             Layer::SchoolBookConvolution(convolution) => {
                 convolution.output_shapes(input_shapes, padding_mode)
             }
@@ -254,6 +230,7 @@ impl<N: Number> OpInfo for Layer<N> {
         match self {
             Layer::Dense(dense) => dense.num_outputs(num_inputs),
             Layer::Convolution(convolution) => convolution.num_outputs(num_inputs),
+            Layer::MatMul(mat) => mat.num_outputs(num_inputs),
             Layer::SchoolBookConvolution(convolution) => convolution.num_outputs(num_inputs),
             Layer::Activation(activation) => activation.num_outputs(num_inputs),
             Layer::Requant(requant) => requant.num_outputs(num_inputs),
@@ -266,6 +243,7 @@ impl<N: Number> OpInfo for Layer<N> {
         match self {
             Layer::Dense(dense) => dense.describe(),
             Layer::Convolution(convolution) => convolution.describe(),
+            Layer::MatMul(mat) => mat.describe(),
             Layer::SchoolBookConvolution(convolution) => convolution.describe(),
             Layer::Activation(activation) => activation.describe(),
             Layer::Requant(requant) => requant.describe(),
@@ -278,6 +256,7 @@ impl<N: Number> OpInfo for Layer<N> {
         match self {
             Layer::Dense(dense) => dense.is_provable(),
             Layer::Convolution(convolution) => convolution.is_provable(),
+            Layer::MatMul(mat) => mat.is_provable(),
             Layer::SchoolBookConvolution(school_book_conv) => school_book_conv.is_provable(),
             Layer::Activation(activation) => activation.is_provable(),
             Layer::Requant(requant) => requant.is_provable(),
@@ -296,6 +275,7 @@ impl Evaluate<f32> for Layer<f32> {
         match self {
             Layer::Dense(dense) => dense.evaluate(inputs, unpadded_input_shapes),
             Layer::Convolution(convolution) => convolution.evaluate(inputs, unpadded_input_shapes),
+            Layer::MatMul(mat) => mat.evaluate(inputs, unpadded_input_shapes),
             Layer::SchoolBookConvolution(school_book_conv) => {
                 school_book_conv.evaluate(inputs, unpadded_input_shapes)
             }
@@ -316,6 +296,7 @@ impl Evaluate<Element> for Layer<Element> {
         match self {
             Layer::Dense(dense) => dense.evaluate(inputs, unpadded_input_shapes),
             Layer::Convolution(convolution) => convolution.evaluate(inputs, unpadded_input_shapes),
+            Layer::MatMul(mat) => mat.evaluate(inputs, unpadded_input_shapes),
             Layer::SchoolBookConvolution(school_book_conv) => {
                 school_book_conv.evaluate(inputs, unpadded_input_shapes)
             }
@@ -335,8 +316,9 @@ where
     fn step_info(&self, id: NodeId, aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         match self {
             Layer::Dense(dense) => dense.step_info(id, aux),
-            Layer::Convolution(convolution) => convolution.step_info(id, aux),
-            Layer::SchoolBookConvolution(convolution) => convolution.step_info(id, aux),
+            Layer::MatMul(mat) => mat.step_info(id, aux),
+            Layer::Convolution(conv) => conv.step_info(id, aux),
+            Layer::SchoolBookConvolution(conv) => conv.step_info(id, aux),
             Layer::Activation(activation) => activation.step_info(id, aux),
             Layer::Requant(requant) => requant.step_info(id, aux),
             Layer::Pooling(pooling) => pooling.step_info(id, aux),
@@ -353,6 +335,7 @@ impl PadOp for Layer<Element> {
         Ok(match self {
             Layer::Dense(dense) => Layer::Dense(dense.pad_node(si)?),
             Layer::Convolution(convolution) => Layer::Convolution(convolution.pad_node(si)?),
+            Layer::MatMul(mat) => Layer::MatMul(mat.pad_node(si)?),
             Layer::SchoolBookConvolution(school_book_conv) => {
                 Layer::SchoolBookConvolution(school_book_conv.pad_node(si)?)
             }
@@ -395,6 +378,13 @@ where
                     bail!("No convolution ctx found when proving convolution layer")
                 }
             }
+            Layer::MatMul(m) => {
+                if let LayerCtx::MatMul(info) = ctx {
+                    m.prove(node_id, info, last_claims, step_data, prover)
+                } else {
+                    bail!("No mat mul ctx found for when proving MatMul layer".to_string(),)
+                }
+            }
             Layer::SchoolBookConvolution(_) => {
                 unreachable!("prove cannot be called for school book convolution")
             }
@@ -435,6 +425,7 @@ where
             Layer::Convolution(convolution) => {
                 convolution.gen_lookup_witness(id, gen, ctx, step_data)
             }
+            Layer::MatMul(m) => m.gen_lookup_witness(id, gen, ctx, step_data),
             Layer::SchoolBookConvolution(school_book_conv) => {
                 // check that the layer is not provable, so we don't need to call the method
                 assert!(!school_book_conv.is_provable());
@@ -464,48 +455,24 @@ impl QuantizeOp for Layer<f32> {
         Ok(match self {
             Layer::Dense(dense) => {
                 let output = dense.quantize_op::<S>(data, node_id, input_scaling)?;
-                QuantizeOutput {
-                    quantized_op: Layer::Dense(output.quantized_op),
-                    output_scalings: output.output_scalings,
-                    requant_layer: output.requant_layer,
-                }
+                QuantizeOutput::new(Layer::Dense(output.quantized_op), output.output_scalings).maybe_requants(output.requant_layer)
             }
             Layer::Convolution(convolution) => {
                 let output = convolution.quantize_op::<S>(data, node_id, input_scaling)?;
-                QuantizeOutput {
-                    quantized_op: Layer::Convolution(output.quantized_op),
-                    output_scalings: output.output_scalings,
-                    requant_layer: output.requant_layer,
-                }
+                QuantizeOutput::new(Layer::Convolution(output.quantized_op), output.output_scalings).maybe_requants(output.requant_layer)
+            }
+            Layer::MatMul(mat) => {
+                let output = mat.quantize_op::<S>(data, node_id, input_scaling)?;
+                QuantizeOutput::new(Layer::MatMul(output.quantized_op), output.output_scalings).maybe_requants(output.requant_layer)
             }
             Layer::SchoolBookConvolution(school_book_conv) => {
                 let output = school_book_conv.quantize_op::<S>(data, node_id, input_scaling)?;
-                QuantizeOutput {
-                    quantized_op: Layer::SchoolBookConvolution(output.quantized_op),
-                    output_scalings: output.output_scalings,
-                    requant_layer: output.requant_layer,
-                }
+                QuantizeOutput::new(Layer::SchoolBookConvolution(output.quantized_op), output.output_scalings).maybe_requants(output.requant_layer)
             }
-            Layer::Activation(activation) => QuantizeOutput {
-                quantized_op: Layer::Activation(activation),
-                output_scalings: input_scaling.to_vec(),
-                requant_layer: None,
-            },
-            Layer::Requant(requant) => QuantizeOutput {
-                quantized_op: Layer::Requant(requant),
-                output_scalings: input_scaling.to_vec(),
-                requant_layer: None,
-            },
-            Layer::Pooling(pooling) => QuantizeOutput {
-                quantized_op: Layer::Pooling(pooling),
-                output_scalings: input_scaling.to_vec(),
-                requant_layer: None,
-            },
-            Layer::Flatten(flatten) => QuantizeOutput {
-                quantized_op: Layer::Flatten(flatten),
-                output_scalings: input_scaling.to_vec(),
-                requant_layer: None,
-            },
+            Layer::Activation(activation) => QuantizeOutput::new(Layer::Activation(activation), input_scaling.to_vec()),
+            Layer::Requant(requant) => QuantizeOutput::new(Layer::Requant(requant), input_scaling.to_vec()),
+            Layer::Pooling(pooling) => QuantizeOutput::new(Layer::Pooling(pooling), input_scaling.to_vec()),
+            Layer::Flatten(flatten) => QuantizeOutput::new(Layer::Flatten(flatten), input_scaling.to_vec()),
         })
     }
 }
@@ -519,6 +486,7 @@ where
     pub fn variant_name(&self) -> String {
         match self {
             Self::Dense(_) => "Dense".to_string(),
+            Self::MatMul(_) => "Matmul".to_string(),
             Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
             Self::Requant(_) => "Requant".to_string(),
@@ -530,6 +498,7 @@ where
     pub fn get_lookup_data(&self) -> Option<(Vec<E>, Vec<E>)> {
         match self {
             LayerProof::Dense(..) => None,
+            LayerProof::MatMul(..) => None,
             LayerProof::Convolution(..) => None,
             LayerProof::Dummy => None,
             LayerProof::Activation(ActivationProof { lookup, .. })

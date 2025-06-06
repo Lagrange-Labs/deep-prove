@@ -155,7 +155,7 @@ impl QuantizeOp for QKV<f32> {
         input_scaling: &[ScalingFactor],
     ) -> anyhow::Result<QuantizeOutput<Self::QuantizedOp>> {
         let num_outputs = self.num_outputs(input_scaling.len());
-        let mut output_scalings = S::scaling_factors_for_node(data, node_id, num_outputs);
+        let output_scalings = S::scaling_factors_for_node(data, node_id, num_outputs);
         ensure!(
             output_scalings.len() == 1,
             "Output scaling for QKV layer different from 1"

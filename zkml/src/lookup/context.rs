@@ -299,7 +299,7 @@ where
         step.op
             .gen_lookup_witness(node_id, &mut witness_gen, ctx, &step.step_data)
             .map_err(|e| {
-                LogUpError::ParamterError(format!(
+                LogUpError::ParameterError(format!(
                     "Error generating lookup witness for node {} with error: {}",
                     node_id,
                     e.to_string()

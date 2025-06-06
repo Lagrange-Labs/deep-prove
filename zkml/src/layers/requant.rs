@@ -413,17 +413,11 @@ where
 }
 
 impl Requant {
-    /// Method used to instantiate a new [`Requant`] from the scaling factors of all tensors involved in a layer.
+    /// Method used to instantiate a new [`Requant`] from the multiplier employed to requantize the layer.
     /// The `intermediate_bit_size` is layer dependant and so should be passed as input. It can be calculated based on how many times you need to multiply and add
     /// to get each value in the output tensor.
-    pub fn from_scaling_factors(
-        input_scale: ScalingFactor,
-        weights_scale: ScalingFactor,
-        output_scale: ScalingFactor,
-        intermediate_bit_size: usize,
-    ) -> Requant {
-        let m = input_scale.m(&weights_scale, &output_scale);
-        let log_m = m.log2();
+    pub(crate) fn from_multiplier(multiplier: f32, intermediate_bit_size: usize) -> Requant {
+        let log_m = multiplier.log2();
         // This is the right shift
         let int_part = log_m.trunc().abs() as usize;
         // This is used to calculate the fixed point multiplier
@@ -442,9 +436,21 @@ impl Requant {
             right_shift: int_part,
             fixed_point_multiplier,
             fp_scale,
-            multiplier: m,
+            multiplier,
             intermediate_bit_size,
         }
+    }
+    /// Method used to instantiate a new [`Requant`] from the scaling factors of all tensors involved in a layer.
+    /// The `intermediate_bit_size` is layer dependant and so should be passed as input. It can be calculated based on how many times you need to multiply and add
+    /// to get each value in the output tensor.
+    pub fn from_scaling_factors(
+        input_scale: ScalingFactor,
+        weights_scale: ScalingFactor,
+        output_scale: ScalingFactor,
+        intermediate_bit_size: usize,
+    ) -> Requant {
+        let m = input_scale.m(&weights_scale, &output_scale);
+        Self::from_multiplier(m, intermediate_bit_size)
     }
 
     /// This returns the shift (including the part that depends on `S1 * S2/ S3`)

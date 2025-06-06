@@ -539,33 +539,19 @@ impl Tensor<Element> {
             conv_data,
         )
     }
+
     /// Returns the evaluation point, in order for (row,col) addressing
     pub fn evals_2d<F: ExtensionField>(&self) -> Vec<F> {
         assert!(self.is_matrix(), "Tensor is not a matrix");
         self.evals_flat()
     }
+
     pub fn evals_flat<F: ExtensionField>(&self) -> Vec<F> {
         self.data.par_iter().map(|e| e.to_field()).collect()
     }
-    pub fn get_conv_weights<F: ExtensionField>(&self) -> Vec<F> {
-        self.evals_flat()
-    }
-    /// Returns a MLE of the matrix that can be evaluated.
-    pub fn to_mle_2d<F: ExtensionField>(&self) -> DenseMultilinearExtension<F> {
-        assert!(self.is_matrix(), "Tensor is not a matrix");
-        assert!(
-            self.nrows_2d().is_power_of_two(),
-            "number of rows {} is not a power of two",
-            self.nrows_2d()
-        );
-        assert!(
-            self.ncols_2d().is_power_of_two(),
-            "number of columns {} is not a power of two",
-            self.ncols_2d()
-        );
-        // N variable to address 2^N rows and M variables to address 2^M columns
-        let num_vars = self.nrows_2d().ilog2() + self.ncols_2d().ilog2();
-        DenseMultilinearExtension::from_evaluations_ext_vec(num_vars as usize, self.evals_2d())
+
+    pub fn to_2d_mle<F: ExtensionField>(&self) -> DenseMultilinearExtension<F> {
+        Tensor::<F>::from(self).to_mle_2d()
     }
 
     pub fn to_mle_flat<F: ExtensionField>(&self) -> DenseMultilinearExtension<F> {
@@ -574,6 +560,42 @@ impl Tensor<Element> {
             self.evals_flat(),
         )
     }
+}
+
+impl<F: ExtensionField> From<&Tensor<Element>> for Tensor<F> {
+    fn from(value: &Tensor<Element>) -> Self {
+        Self {
+            data: value.evals_flat(),
+            shape: value.shape.clone(),
+            og_shape: value.og_shape.clone(),
+        }
+    }
+}
+
+impl<F: ExtensionField> Tensor<F> {
+    pub fn to_mle_2d(&self) -> DenseMultilinearExtension<F> {
+        tensor_to_mle_2d(self, self.data.clone())
+    }
+}
+
+fn tensor_to_mle_2d<T, F: ExtensionField>(
+    tensor: &Tensor<T>,
+    evals: Vec<F>,
+) -> DenseMultilinearExtension<F> {
+    assert!(tensor.is_matrix(), "Tensor is not a matrix");
+    assert!(
+        tensor.nrows_2d().is_power_of_two(),
+        "number of rows {} is not a power of two",
+        tensor.nrows_2d()
+    );
+    assert!(
+        tensor.ncols_2d().is_power_of_two(),
+        "number of columns {} is not a power of two",
+        tensor.ncols_2d()
+    );
+    // N variable to address 2^N rows and M variables to address 2^M columns
+    let num_vars = tensor.nrows_2d().ilog2() + tensor.ncols_2d().ilog2();
+    DenseMultilinearExtension::from_evaluations_ext_vec(num_vars as usize, evals)
 }
 
 impl Tensor<f32> {
@@ -607,6 +629,15 @@ impl<T> Tensor<T> {
     /// Is an empty tensor
     pub fn is_empty(&self) -> bool {
         self.shape.len() == 0
+    }
+
+    /// Create a new tensor with default values
+    pub fn new_from_shape(shape: Vec<usize>) -> Self
+    where
+        T: Clone + Default,
+    {
+        let num_elements = shape.iter().product::<usize>();
+        Self::new(shape, vec![T::default(); num_elements])
     }
 
     /// Is vector
@@ -697,6 +728,17 @@ impl<T> Tensor<T> {
     // Returns the size of an individual filter
     pub fn filter_size(&self) -> usize {
         self.shape[2] * self.shape[2]
+    }
+
+    pub fn get_conv_weights<F: ExtensionField>(&self) -> Vec<F>
+    where
+        T: Fieldizer<F>,
+    {
+        let mut data = vec![F::ZERO; self.data.len()];
+        for i in 0..data.len() {
+            data[i] = self.data[i].to_field();
+        }
+        data
     }
 }
 
@@ -891,7 +933,7 @@ where
         self.shape[0] = new_len;
         self
     }
-    fn pad_next_power_of_two_2d(mut self) -> Self {
+    pub(crate) fn pad_next_power_of_two_2d(mut self) -> Self {
         assert!(self.is_matrix(), "Tensor is not a matrix");
         // assume the matrix is already well formed and there is always n_rows and n_cols
         // this is because we control the creation of the matrix in the first place
@@ -912,13 +954,6 @@ where
         };
 
         let mut padded = Tensor::zeros(vec![new_rows, new_cols]);
-
-        // Copy original values into the padded matrix
-        for i in 0..rows {
-            for j in 0..cols {
-                padded.data[i * new_cols + j] = self.data[i * cols + j];
-            }
-        }
 
         // Parallelize row-wise copying
         padded
@@ -1737,6 +1772,7 @@ mod test {
 
     use ark_std::rand::{Rng, thread_rng};
     use goldilocks::GoldilocksExt2;
+    use ndarray::{Array, Ix2, Order};
 
     use super::*;
     use multilinear_extensions::mle::MultilinearExtension;
@@ -1776,31 +1812,53 @@ mod test {
 
     #[test]
     fn test_tensor_matvec() {
-        let matrix = Tensor::new(vec![3, 3], vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
-        let vector = Tensor::new(vec![3], vec![10, 20, 30]);
+        let shape_m = vec![3, 3];
+        let tensor_m = Tensor::new(shape_m.clone(), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        let matrix = Array::from_vec(tensor_m.get_data().to_vec())
+            .into_shape_with_order((shape_m, Order::RowMajor))
+            .unwrap()
+            .into_dimensionality::<Ix2>()
+            .unwrap();
+        let tensor_v = Tensor::new(vec![3], vec![10, 20, 30]);
+        let vector = Array::from_vec(tensor_v.get_data().to_vec());
 
-        let result = matrix.matvec(&vector);
+        let result = tensor_m.matvec(&tensor_v);
+        let expected_result = matrix.dot(&vector);
 
         assert_eq!(
-            result,
-            Tensor::new(vec![3], vec![140, 320, 500]),
+            Array::from_vec(result.get_data().to_vec()),
+            expected_result,
             "Matrix-vector multiplication failed."
         );
     }
 
     #[test]
     fn test_tensor_matmul() {
-        let matrix_a = Tensor::new(vec![3, 3], vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
-        let matrix_b = Tensor::new(vec![3, 3], vec![10, 20, 30, 40, 50, 60, 70, 80, 90]);
+        let shape_a = vec![4, 3];
+        let tensor_a = Tensor::new(shape_a.clone(), vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+        let matrix_a = Array::from_vec(tensor_a.get_data().to_vec())
+            .into_shape_with_order((shape_a, Order::RowMajor))
+            .unwrap();
+        let shape_b = vec![3, 3];
+        let tensor_b = Tensor::new(shape_b.clone(), vec![10, 20, 30, 40, 50, 60, 70, 80, 90]);
+        let matrix_b = Array::from_vec(tensor_b.get_data().to_vec())
+            .into_shape_with_order((shape_b, Order::RowMajor))
+            .unwrap();
 
-        let result = matrix_a.matmul(&matrix_b);
+        let result = tensor_a.matmul(&tensor_b);
+
+        let expected_result = matrix_a
+            .into_dimensionality::<Ix2>()
+            .unwrap()
+            .dot(&matrix_b.into_dimensionality::<Ix2>().unwrap());
 
         assert_eq!(
-            result,
-            Tensor::new(
-                vec![3, 3],
-                vec![300, 360, 420, 660, 810, 960, 1020, 1260, 1500]
-            ),
+            Array::from_vec(result.get_data().to_vec())
+                .into_shape_with_order((expected_result.shape(), Order::RowMajor))
+                .unwrap()
+                .into_dimensionality::<Ix2>()
+                .unwrap(),
+            expected_result,
             "Matrix-matrix multiplication failed."
         );
     }
@@ -1849,7 +1907,7 @@ mod test {
         let shape = mat.get_shape();
         let mat = mat.pad_next_power_of_two();
         println!("matrix {}", mat);
-        let mut mle = mat.clone().to_mle_2d::<E>();
+        let mut mle = mat.to_2d_mle::<E>();
         let (chosen_row, chosen_col) = (
             thread_rng().gen_range(0..shape[0]),
             thread_rng().gen_range(0..shape[1]),

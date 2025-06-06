@@ -242,6 +242,10 @@ where
         node_id: NodeId,
         mut claims: HashMap<PolyId, Claim<E>>,
     ) -> Result<()> {
+        if claims.is_empty() {
+            // No claims to be added
+            return Ok(());
+        }
         let node_commitments = ctx.model_comms_map.get(&node_id).cloned().ok_or(anyhow!(
             "No commitments stored for node with id: {}",
             node_id
@@ -383,6 +387,10 @@ where
         node_id: NodeId,
         mut claims: HashMap<PolyId, Claim<E>>,
     ) -> Result<()> {
+        if claims.is_empty() {
+            // No claims to be added
+            return Ok(());
+        }
         let node_commitments = self.model_comms_map.remove(&node_id).ok_or(anyhow!(
             "No commitments stored for node with id: {}",
             node_id
