@@ -612,7 +612,7 @@ where
 
 const MAX_BITS: u32 = 30;
 
-const MATRIX_POLY_ID: &str = "MatMulWieght";
+const MATRIX_POLY_ID: &str = "MatMulWeight";
 
 impl MatMul<Element> {
     /// Returns the maximum bit size of the output, given the provided bounds on the inputs
