@@ -441,7 +441,8 @@ impl<N: Number> Model<N> {
                     let outputs = step.step_data.outputs.outputs();
                     ensure!(
                         edge.index < outputs.len(),
-                        "Requested output {} for node {}, which has only {} outputs",
+                        "Node {} requested output {} for node {}, which has only {} outputs",
+                        node_id,
                         edge.index,
                         n,
                         outputs.len()

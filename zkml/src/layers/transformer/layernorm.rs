@@ -5,10 +5,7 @@ use crate::{
     Element, ScalingFactor, Tensor,
     layers::provable::{QuantizeOp, QuantizeOutput},
     padding::PaddingMode,
-    parser::{
-        gguf::{FileTensorLoader, LLMConfig},
-        json,
-    },
+    parser::{gguf::FileTensorLoader, json, llm::LLMConfig},
     tensor::Number,
 };
 

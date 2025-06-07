@@ -1,15 +1,26 @@
 use crate::{
-    commit::same_poly, iop::{
+    Claim, Context, Element, Prover,
+    commit::same_poly,
+    iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
-    }, layers::{provable::{QuantizeOp, QuantizeOutput}, LayerCtx, LayerProof}, lookup::{
-        context::{LookupWitnessGen, TableType, COLUMN_SEPARATOR},
+    },
+    layers::{
+        LayerCtx, LayerProof,
+        provable::{QuantizeOp, QuantizeOutput},
+    },
+    lookup::{
+        context::{COLUMN_SEPARATOR, LookupWitnessGen, TableType},
         logup_gkr::{
             prover::batch_prove as logup_batch_prove, structs::LogUpProof,
             verifier::verify_logup_proof,
         },
         witness::LogUpWitness,
-    }, model::StepData, padding::PaddingMode, quantization::Fieldizer, tensor::Number, Claim, Context, Element, Prover
+    },
+    model::StepData,
+    padding::PaddingMode,
+    quantization::Fieldizer,
+    tensor::Number,
 };
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
@@ -29,7 +40,7 @@ use super::provable::{
 use anyhow::{Result, anyhow, ensure};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum Activation<N>  {
+pub enum Activation<N> {
     Relu(Relu),
     Gelu(GELU<N>),
 }
@@ -88,11 +99,13 @@ impl Evaluate<f32> for Activation<f32> {
         _unpadded_input_shapes: Vec<Vec<usize>>,
     ) -> Result<LayerOut<f32, E>> {
         match self {
-            Activation::Relu(relu) => Ok(LayerOut::from_vec(inputs
-                .iter()
-                .map(|input| relu.op(input))
-                .collect::<Vec<_>>())),
-            Activation::Gelu(gelu) => gelu.evaluate::<E>(inputs, _unpadded_input_shapes)
+            Activation::Relu(relu) => Ok(LayerOut::from_vec(
+                inputs
+                    .iter()
+                    .map(|input| relu.op(input))
+                    .collect::<Vec<_>>(),
+            )),
+            Activation::Gelu(gelu) => gelu.evaluate::<E>(inputs, _unpadded_input_shapes),
         }
     }
 }
@@ -131,7 +144,7 @@ impl Evaluate<Element> for Activation<Element> {
     }
 }
 
-impl<N,E> ProveInfo<E> for Activation<N>
+impl<N, E> ProveInfo<E> for Activation<N>
 where
     E: ExtensionField + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
@@ -166,9 +179,9 @@ where
     }
 }
 
-impl<N>PadOp for Activation<N> {}
+impl<N> PadOp for Activation<N> {}
 
-impl<N,E, PCS> ProvableOp<E, PCS> for Activation<N>
+impl<N, E, PCS> ProvableOp<E, PCS> for Activation<N>
 where
     E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,

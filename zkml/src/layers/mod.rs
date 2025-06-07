@@ -621,7 +621,10 @@ impl QuantizeOp for Layer<f32> {
             }
             Layer::Activation(activation) => {
                 let output = activation.quantize_op::<S>(data, node_id, input_scaling)?;
-                QuantizeOutput::new(Layer::Activation(output.quantized_op), input_scaling.to_vec())
+                QuantizeOutput::new(
+                    Layer::Activation(output.quantized_op),
+                    input_scaling.to_vec(),
+                )
             }
             Layer::Requant(requant) => {
                 QuantizeOutput::new(Layer::Requant(requant), input_scaling.to_vec())

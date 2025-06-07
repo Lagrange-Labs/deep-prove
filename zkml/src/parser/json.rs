@@ -6,7 +6,7 @@ use serde::Deserialize;
 use crate::{
     Tensor,
     layers::transformer::layernorm::LayerNorm,
-    parser::gguf::{Attention, FeedForward, LLMConfig, LLMVariant},
+    parser::llm::{Attention, FeedForward, LLMConfig, LLMVariant},
 };
 
 impl LLMConfig {
@@ -301,7 +301,7 @@ impl FileTensorLoader {
 
 #[cfg(test)]
 pub mod test {
-    use crate::parser::gguf::LLMConfig;
+    use crate::parser::llm::LLMConfig;
     use std::{env, path::PathBuf};
 
     use super::*;

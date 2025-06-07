@@ -1,5 +1,3 @@
-use crate::{layers::{activation::{Activation, GELU}, add, concat_matmul::ConcatMatMul, dense::Dense, provable::{Edge, Node, NodeId}, reshape::{self, Reshape}, Layer}, model::Model, parser::gguf};
-
 pub mod embeddings;
 pub mod layernorm;
 pub mod mha;
@@ -7,55 +5,6 @@ pub mod positional;
 // pub mod qkt;
 pub mod qkv;
 pub mod softmax;
-
-impl gguf::FeedForward<f32> {
-    pub fn write_to_model(
-        self,
-        model: &mut Model<f32>,
-        input_node_id: NodeId,
-    ) -> anyhow::Result<NodeId> {
-        let layernorm = self.norm;
-        let up = Dense::new(self.up, self.up_bias);
-        let activation = GELU::new();
-        let down = Dense::new(self.down, self.down_bias);
-        let add = add::Add::new();
-        let last_node_id =
-            model.add_consecutive_layer(Layer::LayerNorm(layernorm), Some(input_node_id))?;
-        let last_node_id = model.add_consecutive_layer(Layer::Dense(up), Some(last_node_id))?;
-        let last_node_id = model.add_consecutive_layer(
-            Layer::Activation(Activation::Gelu(activation)),
-            Some(last_node_id),
-        )?;
-        let last_node_id = model.add_consecutive_layer(Layer::Dense(down), Some(last_node_id))?;
-        model.add_node(Node::new(
-            vec![Edge::new(last_node_id, 0), Edge::new(input_node_id, 0)],
-            Layer::Add(add),
-        ))
-    }
-}
-
-impl gguf::Attention<f32> {
-    pub fn write_to_model(self, model: &mut Model<f32>, input_node_id: Option<NodeId>, c: &gguf::LLMConfig) -> anyhow::Result<NodeId> {
-        let qkv = qkv::QKV::new(self.q, self.q_bias, self.k, self.k_bias, self.v, self.v_bias);
-        let reshape_qkt = reshape::Reshape::new_squeeze(1);
-        let mha = mha::MhaQK::new(c.num_heads, c.head_dim());
-        let softmax = softmax::Softmax::<f32>::new_with_scale((1.0 / (c.head_dim() as f32)).sqrt());
-        let qkt_v = ConcatMatMul::new_with_permute(vec![1, 0, 2]);
-        let out = Dense::new(self.out, self.out_bias);
-        let reshape_merged = Reshape::new_fixed(vec![vec![1, c.hidden_size]]);
-        let last_node_id = model.add_consecutive_layer(Layer::LayerNorm(self.norm), input_node_id)?;
-        let last_node_id = model.add_consecutive_layer(Layer::QKV(qkv), Some(last_node_id))?;
-        let mha_id = model.add_consecutive_layer(Layer::MhaQK(mha), Some(last_node_id))?;
-        let last_node_id = model.add_consecutive_layer(Layer::Softmax(softmax), Some(mha_id))?;
-        let qkt_reshaped_id = model.add_consecutive_layer(Layer::Reshape(reshape_qkt), Some(last_node_id))?;
-        let last_node_id = model.add_node(Node::new(vec![Edge::new(qkt_reshaped_id,0), Edge::new(mha_id,0)], Layer::ConcatMatMul(qkt_v)))?;
-        let last_node_id = model.add_consecutive_layer(Layer::Reshape(reshape_merged), Some(last_node_id))?;
-        let last_node_id = model.add_consecutive_layer(Layer::Dense(out), Some(last_node_id))?;
-        // here we dont know if the input is the input to the model or an input coming from previous layers
-        let last_node_id = model.add_node(Node::new(vec![Edge { node: input_node_id,index: 0 }, Edge::new(last_node_id,0)], Layer::Add(add::Add::new())))?;
-        self.feedforward.write_to_model(model, last_node_id)
-    }
-}
 
 #[cfg(test)]
 mod test {
@@ -65,7 +14,6 @@ mod test {
     use serde::Deserialize;
 
     use crate::{
-        Tensor,
         layers::{
             activation::GELU,
             add::{self, Add},
@@ -73,12 +21,11 @@ mod test {
             dense::Dense,
             provable::Evaluate,
             reshape::{self, Reshape},
-        },
-        parser::gguf::{
-            self, FileTensorLoader, LLMConfig, LLMModel,
-            tests::{GPT2_Q8_0_URL, file_cache},
-        },
-        tensor::Number,
+        }, model::Model, padding::PaddingMode, parser::{
+            file_cache,
+            gguf::{tests::GPT2_Q8_0_URL, FileTensorLoader},
+            llm::{Attention, FeedForward, LLMConfig, LLMModel},
+        }, tensor::Number, Tensor
     };
 
     use super::{layernorm, mha, qkv, softmax};
@@ -103,7 +50,7 @@ mod test {
     }
 
     impl FlatFFN<f32> {
-        pub fn new_from_gguf(_c: &gguf::LLMConfig, ffn: gguf::FeedForward<f32>) -> Self {
+        pub fn new_from_gguf(_c: &LLMConfig, ffn: FeedForward<f32>) -> Self {
             let layernorm = ffn.norm;
             let up = Dense::new(ffn.up, ffn.up_bias);
             let activation = GELU::new();
@@ -192,7 +139,7 @@ mod test {
     }
 
     impl FlatAttention<f32> {
-        pub fn new_from_gguf(c: &gguf::LLMConfig, att: gguf::Attention<f32>) -> Self {
+        pub fn new_from_gguf(c: &LLMConfig, att: Attention<f32>) -> Self {
             let qkv = qkv::QKV::new(att.q, att.q_bias, att.k, att.k_bias, att.v, att.v_bias);
             let reshape_qkt = reshape::Reshape::new_squeeze(1);
             let mha = mha::MhaQK::new(c.num_heads, c.head_dim());
@@ -232,13 +179,6 @@ mod test {
                 .qkv
                 .evaluate::<GoldilocksExt2>(&normed.outputs(), vec![])?;
             if let Some(gpt2_output) = gpt2_output {
-                println!("input to qkv: {:?}", normed.outputs()[0].get_data());
-                println!("W_q weights: {:?}", self.qkv.q.get_data());
-                println!("W_k weights: {:?}", self.qkv.k.get_data());
-                println!("W_v weights: {:?}", self.qkv.v.get_data());
-                println!("b_q bias: {:?}", self.qkv.q_bias.get_data());
-                println!("b_k bias: {:?}", self.qkv.k_bias.get_data());
-                println!("b_v bias: {:?}", self.qkv.v_bias.get_data());
                 gpt2_output.is_qkv_close(qkv.outputs());
             }
             let mha = self
@@ -248,7 +188,7 @@ mod test {
             // NOTE that we apply softmax row by row
             let softmaxed = self
                 .softmax
-                .evaluate::<GoldilocksExt2>(&mha.outputs(), vec![])?;
+                .evaluate::<GoldilocksExt2>(&[mha.outputs()[0]], vec![])?;
             #[cfg(test)]
             {
                 let qkt_shape = softmaxed.outputs()[0].get_shape();
@@ -477,10 +417,18 @@ mod test {
         );
         let LLMModel::GPT2(mut model) = config.model_json(&loader)?;
         println!("model: {:?}", config.specific_config);
-        let mut att = FlatAttention::new_from_gguf(&config, model.blocks.remove(0));
+        // Try to run with the flat attention implementation
+        let first_attention = model.blocks.remove(0);
+        let mut att = FlatAttention::new_from_gguf(&config, first_attention.clone());
         let output = att.forward(&input, Some(&gpt2_output)).unwrap();
         let expected_output = gpt2_output.manual_output;
         assert!(is_close(&expected_output, &output.get_data()));
+        // Now try to run with the graph implementation
+        let mut model = Model::new_from_input_shapes(vec![input.get_shape()], PaddingMode::NoPadding);
+        let _last_node_id = first_attention.write_to_model(&mut model, None, &config)?;
+        model.route_output(None)?;
+        let output = model.run_float(&[input.clone()])?;
+        assert!(is_close(&expected_output, &output[0].get_data()),"graph output differs");
         Ok(())
     }
 }

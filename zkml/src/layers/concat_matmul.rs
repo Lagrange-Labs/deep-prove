@@ -62,7 +62,7 @@ impl ConcatMatMul {
         assert!(shapes.len() == 2, "ConcatMatMul expects 2 inputs");
         ensure!(
             shapes[0].rank() == shapes[1].rank(),
-            "ConcatMatMul expects inputs of the same shape: {:?} vs {:?}",
+            "ConcatMatMul expects input shapes with same rank: {:?} vs {:?}",
             shapes[0],
             shapes[1]
         );
@@ -130,18 +130,15 @@ impl OpInfo for ConcatMatMul {
         Self::ensure_shape_consistency(&[Shape::from_it(a_shape), Shape::from_it(b_shape)])
             .unwrap();
         // inner matrix shapes
-        let mut mat_result_shape: Shape = vec![a_shape[1], b_shape[2]].into();
+        let mut mat_result_shape: Shape = vec![a_shape[0], a_shape[1], b_shape[2]].into();
         if let PaddingMode::Padding = padding_mode {
             mat_result_shape = mat_result_shape.next_power_of_two()
         }
         if let Some(ref permute) = self.permute {
+            println!("ConcatMatMul: Permute: {:?} over resulting shape {:?}", permute, mat_result_shape);
             mat_result_shape = mat_result_shape.permute(permute);
         }
-        vec![
-            Shape::new(vec![a_shape[0]])
-                .concat(&mat_result_shape)
-                .into_vec(),
-        ]
+        vec![ mat_result_shape.into_vec() ]
     }
 
     fn num_outputs(&self, _num_inputs: usize) -> usize {
@@ -219,5 +216,7 @@ mod test {
         );
         let expected = expected.permute3d(&vec![1, 0, 2]);
         assert_eq!(result.outputs[0].data, expected.data);
+        let expected_shape = concat_matmul.output_shapes(&[a.get_shape(), b.get_shape()], PaddingMode::NoPadding);
+        assert_eq!(result.outputs[0].get_shape(), expected_shape[0]);
     }
 }

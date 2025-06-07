@@ -3,8 +3,9 @@ use anyhow::ensure;
 use crate::{
     Tensor,
     parser::{
-        gguf::{FileTensorLoader, LLMConfig, LLMVariant},
+        gguf::FileTensorLoader,
         json,
+        llm::{LLMConfig, LLMVariant},
     },
     tensor::Number,
 };
