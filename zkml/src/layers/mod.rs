@@ -64,7 +64,7 @@ pub enum Layer<T> {
     // Traditional convolution is used for debug purposes. That is because the actual convolution
     // we use relies on the FFT algorithm. This convolution does not have a snark implementation.
     SchoolBookConvolution(SchoolBookConv<T>),
-    Activation(Activation),
+    Activation(Activation<T>),
     // this is the output quant info. Since we always do a requant layer after each dense,
     // then we assume the inputs requant info are default()
     Requant(Requant),
@@ -620,7 +620,8 @@ impl QuantizeOp for Layer<f32> {
                 .maybe_requants(output.requant_layer)
             }
             Layer::Activation(activation) => {
-                QuantizeOutput::new(Layer::Activation(activation), input_scaling.to_vec())
+                let output = activation.quantize_op::<S>(data, node_id, input_scaling)?;
+                QuantizeOutput::new(Layer::Activation(output.quantized_op), input_scaling.to_vec())
             }
             Layer::Requant(requant) => {
                 QuantizeOutput::new(Layer::Requant(requant), input_scaling.to_vec())

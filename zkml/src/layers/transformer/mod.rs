@@ -1,3 +1,5 @@
+use crate::{layers::{activation::{Activation, GELU}, add, concat_matmul::ConcatMatMul, dense::Dense, provable::{Edge, Node, NodeId}, reshape::{self, Reshape}, Layer}, model::Model, parser::gguf};
+
 pub mod embeddings;
 pub mod layernorm;
 pub mod mha;
@@ -5,6 +7,55 @@ pub mod positional;
 // pub mod qkt;
 pub mod qkv;
 pub mod softmax;
+
+impl gguf::FeedForward<f32> {
+    pub fn write_to_model(
+        self,
+        model: &mut Model<f32>,
+        input_node_id: NodeId,
+    ) -> anyhow::Result<NodeId> {
+        let layernorm = self.norm;
+        let up = Dense::new(self.up, self.up_bias);
+        let activation = GELU::new();
+        let down = Dense::new(self.down, self.down_bias);
+        let add = add::Add::new();
+        let last_node_id =
+            model.add_consecutive_layer(Layer::LayerNorm(layernorm), Some(input_node_id))?;
+        let last_node_id = model.add_consecutive_layer(Layer::Dense(up), Some(last_node_id))?;
+        let last_node_id = model.add_consecutive_layer(
+            Layer::Activation(Activation::Gelu(activation)),
+            Some(last_node_id),
+        )?;
+        let last_node_id = model.add_consecutive_layer(Layer::Dense(down), Some(last_node_id))?;
+        model.add_node(Node::new(
+            vec![Edge::new(last_node_id, 0), Edge::new(input_node_id, 0)],
+            Layer::Add(add),
+        ))
+    }
+}
+
+impl gguf::Attention<f32> {
+    pub fn write_to_model(self, model: &mut Model<f32>, input_node_id: Option<NodeId>, c: &gguf::LLMConfig) -> anyhow::Result<NodeId> {
+        let qkv = qkv::QKV::new(self.q, self.q_bias, self.k, self.k_bias, self.v, self.v_bias);
+        let reshape_qkt = reshape::Reshape::new_squeeze(1);
+        let mha = mha::MhaQK::new(c.num_heads, c.head_dim());
+        let softmax = softmax::Softmax::<f32>::new_with_scale((1.0 / (c.head_dim() as f32)).sqrt());
+        let qkt_v = ConcatMatMul::new_with_permute(vec![1, 0, 2]);
+        let out = Dense::new(self.out, self.out_bias);
+        let reshape_merged = Reshape::new_fixed(vec![vec![1, c.hidden_size]]);
+        let last_node_id = model.add_consecutive_layer(Layer::LayerNorm(self.norm), input_node_id)?;
+        let last_node_id = model.add_consecutive_layer(Layer::QKV(qkv), Some(last_node_id))?;
+        let mha_id = model.add_consecutive_layer(Layer::MhaQK(mha), Some(last_node_id))?;
+        let last_node_id = model.add_consecutive_layer(Layer::Softmax(softmax), Some(mha_id))?;
+        let qkt_reshaped_id = model.add_consecutive_layer(Layer::Reshape(reshape_qkt), Some(last_node_id))?;
+        let last_node_id = model.add_node(Node::new(vec![Edge::new(qkt_reshaped_id,0), Edge::new(mha_id,0)], Layer::ConcatMatMul(qkt_v)))?;
+        let last_node_id = model.add_consecutive_layer(Layer::Reshape(reshape_merged), Some(last_node_id))?;
+        let last_node_id = model.add_consecutive_layer(Layer::Dense(out), Some(last_node_id))?;
+        // here we dont know if the input is the input to the model or an input coming from previous layers
+        let last_node_id = model.add_node(Node::new(vec![Edge { node: input_node_id,index: 0 }, Edge::new(last_node_id,0)], Layer::Add(add::Add::new())))?;
+        self.feedforward.write_to_model(model, last_node_id)
+    }
+}
 
 #[cfg(test)]
 mod test {

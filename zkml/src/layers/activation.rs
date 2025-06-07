@@ -1,23 +1,15 @@
 use crate::{
-    Claim, Context, Element, Prover,
-    commit::same_poly,
-    iop::{
+    commit::same_poly, iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
-    },
-    layers::{LayerCtx, LayerProof},
-    lookup::{
-        context::{COLUMN_SEPARATOR, LookupWitnessGen, TableType},
+    }, layers::{provable::{QuantizeOp, QuantizeOutput}, LayerCtx, LayerProof}, lookup::{
+        context::{LookupWitnessGen, TableType, COLUMN_SEPARATOR},
         logup_gkr::{
             prover::batch_prove as logup_batch_prove, structs::LogUpProof,
             verifier::verify_logup_proof,
         },
         witness::LogUpWitness,
-    },
-    model::StepData,
-    padding::PaddingMode,
-    quantization::Fieldizer,
-    tensor::Number,
+    }, model::StepData, padding::PaddingMode, quantization::Fieldizer, tensor::Number, Claim, Context, Element, Prover
 };
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
@@ -36,15 +28,16 @@ use super::provable::{
 
 use anyhow::{Result, anyhow, ensure};
 
-#[derive(Clone, Debug, Serialize, Deserialize, Copy)]
-pub enum Activation {
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Activation<N>  {
     Relu(Relu),
+    Gelu(GELU<N>),
 }
 
 /// Currently holds the poly info for the output polynomial of the RELU
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ActivationCtx {
-    pub op: Activation,
+    pub op: Activation<Element>,
     pub node_id: NodeId,
     pub num_vars: usize,
 }
@@ -63,13 +56,16 @@ where
     pub(crate) commits: Vec<PCS::Commitment>,
 }
 
-impl OpInfo for Activation {
+impl<N> OpInfo for Activation<N> {
     fn num_outputs(&self, num_inputs: usize) -> usize {
         num_inputs
     }
 
     fn describe(&self) -> String {
-        format!("RELU: {}", 1 << Relu::num_vars())
+        match self {
+            Activation::Relu(_relu) => format!("RELU: {}", 1 << Relu::num_vars()),
+            Activation::Gelu(_gelu) => format!("GELU"),
+        }
     }
 
     fn output_shapes(
@@ -85,23 +81,57 @@ impl OpInfo for Activation {
     }
 }
 
-impl<N: Number> Evaluate<N> for Activation {
+impl Evaluate<f32> for Activation<f32> {
     fn evaluate<E: ExtensionField>(
         &self,
-        inputs: &[&Tensor<N>],
+        inputs: &[&Tensor<f32>],
         _unpadded_input_shapes: Vec<Vec<usize>>,
-    ) -> Result<LayerOut<N, E>> {
+    ) -> Result<LayerOut<f32, E>> {
+        match self {
+            Activation::Relu(relu) => Ok(LayerOut::from_vec(inputs
+                .iter()
+                .map(|input| relu.op(input))
+                .collect::<Vec<_>>())),
+            Activation::Gelu(gelu) => gelu.evaluate::<E>(inputs, _unpadded_input_shapes)
+        }
+    }
+}
+
+impl QuantizeOp for Activation<f32> {
+    type QuantizedOp = Activation<Element>;
+
+    fn quantize_op<S: crate::ScalingStrategy>(
+        self,
+        _data: &S::AuxData,
+        _node_id: NodeId,
+        input_scaling: &[crate::ScalingFactor],
+    ) -> anyhow::Result<QuantizeOutput<Self::QuantizedOp>> {
+        let q_op = match self {
+            Activation::Relu(_) => Activation::Relu(Relu),
+            Activation::Gelu(_) => Activation::Gelu(GELU::new()),
+        };
+        Ok(QuantizeOutput::new(q_op, input_scaling.to_vec()))
+    }
+}
+
+impl Evaluate<Element> for Activation<Element> {
+    fn evaluate<E: ExtensionField>(
+        &self,
+        inputs: &[&Tensor<Element>],
+        _unpadded_input_shapes: Vec<Vec<usize>>,
+    ) -> Result<LayerOut<Element, E>> {
         let outputs = match self {
             Activation::Relu(relu) => inputs
                 .iter()
                 .map(|input| relu.op(input))
                 .collect::<Vec<_>>(),
+            Activation::Gelu(_) => unimplemented!("GELU not implemented for Element"),
         };
         Ok(LayerOut::from_vec(outputs))
     }
 }
 
-impl<E> ProveInfo<E> for Activation
+impl<N,E> ProveInfo<E> for Activation<N>
 where
     E: ExtensionField + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
@@ -130,14 +160,15 @@ where
                 node_id: id,
                 num_vars,
             }),
+            Activation::Gelu(_) => unimplemented!("GELU not implemented for Element"),
         };
         Ok((info, aux))
     }
 }
 
-impl PadOp for Activation {}
+impl<N>PadOp for Activation<N> {}
 
-impl<E, PCS> ProvableOp<E, PCS> for Activation
+impl<N,E, PCS> ProvableOp<E, PCS> for Activation<N>
 where
     E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
@@ -240,19 +271,19 @@ impl OpInfo for ActivationCtx {
         input_shapes: &[Vec<usize>],
         padding_mode: PaddingMode,
     ) -> Vec<Vec<usize>> {
-        Activation::Relu(Relu).output_shapes(input_shapes, padding_mode)
+        self.op.output_shapes(input_shapes, padding_mode)
     }
 
     fn num_outputs(&self, num_inputs: usize) -> usize {
-        Activation::Relu(Relu).num_outputs(num_inputs)
+        self.op.num_outputs(num_inputs)
     }
 
     fn describe(&self) -> String {
-        Activation::Relu(Relu).describe()
+        self.op.describe()
     }
 
     fn is_provable(&self) -> bool {
-        Activation::Relu(Relu).is_provable()
+        true
     }
 }
 
@@ -289,7 +320,7 @@ where
     }
 }
 
-impl Activation {
+impl<N> Activation<N> {
     #[timed::timed_instrument(name = "Prover::prove_activation_step")]
     pub(crate) fn prove_step<
         E: ExtensionField,
@@ -307,6 +338,9 @@ impl Activation {
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
+        if let Activation::Gelu(_) = self {
+            unimplemented!("GELU not implemented for Element");
+        }
         // Should only be one prover_info for this step
         let logup_witnesses = prover.lookup_witness(node_id)?;
         if logup_witnesses.len() != 1 {
@@ -455,6 +489,7 @@ impl Relu {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GELU<N> {
     _n: PhantomData<N>,
 }
