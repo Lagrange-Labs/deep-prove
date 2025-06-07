@@ -90,9 +90,13 @@ mod test {
             let down = self
                 .down
                 .evaluate::<GoldilocksExt2>(&act.outputs(), vec![])?;
-            let out = self
-                .add
-                .evaluate::<GoldilocksExt2>(&vec![input, down.outputs()[0]])?;
+            let out = self.add.evaluate::<GoldilocksExt2>(
+                &vec![input, &down.outputs()[0]],
+                vec![
+                    input.get_shape().to_vec(),
+                    down.outputs()[0].get_shape().to_vec(),
+                ],
+            )?;
             Ok(out.outputs()[0].clone())
         }
     }
@@ -228,9 +232,13 @@ mod test {
                 gpt2_output.is_attention_output_proj_close(projected.outputs());
             }
             // and then residual connection, [1, hidden_size]
-            let out = self
-                .add
-                .evaluate::<GoldilocksExt2>(&vec![input, &projected.outputs()[0]])?;
+            let out = self.add.evaluate::<GoldilocksExt2>(
+                &vec![input, &projected.outputs()[0]],
+                vec![
+                    input.get_shape().to_vec(),
+                    projected.outputs()[0].get_shape().to_vec(),
+                ],
+            )?;
             if let Some(gpt2_output) = gpt2_output {
                 gpt2_output.is_residual_attn_close(out.outputs());
             }

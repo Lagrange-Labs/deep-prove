@@ -1,6 +1,9 @@
 use std::ops::Range;
 
-use crate::padding::PaddingMode;
+use crate::{
+    layers::provable::{QuantizeOp, QuantizeOutput},
+    padding::PaddingMode,
+};
 use anyhow::ensure;
 use ff_ext::ExtensionField;
 use serde::{Deserialize, Serialize};
@@ -114,6 +117,19 @@ impl<N: Number> Evaluate<N> for Reshape {
             .map(|(new_dim, input_tensor)| input_tensor.reshape(new_dim))
             .collect();
         Ok(LayerOut::from_vec(out_tensors))
+    }
+}
+
+impl QuantizeOp for Reshape {
+    type QuantizedOp = Reshape;
+
+    fn quantize_op<S: crate::ScalingStrategy>(
+        self,
+        _data: &S::AuxData,
+        _node_id: super::provable::NodeId,
+        input_scaling: &[crate::ScalingFactor],
+    ) -> anyhow::Result<QuantizeOutput<Self::QuantizedOp>> {
+        Ok(QuantizeOutput::new(self, input_scaling.to_vec()))
     }
 }
 

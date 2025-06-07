@@ -2,7 +2,12 @@ use anyhow::{bail, ensure};
 use ff_ext::ExtensionField;
 use serde::{Deserialize, Serialize};
 
-use crate::{layers::provable::{Evaluate, NodeId, OpInfo, QuantizeOp, QuantizeOutput}, padding::PaddingMode, tensor::Number, Element, NextPowerOfTwo, ScalingFactor, ScalingStrategy, Tensor};
+use crate::{
+    Element, NextPowerOfTwo, ScalingFactor, ScalingStrategy, Tensor,
+    layers::provable::{Evaluate, NodeId, OpInfo, QuantizeOp, QuantizeOutput},
+    padding::PaddingMode,
+    tensor::Number,
+};
 
 use super::provable::LayerOut;
 
@@ -69,7 +74,10 @@ impl<N> OpInfo for Add<N> {
     ) -> Vec<Vec<usize>> {
         match padding_mode {
             PaddingMode::NoPadding => input_shapes.to_vec(),
-            PaddingMode::Padding => input_shapes.iter().map(|shape| shape.next_power_of_two()).collect(),
+            PaddingMode::Padding => input_shapes
+                .iter()
+                .map(|shape| shape.next_power_of_two())
+                .collect(),
         }
     }
 
@@ -112,7 +120,9 @@ mod test {
         let add = Add::new();
         let t1 = Tensor::<Element>::random(&vec![2, 2]);
         let t2 = Tensor::<Element>::random(&vec![2, 2]);
-        let result = add.evaluate::<GoldilocksExt2>(&[&t1, &t2]).unwrap();
+        let result = add
+            .evaluate::<GoldilocksExt2>(&[&t1, &t2], vec![vec![2, 2], vec![2, 2]])
+            .unwrap();
         for i in 0..2 {
             for j in 0..2 {
                 assert_eq!(
@@ -122,7 +132,9 @@ mod test {
             }
         }
         let add = Add::new_with(Some(t1.clone()));
-        let result = add.evaluate::<GoldilocksExt2>(&[&t2]).unwrap();
+        let result = add
+            .evaluate::<GoldilocksExt2>(&[&t2], vec![vec![2, 2]])
+            .unwrap();
         for i in 0..2 {
             for j in 0..2 {
                 assert_eq!(

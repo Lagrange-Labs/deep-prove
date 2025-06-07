@@ -1,6 +1,8 @@
 //! This layer applies the softmax function to the last dimension of the input tensor
 use crate::{
-    layers::provable::{Evaluate, LayerOut, OpInfo, QuantizeOp}, tensor::Number, Element, Tensor
+    Element, Tensor,
+    layers::provable::{Evaluate, LayerOut, OpInfo, QuantizeOp},
+    tensor::Number,
 };
 
 #[derive(Debug, Clone)]

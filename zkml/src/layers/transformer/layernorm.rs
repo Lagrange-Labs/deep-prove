@@ -2,10 +2,14 @@ use anyhow::ensure;
 use tracing::warn;
 
 use crate::{
-    layers::provable::{QuantizeOp, QuantizeOutput}, padding::PaddingMode, parser::{
+    Element, ScalingFactor, Tensor,
+    layers::provable::{QuantizeOp, QuantizeOutput},
+    padding::PaddingMode,
+    parser::{
         gguf::{FileTensorLoader, LLMConfig},
         json,
-    }, tensor::Number, Element, ScalingFactor, Tensor
+    },
+    tensor::Number,
 };
 
 use crate::layers::provable::{Evaluate, LayerOut, OpInfo};
