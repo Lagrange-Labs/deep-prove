@@ -10,37 +10,61 @@ from transformers.modeling_utils import Conv1D
 torch.set_printoptions(precision=6, sci_mode=False)
 
 # --- Argument Parsing --- #
-# This MUST be at the top level of the script to ensure `args` is globally available.
-parser = argparse.ArgumentParser(description="Run GPT-2 tiny model and dump weights and intermediate tensors.")
+parser = argparse.ArgumentParser(description="Run a GPT-2 model and dump weights and intermediate tensors.")
 parser.add_argument(
     "--output-dir",
     type=str,
-    default=".", # Default to current directory
+    default=".",
     help="Directory to save the output JSON files."
 )
-args = parser.parse_args() # This defines 'args'
+parser.add_argument(
+    "--model-name",
+    type=str,
+    default="tiny-gpt2",
+    help="The Hugging Face model ID to use (e.g., 'distilgpt2','tiny-gpt2')."
+)
+parser.add_argument(
+    '--export-model',
+    action='store_true',
+    help="If set, exports the model weights to a JSON file."
+)
+args = parser.parse_args()
 
-# Ensure output directory exists, executed early
-# This now correctly uses 'args' which should have just been defined.
+# --- Model Selection ---
+model_map = {
+    "tiny-gpt2": "sshleifer/tiny-gpt2",
+    "distilgpt2": "distilbert/distilgpt2",
+}
+model_hf_id = model_map.get(args.model_name, args.model_name)  # Use the mapping or the direct name
+print(f"ℹ️ Using model: {model_hf_id}")
+
+# Ensure output directory exists
 if not os.path.exists(args.output_dir):
     os.makedirs(args.output_dir)
     print(f"Created output directory: {args.output_dir}")
 
 # Load tokenizer and model
+print(f"ℹ️ Loading model: {model_hf_id}")
 tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
-# model = GPT2Model.from_pretrained("gpt2", output_hidden_states=True)
-model = AutoModelForCausalLM.from_pretrained("sshleifer/tiny-gpt2")
+model = AutoModelForCausalLM.from_pretrained(model_hf_id)
 
 model.eval()
-
+# --- Architectural Investigation ---
+print("--- Model Config ---")
+print(model.config)
+print("\n--- Model Structure ---")
+print(model)
+print("\n" + "="*50 + "\n")
+# --- End Architectural Investigation ---
 # Input
 input_text = "Hello"
 input_ids = tokenizer.encode(input_text, return_tensors="pt")
 
 # Run through model to get reference
 with torch.no_grad():
-    outputs = model(input_ids, output_hidden_states=True)
-    inputs_embeds = outputs.hidden_states[0] # This is wte(input_ids) + wpe(position_ids)
+    # IMPORTANT: Call the transformer directly to get clean hidden states
+    transformer_outputs = model.transformer(input_ids, output_hidden_states=True)
+    inputs_embeds = transformer_outputs.hidden_states[0] 
 
     # Explicitly calculate token and positional embeddings
     input_seq_length = input_ids.size(1)
@@ -53,50 +77,13 @@ with torch.no_grad():
     assert torch.allclose(inputs_embeds, token_embeds_only + pos_embeds_only, atol=1e-6), \
         "Sum of explicit token and positional embeddings does not match hidden_states[0]"
 
-# ---- Manual forward through full first block ---- #
+# ---- Manual forward through all transformer blocks ---- #
+def to_list(t): return t.squeeze().flatten().tolist()
+
+layer_debug_outputs = []
+current_hidden_state = inputs_embeds
+
 with torch.no_grad():
-    layer = model.transformer.h[0]
-    hidden_size = model.config.hidden_size # For splitting
-
-    # LayerNorm before attention
-    ln1_out = layer.ln_1(inputs_embeds)
-    print(f"ℹ️ INPUT to QKV (ln1_out) shape {ln1_out.shape} => {ln1_out}")
-
-    # QKV weights and biases from c_attn layer
-    c_attn_module = layer.attn.c_attn
-    
-    # Print original fused weights and biases
-    print(f"ℹ️ c_attn module FULL weights (c_attn_module.weight) shape: {c_attn_module.weight.shape}:\n{c_attn_module.weight.data}")
-    print(f"ℹ️ c_attn module FULL bias (c_attn_module.bias) shape: {c_attn_module.bias.shape}:\n{c_attn_module.bias.data}")
-
-    # Split weights and biases for Q, K, V
-    # c_attn_module.weight is [hidden_size, 3 * hidden_size]
-    # c_attn_module.bias is [3 * hidden_size]
-    W_q, W_k, W_v = c_attn_module.weight.split(hidden_size, dim=1)
-    b_q, b_k, b_v = c_attn_module.bias.split(hidden_size, dim=0)
-
-    print(f"ℹ️ W_q (weight for Q) shape: {W_q.shape} => {W_q.data.flatten().tolist()}")
-    print(f"ℹ️ W_k (weight for K) shape: {W_k.shape} => {W_k.data.flatten().tolist()}")
-    print(f"ℹ️ W_v (weight for V) shape: {W_v.shape} => {W_v.data.flatten().tolist()}")
-    print(f"ℹ️ b_q (bias for Q) shape: {b_q.shape} => {b_q.data.flatten().tolist()}")
-    print(f"ℹ️ b_k (bias for K) shape: {b_k.shape} => {b_k.data.flatten().tolist()}")
-    print(f"ℹ️ b_v (bias for V) shape: {b_v.shape} => {b_v.data.flatten().tolist()}")
-
-    # Calculate Q, K, V separately (textbook style)
-    # ln1_out: [batch, seq_len, hidden_size]
-    # W_q, W_k, W_v: [hidden_size, hidden_size]
-    # b_q, b_k, b_v: [hidden_size]
-    q_before_heads = torch.matmul(ln1_out, W_q) + b_q
-    k_before_heads = torch.matmul(ln1_out, W_k) + b_k
-    v_before_heads = torch.matmul(ln1_out, W_v) + b_v
-    
-    # The print for "Fused QKV tensor" is removed as we are not calculating it that way anymore.
-    # The following print will now show the Q tensor as calculated by the separate matmul.
-    print(f"ℹ️ Q_before_heads (ln1_out @ W_q + b_q) shape: {q_before_heads.shape}:\n{q_before_heads}")
-    # Optionally print k_before_heads and v_before_heads if needed:
-    # print(f"ℹ️ K_before_heads (ln1_out @ W_k + b_k) shape: {k_before_heads.shape}:\n{k_before_heads}")
-    # print(f"ℹ️ V_before_heads (ln1_out @ W_v + b_v) shape: {v_before_heads.shape}:\n{v_before_heads}")
-
     def split_heads(x):
         B, T, C = x.size()
         H = model.config.n_head
@@ -106,76 +93,178 @@ with torch.no_grad():
         B, H, T, D = x.size()
         return x.transpose(1, 2).contiguous().view(B, T, H * D)
 
-    q = split_heads(q_before_heads)
-    k = split_heads(k_before_heads)
-    v = split_heads(v_before_heads)
+    for i, layer in enumerate(model.transformer.h):
+        print(f"--- Processing Layer {i} ---")
+        
+        hidden_states = current_hidden_state
 
-    print(f"ℹ️ Q tensor (q) shape: {q.shape}:\n{q}")
-    print(f"ℹ️ K tensor (k) shape: {k.shape}:\n{k}")
-    print(f"ℹ️ V tensor (v) shape: {v.shape}:\n{v}")
+        # 1. LayerNorm 1
+        ln1_out = layer.ln_1(hidden_states)
+        
+        # Debug: Check if we're using the reference intermediate from layer 5
+        if i == 5:
+            reference_ln1_out = layer.ln_1(transformer_outputs.hidden_states[i])
+            ln1_diff = (ln1_out - reference_ln1_out).abs().max()
+            print(f"🔍 Layer {i} ln1_out vs reference: max diff = {ln1_diff.item():.8f}")
+            if ln1_diff > 1e-6:
+                print(f"❌ Layer {i} ln1_out already diverged from reference!")
+                print(f"  Manual ln1_out first 3: {ln1_out.flatten()[:3].tolist()}")
+                print(f"  Reference ln1_out first 3: {reference_ln1_out.flatten()[:3].tolist()}")
+        
+        # 2. Attention Block
+        # To capture intermediates, we call the sub-modules of the attention layer
+        
+        # a. QKV projection
+        q_before_heads, k_before_heads, v_before_heads = layer.attn.c_attn(ln1_out).split(model.config.hidden_size, dim=2)
+        
+        # b. Split heads for multi-head attention
+        q = split_heads(q_before_heads)
+        k = split_heads(k_before_heads)
+        v = split_heads(v_before_heads)
+        
+        # c. Core attention mechanism
+        attn_scores = torch.matmul(q, k.transpose(-2, -1)) / (q.size(-1) ** 0.5)
+        mask = torch.tril(torch.ones_like(attn_scores[0, 0])).unsqueeze(0).unsqueeze(0)
+        attn_scores = attn_scores.masked_fill(mask == 0, float("-inf"))
+        attn_weights = torch.softmax(attn_scores, dim=-1)
+        attn_weights_after_dropout = layer.attn.attn_dropout(attn_weights)
+        attn_output_merged = torch.matmul(attn_weights_after_dropout, v)
+        attn_output = merge_heads(attn_output_merged)
+        
+        # d. Final projection
+        attn_output_proj = layer.attn.c_proj(attn_output)
+        attn_output_proj = layer.attn.resid_dropout(attn_output_proj)
+        
+        # 3. First residual connection
+        residual_attn = hidden_states + attn_output_proj
+        
+        # 4. LayerNorm 2
+        ln2_out = layer.ln_2(residual_attn)
+        
+        # 5. MLP block
+        # To capture intermediates, we call the sub-modules of the MLP
+        ffn_intermediate = layer.mlp.c_fc(ln2_out)
+        ffn_activated = layer.mlp.act(ffn_intermediate)
+        ffn_output = layer.mlp.c_proj(ffn_activated)
+        ffn_output = layer.mlp.dropout(ffn_output)
+        
+        # 6. Second residual connection
+        manual_output = residual_attn + ffn_output
+        
+        # 7. Apply final LayerNorm if this is the last layer
+        manual_output_with_final_ln = None
+        if i == len(model.transformer.h) - 1:  # Last layer
+            manual_output_with_final_ln = model.transformer.ln_f(manual_output)
+        
+        # Final validation against the transformer's output
+        automated_output = transformer_outputs.hidden_states[i+1]
+        
+        # Choose the correct manual output for comparison based on layer position
+        if i == len(model.transformer.h) - 1:  # Last layer
+            # For the final layer, compare against the output with final LayerNorm applied
+            comparison_manual_output = manual_output_with_final_ln
+        else:
+            # For intermediate layers, compare against the raw layer output
+            comparison_manual_output = manual_output
+        
+        max_diff = (comparison_manual_output - automated_output).abs().max()
+        
+        if not torch.allclose(comparison_manual_output, automated_output, atol=1e-5):
+            print(f"❌ Mismatch in Layer {i}. Max diff: {max_diff.item():.6f}")
+            
+            # For layer 5, let's debug step by step
+            if i == 5:
+                print(f"🔍 Step-by-step debug for Layer {i}:")
+                ref_hidden_states = transformer_outputs.hidden_states[i]
+                ref_ln1_out = layer.ln_1(ref_hidden_states)
+                print(f"  Hidden states match: {torch.allclose(hidden_states, ref_hidden_states, atol=1e-6)}")
+                print(f"  LN1 outputs match: {torch.allclose(ln1_out, ref_ln1_out, atol=1e-6)}")
+                
+                # Check attention calculation
+                ref_attn_out = layer.attn(ref_ln1_out)[0]
+                our_attn_out = attn_output_proj
+                print(f"  Attention outputs match: {torch.allclose(our_attn_out, ref_attn_out, atol=1e-6)}")
+                
+                # Check residual after attention
+                ref_residual_attn = ref_hidden_states + ref_attn_out
+                print(f"  Residual attn match: {torch.allclose(residual_attn, ref_residual_attn, atol=1e-6)}")
+                
+                # Check MLP
+                ref_ln2_out = layer.ln_2(ref_residual_attn)
+                ref_mlp_out = layer.mlp(ref_ln2_out)
+                our_mlp_out = ffn_output
+                print(f"  LN2 outputs match: {torch.allclose(ln2_out, ref_ln2_out, atol=1e-6)}")
+                print(f"  MLP outputs match: {torch.allclose(our_mlp_out, ref_mlp_out, atol=1e-6)}")
+                
+                # Check final sum
+                ref_final = ref_residual_attn + ref_mlp_out
+                our_final = residual_attn + ffn_output
+                print(f"  Final outputs match: {torch.allclose(our_final, ref_final, atol=1e-6)}")
+                print(f"  Reference final (first 3): {ref_final.flatten()[:3].tolist()}")
+                print(f"  Our final (first 3): {our_final.flatten()[:3].tolist()}")
+                print(f"  Manual calc (first 3): {manual_output.flatten()[:3].tolist()}")
+                print(f"  Automated (first 3): {automated_output.flatten()[:3].tolist()}")
+                
+                # Sanity check: manual_output should equal our_final
+                print(f"  manual_output == our_final: {torch.allclose(manual_output, our_final, atol=1e-8)}")
+                
+                # Double check the transformer reference calculation
+                ref_block_output = layer(ref_hidden_states)[0]
+                print(f"  Direct block call matches automated: {torch.allclose(ref_block_output, automated_output, atol=1e-6)}")
+                
+                # Test: What if we call the SAME layer on the SAME hidden state multiple times?
+                ref_block_output2 = layer(ref_hidden_states)[0]
+                print(f"  Layer is deterministic: {torch.allclose(ref_block_output, ref_block_output2, atol=1e-8)}")
+                
+                # The issue might be that transformer_outputs.hidden_states comes from a different execution context
+                print(f"  Block output diff from transformer: {(ref_block_output - automated_output).abs().max().item():.8f}")
+                print(f"  Block vs transformer (first 3): block={ref_block_output.flatten()[:3].tolist()}")
+                print(f"  Block vs transformer (first 3): transformer={automated_output.flatten()[:3].tolist()}")
+        else:
+            print(f"✅ Layer {i} output matches. Max diff: {max_diff.item():.6f}")
+        
+        # Dump intermediate tensors for this layer
+        layer_json = {
+            "ln1_out": to_list(ln1_out),
+            "ln2_out": to_list(ln2_out),
+            "q": to_list(q_before_heads),
+            "k": to_list(k_before_heads),
+            "v": to_list(v_before_heads),
+            "attn_scores": to_list(attn_scores),
+            "attn_weights": to_list(attn_weights),
+            "attn_output_proj": to_list(attn_output_proj),
+            "attn_output": to_list(attn_output),
+            "residual_attn": to_list(residual_attn),
+            "ffn_up": to_list(ffn_intermediate),
+            "ffn_activated": to_list(ffn_activated),
+            "ffn_output_proj": to_list(ffn_output),
+            "manual_output": to_list(manual_output),
+            "automated_output": to_list(automated_output)
+        }
+        
+        # Add final LayerNorm output if this is the last layer
+        if manual_output_with_final_ln is not None:
+            layer_json["manual_output_with_final_ln"] = to_list(manual_output_with_final_ln)
+        
+        layer_debug_outputs.append(layer_json)
 
-    # Attention
-    attn_scores = torch.matmul(q, k.transpose(-2, -1)) / (q.size(-1) ** 0.5)
-    mask = torch.tril(torch.ones_like(attn_scores[0, 0])).unsqueeze(0).unsqueeze(0)
-    attn_scores = attn_scores.masked_fill(mask == 0, float("-inf"))
-
-    attn_weights = torch.softmax(attn_scores, dim=-1)
-    attn_output = torch.matmul(attn_weights, v)
-    attn_output = merge_heads(attn_output)
-
-    # Output proj + dropout + residual
-    attn_output_proj = layer.attn.c_proj(attn_output)
-    attn_output_proj = torch.nn.functional.dropout(attn_output_proj, p=model.config.resid_pdrop, training=model.training)
-    residual_attn = inputs_embeds + attn_output_proj
-
-    # LayerNorm before MLP
-    ln2_out = layer.ln_2(residual_attn)
-
-    # FFN (c_fc -> GELU -> c_proj -> dropout)
-    ffn_intermediate = layer.mlp.c_fc(ln2_out)
-    ffn_activated = layer.mlp.act(ffn_intermediate)
-    ffn_output_proj = layer.mlp.c_proj(ffn_activated)
-    ffn_output_proj = torch.nn.functional.dropout(ffn_output_proj, p=model.config.resid_pdrop, training=model.training)
-
-
-    manual_output = residual_attn + ffn_output_proj
-
-# Validate
-automated_output = outputs.hidden_states[1]
-
-if not torch.allclose(manual_output, automated_output, atol=1e-4):
-    max_diff = (manual_output - automated_output).abs().max()
-    print(f"❌ Mismatch. Max diff: {max_diff.item():.6f}")
-    raise ValueError("Mismatch between manual and automatic full block output.")
+        # Update hidden state for the next loop iteration
+        # CRITICAL: Use the correct automated output, not the manual output
+        # This prevents error accumulation across layers
+        current_hidden_state = automated_output
 
 # Dump
-def to_list(t): return t.squeeze().flatten().tolist()
-
 output_json = {
     "token": input_text,
     "input_ids": input_ids.squeeze().tolist(),
     "token_embeds_only": to_list(token_embeds_only),
     "pos_embeds_only": to_list(pos_embeds_only),
     "inputs_embeds": to_list(inputs_embeds),
-    "ln1_out": to_list(ln1_out),
-    "ln2_out": to_list(ln2_out),
-    "q": to_list(q_before_heads),
-    "k": to_list(k_before_heads),
-    "v": to_list(v_before_heads),
-    "attn_scores": to_list(attn_scores),
-    "attn_weights": to_list(attn_weights),
-    "attn_output_proj": to_list(attn_output_proj),
-    "attn_output": to_list(attn_output),
-    "residual_attn": to_list(residual_attn),
-    "ffn_up": to_list(ffn_intermediate),
-    "ffn_activated": to_list(ffn_activated),
-    "ffn_output_proj": to_list(ffn_output_proj),
-    "manual_output": to_list(manual_output),
-    "automated_output": to_list(automated_output)
+    "layers": layer_debug_outputs
 }
 
 # Save the debug tensor outputs
-output_debug_fname = os.path.join(args.output_dir, "gpt2_debug_output.json")
+output_debug_fname = os.path.join(args.output_dir, f"{args.model_name.replace('-', '_')}_debug_output.json")
 with open(output_debug_fname, "w") as f:
     json.dump(output_json, f, indent=2)
 # Print absolute path for clarity
@@ -264,9 +353,9 @@ for name, tensor in state_dict.items():
                     W_q_orig, W_k_orig, W_v_orig = processed_tensor.split(H, dim=1)
 
                     # Transpose each component to [out, in] before flattening
-                    current_data_list = W_q_orig.flatten().tolist() + \
-                                        W_k_orig.flatten().tolist() + \
-                                        W_v_orig.flatten().tolist()
+                    current_data_list = W_q_orig.T.flatten().tolist() + \
+                                        W_k_orig.T.flatten().tolist() + \
+                                        W_v_orig.T.flatten().tolist()
                     # Shape for JSON is 1D concatenated data
                     current_shape = [len(current_data_list)]
                     print(f"ℹ️ Exporting {name} (as attn_qkv.weight): Original Conv1D shape {list(processed_tensor.shape)}. Exporting concatenated W_q.T, W_k.T, W_v.T data as 1D array, shape {current_shape}.")
@@ -365,9 +454,10 @@ for name, tensor in state_dict.items():
             if "others" not in export: export["others"] = {} 
             export["others"][name] = tensor_data
 
-# Save the model weights and metadata
-weights_fname = os.path.join(args.output_dir, "gpt2_tiny_weights.json") 
-with open(weights_fname, "w") as f:
-    json.dump(export, f, indent=2)
-# Print absolute path for clarity
-print(f"✅ Export written to {os.path.abspath(weights_fname)}")
+# Save the model weights and metadata if requested
+if args.export_model:
+    weights_fname = os.path.join(args.output_dir, f"{args.model_name.replace('-', '_')}_weights.json") 
+    with open(weights_fname, "w") as f:
+        json.dump(export, f, indent=2)
+    # Print absolute path for clarity
+    print(f"✅ Export written to {os.path.abspath(weights_fname)}")

@@ -126,7 +126,8 @@ impl GPT2Model {
         let blocks = (0..num_layers)
             .map(|i| Attention::from_json(&l.pp(&format!("blk.{i}.")), &config))
             .collect::<anyhow::Result<Vec<Attention<f32>>>>()?;
-        Ok(Self::new(embeddings, positional, blocks))
+        let final_norm = LayerNorm::from_json(&l.pp("output_"), config)?;
+        Ok(Self::new(embeddings, positional, blocks, final_norm))
     }
     pub fn from_loader(loader: &FileTensorLoader, config: &LLMConfig) -> anyhow::Result<Self> {
         let embeddings = Embeddings::from_loader(loader)?;
@@ -135,7 +136,8 @@ impl GPT2Model {
         let blocks = (0..num_layers)
             .map(|i| Attention::from_loader(&loader.pp(&format!("blk.{i}.")), &config))
             .collect::<anyhow::Result<Vec<Attention<f32>>>>()?;
-        Ok(Self::new(embeddings, positional, blocks))
+        let final_norm = LayerNorm::from_loader(&loader.pp("output_"), config)?;
+        Ok(Self::new(embeddings, positional, blocks, final_norm))
     }
 }
 

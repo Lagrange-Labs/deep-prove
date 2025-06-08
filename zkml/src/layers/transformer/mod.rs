@@ -10,6 +10,7 @@ pub mod softmax;
 mod test {
     use std::{fs::File, path::PathBuf};
 
+    use anyhow::Context;
     use goldilocks::GoldilocksExt2;
     use serde::Deserialize;
 
@@ -22,9 +23,7 @@ mod test {
             provable::Evaluate,
             reshape::{self, Reshape},
         }, model::Model, padding::PaddingMode, parser::{
-            file_cache,
-            gguf::{tests::GPT2_Q8_0_URL, FileTensorLoader},
-            llm::{Attention, FeedForward, LLMConfig, LLMModel},
+            file_cache, gguf::{tests::GPT2_Q8_0_URL, FileTensorLoader}, json::test::{TINY_GPT2_DEBUG_NAME, TINY_GPT2_NAME}, llm::{Attention, FeedForward, LLMConfig, LLMModel}
         }, tensor::Number, Tensor
     };
 
@@ -68,7 +67,7 @@ mod test {
         pub fn evaluate(
             &mut self,
             input: &Tensor<f32>,
-            output: Option<&GPT2Output>,
+            output: Option<&GPT2LayerOutput>,
         ) -> anyhow::Result<Tensor<f32>> {
             let normed = self
                 .layernorm
@@ -80,7 +79,7 @@ mod test {
                 .up
                 .evaluate::<GoldilocksExt2>(&normed.outputs(), vec![])?;
             if let Some(gpt2_output) = output {
-                gpt2_output.is_ffn_up_close(up.outputs());
+                assert!(gpt2_output.is_ffn_up_close(up.outputs()));
             }
             let act = self
                 .activation
@@ -165,7 +164,7 @@ mod test {
         pub fn forward(
             &mut self,
             input: &Tensor<f32>,
-            gpt2_output: Option<&GPT2Output>,
+            gpt2_output: Option<&GPT2LayerOutput>,
         ) -> anyhow::Result<Tensor<f32>> {
             assert_eq!(input.get_shape().len(), 2);
             let seq_len = input.get_shape()[0];
@@ -173,13 +172,13 @@ mod test {
                 .layernorm
                 .evaluate::<GoldilocksExt2>(&vec![input], vec![])?;
             if let Some(gpt2_output) = gpt2_output {
-                gpt2_output.is_layernorm_close(normed.outputs());
+                assert!(gpt2_output.is_layernorm_close(normed.outputs()));
             }
             let qkv = self
                 .qkv
                 .evaluate::<GoldilocksExt2>(&normed.outputs(), vec![])?;
             if let Some(gpt2_output) = gpt2_output {
-                gpt2_output.is_qkv_close(qkv.outputs());
+                assert!(gpt2_output.is_qkv_close(qkv.outputs()));
             }
             let mha = self
                 .mha
@@ -213,14 +212,14 @@ mod test {
                 .reshape_merged
                 .evaluate::<GoldilocksExt2>(&qkt_v.outputs(), vec![])?;
             if let Some(gpt2_output) = gpt2_output {
-                gpt2_output.is_attention_mha_output_close(merged.outputs());
+                assert!(gpt2_output.is_attention_mha_output_close(merged.outputs()));
             }
             // now we do the final projection - still [1,hidden_size]
             let projected = self
                 .out
                 .evaluate::<GoldilocksExt2>(&merged.outputs(), vec![])?;
             if let Some(gpt2_output) = gpt2_output {
-                gpt2_output.is_attention_output_proj_close(projected.outputs());
+                assert!(gpt2_output.is_attention_output_proj_close(projected.outputs()));
             }
             // and then residual connection, [1, hidden_size]
             let out = self.add.evaluate::<GoldilocksExt2>(
@@ -231,7 +230,7 @@ mod test {
                 ],
             )?;
             if let Some(gpt2_output) = gpt2_output {
-                gpt2_output.is_residual_attn_close(out.outputs());
+                assert!(gpt2_output.is_residual_attn_close(out.outputs()));
             }
             // and then FFN
             let ffn_out = self.ffn.evaluate(&out.outputs()[0], gpt2_output)?;
@@ -300,6 +299,10 @@ mod test {
         #[allow(dead_code)]
         input_ids: u32,
         inputs_embeds: Vec<f32>,
+        layers: Vec<GPT2LayerOutput>,
+    }
+    #[derive(Debug, Deserialize)]
+    struct GPT2LayerOutput {
         ln1_out: Vec<f32>,
         ln2_out: Vec<f32>,
         q: Vec<f32>,
@@ -310,69 +313,38 @@ mod test {
         residual_attn: Vec<f32>,
         ffn_up: Vec<f32>,
         manual_output: Vec<f32>,
+        // Optional field for the final layer with LayerNorm applied
+        manual_output_with_final_ln: Option<Vec<f32>>,
     }
 
-    impl GPT2Output {
-        pub fn is_qkv_close(&self, qkv: Vec<&Tensor<f32>>) {
+    impl GPT2LayerOutput {
+        pub fn is_qkv_close(&self, qkv: Vec<&Tensor<f32>>) -> bool {
             let q = qkv[0];
             let k = qkv[1];
             let v = qkv[2];
             let q_close = is_close(q.get_data(), &self.q);
             let k_close = is_close(k.get_data(), &self.k);
             let v_close = is_close(v.get_data(), &self.v);
-            println!("q close? {} -> {:?} vs {:?}", q_close, q.get_data(), self.q);
-            println!("k close? {} -> {:?} vs {:?}", k_close, k.get_data(), self.k);
-            println!("v close? {} -> {:?} vs {:?}", v_close, v.get_data(), self.v);
+            q_close && k_close && v_close
         }
 
-        pub fn is_layernorm_close(&self, layernorm: Vec<&Tensor<f32>>) {
-            let layernorm_close = is_close(layernorm[0].get_data(), &self.ln1_out);
-            println!("layernorm close? {}", layernorm_close);
+        pub fn is_layernorm_close(&self, layernorm: Vec<&Tensor<f32>>) -> bool {
+            is_close(layernorm[0].get_data(), &self.ln1_out)
         }
-        pub fn is_attention_mha_output_close(&self, mha_output: Vec<&Tensor<f32>>) {
-            let mha_output_close = is_close(mha_output[0].get_data(), &self.attn_output);
-            println!(
-                "mha output close? {} -> {:?} vs {:?}",
-                mha_output_close,
-                mha_output[0].get_data(),
-                self.attn_output
-            );
+        pub fn is_attention_mha_output_close(&self, mha_output: Vec<&Tensor<f32>>) -> bool {
+            is_close(mha_output[0].get_data(), &self.attn_output)
         }
-        pub fn is_attention_output_proj_close(&self, output_proj: Vec<&Tensor<f32>>) {
-            let output_proj_close = is_close(output_proj[0].get_data(), &self.attn_output_proj);
-            println!(
-                "output proj close? {} -> {:?} vs {:?}",
-                output_proj_close,
-                output_proj[0].get_data(),
-                self.attn_output_proj
-            );
+        pub fn is_attention_output_proj_close(&self, output_proj: Vec<&Tensor<f32>>) -> bool {
+            is_close(output_proj[0].get_data(), &self.attn_output_proj)
         }
-        pub fn is_residual_attn_close(&self, residual_attn: Vec<&Tensor<f32>>) {
-            let residual_attn_close = is_close(residual_attn[0].get_data(), &self.residual_attn);
-            println!(
-                "residual attn close? {} -> {:?} vs {:?}",
-                residual_attn_close,
-                residual_attn[0].get_data(),
-                self.residual_attn
-            );
+        pub fn is_residual_attn_close(&self, residual_attn: Vec<&Tensor<f32>>) -> bool {
+            is_close(residual_attn[0].get_data(), &self.residual_attn)
         }
-        pub fn is_prefnn_layernorm_close(&self, ln2_out: Vec<&Tensor<f32>>) {
-            let ln2_out_close = is_close(ln2_out[0].get_data(), &self.ln2_out);
-            println!(
-                "ln2 out close? {} -> {:?} vs {:?}",
-                ln2_out_close,
-                ln2_out[0].get_data(),
-                self.ln2_out
-            );
+        pub fn is_prefnn_layernorm_close(&self, ln2_out: Vec<&Tensor<f32>>) -> bool {
+            is_close(ln2_out[0].get_data(), &self.ln2_out)
         }
-        pub fn is_ffn_up_close(&self, ffn_up: Vec<&Tensor<f32>>) {
-            let ffn_up_close = is_close(ffn_up[0].get_data(), &self.ffn_up);
-            println!(
-                "ffn up close? {} -> {:?} vs {:?}",
-                ffn_up_close,
-                ffn_up[0].get_data(),
-                self.ffn_up
-            );
+        pub fn is_ffn_up_close(&self, ffn_up: Vec<&Tensor<f32>>) -> bool {
+            is_close(ffn_up[0].get_data(), &self.ffn_up)
         }
     }
 
@@ -393,24 +365,16 @@ mod test {
 
     #[test]
     fn test_read_gpt2_pytorch_output() -> anyhow::Result<()> {
-        let base_path = PathBuf::from(json::test::get_json_folder_out()?);
-        let model_weights_path = base_path.join("gpt2_tiny_weights.json");
-        let debug_output_path = base_path.join("gpt2_debug_output.json");
+        let model_weights_path = json::test::get_json_file(TINY_GPT2_NAME)?;
+        let debug_output_path = json::test::get_json_file(TINY_GPT2_DEBUG_NAME)?;
 
-        let model_weights_path_str = model_weights_path.to_str().ok_or_else(|| {
-            anyhow::anyhow!(
-                "Model weights path is not valid UTF-8: {:?}",
-                model_weights_path
-            )
-        })?;
-        let loader = json::FileTensorLoader::new_from_path(model_weights_path_str)?;
+        let loader = json::FileTensorLoader::new_from_path(model_weights_path)?;
         let config = LLMConfig::from_json(&loader)?;
         println!("config: {:?}", config);
 
         let gpt2_output = serde_json::from_reader::<_, GPT2Output>(
-            File::open(debug_output_path.as_path()).unwrap(),
-        )
-        .unwrap();
+            File::open(debug_output_path.clone()).context(format!("failed to open file {}",debug_output_path.clone()))?
+        )?;
         let input = Tensor::new(
             vec![1, config.embedding_size],
             gpt2_output.inputs_embeds.clone(),
@@ -420,15 +384,18 @@ mod test {
         // Try to run with the flat attention implementation
         let first_attention = model.blocks.remove(0);
         let mut att = FlatAttention::new_from_gguf(&config, first_attention.clone());
-        let output = att.forward(&input, Some(&gpt2_output)).unwrap();
-        let expected_output = gpt2_output.manual_output;
-        assert!(is_close(&expected_output, &output.get_data()));
+        let first_layer_output = gpt2_output.layers.get(0).expect("no layers in output");
+        let output = att.forward(&input, Some(first_layer_output)).unwrap();
+        let expected_output = &first_layer_output.manual_output;
+        assert!(is_close(expected_output, &output.get_data()));
         // Now try to run with the graph implementation
         let mut model = Model::new_from_input_shapes(vec![input.get_shape()], PaddingMode::NoPadding);
         let _last_node_id = first_attention.write_to_model(&mut model, None, &config)?;
         model.route_output(None)?;
         let output = model.run_float(&[input.clone()])?;
-        assert!(is_close(&expected_output, &output[0].get_data()),"graph output differs");
+        assert!(is_close(expected_output, &output[0].get_data()),"graph output differs");
         Ok(())
     }
+
+    
 }

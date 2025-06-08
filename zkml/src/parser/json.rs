@@ -306,20 +306,25 @@ pub mod test {
 
     use super::*;
 
-    pub fn get_json_folder_out() -> anyhow::Result<String> {
-        if env::var("DEEPPROVE_CI").unwrap_or_default() == "true" {
+    pub const TINY_GPT2_NAME: &str = "gpt2_tiny_weights.json";
+    pub const TINY_GPT2_DEBUG_NAME: &str = "tiny_gpt2_debug_output.json";
+    pub const DISTIL_GPT2_NAME: &str = "distilgpt2_weights.json";
+    pub const DISTIL_GPT2_DEBUG_NAME: &str = "distilgpt2_debug_output.json";
+
+    pub fn get_json_file(name: &str) -> anyhow::Result<String> {
+        let path =if env::var("DEEPPROVE_CI").unwrap_or_default() == "true" {
             let ci_asset_dir = env::var("DEEPPROVE_ASSET_DIR")
                 .context("DEEPPROVE_ASSET_DIR not set in CI environment")?;
-            Ok(ci_asset_dir)
+            PathBuf::from(ci_asset_dir).join(name)
         } else {
-            Ok("assets/scripts/llms/".to_string())
-        }
+            PathBuf::from("assets/scripts/llms/").join(name)
+        };
+        Ok(path.to_str().unwrap().to_string())
     }
 
     #[test]
     fn test_json_tensor_loader() -> anyhow::Result<()> {
-        let base_path_str = get_json_folder_out()?;
-        let path = PathBuf::from(base_path_str).join("gpt2_tiny_weights.json");
+        let path = get_json_file(TINY_GPT2_NAME)?;
         let loader = FileTensorLoader::new_from_path(path)?;
         let config = LLMConfig::from_json(&loader)?;
         println!("tiny gpt2 config: {:?}", config);
