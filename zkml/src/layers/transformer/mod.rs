@@ -24,7 +24,7 @@ mod test {
             reshape::{self, Reshape},
         }, model::Model, padding::PaddingMode, parser::{
             file_cache, gguf::{tests::GPT2_Q8_0_URL, FileTensorLoader}, json::test::{TINY_GPT2_DEBUG_NAME, TINY_GPT2_NAME}, llm::{Attention, FeedForward, LLMConfig, LLMModel}
-        }, tensor::Number, Tensor
+        }, tensor::{Number, Shape}, Tensor
     };
 
     use super::{layernorm, mha, qkv, softmax};
@@ -364,7 +364,7 @@ mod test {
     use crate::parser::json;
 
     #[test]
-    fn test_read_gpt2_pytorch_output() -> anyhow::Result<()> {
+    fn test_read_gpt2_pytorch_output_first() -> anyhow::Result<()> {
         let model_weights_path = json::test::get_json_file(TINY_GPT2_NAME)?;
         let debug_output_path = json::test::get_json_file(TINY_GPT2_DEBUG_NAME)?;
 
@@ -386,6 +386,7 @@ mod test {
         let mut att = FlatAttention::new_from_gguf(&config, first_attention.clone());
         let first_layer_output = gpt2_output.layers.get(0).expect("no layers in output");
         let output = att.forward(&input, Some(first_layer_output)).unwrap();
+        println!("flat output: {:?}", output.get_shape());
         let expected_output = &first_layer_output.manual_output;
         assert!(is_close(expected_output, &output.get_data()));
         // Now try to run with the graph implementation
@@ -393,7 +394,29 @@ mod test {
         let _last_node_id = first_attention.write_to_model(&mut model, None, &config)?;
         model.route_output(None)?;
         let output = model.run_float(&[input.clone()])?;
+        println!("graph output: {:?}", output[0].get_shape());
         assert!(is_close(expected_output, &output[0].get_data()),"graph output differs");
+        Ok(())
+    }
+
+    #[test]
+    fn test_gpt2_model_full_pass() -> anyhow::Result<()> {
+        let model_weights_path = json::test::get_json_file(TINY_GPT2_NAME)?;
+        let debug_output_path = json::test::get_json_file(TINY_GPT2_DEBUG_NAME)?;
+        let loader = json::FileTensorLoader::new_from_path(model_weights_path)?;
+        let config = LLMConfig::from_json(&loader)?;
+        let LLMModel::GPT2(llm_model) = config.model_json(&loader)?;
+        let gpt2_output = serde_json::from_reader::<_, GPT2Output>(
+            File::open(debug_output_path.clone()).context(format!("failed to open file {}",debug_output_path.clone()))?
+        )?;
+        let expected_output = &gpt2_output.layers.last().unwrap().manual_output_with_final_ln.as_ref().unwrap().clone();
+        let input = Tensor::new(
+            vec![1, config.embedding_size],
+            gpt2_output.inputs_embeds.clone(),
+        );
+        let model = llm_model.to_graph_model(&config, Shape::from(input.get_shape()))?;
+        let output = model.run_float(&[input.clone()])?[0].clone();
+        assert!(is_close(expected_output, &output.get_data()),"graph output differs");
         Ok(())
     }
 

@@ -3,14 +3,13 @@ use ff_ext::ExtensionField;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Element, NextPowerOfTwo, ScalingFactor, ScalingStrategy, Tensor,
-    layers::provable::{Evaluate, NodeId, OpInfo, QuantizeOp, QuantizeOutput},
-    padding::PaddingMode,
-    tensor::Number,
+    layers::provable::{Evaluate, NodeId, OpInfo, QuantizeOp, QuantizeOutput}, padding::PaddingMode, tensor::{Number, Shape}, Element, NextPowerOfTwo, ScalingFactor, ScalingStrategy, Tensor
 };
 
 use super::provable::LayerOut;
 
+/// Add layer that adds two tensors together. 
+/// If there is two inputs, no static weight, then the output shape is the same as the first input.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Add<N> {
     operand: Option<Tensor<N>>,
@@ -33,12 +32,13 @@ impl<N: Number> Evaluate<N> for Add<N> {
     ) -> anyhow::Result<LayerOut<N, E>> {
         let result = if inputs.len() == 2 {
             ensure!(
-                inputs[0].get_shape().iter().product::<usize>()
-                    == inputs[1].get_shape().iter().product::<usize>(),
+                Shape::from(inputs[0].get_shape()).numel()
+                    == Shape::from(inputs[1].get_shape()).numel(),
                 "Add layer expects inputs to have the same shape: {:?} vs {:?}",
                 inputs[0].get_shape(),
                 inputs[1].get_shape()
             );
+            println!("Add layer: {:?} + {:?}", inputs[0].get_shape(), inputs[1].get_shape());
             inputs[0].add(inputs[1])
         } else if inputs.len() == 1 {
             ensure!(

@@ -1818,6 +1818,9 @@ impl Shape {
     pub fn rank(&self) -> usize {
         self.0.len()
     }
+    pub fn numel(&self) -> usize {
+        self.0.iter().product()
+    }
     pub fn is_matrix(&self) -> bool {
         self.0.len() == 2
     }
