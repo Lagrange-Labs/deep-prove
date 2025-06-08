@@ -455,7 +455,10 @@ pub mod tests {
 
     use crate::{
         layers::transformer::embeddings::Embeddings,
-        parser::{file_cache, llm::{Attention, LLMConfig}},
+        parser::{
+            file_cache,
+            llm::{Attention, LLMConfig},
+        },
     };
 
     // download at https://huggingface.co/igorbkz/gpt2-Q8_0-GGUF

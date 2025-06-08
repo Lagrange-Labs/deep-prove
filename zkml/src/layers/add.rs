@@ -3,12 +3,15 @@ use ff_ext::ExtensionField;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    layers::provable::{Evaluate, NodeId, OpInfo, QuantizeOp, QuantizeOutput}, padding::PaddingMode, tensor::{Number, Shape}, Element, NextPowerOfTwo, ScalingFactor, ScalingStrategy, Tensor
+    Element, NextPowerOfTwo, ScalingFactor, ScalingStrategy, Tensor,
+    layers::provable::{Evaluate, NodeId, OpInfo, QuantizeOp, QuantizeOutput},
+    padding::PaddingMode,
+    tensor::{Number, Shape},
 };
 
 use super::provable::LayerOut;
 
-/// Add layer that adds two tensors together. 
+/// Add layer that adds two tensors together.
 /// If there is two inputs, no static weight, then the output shape is the same as the first input.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Add<N> {
@@ -38,7 +41,6 @@ impl<N: Number> Evaluate<N> for Add<N> {
                 inputs[0].get_shape(),
                 inputs[1].get_shape()
             );
-            println!("Add layer: {:?} + {:?}", inputs[0].get_shape(), inputs[1].get_shape());
             inputs[0].add(inputs[1])
         } else if inputs.len() == 1 {
             ensure!(

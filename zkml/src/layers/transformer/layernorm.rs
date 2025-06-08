@@ -100,7 +100,11 @@ impl Evaluate<f32> for LayerNorm<f32> {
         assert!(inputs.len() == 1);
         let input = inputs[0];
         println!("LayerNorm !!! {:?}", input.get_shape());
-        ensure!(input.get_shape().len() == 2, "layernorm input must have shape [seq_len, embedding_size]: found {:?}", input.get_shape());
+        ensure!(
+            input.get_shape().len() == 2,
+            "layernorm input must have shape [seq_len, embedding_size]: found {:?}",
+            input.get_shape()
+        );
         let embedding_size = input.get_shape()[1];
         let device = Default::default();
         // NOTE: simply use the burn tensor API for now as we want to move towards using more burn features

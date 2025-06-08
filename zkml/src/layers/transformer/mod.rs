@@ -15,6 +15,7 @@ mod test {
     use serde::Deserialize;
 
     use crate::{
+        Tensor,
         layers::{
             activation::GELU,
             add::{self, Add},
@@ -22,9 +23,16 @@ mod test {
             dense::Dense,
             provable::Evaluate,
             reshape::{self, Reshape},
-        }, model::Model, padding::PaddingMode, parser::{
-            file_cache, gguf::{tests::GPT2_Q8_0_URL, FileTensorLoader}, json::test::{TINY_GPT2_DEBUG_NAME, TINY_GPT2_NAME}, llm::{Attention, FeedForward, LLMConfig, LLMModel}
-        }, tensor::{Number, Shape}, Tensor
+        },
+        model::Model,
+        padding::PaddingMode,
+        parser::{
+            file_cache,
+            gguf::{FileTensorLoader, tests::GPT2_Q8_0_URL},
+            json::test::{TINY_GPT2_DEBUG_NAME, TINY_GPT2_NAME},
+            llm::{Attention, FeedForward, LLMConfig, LLMModel},
+        },
+        tensor::{Number, Shape},
     };
 
     use super::{layernorm, mha, qkv, softmax};
@@ -373,7 +381,8 @@ mod test {
         println!("config: {:?}", config);
 
         let gpt2_output = serde_json::from_reader::<_, GPT2Output>(
-            File::open(debug_output_path.clone()).context(format!("failed to open file {}",debug_output_path.clone()))?
+            File::open(debug_output_path.clone())
+                .context(format!("failed to open file {}", debug_output_path.clone()))?,
         )?;
         let input = Tensor::new(
             vec![1, config.embedding_size],
@@ -390,12 +399,16 @@ mod test {
         let expected_output = &first_layer_output.manual_output;
         assert!(is_close(expected_output, &output.get_data()));
         // Now try to run with the graph implementation
-        let mut model = Model::new_from_input_shapes(vec![input.get_shape()], PaddingMode::NoPadding);
+        let mut model =
+            Model::new_from_input_shapes(vec![input.get_shape()], PaddingMode::NoPadding);
         let _last_node_id = first_attention.write_to_model(&mut model, None, &config)?;
         model.route_output(None)?;
         let output = model.run_float(&[input.clone()])?;
         println!("graph output: {:?}", output[0].get_shape());
-        assert!(is_close(expected_output, &output[0].get_data()),"graph output differs");
+        assert!(
+            is_close(expected_output, &output[0].get_data()),
+            "graph output differs"
+        );
         Ok(())
     }
 
@@ -407,18 +420,27 @@ mod test {
         let config = LLMConfig::from_json(&loader)?;
         let LLMModel::GPT2(llm_model) = config.model_json(&loader)?;
         let gpt2_output = serde_json::from_reader::<_, GPT2Output>(
-            File::open(debug_output_path.clone()).context(format!("failed to open file {}",debug_output_path.clone()))?
+            File::open(debug_output_path.clone())
+                .context(format!("failed to open file {}", debug_output_path.clone()))?,
         )?;
-        let expected_output = &gpt2_output.layers.last().unwrap().manual_output_with_final_ln.as_ref().unwrap().clone();
+        let expected_output = &gpt2_output
+            .layers
+            .last()
+            .unwrap()
+            .manual_output_with_final_ln
+            .as_ref()
+            .unwrap()
+            .clone();
         let input = Tensor::new(
             vec![1, config.embedding_size],
             gpt2_output.inputs_embeds.clone(),
         );
         let model = llm_model.to_graph_model(&config, Shape::from(input.get_shape()))?;
         let output = model.run_float(&[input.clone()])?[0].clone();
-        assert!(is_close(expected_output, &output.get_data()),"graph output differs");
+        assert!(
+            is_close(expected_output, &output.get_data()),
+            "graph output differs"
+        );
         Ok(())
     }
-
-    
 }
