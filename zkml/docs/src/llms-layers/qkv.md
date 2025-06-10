@@ -44,10 +44,10 @@ Furthermore, the prover has computed the MLEs of the weight matrices $W_q$, $W_k
 
 Given the 3 claims $y_Q$, $y_K,$ and $y_V$, the prover computes also the claims $y_{B_q} = B_q(r_Q^c)$, $y_{B_k} = B_k(r_K^c)$ and $y_{B_v} = B_v(r_V^c)$, and claims $\widetilde{y_Q} = y_Q - B_q(r_Q^c)$, $\widetilde{y_K} = y_K - B_k(r_K^c)$, $\widetilde{y_V} = y_V - B_V(r_V^c)$.
 
-Given the 3 claims $y'_Q$, $y'_K$, $y'_V$, the verifier samples a random challenge $\lambda$ and then the prover employs a sum-check protocol to prove the relationship:
+Given the 3 claims $y'_Q$, $y'_K$, $y'_V$, the verifier samples random challenges $\lambda_1$, $\lambda_2$ and then the prover employs a sum-check protocol to prove the relationship:
 \begin{equation}
 \scriptsize
-\widetilde{y_Q} + \lambda \widetilde{y_K} + \lambda^2 \widetilde{y_V} = \sum_{x \in \{0,1\}^{\log(e)}} X(r_Q^r, x)*W_Q(x, r_Q^c) + \lambda X(r_K^r, x)*W_K(x, r_K^c) + \lambda^2 X(r_V^r, x)*W_V(x,r_V^c)
+\widetilde{y_Q} + \lambda_1 \widetilde{y_K} + \lambda_2 \widetilde{y_V} = \sum_{x \in \{0,1\}^{\log(e)}} X(r_Q^r, x)*W_Q(x, r_Q^c) + \lambda_1 X(r_K^r, x)*W_K(x, r_K^c) + \lambda_2 X(r_V^r, x)*W_V(x,r_V^c)
 \tag{1}
 \end{equation}
 
@@ -154,10 +154,10 @@ The sum-check proof will produce the following claims for a random point $r \in 
 #### Prove Computation of New Vectors
 To prove the computation of $q$, $k$ and $v$ vector for the new processed input token $x$, we use a simplied variant of the sum-check employed in the general QKV layer, described in Equation (1). The proving starts from 3 claims $y_q$, $y_k$ and $y_v$: the first one is coming directly from the output claims of the QKV layer, and it is computed over a random point $r_q \in \mathbb{F}^{\log(h)}$; the latter claims correspond to the claims $y_k$ and $y_v$ employed to prove concatenation in the same layer, and so they are evaluated over the same point $r_h \in \mathbb{F}^{\log{h}}$. 
 
-Given a random challenge $\lambda$ provided by the verifier, the prover computes the claims $B_q(r_q)$, $B_k(r)$, $B_v(r)$ and generates a sum-check proof for the following relationship:
+Given random challenges $\lambda_1$, $\lambda_2$ provided by the verifier, the prover computes the claims $B_q(r_q)$, $B_k(r)$, $B_v(r)$ and generates a sum-check proof for the following relationship:
 $$ 
 \footnotesize
-y_q - B_q(r_q) + \lambda (y_k - B_k(r))  + \lambda^2 (y_v - B_v(r)) = \sum_{z \in \{0,1\}^{\log(e)}} X(z)*(W_Q(z, r_q) + \lambda W_K(z, r_h) + \lambda^2 W_V(z,r_h))
+y_q - B_q(r_q) + \lambda_1 (y_k - B_k(r))  + \lambda_2 (y_v - B_v(r)) = \sum_{z \in \{0,1\}^{\log(e)}} X(z)*(W_Q(z, r_q) + \lambda_1 W_K(z, r_h) + \lambda_2 W_V(z,r_h))
 $$
 where $X$ is the MLE of the input row $x$.
 
