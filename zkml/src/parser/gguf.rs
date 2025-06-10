@@ -19,7 +19,14 @@ use crate::{
 
 impl LLMConfig {
     pub fn from_content(l: &FileTensorLoader) -> anyhow::Result<Self> {
-        let variant = LLMVariant::from_content(l)?;
+        let variant_name = l
+            .content
+            .metadata
+            .get("general.name")
+            .or(l.content.metadata.get("general.architecture"))
+            .map(|v| v.to_string())
+            .context("no variant found")??;
+        let variant = LLMVariant::from_content(variant_name)?;
         let embedding_size = l.content.metadata[variant.embedding_size_key()].to_u32()? as usize;
         let hidden_size = l.content.metadata[variant.hidden_size_key()].to_u32()? as usize;
         let num_heads = l.content.metadata[variant.num_heads_key()].to_u32()? as usize;
@@ -51,25 +58,6 @@ impl LLMConfig {
 }
 
 impl LLMVariant {
-    pub fn from_content(l: &FileTensorLoader) -> anyhow::Result<Self> {
-        let Some(variant_value) = l
-            .content
-            .metadata
-            .get("general.name")
-            .or_else(|| l.content.metadata.get("general.architecture"))
-        else {
-            bail!("no variant found");
-        };
-        // Convert gguf_file::Value to String, then get &str
-        let variant_str = variant_value
-            .to_string()
-            .map_err(|e| anyhow::anyhow!("Failed to convert GGUF value to string: {}", e))?;
-        match variant_str.as_str() {
-            "gpt2" => Ok(Self::GPT2),
-            a => bail!("unsupported architecture: {:?}", a),
-        }
-    }
-
     pub fn num_heads_key(&self) -> &str {
         match self {
             Self::GPT2 => "gpt2.attention.head_count",

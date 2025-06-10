@@ -99,7 +99,6 @@ impl Evaluate<f32> for LayerNorm<f32> {
     ) -> anyhow::Result<LayerOut<f32, E>> {
         assert!(inputs.len() == 1);
         let input = inputs[0];
-        println!("LayerNorm !!! {:?}", input.get_shape());
         ensure!(
             input.get_shape().len() == 2,
             "layernorm input must have shape [seq_len, embedding_size]: found {:?}",

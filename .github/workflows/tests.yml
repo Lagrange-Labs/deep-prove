@@ -23,7 +23,7 @@ jobs:
         run: mkdir -p ./ci_py_assets
 
       - name: Run Python script to generate assets
-        run: python zkml/assets/scripts/llms/gpt2_internal.py --output-dir ./zkml/assets/scripts/llms/
+        run: python zkml/assets/scripts/llms/gpt2_internal.py --output-dir ./zkml/assets/scripts/llms/ --export-model
 
       - name: Set Environment Variables for Rust tests
         run: |

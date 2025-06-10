@@ -8,7 +8,7 @@ pub mod softmax;
 
 #[cfg(test)]
 mod test {
-    use std::{fs::File, path::PathBuf};
+    use std::fs::File;
 
     use anyhow::Context;
     use goldilocks::GoldilocksExt2;
@@ -29,7 +29,9 @@ mod test {
         parser::{
             file_cache,
             gguf::{FileTensorLoader, tests::GPT2_Q8_0_URL},
-            json::test::{TINY_GPT2_DEBUG_NAME, TINY_GPT2_NAME},
+            json::test::{
+                DISTIL_GPT2_DEBUG_NAME, DISTIL_GPT2_NAME, TINY_GPT2_DEBUG_NAME, TINY_GPT2_NAME,
+            },
             llm::{Attention, FeedForward, LLMConfig, LLMModel},
         },
         tensor::{Number, Shape},
@@ -309,6 +311,18 @@ mod test {
         inputs_embeds: Vec<f32>,
         layers: Vec<GPT2LayerOutput>,
     }
+
+    impl GPT2Output {
+        pub fn final_output(&self) -> &Vec<f32> {
+            self.layers
+                .last()
+                .unwrap()
+                .manual_output_with_final_ln
+                .as_ref()
+                .unwrap()
+        }
+    }
+
     #[derive(Debug, Deserialize)]
     struct GPT2LayerOutput {
         ln1_out: Vec<f32>,
@@ -416,6 +430,9 @@ mod test {
     fn test_gpt2_model_full_pass() -> anyhow::Result<()> {
         let model_weights_path = json::test::get_json_file(TINY_GPT2_NAME)?;
         let debug_output_path = json::test::get_json_file(TINY_GPT2_DEBUG_NAME)?;
+        // too big to run in JSON mode - need to switch format
+        // let model_weights_path = json::test::get_json_file(DISTIL_GPT2_NAME)?;
+        // let debug_output_path = json::test::get_json_file(DISTIL_GPT2_DEBUG_NAME)?;
         let loader = json::FileTensorLoader::new_from_path(model_weights_path)?;
         let config = LLMConfig::from_json(&loader)?;
         let LLMModel::GPT2(llm_model) = config.model_json(&loader)?;
@@ -423,14 +440,7 @@ mod test {
             File::open(debug_output_path.clone())
                 .context(format!("failed to open file {}", debug_output_path.clone()))?,
         )?;
-        let expected_output = &gpt2_output
-            .layers
-            .last()
-            .unwrap()
-            .manual_output_with_final_ln
-            .as_ref()
-            .unwrap()
-            .clone();
+        let expected_output = &&gpt2_output.final_output();
         let input = Tensor::new(
             vec![1, config.embedding_size],
             gpt2_output.inputs_embeds.clone(),

@@ -1775,9 +1775,11 @@ impl Shape {
     pub fn from_it<V: std::borrow::Borrow<usize>, I: IntoIterator<Item = V>>(iter: I) -> Self {
         Self(iter.into_iter().map(|v| *v.borrow()).collect())
     }
+
     pub fn new(shape: Vec<usize>) -> Self {
         Self(shape)
     }
+
     pub fn slice<R: RangeBounds<usize>>(&self, range: R) -> Shape {
         let len = self.0.len();
         let start = match range.start_bound() {
