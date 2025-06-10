@@ -3,14 +3,19 @@ use std::collections::HashMap;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 
 use crate::{
+    Element, NextPowerOfTwo,
     layers::{
         convolution::Convolution,
         dense::Dense,
         flatten::Flatten,
         matrix_mul::{MatMul, OperandMatrix},
         pooling::Pooling,
-        provable::{Node, NodeId, OpInfo}, transformer::qkv::QKV,
-    }, model::{Model, ToIterator}, parser::{check_filter, safe_conv2d_shape, safe_maxpool2d_shape}, try_unzip, Element, NextPowerOfTwo
+        provable::{Node, NodeId, OpInfo},
+        transformer::qkv::QKV,
+    },
+    model::{Model, ToIterator},
+    parser::{check_filter, safe_conv2d_shape, safe_maxpool2d_shape},
+    try_unzip,
 };
 type GarbagePad = Option<(Vec<usize>, Vec<usize>)>;
 type Shape = Vec<usize>;
@@ -28,15 +33,17 @@ pub struct ShapeInfo {
 
 impl ShapeInfo {
     pub fn unpadded_output_shapes(&self) -> Vec<Shape> {
-        self.shapes.iter().map(|sd| 
-            sd.input_shape_og.clone()
-        ).collect()
+        self.shapes
+            .iter()
+            .map(|sd| sd.input_shape_og.clone())
+            .collect()
     }
 
     pub fn padded_output_shapes(&self) -> Vec<Shape> {
-        self.shapes.iter().map(|sd| 
-            sd.input_shape_padded.clone()
-        ).collect()
+        self.shapes
+            .iter()
+            .map(|sd| sd.input_shape_padded.clone())
+            .collect()
     }
 }
 
@@ -347,20 +354,23 @@ pub(crate) fn pad_qkv(mut qkv: QKV<Element>, si: &mut ShapeInfo) -> Result<QKV<E
         "Padded input shape for QKV is not 2D"
     );
 
-    let unpadded_output_shapes = qkv.output_shapes(
-        &vec![sd.input_shape_og.clone()], 
-        PaddingMode::NoPadding
-    );
+    let unpadded_output_shapes =
+        qkv.output_shapes(&vec![sd.input_shape_og.clone()], PaddingMode::NoPadding);
     let expected_num_outputs = qkv.num_outputs(1);
-    ensure!(unpadded_output_shapes.len() == expected_num_outputs, 
-        "Expected {expected_num_outputs} unpadded output shapes for QKV layer, found {}", unpadded_output_shapes.len(),
+    ensure!(
+        unpadded_output_shapes.len() == expected_num_outputs,
+        "Expected {expected_num_outputs} unpadded output shapes for QKV layer, found {}",
+        unpadded_output_shapes.len(),
     );
-    
-    ensure!(sd.input_shape_padded.iter().all(|d| d.is_power_of_two()), "Padded input shapes for QKV layer are not a power of 2");
-    
+
+    ensure!(
+        sd.input_shape_padded.iter().all(|d| d.is_power_of_two()),
+        "Padded input shapes for QKV layer are not a power of 2"
+    );
+
     // Pad weight matrices
     [&mut qkv.q, &mut qkv.k, &mut qkv.v].into_iter().try_for_each(|weight_mat| {
-        ensure!(weight_mat.nrows_2d() <= sd.input_shape_padded[1], 
+        ensure!(weight_mat.nrows_2d() <= sd.input_shape_padded[1],
             "Weight matrices in QKV layer has more rows than the number of columns of padded input shapes: Expected at most {} rows, found {}",
             sd.input_shape_padded[1], weight_mat.nrows_2d(),
         );
@@ -370,16 +380,20 @@ pub(crate) fn pad_qkv(mut qkv: QKV<Element>, si: &mut ShapeInfo) -> Result<QKV<E
             vec![nrows, ncols]
         );
         Ok(())
-    })?; 
+    })?;
 
     // Pad bias vectors
-    [&mut qkv.q_bias, &mut qkv.k_bias, &mut qkv.v_bias].into_iter().for_each(|bias_vec| {
-        let new_len = bias_vec.get_shape()[0];
-        bias_vec.pad_to_shape(vec![pad_minimum(new_len)])
-    });
+    [&mut qkv.q_bias, &mut qkv.k_bias, &mut qkv.v_bias]
+        .into_iter()
+        .for_each(|bias_vec| {
+            let new_len = bias_vec.get_shape()[0];
+            bias_vec.pad_to_shape(vec![pad_minimum(new_len)])
+        });
 
-    let padded_output_shapes = qkv.output_shapes(&vec![sd.input_shape_padded.clone()], PaddingMode::Padding);
-    ensure!(unpadded_output_shapes.len() == padded_output_shapes.len(), 
+    let padded_output_shapes =
+        qkv.output_shapes(&vec![sd.input_shape_padded.clone()], PaddingMode::Padding);
+    ensure!(
+        unpadded_output_shapes.len() == padded_output_shapes.len(),
         "Number of unpadded output shapes different from number of padded output shapes for QKV layer"
     );
 
@@ -388,13 +402,15 @@ pub(crate) fn pad_qkv(mut qkv: QKV<Element>, si: &mut ShapeInfo) -> Result<QKV<E
         "QKV layer has garbage padding to be removed",
     );
 
-    si.shapes = unpadded_output_shapes.into_iter().zip(padded_output_shapes).map(|(unpadded_shape, padded_shape)|
-        ShapeData {
+    si.shapes = unpadded_output_shapes
+        .into_iter()
+        .zip(padded_output_shapes)
+        .map(|(unpadded_shape, padded_shape)| ShapeData {
             input_shape_padded: padded_shape,
             ignore_garbage_pad: None,
             input_shape_og: unpadded_shape,
-        }
-    ).collect();
+        })
+        .collect();
 
     Ok(qkv)
 }

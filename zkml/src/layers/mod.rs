@@ -30,14 +30,21 @@ use requant::RequantCtx;
 use transcript::Transcript;
 
 use crate::{
-    iop::context::{ContextAux, ShapeStep, TableCtx}, layers::{
+    Context, Element, ScalingStrategy,
+    iop::context::{ContextAux, ShapeStep, TableCtx},
+    layers::{
         activation::{Activation, ActivationProof},
         convolution::Convolution,
         dense::Dense,
         pooling::Pooling,
         requant::{Requant, RequantProof},
-        transformer::qkv::{QKVCtx, QKVProof, QKV},
-    }, lookup::context::LookupWitnessGen, model::StepData, padding::{PaddingMode, ShapeInfo}, quantization::ScalingFactor, tensor::{Number, Tensor}, Context, Element, ScalingStrategy
+        transformer::qkv::{QKV, QKVCtx, QKVProof},
+    },
+    lookup::context::LookupWitnessGen,
+    model::StepData,
+    padding::{PaddingMode, ShapeInfo},
+    quantization::ScalingFactor,
+    tensor::{Number, Tensor},
 };
 use activation::ActivationCtx;
 use convolution::{ConvCtx, ConvProof, SchoolBookConv, SchoolBookConvCtx};
