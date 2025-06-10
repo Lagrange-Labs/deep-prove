@@ -82,13 +82,8 @@ where
         self.claims.push(claim);
         Ok(())
     }
-    pub fn prove<T: Transcript<E>>(self, ctx: &Context<E>, t: &mut T) -> anyhow::Result<Proof<E>> {
+    pub fn prove<T: Transcript<E>>(self, t: &mut T) -> anyhow::Result<Proof<E>> {
         let challenges = t.read_challenges(self.claims.len());
-
-        println!("proving challenges: {challenges:?}");
-        println!("Proving context: {:?}", ctx.vp_info);
-
-        assert_eq!(ctx.vp_info.max_num_variables, self.poly.num_vars());
 
         let beta_evals = challenges
             .into_par_iter()
@@ -101,7 +96,7 @@ where
                     .collect_vec()
             })
             .collect::<Vec<_>>();
-        let final_beta = (0..1 << ctx.vp_info.max_num_variables)
+        let final_beta = (0..1 << self.poly.num_vars())
             .into_par_iter()
             .map(|i| {
                 beta_evals
@@ -158,8 +153,6 @@ where
 
     pub fn verify<T: Transcript<E>>(self, proof: &Proof<E>, t: &mut T) -> anyhow::Result<Claim<E>> {
         let fs_challenges = t.read_challenges(self.claims.len());
-        println!("verifier challenges: {fs_challenges:?}");
-        println!("Verifier context: {:?}", self.ctx.vp_info);
         let (rs, ys): (Vec<_>, Vec<_>) = self.claims.into_iter().map(|c| (c.point, c.eval)).unzip();
         let y_res = aggregated_rlc(&ys, &fs_challenges);
         // check sumcheck proof
@@ -235,7 +228,7 @@ mod test {
         for (r_i, y_i) in claims.clone().into_iter() {
             prover.add_claim(Claim::new(r_i, y_i))?;
         }
-        let proof = prover.prove(&ctx, &mut t)?;
+        let proof = prover.prove(&mut t)?;
         // VERIFIER PART
         let mut t = default_transcript();
         let mut verifier = Verifier::new(&ctx);

@@ -73,12 +73,12 @@ pub struct QKVProof<E: ExtensionField> {
 impl<E: ExtensionField> QKVProof<E> {
     /// Returns the individual claims f_1(r) f_2(r)  f_3(r) ... at the end of a sumcheck multiplied
     /// together
-    pub fn individual_to_virtual_claim(&self, batching_challenge: &Challenge<E>) -> E {
+    pub fn individual_to_virtual_claim(&self, batching_challenges: &[Challenge<E>]) -> E {
         self.individual_claims
             .chunks(2)
-            .rev()
-            .fold(E::ZERO, |acc, evals| {
-                acc * batching_challenge.elements + evals[0] * evals[1]
+            .zip(batching_challenges)
+            .fold(E::ZERO, |acc, (evals, chal)| {
+                acc + evals[0] * evals[1] * chal.elements
             })
     }
 }
@@ -153,15 +153,15 @@ impl<N: Number> QKV<N> {
         Ok((input_point, weight_matrix_point))
     }
 
-    // Squeeze the challenge required to batch the sumcheck equations employed to prove the layer.
+    // Squeeze the challenges required to batch the sumcheck equations employed to prove the layer.
     // It requires as input the output claims for the layer and the evaluations (over the same points of the output
     // claims) of the MLEs of the output tensors before bias addition, which are the claims actually used in the batched
     // sumcheck
-    fn challenge_for_batched_sumcheck<E: ExtensionField, T: Transcript<E>>(
+    fn challenges_for_batched_sumcheck<E: ExtensionField, T: Transcript<E>>(
         transcript: &mut T,
         last_claims: &[&Claim<E>],
         evals_pre_bias: &[E],
-    ) -> Challenge<E> {
+    ) -> Vec<Challenge<E>> {
         // add claims about output tensors without bias to the transcript, to then squeeze the challenge necessary to batch the matrix multiplication
         // sum-check equation
         last_claims
@@ -171,8 +171,14 @@ impl<N: Number> QKV<N> {
                 transcript.append_field_element_exts(&claim.point);
                 transcript.append_field_element_ext(evals);
             });
-
-        transcript.get_and_append_challenge(BATCHING_CHALLENGE_LABEL.as_bytes())
+        // We need 3 challenges: the first one can be the identity element, while the other 2 are randomly generated    
+        [Challenge {
+            elements: E::ONE
+        }].into_iter().chain(
+            (0..2).map(|_| 
+                transcript.read_challenge()
+            )
+        ).collect()   
     }
 }
 
@@ -404,8 +410,6 @@ impl PadOp for QKV<Element> {
     }
 }
 
-const BATCHING_CHALLENGE_LABEL: &str = "batching_qkv";
-
 impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS> for QKV<Element>
 where
     E::BaseField: Serialize + DeserializeOwned,
@@ -488,8 +492,8 @@ where
                 }),
         )?;
 
-        let challenge =
-            Self::challenge_for_batched_sumcheck(prover.transcript, &last_claims, &evals_pre_bias);
+        let challenges =
+            Self::challenges_for_batched_sumcheck(prover.transcript, &last_claims, &evals_pre_bias);
 
         let input_mle = input.to_mle_2d();
 
@@ -501,14 +505,14 @@ where
         last_claims
             .iter()
             .zip([&self.q, &self.k, &self.v])
-            .enumerate()
-            .try_for_each(|(i, (&claim, weight_matrix))| {
+            .zip(&challenges)
+            .try_for_each(|((&claim, weight_matrix), challenge)| {
                 let mut weight_mle = weight_matrix.to_2d_mle();
                 let (point_for_row, point_for_column) =
                     Self::split_claim_point(&claim.point, output_num_vars_2d)?;
                 let fixed_input_mle = input_mle.fix_high_variables(point_for_row);
                 weight_mle.fix_variables_in_place(point_for_column);
-                let coefficient = challenge.elements.pow_vartime(&vec![i as u64]);
+                let coefficient = challenge.elements;
                 vp.add_mle_list(vec![fixed_input_mle.into(), weight_mle.into()], coefficient);
                 anyhow::Ok(())
             })?;
@@ -555,21 +559,13 @@ where
         prover.add_common_claims(node_id, common_claims)?;
 
         // Aggregate input claims into a single one, which will be returned as output
-        let input_num_vars = input_mle.num_vars();
-
-        println!("Input vars for same poly proving: {input_num_vars}");
-
-        let ctx = same_poly::Context::new(input_num_vars);
-
         let mut same_poly_prover = same_poly::Prover::new(input_mle);
-
-        println!("input claims for prover: {input_claims:?}");
 
         input_claims
             .into_iter()
             .try_for_each(|claim| same_poly_prover.add_claim(claim))?;
 
-        let aggregation_proof = same_poly_prover.prove(&ctx, prover.transcript)?;
+        let aggregation_proof = same_poly_prover.prove(prover.transcript)?;
 
         let aggregated_claim = aggregation_proof.extract_claim();
 
@@ -679,7 +675,7 @@ where
             })
             .collect::<Result<Vec<_>>>()?;
 
-        let challenge = QKV::<Element>::challenge_for_batched_sumcheck(
+        let challenges = QKV::<Element>::challenges_for_batched_sumcheck(
             verifier.transcript,
             last_claims,
             &proof.pre_bias_evals,
@@ -689,9 +685,8 @@ where
         let batched_evals = proof
             .pre_bias_evals
             .iter()
-            .rev() // Reverse order because we are starting
-            // from the evaluation scaled by challenge^2
-            .fold(E::ZERO, |acc, eval| acc * challenge.elements + eval);
+            .zip(&challenges)
+            .fold(E::ZERO, |acc, (eval, chal)| acc + *eval * chal.elements);
 
         // verify batched sumcheck
         let subclaim = IOPVerifierState::<E>::verify(
@@ -747,19 +742,15 @@ where
         // We compute the evaluation directly from the individual final evaluations of each polynomial
         // involved in the sumcheck the prover's giving,e.g. y(res) = SUM f_i(res)
         ensure!(
-            proof.individual_to_virtual_claim(&challenge) == subclaim.expected_evaluation,
+            proof.individual_to_virtual_claim(&challenges) == subclaim.expected_evaluation,
             "sumcheck claim failed",
         );
 
         let sum_check_num_vars = padded_input_shape.iter().product::<usize>().ilog2() as usize;
 
-        println!("num vars for same poly verifier: {sum_check_num_vars}");
-
         let ctx = same_poly::Context::new(sum_check_num_vars);
 
         let mut same_poly_verifier = same_poly::Verifier::new(&ctx);
-
-        println!("input claims for verifier: {input_claims:?}");
 
         input_claims
             .into_iter()
