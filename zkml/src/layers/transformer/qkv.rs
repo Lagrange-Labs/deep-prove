@@ -1,18 +1,16 @@
-use std::collections::HashMap;
-
 use anyhow::{ensure, Result};
 use ff_ext::ExtensionField;
 use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::{mle::{IntoMLE, MultilinearExtension}, virtual_poly::{VPAuxInfo, VirtualPolynomial}};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use sumcheck::structs::{IOPProof, IOPProverState};
-use transcript::Transcript;
+use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
+use transcript::{Challenge, Transcript};
 
 use crate::{
-    commit::{context::PolyId, same_poly}, iop::{context::{ContextAux, ShapeStep}, verifier::Verifier}, layers::{
+    commit::same_poly, iop::{context::{ContextAux, ShapeStep}, verifier::Verifier}, layers::{
         provable::{Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, QuantizeOp, QuantizeOutput, VerifiableCtx},
-        requant::Requant, LayerCtx,
-    }, model::StepData, padding::{PaddingMode, ShapeInfo}, quantization::model_scaling_factor_from_tensor_and_bias, tensor::Number, try_unzip, Claim, Element, NextPowerOfTwo, Prover, ScalingFactor, ScalingStrategy, Tensor
+        requant::Requant, LayerCtx, LayerProof,
+    }, model::StepData, padding::{pad_qkv, PaddingMode, ShapeInfo}, quantization::model_scaling_factor_from_tensor_and_bias, tensor::Number, try_unzip, Claim, Element, NextPowerOfTwo, Prover, ScalingFactor, ScalingStrategy, Tensor
 };
 
 /// A layer that evaluates the tensor X against the matrices Q, K and V.
@@ -22,16 +20,16 @@ use crate::{
 /// the full K and V matrices as if they were computed using the whole input tensor.
 #[derive(Debug, Clone)]
 pub struct QKV<N> {
-    pub q: Tensor<N>,
-    pub q_bias: Tensor<N>,
-    pub k: Tensor<N>,
-    pub k_bias: Tensor<N>,
-    pub v: Tensor<N>,
-    pub v_bias: Tensor<N>,
+    pub(crate) q: Tensor<N>,
+    pub(crate) q_bias: Tensor<N>,
+    pub(crate) k: Tensor<N>,
+    pub(crate) k_bias: Tensor<N>,
+    pub(crate) v: Tensor<N>,
+    pub(crate) v_bias: Tensor<N>,
     unpadded_shape: Vec<usize>, // same shape for Q, K and V
     // pub cache: Option<CacheQKV<N>>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct QKVCtx<E> {
     node_id: NodeId,
     sumcheck_poly_aux: VPAuxInfo<E>,
@@ -48,10 +46,20 @@ pub struct QKVProof<E: ExtensionField> {
     aggregation_proof: same_poly::Proof<E>,
     /// The evaluation of the MLEs of the outputs vectors without the bias.
     /// The verifier needs these evaluations to check the output of the sumcheck proof
-    pre_bias_evals: HashMap<PolyId, E>,
+    pre_bias_evals: Vec<E>,
     /// The individual evaluations of the individual polynomial for the last random part of the
     /// sumcheck. One for each polynomial involved in the "virtual poly"
     individual_claims: Vec<E>,
+}
+
+impl<E: ExtensionField> QKVProof<E> {
+    /// Returns the individual claims f_1(r) f_2(r)  f_3(r) ... at the end of a sumcheck multiplied
+    /// together
+    pub fn individual_to_virtual_claim(&self, batching_challenge: &Challenge<E>) -> E {
+        self.individual_claims.chunks(2).rev().fold(E::ZERO, |acc, evals| 
+            acc * batching_challenge.elements + evals[0]*evals[1]
+        )
+    }
 }
 
 impl<N: Number> QKV<N> {
@@ -89,6 +97,8 @@ impl<N: Number> QKV<N> {
         }
     }
 
+    // Given the point of a claim referring to a 2d output tensor with `output_num_vars` variables,
+    // split the point in 2 sub-points corresponding to the variables on each of the 2 dimensions (i.e., rows and columns)
     fn split_claim_point<E: ExtensionField>(claim_point: &[E], output_num_vars: (usize, usize)) -> Result<(&[E], &[E])> {
         ensure!(claim_point.len() == output_num_vars.0 + output_num_vars.1, 
             "Mismatch between size of claim point and number of variables when splitting claim point for QKV layer"
@@ -98,17 +108,47 @@ impl<N: Number> QKV<N> {
         Ok((point_for_row, point_for_column))
     }
 
+    // Build evaluations point for claims related to a pair (input_matrix, weight matrix) produced 
+    // by the sumcheck protocol in `prove`. Here, weight matrix can be one of 'self.q`, `self.k` and 'self.v`.
+    // The method requires the following inputs:
+    // - `claim_point`: point of the claim for the MLE of `output matrix = input_matrix*weight_matrix``
+    // - `proof_point`: random point employed to prove sumcheck
+    // - `output_num_vars` : number of variables of the output matrix
     fn build_points<E: ExtensionField>(
         claim_point: &[E],
         proof_point: &[E],
         output_num_vars: (usize, usize),
     ) -> Result<(Vec<E>, Vec<E>)> {
         let (point_for_row, point_for_column) = Self::split_claim_point(claim_point, output_num_vars)?;
-        let input_point = [point_for_row, proof_point].concat();
-        let weight_matrix_point = [proof_point, point_for_column].concat();
+        // sumcheck point is on the column variables, which are the low ones
+        let input_point = [proof_point, point_for_row].concat();
+        // sumcheck point is on the row variables, which are the high ones
+        let weight_matrix_point = [point_for_column, proof_point].concat();
         Ok((input_point, weight_matrix_point))
     }
+
+    // Squeeze the challenge required to batch the sumcheck equations employed to prove the layer.
+    // It requires as input the output claims for the layer and the evaluations (over the same points of the output
+    // claims) of the MLEs of the output tensors before bias addition, which are the claims actually used in the batched
+    // sumcheck
+    fn challenge_for_batched_sumcheck<E: ExtensionField, T: Transcript<E>>(
+        transcript: &mut T,
+        last_claims: &[&Claim<E>], 
+        evals_pre_bias: &[E],
+    ) -> Challenge<E> {
+        // add claims about output tensors without bias to the transcript, to then squeeze the challenge necessary to batch the matrix multiplication 
+        // sum-check equation
+        last_claims.into_iter().zip(evals_pre_bias).for_each(|(&claim, evals)| {
+            transcript.append_field_element_exts(&claim.point);
+            transcript.append_field_element_ext(evals);
+        });
+        
+
+        transcript.get_and_append_challenge(BATCHING_CHALLENGE_LABEL.as_bytes())
+    }
 }
+
+const IS_PROVABLE: bool = true;
 
 impl<N> OpInfo for QKV<N> {
     /// Returns the shapes of the outputs (in the same order)
@@ -122,7 +162,7 @@ impl<N> OpInfo for QKV<N> {
         match padding_mode {
             PaddingMode::NoPadding => vec![
                 vec![input_shape[0], self.unpadded_shape[1]];
-                3
+                self.num_outputs(1)
             ],
             PaddingMode::Padding => vec![
                 vec![input_shape[0], self.q.get_shape()[1]],
@@ -147,7 +187,7 @@ impl<N> OpInfo for QKV<N> {
 
     /// Specify whether the operation needs to be proven or not
     fn is_provable(&self) -> bool {
-        true
+        IS_PROVABLE
     }
 }
 
@@ -207,8 +247,8 @@ impl QuantizeOp for QKV<f32> {
         let num_outputs = self.num_outputs(input_scaling.len());
         let output_scalings = S::scaling_factors_for_node(data, node_id, num_outputs);
         ensure!(
-            output_scalings.len() == 1,
-            "Output scaling for QKV layer different from 1"
+            output_scalings.len() == num_outputs,
+            "Output scaling for QKV layer different from {num_outputs}"
         );
         self.quantize_from_scalings(input_scaling, &output_scalings)
     }
@@ -317,15 +357,18 @@ where  E::BaseField: Serialize + DeserializeOwned,
             unpadded_shape: self.unpadded_shape.clone(),
         };
 
-        todo!()
+        Ok((
+            LayerCtx::QKV(ctx),
+            aux,
+        ))
     }
 }
 
 impl PadOp for QKV<Element> {
-    fn pad_node(self, _si: &mut ShapeInfo) -> Result<Self>
+    fn pad_node(self, si: &mut ShapeInfo) -> Result<Self>
         where
             Self: Sized, {
-        todo!()
+        pad_qkv(self, si)
     }
 }
 
@@ -388,18 +431,12 @@ where
             Ok((bias_claim, eval_pre_bias)) 
         }))?;
 
-
-
-        // add output claims to the transcript, to then squeeze the challenge necessary to batch the matrix multiplication 
-        // sum-check equation
-        last_claims.iter().zip(&evals_pre_bias).for_each(|(&claim, evals)| {
-            prover.transcript.append_field_element_exts(&claim.point);
-            prover.transcript.append_field_element_ext(evals);
-        });
+        let challenge = Self::challenge_for_batched_sumcheck(
+            prover.transcript, 
+            &last_claims, 
+            &evals_pre_bias
+        );
         
-
-        let challenge = prover.transcript.get_and_append_challenge(BATCHING_CHALLENGE_LABEL.as_bytes());
-
         let input_mle = input.to_mle_2d();
 
         // Number of variables involved in the sum-check corresponds to the number of columns of the input matrix
@@ -435,6 +472,14 @@ where
             ))
         }))?;
 
+        // debug: check input claims
+        debug_assert!(
+            input_claims.iter().all(|claim| {
+                let eval = input_mle.evaluate(&claim.point);
+                claim.eval == eval
+            })
+        );
+
         // Build set of claims to be proven via polynomial commitment opening proof
         let common_claims = weight_claims.into_iter().chain(bias_claims).zip(
             [
@@ -450,10 +495,15 @@ where
         prover.add_common_claims(node_id, common_claims)?;
 
         // Aggregate input claims into a single one, which will be returned as output
-        let mut same_poly_prover = same_poly::Prover::new(input_mle);
-        let input_num_vars = input.num_vars_2d().0 + input.num_vars_2d().1;
+        let input_num_vars = input_mle.num_vars();
+        
+        println!("Input vars for same poly proving: {input_num_vars}");
 
         let ctx = same_poly::Context::new(input_num_vars);
+
+        let mut same_poly_prover = same_poly::Prover::new(input_mle);
+        
+        println!("input claims for prover: {input_claims:?}");
 
         input_claims.into_iter().try_for_each(|claim| 
             same_poly_prover.add_claim(claim)
@@ -463,18 +513,14 @@ where
 
         let aggregated_claim = aggregation_proof.extract_claim(); 
 
-        // ToDo: add `proof` to Prover
         let proof = QKVProof {
             sumcheck: proof,
             aggregation_proof,
             individual_claims: sumcheck_evals,
-            pre_bias_evals: evals_pre_bias.into_iter().zip([
-                BIAS_Q_POLY_ID,
-                BIAS_K_POLY_ID,
-                BIAS_V_POLY_ID,
-            ]).map(|(eval, id)| (id.to_string(), eval)).collect(),
+            pre_bias_evals: evals_pre_bias,
         };
         
+        prover.push_proof(node_id, LayerProof::QKV(proof));
 
         Ok(vec![aggregated_claim])
 
@@ -489,19 +535,32 @@ impl<E> OpInfo for QKVCtx<E> {
         input_shapes: &[Vec<usize>],
         padding_mode: PaddingMode,
     ) -> Vec<Vec<usize>> {
-        todo!()
+        let weight_shape = match padding_mode {
+            PaddingMode::NoPadding => &self.unpadded_shape,
+            PaddingMode::Padding => &self.padded_matrix_shape,
+        };
+
+        assert_eq!(input_shapes.len(), 1, "Expected only 1 input shape for QKV layer");
+
+        assert_eq!(input_shapes[0][1], weight_shape[0], 
+            "Shape mismatch for QKV ctx: number of columns in input shape different from number of rows of weight matrices {} != {}",
+            input_shapes[0][1],
+            weight_shape[0],
+        );
+
+        vec![vec![input_shapes[0][0], weight_shape[1]]; self.num_outputs(1)]
     }
 
     fn num_outputs(&self, num_inputs: usize) -> usize {
-        todo!()
+        num_inputs * 3
     }
 
     fn describe(&self) -> String {
-        todo!()
+        format!("QKV [{},{}]", self.padded_matrix_shape[0], self.padded_matrix_shape[1])
     }
 
     fn is_provable(&self) -> bool {
-        todo!()
+        IS_PROVABLE
     }
 }
 
@@ -519,7 +578,123 @@ where
         verifier: &mut Verifier<E, T, PCS>,
         shape_step: &ShapeStep,
     ) -> Result<Vec<Claim<E>>> {
-        todo!()
+        ensure!(shape_step.padded_input_shape.len() == 1, 
+            "Expected 1 input shape for QKV verifier, found {}", 
+            shape_step.padded_input_shape.len(),
+        );
+        let padded_input_shape = &shape_step.padded_input_shape[0];
+        let expected_num_outputs = self.num_outputs(1);
+        ensure!(shape_step.padded_output_shape.len() == expected_num_outputs, 
+            "Expected {expected_num_outputs} shapes for QKV verifier, found {}",
+            shape_step.padded_output_shape.len()
+        );
+        ensure!(last_claims.len() == expected_num_outputs, 
+            "Expected {expected_num_outputs} output claims for QKV verifier, found {}",
+            last_claims.len()
+        );
+
+        let output_shape = &shape_step.padded_output_shape[0]; // we can just take the first one since all the output shapes
+            // are expected to be the same
+        let output_num_vars = (
+            output_shape[0].ilog2() as usize,
+            output_shape[1].ilog2() as usize,
+        );
+        
+        // compute claims for the bias vector, subtracting the `pre_bias_evals` found in the proof from the output claims
+        let bias_claims = last_claims.into_iter().zip(&proof.pre_bias_evals)
+            .map(|(&claim, eval)| {
+                let bias_eval = claim.eval - eval;
+                let (_, point_for_column) = QKV::<Element>::split_claim_point(&claim.point, output_num_vars)?;
+                Ok(Claim::new(point_for_column.to_vec(), bias_eval))
+            }).collect::<Result<Vec<_>>>()?;
+
+        let challenge = QKV::<Element>::challenge_for_batched_sumcheck(
+            verifier.transcript, 
+            last_claims, 
+            &proof.pre_bias_evals,
+        );
+
+        // use challenge to batch evaluations used in sumcheck
+        let batched_evals = proof.pre_bias_evals.iter().rev() // Reverse order because we are starting 
+            // from the evaluation scaled by challenge^2
+            .fold(E::ZERO, |acc, eval| {
+            acc*challenge.elements + eval
+        });
+        
+        // verify batched sumcheck
+        let subclaim = IOPVerifierState::<E>::verify(
+            batched_evals,
+            &proof.sumcheck,
+            &self.sumcheck_poly_aux,
+            verifier.transcript,
+        );
+
+        // Build claims corresponding to each evaluation of the MLEs involved in the batched sumcheck, 
+        // splitting between claims related to the input matrix and claims related to the weight matrices
+        let (input_claims, weight_claims): (Vec<_>, Vec<_>) = try_unzip(last_claims.iter().zip(
+            proof.individual_claims.chunks(2) // each chunk refers to a pair of (input, weight matrix) MLEs in the sumcheck
+        ).map(|(&claim, evals)| {
+            let (point_for_input, point_for_weight) = QKV::<Element>::build_points(
+                &claim.point, 
+                &subclaim.point_flat(), 
+                output_num_vars,
+            )?;
+            anyhow::Ok((
+                Claim::new(point_for_input, evals[0]),
+                Claim::new(point_for_weight, evals[1]),
+            ))
+        }))?;
+        
+        // Build set of claims to be proven via polynomial commitment opening proof
+        let common_claims = weight_claims.into_iter().chain(bias_claims).zip(
+            [
+                WEIGHT_Q_POLY_ID,
+                WEIGHT_K_POLY_ID,
+                WEIGHT_V_POLY_ID,
+                BIAS_Q_POLY_ID,
+                BIAS_K_POLY_ID,
+                BIAS_V_POLY_ID,
+            ]
+        ).map(|(claim, id)| (id.to_string(), claim)).collect();
+
+        verifier.add_common_claims(self.node_id, common_claims)?;
+
+        // SUMCHECK verification part
+        // Instead of computing the polynomial at the random point requested like this
+        // let computed_point = vp.evaluate(
+        //     subclaim
+        //         .point
+        //         .iter()
+        //         .map(|c| c.elements)
+        //         .collect_vec()
+        //         .as_ref(),
+        //
+        // We compute the evaluation directly from the individual final evaluations of each polynomial
+        // involved in the sumcheck the prover's giving,e.g. y(res) = SUM f_i(res)
+        ensure!(
+            proof.individual_to_virtual_claim(&challenge) == subclaim.expected_evaluation,
+            "sumcheck claim failed",
+        );
+
+
+        let sum_check_num_vars = padded_input_shape.iter().product::<usize>().ilog2() as usize;
+
+        println!("num vars for same poly verifier: {sum_check_num_vars}");
+
+        let ctx = same_poly::Context::new(sum_check_num_vars);
+
+        let mut same_poly_verifier = same_poly::Verifier::new(&ctx);
+
+        println!("input claims for verifier: {input_claims:?}");
+
+        input_claims.into_iter().try_for_each(|claim| 
+            same_poly_verifier.add_claim(claim)
+        )?;
+
+        let aggregated_claim = same_poly_verifier.verify(&proof.aggregation_proof, verifier.transcript)?;
+
+
+        Ok(vec![aggregated_claim])
     }
 }
 
@@ -581,10 +756,12 @@ impl<N: Number> CacheQKV<N> {
 mod tests {
     use goldilocks::GoldilocksExt2;
 
+    use crate::{layers::Layer, model::{test::prove_model, Model}, padding::ShapeData};
+
     use super::*;
 
     impl<N: Number> QKV<N> {
-        pub fn random(emb_size: usize, hidden_size: usize) -> Self {
+        pub(crate) fn random(emb_size: usize, hidden_size: usize) -> Self {
             let q = Tensor::<N>::random(&[emb_size, hidden_size]);
             let q_bias = Tensor::<N>::random(&[hidden_size]);
             let k = Tensor::<N>::random(&[emb_size, hidden_size]);
@@ -694,5 +871,154 @@ mod tests {
         assert_eq!(output[1].get_data(), out_k.get_data());
         out_v.concat(new_token_emb.matmul(&v).add_dim2(&v_bias));
         assert_eq!(output[2].get_data(), out_v.get_data());
+    }
+
+    #[test]
+    fn test_qkv_padding() {
+        let num_inputs = 57;
+        let embedding_size = 77;
+        let hidden_size = 35;
+        let unpadded_input_shape = vec![num_inputs, embedding_size];
+        let weight_shape = vec![embedding_size, hidden_size];
+        let bias_shape = vec![hidden_size];
+
+        let layer = QKV::<Element>::random(embedding_size, hidden_size);
+        let mut si = vec![ShapeData::new(unpadded_input_shape.clone())].as_slice().into();
+        let padded_layer = layer.clone().pad_node(&mut si).unwrap();
+
+        let padded_weight_shape = weight_shape.next_power_of_two();
+        let padded_bias_shape = bias_shape.next_power_of_two();
+
+        let unpadded_output_shapes = layer.output_shapes(&vec![unpadded_input_shape.clone()], PaddingMode::NoPadding);
+        assert_eq!(
+            unpadded_output_shapes,
+            si.unpadded_output_shapes(),
+        );
+        // check unpadded output shapes for padded layer
+        let unpadded_output_shapes = padded_layer.output_shapes(&vec![unpadded_input_shape.clone()], PaddingMode::NoPadding);
+        assert_eq!(
+            unpadded_output_shapes,
+            si.unpadded_output_shapes(),
+        );
+        // check padded output shapes
+        let padded_input_shape = unpadded_input_shape.next_power_of_two();
+        let padded_output_shapes = padded_layer.output_shapes(&vec![padded_input_shape], PaddingMode::Padding);
+        assert_eq!(
+            padded_output_shapes,
+            si.padded_output_shapes(),
+        );
+
+        assert_eq!(
+            padded_layer.q.get_shape(), padded_weight_shape
+        );
+        assert_eq!(
+            padded_layer.k.get_shape(), padded_weight_shape
+        );
+        assert_eq!(
+            padded_layer.v.get_shape(), padded_weight_shape
+        );
+        assert_eq!(
+            padded_layer.q_bias.get_shape(), padded_bias_shape
+        );
+        assert_eq!(
+            padded_layer.k_bias.get_shape(), padded_bias_shape
+        );
+        assert_eq!(
+            padded_layer.v_bias.get_shape(), padded_bias_shape
+        );
+        
+        // check data in padded layer is the same of original layer
+        [&layer.q, &layer.k, &layer.v].into_iter().zip([&padded_layer.q, &padded_layer.k, &padded_layer.v])
+            .for_each(|(weight, padded_weight)| {
+                let weight_shape = weight.get_shape();
+                for i in 0..weight_shape[0] {
+                    for j in 0..weight_shape[1] {
+                        assert_eq!(
+                            weight.get_2d(i, j),
+                            padded_weight.get_2d(i, j)
+                        )
+                    }
+                }
+            });
+    }
+
+    #[test]
+    fn test_qkv_already_padded() {
+        // use power of 2 dimensions
+        let num_inputs = 64;
+        let embedding_size = 128;
+        let hidden_size = 32;
+        let unpadded_input_shape = vec![num_inputs, embedding_size];
+        let weight_shape = vec![embedding_size, hidden_size];
+        let bias_shape = vec![hidden_size];
+        
+        let layer = QKV::<Element>::random(embedding_size, hidden_size);
+        let mut si = vec![ShapeData::new(unpadded_input_shape.clone())].as_slice().into();
+        let padded_layer = layer.clone().pad_node(&mut si).unwrap();
+
+        let unpadded_output_shapes = layer.output_shapes(&vec![unpadded_input_shape.clone()], PaddingMode::NoPadding);
+        assert_eq!(
+            unpadded_output_shapes,
+            si.unpadded_output_shapes(),
+        );
+        // check unpadded output shapes for padded layer
+        let unpadded_output_shapes = padded_layer.output_shapes(&vec![unpadded_input_shape.clone()], PaddingMode::NoPadding);
+        assert_eq!(
+            unpadded_output_shapes,
+            si.unpadded_output_shapes(),
+        );
+        // check padded output shapes
+        let padded_output_shapes = padded_layer.output_shapes(&vec![unpadded_input_shape], PaddingMode::Padding);
+        assert_eq!(
+            padded_output_shapes,
+            si.padded_output_shapes(),
+        );
+
+        assert_eq!(
+            padded_layer.q.get_shape(), weight_shape
+        );
+        assert_eq!(
+            padded_layer.k.get_shape(), weight_shape
+        );
+        assert_eq!(
+            padded_layer.v.get_shape(), weight_shape
+        );
+        assert_eq!(
+            padded_layer.q_bias.get_shape(), bias_shape
+        );
+        assert_eq!(
+            padded_layer.k_bias.get_shape(), bias_shape
+        );
+        assert_eq!(
+            padded_layer.v_bias.get_shape(), bias_shape
+        );
+        
+        // check data in padded layer is the same of original layer
+        [&layer.q, &layer.k, &layer.v].into_iter().zip([&padded_layer.q, &padded_layer.k, &padded_layer.v])
+            .for_each(|(weight, padded_weight)| {
+                assert_eq!(weight.get_data(), padded_weight.get_data())
+            });
+    }
+
+    #[test]
+    fn test_proven_qkv_layer() {
+        let num_inputs = 49;
+        let embedding_size = 78;
+        let hidden_size = 120;
+
+        let input_shape = vec![num_inputs, embedding_size];
+        let mut model = Model::<f32>::new_from_input_shapes(
+            vec![input_shape], 
+            PaddingMode::NoPadding
+        );
+
+        let _qkv_node_id = model.add_consecutive_layer(Layer::QKV(
+                QKV::random(embedding_size, hidden_size)
+            ), None
+        ).unwrap();
+
+        model.route_output(None).unwrap();
+        model.describe();
+        prove_model(model).unwrap();
     }
 }

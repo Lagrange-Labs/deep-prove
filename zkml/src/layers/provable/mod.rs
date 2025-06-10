@@ -423,7 +423,7 @@ where
             LayerCtx::Dense(dense_ctx) => dense_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::MatMul(mat_ctx) => mat_ctx.output_shapes(input_shapes, padding_mode),
-            LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
+            LayerCtx::QKV(qkv_ctx) => qkv_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Activation(activation_ctx) => {
                 activation_ctx.output_shapes(input_shapes, padding_mode)
             }
@@ -441,7 +441,7 @@ where
             LayerCtx::Dense(dense_ctx) => dense_ctx.num_outputs(num_inputs),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.num_outputs(num_inputs),
             LayerCtx::MatMul(mat_ctx) => mat_ctx.num_outputs(num_inputs),
-            LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
+            LayerCtx::QKV(qkv_ctx) => qkv_ctx.num_outputs(num_inputs),
             LayerCtx::Activation(activation_ctx) => activation_ctx.num_outputs(num_inputs),
             LayerCtx::Requant(requant_ctx) => requant_ctx.num_outputs(num_inputs),
             LayerCtx::Pooling(pooling_ctx) => pooling_ctx.num_outputs(num_inputs),
@@ -455,7 +455,7 @@ where
             LayerCtx::Dense(dense_ctx) => dense_ctx.describe(),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.describe(),
             LayerCtx::MatMul(mat_ctx) => mat_ctx.describe(),
-            LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
+            LayerCtx::QKV(qkv_ctx) => qkv_ctx.describe(),
             LayerCtx::Activation(activation_ctx) => activation_ctx.describe(),
             LayerCtx::Requant(requant_ctx) => requant_ctx.describe(),
             LayerCtx::Pooling(pooling_ctx) => pooling_ctx.describe(),
@@ -469,7 +469,7 @@ where
             LayerCtx::Dense(dense_ctx) => dense_ctx.is_provable(),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.is_provable(),
             LayerCtx::MatMul(mat_ctx) => mat_ctx.is_provable(),
-            LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
+            LayerCtx::QKV(qkv_ctx) => qkv_ctx.is_provable(),
             LayerCtx::Activation(activation_ctx) => activation_ctx.is_provable(),
             LayerCtx::Requant(requant_ctx) => requant_ctx.is_provable(),
             LayerCtx::Pooling(pooling_ctx) => pooling_ctx.is_provable(),
@@ -515,8 +515,8 @@ where
             (LayerCtx::MatMul(matmul_ctx), LayerProof::MatMul(proof)) => {
                 matmul_ctx.verify(proof, last_claims, verifier, shape_step)
             }
-            (LayerCtx::QKV, LayerProof::QKV) => {
-                unimplemented!("QKV layer not implemented")
+            (LayerCtx::QKV(qkv_ctx), LayerProof::QKV(proof)) => {
+                qkv_ctx.verify(proof, last_claims, verifier, shape_step)
             }
             (LayerCtx::Activation(activation_ctx), LayerProof::Activation(proof)) => {
                 activation_ctx.verify(proof, last_claims, verifier, shape_step)

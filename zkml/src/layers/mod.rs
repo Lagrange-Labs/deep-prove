@@ -30,21 +30,14 @@ use requant::RequantCtx;
 use transcript::Transcript;
 
 use crate::{
-    Context, Element, ScalingStrategy,
-    iop::context::{ContextAux, ShapeStep, TableCtx},
-    layers::{
+    iop::context::{ContextAux, ShapeStep, TableCtx}, layers::{
         activation::{Activation, ActivationProof},
         convolution::Convolution,
         dense::Dense,
         pooling::Pooling,
         requant::{Requant, RequantProof},
-        transformer::qkv::QKV,
-    },
-    lookup::context::LookupWitnessGen,
-    model::StepData,
-    padding::{PaddingMode, ShapeInfo},
-    quantization::ScalingFactor,
-    tensor::{Number, Tensor},
+        transformer::qkv::{QKVCtx, QKVProof, QKV},
+    }, lookup::context::LookupWitnessGen, model::StepData, padding::{PaddingMode, ShapeInfo}, quantization::ScalingFactor, tensor::{Number, Tensor}, Context, Element, ScalingStrategy
 };
 use activation::ActivationCtx;
 use convolution::{ConvCtx, ConvProof, SchoolBookConv, SchoolBookConvCtx};
@@ -90,7 +83,7 @@ where
     Requant(RequantCtx),
     Pooling(PoolingCtx),
     Table(TableCtx<E>),
-    QKV,
+    QKV(QKVCtx<E>),
     Flatten,
 }
 
@@ -107,7 +100,7 @@ where
     Activation(ActivationProof<E, PCS>),
     Requant(RequantProof<E, PCS>),
     Pooling(PoolingProof<E, PCS>),
-    QKV,
+    QKV(QKVProof<E>),
     Dummy, // To be used for non-provable layers
 }
 
@@ -120,7 +113,7 @@ where
         match self {
             Self::Dense(_) => "Dense".to_string(),
             Self::MatMul(_) => "Matrix Multiplication".to_string(),
-            Self::QKV => "QKV".to_string(),
+            Self::QKV(_) => "QKV".to_string(),
             Self::SchoolBookConvolution(_) => "Traditional Convolution".to_string(),
             Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
@@ -327,7 +320,7 @@ where
     fn step_info(&self, id: NodeId, aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         match self {
             Layer::Dense(dense) => dense.step_info(id, aux),
-            Layer::QKV(_qkv) => unimplemented!("QKV proving layer not implemented"),
+            Layer::QKV(qkv) => qkv.step_info(id, aux),
             Layer::MatMul(mat) => mat.step_info(id, aux),
             Layer::Convolution(conv) => conv.step_info(id, aux),
             Layer::SchoolBookConvolution(conv) => conv.step_info(id, aux),
@@ -347,7 +340,7 @@ impl PadOp for Layer<Element> {
         Ok(match self {
             Layer::Dense(dense) => Layer::Dense(dense.pad_node(si)?),
             Layer::Convolution(convolution) => Layer::Convolution(convolution.pad_node(si)?),
-            Layer::QKV(_qkv) => unimplemented!("QKV layer not implemented"),
+            Layer::QKV(qkv) => Layer::QKV(qkv.pad_node(si)?),
             Layer::MatMul(mat) => Layer::MatMul(mat.pad_node(si)?),
             Layer::SchoolBookConvolution(school_book_conv) => {
                 Layer::SchoolBookConvolution(school_book_conv.pad_node(si)?)
@@ -386,9 +379,8 @@ where
             (Layer::MatMul(m), LayerCtx::MatMul(info)) => {
                 m.prove(node_id, info, last_claims, step_data, prover)
             }
-            (Layer::QKV(_qkv), LayerCtx::QKV) => {
-                unimplemented!("QKV layer not implemented")
-                // qkv.prove(node_id, info, last_claims, step_data, prover)
+            (Layer::QKV(qkv), LayerCtx::QKV(info)) => {
+                qkv.prove(node_id, info, last_claims, step_data, prover)
             }
             (Layer::SchoolBookConvolution(_), LayerCtx::SchoolBookConvolution(_)) => {
                 unreachable!("prove cannot be called for school book convolution")
@@ -427,7 +419,7 @@ where
                 convolution.gen_lookup_witness(id, gen, ctx, step_data)
             }
             Layer::MatMul(m) => m.gen_lookup_witness(id, gen, ctx, step_data),
-            Layer::QKV(_qkv) => unimplemented!("QKV layer not implemented"),
+            Layer::QKV(qkv) => qkv.gen_lookup_witness(id, gen, ctx, step_data),
             Layer::SchoolBookConvolution(school_book_conv) => {
                 // check that the layer is not provable, so we don't need to call the method
                 assert!(!school_book_conv.is_provable());
@@ -512,7 +504,7 @@ where
         match self {
             Self::Dense(_) => "Dense".to_string(),
             Self::MatMul(_) => "Matmul".to_string(),
-            Self::QKV => "QKV".to_string(),
+            Self::QKV(_) => "QKV".to_string(),
             Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
             Self::Requant(_) => "Requant".to_string(),
@@ -525,7 +517,7 @@ where
         match self {
             LayerProof::Dense(..) => None,
             LayerProof::MatMul(..) => None,
-            LayerProof::QKV => None,
+            LayerProof::QKV(..) => None,
             LayerProof::Convolution(..) => None,
             LayerProof::Dummy => None,
             LayerProof::Activation(ActivationProof { lookup, .. })
