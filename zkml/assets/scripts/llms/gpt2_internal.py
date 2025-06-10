@@ -353,9 +353,9 @@ for name, tensor in state_dict.items():
                     W_q_orig, W_k_orig, W_v_orig = processed_tensor.split(H, dim=1)
 
                     # Transpose each component to [out, in] before flattening
-                    current_data_list = W_q_orig.T.flatten().tolist() + \
-                                        W_k_orig.T.flatten().tolist() + \
-                                        W_v_orig.T.flatten().tolist()
+                    current_data_list = W_q_orig.flatten().tolist() + \
+                                        W_k_orig.flatten().tolist() + \
+                                        W_v_orig.flatten().tolist()
                     # Shape for JSON is 1D concatenated data
                     current_shape = [len(current_data_list)]
                     print(f"ℹ️ Exporting {name} (as attn_qkv.weight): Original Conv1D shape {list(processed_tensor.shape)}. Exporting concatenated W_q.T, W_k.T, W_v.T data as 1D array, shape {current_shape}.")
