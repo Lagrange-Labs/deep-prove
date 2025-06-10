@@ -36,25 +36,25 @@ Proving the three matrix multiplications to compute `Q`, `K` and `V` can be done
 
 The prover starts from the following 3 claims about the MLEs of the output matrices of the layer:
 
-- Claim $y_Q$ about the MLE of matrix `Q`, computed at the random point $r_Q = (r'_Q \in \mathbb{F}^{\log(s)}, r''_Q \in \mathbb{F}^{\log(h)})$
-- Claim $y_K$ about the MLE of matrix `K`, computed at the random point $r_K = (r'_K \in \mathbb{F}^{\log(s)}, r''_K \in \mathbb{F}^{\log(h)})$
-- Claim $y_V$ about the MLE of matrix `V`, computed at the random point $r_V = (r'_V \in \mathbb{F}^{\log(s)}, r''_V \in \mathbb{F}^{\log(h)})$. 
+- Claim $y_Q$ about the MLE of matrix `Q`, computed at the random point $r_Q \in \mathbb{F}^{\log(s)+\log(h)}$; consider $r_Q$ to be split in 2 sub-points $r_Q^r \in \mathbb{F}^{\log(s)}$, $r_Q^c \in \mathbb{F}^{\log(h)}$, which are built from the coordinates of $r_Q$ referring to the rows and columns variables, respectively, of the MLE of `Q`
+- Claim $y_K$ about the MLE of matrix `K`, computed at the random point $r_K \in \mathbb{F}^{\log(s)+\log(h)}$; consider $r_K$ to be split in 2 sub-points $r_K^r \in \mathbb{F}^{\log(s)}$, $r_K^c \in \mathbb{F}^{\log(h)}$, which are built from the coordinates of $r_K$ referring to the rows and columns variables, respectively, of the MLE of `K`
+- Claim $y_V$ about the MLE of matrix `V`, computed at the random point $r_V \in \mathbb{F}^{\log(s)+\log(h)}$; consider $r_V$ to be split in 2 sub-points $r_V^r \in \mathbb{F}^{\log(s)}$, $r_V^c \in \mathbb{F}^{\log(h)}$, which are built from the coordinates of $r_V$ referring to the rows and columns variables, respectively, of the MLE of `V`
 
 Furthermore, the prover has computed the MLEs of the weight matrices $W_q$, $W_k$ and $W_v$ and the MLEs of the bias vectors $B_q$, $B_k$ and $B_v$, which were commited to in a setup phase. 
 
-Given the 3 claims $y_Q$, $y_K,$ and $y_V$, the prover computes also the claims $y_{B_q} = B_q(r''_Q)$, $y_{B_k} = B_k(r''_K)$ and $y_{B_v} = B_v(r''_V)$, and claims $\widetilde{y_Q} = y_Q - B_q(r''_Q)$, $\widetilde{y_K} = y_K - B_k(r''_K)$, $\widetilde{y_V} = y_V - B_V(r''_V)$.
+Given the 3 claims $y_Q$, $y_K,$ and $y_V$, the prover computes also the claims $y_{B_q} = B_q(r_Q^c)$, $y_{B_k} = B_k(r_K^c)$ and $y_{B_v} = B_v(r_V^c)$, and claims $\widetilde{y_Q} = y_Q - B_q(r_Q^c)$, $\widetilde{y_K} = y_K - B_k(r_K^c)$, $\widetilde{y_V} = y_V - B_V(r_V^c)$.
 
 Given the 3 claims $y'_Q$, $y'_K$, $y'_V$, the verifier samples a random challenge $\lambda$ and then the prover employs a sum-check protocol to prove the relationship:
 \begin{equation}
 \scriptsize
-\widetilde{y_Q} + \lambda \widetilde{y_K} + \lambda^2 \widetilde{y_V} = \sum_{x \in \{0,1\}^{\log(e)}} X(r'_Q, x)*W_Q(x, r''_Q) + \lambda X(r'_K, x)*W_K(x, r''_K) + \lambda^2 X(r'_V, x)*W_V(x,r''_V)
+\widetilde{y_Q} + \lambda \widetilde{y_K} + \lambda^2 \widetilde{y_V} = \sum_{x \in \{0,1\}^{\log(e)}} X(r_Q^r, x)*W_Q(x, r_Q^c) + \lambda X(r_K^r, x)*W_K(x, r_K^c) + \lambda^2 X(r_V^r, x)*W_V(x,r_V^c)
 \tag{1}
 \end{equation}
 
 Where $X$ is the MLE of the input matrix `X`. At the end of the sum-check protocol, for a random $r \in \mathbb{F}^{\log(e)}$ the following claims are produced:
 
-- 3 claims $X(r'_Q, r)$, $X(r'_K, r)$, $X(r'_V, r)$, which can be accumulated in a single claim for the MLE polynomial $X$, using the [same poly technique](https://github.com/Lagrange-Labs/deep-prove/blob/c2752df53be1b4b6832e452b6cbca17e3543556b/docs/src/commitments.md#accumulation-for-same-polynomial). 
-- 3 Claims $y_{W_Q} = W_Q(r, r''_Q)$, $y_{W_K} = W_K(r, r''_K)$, $y_{W_V} = W_V(r, r''_V)$, which will be bound to the corresponding weight polynomial through an opening proof of the polynomial commitment scheme, as described in the next section.
+- 3 claims $X(r_Q^r, r)$, $X(r_K^r, r)$, $X(r_V^r, r)$, which can be accumulated in a single claim for the MLE polynomial $X$, using the [same poly technique](https://github.com/Lagrange-Labs/deep-prove/blob/c2752df53be1b4b6832e452b6cbca17e3543556b/docs/src/commitments.md#accumulation-for-same-polynomial). 
+- 3 Claims $y_{W_Q} = W_Q(r, r_Q^c)$, $y_{W_K} = W_K(r, r_K^c)$, $y_{W_V} = W_V(r, r_V^c)$, which will be bound to the corresponding weight polynomial through an opening proof of the polynomial commitment scheme, as described in the next section.
 
 ### Polynomial Commitment Operations
 The proving protocol requires the prover to commit to the weight matrices $W_q$, $W_k$ and $W_v$, and to the MLEs of the bias vectors $B_q$, $B_k$ and $B_v$. However, since these polynomials depend only on the parameters of the model, which are input-independent, these commitments can be pre-computed by the prover in a setup phase.
