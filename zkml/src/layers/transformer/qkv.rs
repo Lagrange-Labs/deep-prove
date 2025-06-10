@@ -171,14 +171,11 @@ impl<N: Number> QKV<N> {
                 transcript.append_field_element_exts(&claim.point);
                 transcript.append_field_element_ext(evals);
             });
-        // We need 3 challenges: the first one can be the identity element, while the other 2 are randomly generated    
-        [Challenge {
-            elements: E::ONE
-        }].into_iter().chain(
-            (0..2).map(|_| 
-                transcript.read_challenge()
-            )
-        ).collect()   
+        // We need 3 challenges: the first one can be the identity element, while the other 2 are randomly generated
+        [Challenge { elements: E::ONE }]
+            .into_iter()
+            .chain((0..2).map(|_| transcript.read_challenge()))
+            .collect()
     }
 }
 
