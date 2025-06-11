@@ -14,10 +14,10 @@ use crate::{
     },
     model::{Model, ToIterator},
     parser::{check_filter, safe_conv2d_shape, safe_maxpool2d_shape},
+    tensor::Shape,
     try_unzip,
 };
-type GarbagePad = Option<(Vec<usize>, Vec<usize>)>;
-type Shape = Vec<usize>;
+type GarbagePad = Option<(Shape, Shape)>;
 
 #[derive(Clone, Debug, Copy)]
 pub enum PaddingMode {
@@ -44,9 +44,9 @@ pub fn pad_model(mut model: Model<Element>) -> Result<Model<Element>> {
             .into_iter()
             .zip(model.padded_input_shapes())
             .map(|(unpadded_shape, padded_shape)| ShapeData {
-                input_shape_padded: padded_shape,
+                input_shape_padded: padded_shape.into(),
                 ignore_garbage_pad: None,
-                input_shape_og: unpadded_shape,
+                input_shape_og: unpadded_shape.into(),
             })
             .collect(),
     };
@@ -102,11 +102,11 @@ pub(crate) fn pooling(p: Pooling, si: &mut ShapeInfo) -> Result<Pooling> {
     for sd in si.shapes.iter_mut() {
         // Make sure that input shape is already padded and is well formed
         ensure!(
-            sd.input_shape_padded.iter().all(|d| d.is_power_of_two()),
+            sd.input_shape_padded.is_power_of_two(),
             "Input shape for max pool is not padded"
         );
-        sd.input_shape_og = safe_maxpool2d_shape(&sd.input_shape_og)?;
-        sd.input_shape_padded = safe_maxpool2d_shape(&sd.input_shape_padded)?;
+        sd.input_shape_og = safe_maxpool2d_shape(sd.input_shape_og.as_ref())?.into();
+        sd.input_shape_padded = safe_maxpool2d_shape(sd.input_shape_padded.as_ref())?.into();
     }
     Ok(p)
 }
@@ -121,7 +121,8 @@ pub(crate) fn pad_conv(
         "More than 1 input shape found when padding convolution layer"
     );
     let sd = si.shapes.first_mut().unwrap();
-    sd.input_shape_og = safe_conv2d_shape(&sd.input_shape_og, &c.filter.get_shape())?;
+    sd.input_shape_og =
+        safe_conv2d_shape(sd.input_shape_og.as_ref(), &c.filter.get_shape())?.into();
     let weight_shape = c.filter.get_shape();
     // Perform basic sanity checks on the tensor dimensions
     check_filter(&weight_shape).context("filter shape test failed:")?;
@@ -131,30 +132,28 @@ pub(crate) fn pad_conv(
     );
     // Make sure that input shape is already padded and is well formed
     ensure!(
-        sd.input_shape_padded.iter().all(|d| d.is_power_of_two()),
+        sd.input_shape_padded.is_power_of_two(),
         "Input shape for convolution is not padded",
     );
     ensure!(
-        sd.input_shape_padded.len() == 3,
+        sd.input_shape_padded.rank() == 3,
         "Input shape for convolution is not 3D"
     );
     let new_conv_good = c.clone();
     // Since we are doing an FFT based conv, we need to pad the last two dimensions of the filter to match the input.
     let weight_shape = c.filter.pad_next_power_of_two().get_shape();
     let (filter_height, filter_width) = (weight_shape[2], weight_shape[3]);
-    let (input_height, input_width) = (sd.input_shape_padded[1], sd.input_shape_padded[2]);
+    let (input_height, input_width) = (sd.input_shape_padded.dim(1), sd.input_shape_padded.dim(2));
 
     ensure!(
         filter_height <= input_height && filter_width <= input_width,
         "Filter dimensions in convolution have to be smaller than input dimensions",
     );
 
-    let new_conv = new_conv_good.into_padded_and_ffted(&sd.input_shape_og);
-    let output_shape = safe_conv2d_shape(&sd.input_shape_padded, &weight_shape)?;
-    sd.input_shape_padded = output_shape
-        .iter()
-        .map(|i| i.next_power_of_two())
-        .collect::<Vec<_>>();
+    let new_conv = new_conv_good.into_padded_and_ffted(sd.input_shape_og.as_ref());
+    let output_shape: Shape =
+        safe_conv2d_shape(sd.input_shape_padded.as_ref(), &weight_shape)?.into();
+    sd.input_shape_padded = output_shape.next_power_of_two();
     Ok(new_conv)
 }
 
@@ -165,8 +164,9 @@ pub(crate) fn pad_dense(mut d: Dense<Element>, si: &mut ShapeInfo) -> Result<Den
         "More than 1 input shape found when padding dense layer"
     );
     let sd = si.shapes.first_mut().unwrap();
-    let nrows = d.matrix.get_shape()[0];
-    sd.input_shape_og = vec![nrows];
+    let matrix_shape: Shape = d.matrix.get_shape().into();
+    let nrows = matrix_shape.nrows();
+    sd.input_shape_og = vec![nrows].into();
     ensure!(
         d.bias.get_data().len() == nrows,
         "Bias length {} does not match matrix width {}",
@@ -174,24 +174,24 @@ pub(crate) fn pad_dense(mut d: Dense<Element>, si: &mut ShapeInfo) -> Result<Den
         nrows,
     );
     ensure!(
-        sd.input_shape_padded.iter().all(|d| d.is_power_of_two()),
+        sd.input_shape_padded.is_power_of_two(),
         "Input shape for dense is not padded"
     );
-    if sd.input_shape_padded.len() != 1 {
-        sd.input_shape_padded = vec![sd.input_shape_padded.iter().product()];
-        sd.input_shape_og = vec![sd.input_shape_og.iter().product()];
+    if sd.input_shape_padded.rank() != 1 {
+        sd.input_shape_padded = vec![sd.input_shape_padded.numel()].into();
+        sd.input_shape_og = vec![sd.input_shape_og.numel()].into();
     }
     let mut new_cols = d.matrix.ncols_2d();
-    if d.matrix.ncols_2d() != sd.input_shape_padded[0] {
-        if d.matrix.ncols_2d() < sd.input_shape_padded[0] {
-            new_cols = sd.input_shape_padded[0];
+    if d.matrix.ncols_2d() != sd.input_shape_padded.dim(0) {
+        if d.matrix.ncols_2d() < sd.input_shape_padded.dim(0) {
+            new_cols = sd.input_shape_padded.dim(0);
         } else {
             // If we have too many columns, we can't shrink without losing information
             bail!(
                 "Dense layer matrix has more columns ({}) than previous layer output size ({}).
                             Cannot shrink without losing information.",
                 d.matrix.ncols_2d(),
-                sd.input_shape_padded[0]
+                sd.input_shape_padded.dim(0)
             );
         }
     }
@@ -205,8 +205,8 @@ pub(crate) fn pad_dense(mut d: Dense<Element>, si: &mut ShapeInfo) -> Result<Den
         let previous_input_shape_og = previous_shape.0.clone();
         let previous_input_shape_padded = previous_shape.1.clone();
         d.matrix = d.matrix.pad_matrix_to_ignore_garbage(
-            &previous_input_shape_og,
-            &previous_input_shape_padded,
+            previous_input_shape_og.as_ref(),
+            previous_input_shape_padded.as_ref(),
             &[nrows, ncols],
         );
         sd.ignore_garbage_pad = None;
@@ -214,7 +214,7 @@ pub(crate) fn pad_dense(mut d: Dense<Element>, si: &mut ShapeInfo) -> Result<Den
         d.matrix.reshape_to_fit_inplace_2d(vec![nrows, ncols]);
     }
     d.bias = d.bias.pad_1d(nrows);
-    sd.input_shape_padded = vec![nrows];
+    sd.input_shape_padded = vec![nrows].into();
     Ok(d)
 }
 
@@ -226,19 +226,22 @@ pub(crate) fn pad_matmul(mut mat: MatMul<Element>, si: &mut ShapeInfo) -> Result
         si.shapes.len(),
     );
 
-    let (unpadded_input_shapes, mut padded_input_shapes): (Vec<_>, Vec<_>) =
-        try_unzip(si.shapes.iter().map(|s| {
-            ensure!(
-                s.input_shape_og.len() == 2,
-                "Unpadded input shape for MatMul is not 2D"
-            );
-            ensure!(
-                s.input_shape_padded.len() == 2,
-                "Padded input shape for MatMul is not 2D"
-            );
-            Ok((s.input_shape_og.clone(), s.input_shape_padded.clone()))
-        }))?;
-
+    ensure!(
+        si.shapes
+            .iter()
+            .all(|s| s.input_shape_og.rank() == 2 && s.input_shape_padded.rank() == 2),
+        "Unpadded input shape for MatMul is not 2D"
+    );
+    let (unpadded_input_shapes, mut padded_input_shapes): (Vec<Vec<usize>>, Vec<Vec<usize>>) = si
+        .shapes
+        .iter()
+        .map(|s| {
+            (
+                s.input_shape_og.clone().into_vec(),
+                s.input_shape_padded.clone().into_vec(),
+            )
+        })
+        .collect();
     let mut unpadded_output_shapes =
         mat.output_shapes(&unpadded_input_shapes, PaddingMode::NoPadding);
     ensure!(
@@ -286,8 +289,8 @@ pub(crate) fn pad_matmul(mut mat: MatMul<Element>, si: &mut ShapeInfo) -> Result
         "MatMul layer has garbage padding to be removed",
     );
     si.shapes = vec![ShapeData {
-        input_shape_og: unpadded_output_shape,
-        input_shape_padded: vec![left_shape[0], right_shape[1]],
+        input_shape_og: unpadded_output_shape.into(),
+        input_shape_padded: vec![left_shape[0], right_shape[1]].into(),
         ignore_garbage_pad: None,
     }];
     Ok(mat)

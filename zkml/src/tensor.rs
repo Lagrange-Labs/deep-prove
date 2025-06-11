@@ -1768,7 +1768,7 @@ impl<T> Tensor<T> {
 
 /// Structure that holds a shape of a tensor.
 /// NOTE: it is currently being phased in incrementally the codebase currently. There will be places where we still use Vec<usize>
-#[derive(Debug, Clone, derive_more::From)]
+#[derive(Debug, Clone, derive_more::From, derive_more::Into, derive_more::AsRef)]
 pub struct Shape(Vec<usize>);
 
 impl Shape {
@@ -1827,7 +1827,12 @@ impl Shape {
         self.0.len() == 2
     }
     pub fn ncols(&self) -> usize {
+        assert!(self.is_matrix(), "Tensor is not a matrix");
         self.0[1]
+    }
+    pub fn nrows(&self) -> usize {
+        assert!(self.is_matrix(), "Tensor is not a matrix");
+        self.0[0]
     }
     pub fn matmul_output_bitsize(&self) -> usize {
         assert!(self.is_matrix(), "Tensor is not a matrix");
@@ -1835,6 +1840,9 @@ impl Shape {
         let ncols = self.ncols();
         // - 1 because numbers are signed so only half of the range is used when doing multiplication
         2 * (*quantization::BIT_LEN - 1) + ceil_log2(ncols) + 1
+    }
+    pub fn is_power_of_two(&self) -> bool {
+        self.0.iter().all(|x| x.is_power_of_two())
     }
 }
 

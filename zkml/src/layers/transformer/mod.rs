@@ -29,9 +29,7 @@ mod test {
         parser::{
             file_cache,
             gguf::{FileTensorLoader, tests::GPT2_Q8_0_URL},
-            json::test::{
-                DISTIL_GPT2_DEBUG_NAME, DISTIL_GPT2_NAME, TINY_GPT2_DEBUG_NAME, TINY_GPT2_NAME,
-            },
+            json::test::{TINY_GPT2_DEBUG_NAME, TINY_GPT2_NAME},
             llm::{Attention, FeedForward, LLMConfig, LLMModel},
         },
         tensor::{Number, Shape},

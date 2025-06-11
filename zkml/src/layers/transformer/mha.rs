@@ -44,19 +44,20 @@ impl OpInfo for MhaQK {
     ) -> Vec<Vec<usize>> {
         // // qk is now of shape [num_heads,seq_len]
         // // v is of shape [num_heads, seq_len, head_dim].
+        let seq_len = input_shapes[1][0];
         match padding_mode {
             PaddingMode::NoPadding => {
                 vec![
-                    vec![self.num_heads, input_shapes[0][1]],
-                    vec![self.num_heads, input_shapes[0][1], self.head_dim],
+                    vec![self.num_heads, seq_len],
+                    vec![self.num_heads, seq_len, self.head_dim],
                 ]
             }
             PaddingMode::Padding => {
                 vec![
-                    vec![self.num_heads, input_shapes[0][1].next_power_of_two()],
+                    vec![self.num_heads, seq_len.next_power_of_two()],
                     vec![
                         self.num_heads,
-                        input_shapes[0][1].next_power_of_two(),
+                        seq_len.next_power_of_two(),
                         self.head_dim.next_power_of_two(),
                     ],
                 ]
@@ -220,5 +221,10 @@ mod test {
         assert_eq!(qk.get_shape(), vec![num_heads, seq_len]);
         // same, but on 3d
         assert_eq!(v.get_shape(), vec![num_heads, seq_len, head_dim]);
+        let output_shapes = mha_qk.output_shapes(
+            &[q.get_shape(), k.get_shape(), v.get_shape()],
+            PaddingMode::NoPadding,
+        );
+        assert_eq!(output_shapes, vec![qk.get_shape(), v.get_shape()]);
     }
 }

@@ -308,7 +308,9 @@ pub mod test {
 
     pub const TINY_GPT2_NAME: &str = "tiny_gpt2_weights.json";
     pub const TINY_GPT2_DEBUG_NAME: &str = "tiny_gpt2_debug_output.json";
+    #[allow(dead_code)]
     pub const DISTIL_GPT2_NAME: &str = "distilgpt2_weights.json";
+    #[allow(dead_code)]
     pub const DISTIL_GPT2_DEBUG_NAME: &str = "distilgpt2_debug_output.json";
 
     pub fn get_json_file(name: &str) -> anyhow::Result<String> {
