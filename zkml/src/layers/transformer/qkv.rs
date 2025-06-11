@@ -63,7 +63,7 @@ pub struct QKVProof<E: ExtensionField> {
     /// Proof for the aggregation of the claims about the input matrix to
     /// a single claim
     aggregation_proof: same_poly::Proof<E>,
-    /// The evaluation of the MLEs of the outputs vectors without the bias.
+    /// Th  evaluation of the weight MLEs over the input vector, without the bias.
     /// The verifier needs these evaluations to check the output of the sumcheck proof
     pre_bias_evals: Vec<E>,
     /// The individual evaluations of the individual polynomial for the last random part of the
@@ -77,8 +77,7 @@ pub struct QKVProof<E: ExtensionField> {
 }
 
 impl<E: ExtensionField> QKVProof<E> {
-    /// Returns the individual claims f_1(r) f_2(r)  f_3(r) ... at the end of a sumcheck multiplied
-    /// together
+    /// Returns the aggregated sumcheck claims `y = f_1(r) * f_2(r) * f_3(r) ...` from the individual claims.
     pub fn individual_to_virtual_claim(&self, batching_challenges: &[Challenge<E>]) -> E {
         self.individual_claims
             .into_iter()
