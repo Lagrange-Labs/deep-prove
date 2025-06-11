@@ -3,10 +3,7 @@ use ff_ext::ExtensionField;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Tensor,
-    layers::provable::{Evaluate, LayerOut, OpInfo},
-    padding::PaddingMode,
-    tensor::{Number, Shape},
+    layers::provable::{Evaluate, LayerOut, OpInfo}, padding::PaddingMode, tensor::{Number, Shape}, Tensor
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
