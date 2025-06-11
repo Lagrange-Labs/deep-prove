@@ -37,17 +37,6 @@ mod test {
 
     use super::{layernorm, mha, qkv, softmax};
 
-    // === FFN Block === //
-    // LayerNorm before FFN
-    // let ff_in = x_resid1.layer_norm(eps2); // [hidden_size]
-
-    // // FFN: up -> activation -> down
-    // let ff_up = ff_in.matmul(w_ff1); // [ff_dim]
-    // let act = gelu(ff_up);           // [ff_dim]
-    // let ff_down = act.matmul(w_ff2); // [hidden_size]
-
-    // // Residual connection
-    // let x_out = x_resid1 + ff_down; // [hidden_size]
     struct FlatFFN<N> {
         layernorm: layernorm::LayerNorm<N>,
         up: Dense<N>,
@@ -382,6 +371,26 @@ mod test {
     }
 
     use crate::parser::json;
+    #[test]
+    fn test_read_gpt2_pytorch_embeddings() -> anyhow::Result<()> {
+        let model_weights_path = json::test::get_json_file(TINY_GPT2_NAME)?;
+        let debug_output_path = json::test::get_json_file(TINY_GPT2_DEBUG_NAME)?;
+        let loader = json::FileTensorLoader::new_from_path(model_weights_path)?;
+        let config = LLMConfig::from_json(&loader)?;
+        let LLMModel::GPT2(llm_model) = config.model_json(&loader)?;
+        let gpt2_output = serde_json::from_reader::<_, GPT2Output>(
+            File::open(debug_output_path.clone())
+                .context(format!("failed to open file {}", debug_output_path.clone()))?,
+        )?;
+        let input = Tensor::new(
+            vec![1],
+            vec![gpt2_output.input_ids as f32],
+        );
+        let embedded = llm_model.embeddings.evaluate::<GoldilocksExt2>(&vec![&input], vec![])?;
+        let positionned = llm_model.positional.evaluate::<GoldilocksExt2>(&vec![embedded.outputs()[0]], vec![])?;
+        assert!(is_close(&positionned.outputs()[0].get_data(), &gpt2_output.inputs_embeds));
+        Ok(())
+    }
 
     #[test]
     fn test_read_gpt2_pytorch_output_first() -> anyhow::Result<()> {

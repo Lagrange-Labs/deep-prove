@@ -63,10 +63,8 @@ pub enum LLMModel {
 
 #[derive(Debug, Clone)]
 pub struct GPT2Model {
-    #[allow(dead_code)]
-    embeddings: Embeddings<f32>,
-    #[allow(dead_code)]
-    positional: Positional<f32>,
+    pub embeddings: Embeddings<f32>,
+    pub positional: Positional<f32>,
     pub blocks: Vec<Attention<f32>>,
     /// Final LayerNorm applied after all transformer blocks (ln_f in GPT-2)
     pub final_norm: LayerNorm<f32>,
@@ -217,4 +215,13 @@ impl Attention<f32> {
         ))?;
         self.feedforward.write_to_model(model, last_node_id)
     }
+}
+
+
+#[cfg(test)]
+mod test {
+    use crate::parser::json::test::{TINY_GPT2_DEBUG_NAME, TINY_GPT2_NAME};
+
+    use super::*;
+    
 }
