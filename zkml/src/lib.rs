@@ -5,6 +5,7 @@
 use ff_ext::ExtensionField;
 use gkr::structs::PointAndEval;
 use itertools::Itertools;
+use rayon::iter::ParallelIterator;
 use serde::{Deserialize, Serialize};
 use transcript::{BasicTranscript, Transcript};
 mod commit;
@@ -114,6 +115,18 @@ where
         c.extend([r?]);
         Ok(c)
     })
+}
+
+pub(crate) fn try_unzip_parallel<I, C, T, E>(iter: I) -> Result<C, E>
+where
+    I: ParallelIterator<Item = Result<T, E>>,
+    C: Extend<T> + Default + Send,
+    E: Send,
+    T: Send,
+{
+    // ToDo: remove need to collect into vector first
+    let v = iter.collect::<Vec<_>>();
+    try_unzip(v)
 }
 
 pub trait VectorTranscript<E: ExtensionField> {

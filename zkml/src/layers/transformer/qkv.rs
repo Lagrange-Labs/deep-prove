@@ -1,10 +1,12 @@
 use anyhow::{Result, ensure};
 use ff_ext::ExtensionField;
+use itertools::Itertools;
 use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::{
     mle::{IntoMLE, MultilinearExtension},
     virtual_poly::{VPAuxInfo, VirtualPolynomial},
 };
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
 use transcript::{Challenge, Transcript};
@@ -28,7 +30,7 @@ use crate::{
     padding::{PaddingMode, ShapeInfo, pad_qkv},
     quantization::model_scaling_factor_from_tensor_and_bias,
     tensor::Number,
-    try_unzip,
+    try_unzip, try_unzip_parallel,
 };
 
 /// A layer that evaluates the tensor X against the matrices Q, K and V.
@@ -51,8 +53,7 @@ pub struct QKV<N> {
 pub struct QKVCtx<E> {
     node_id: NodeId,
     sumcheck_poly_aux: VPAuxInfo<E>,
-    padded_matrix_shape: Vec<usize>, // same shape for Q, K and V
-    unpadded_shape: Vec<usize>,      // same shape for Q, K and V
+    unpadded_shape: Vec<usize>, // same shape for Q, K and V
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -66,8 +67,13 @@ pub struct QKVProof<E: ExtensionField> {
     /// The verifier needs these evaluations to check the output of the sumcheck proof
     pre_bias_evals: Vec<E>,
     /// The individual evaluations of the individual polynomial for the last random part of the
-    /// sumcheck. One for each polynomial involved in the "virtual poly"
-    individual_claims: Vec<E>,
+    /// sumcheck. One for each polynomial involved in the "virtual poly".
+    /// There is a pair of evaluations for each output matrix `Q`, `K` and `V`:
+    /// the first evaluation in the pair refers to the input matrix MLE, while the second evaluation
+    /// in the pair refers to the corresponding weight matrix `W_q`, `W_k`, `W_v`, respectively.
+    /// The first pair contains the evaluations for `Q`, the second pair contains the evaluations
+    /// for `K`, and the third pair contains the evaluations for `V`
+    individual_claims: [(E, E); 3],
 }
 
 impl<E: ExtensionField> QKVProof<E> {
@@ -75,10 +81,10 @@ impl<E: ExtensionField> QKVProof<E> {
     /// together
     pub fn individual_to_virtual_claim(&self, batching_challenges: &[Challenge<E>]) -> E {
         self.individual_claims
-            .chunks(2)
+            .into_iter()
             .zip(batching_challenges)
             .fold(E::ZERO, |acc, (evals, chal)| {
-                acc + evals[0] * evals[1] * chal.elements
+                acc + evals.0 * evals.1 * chal.elements
             })
     }
 }
@@ -171,7 +177,8 @@ impl<N: Number> QKV<N> {
                 transcript.append_field_element_exts(&claim.point);
                 transcript.append_field_element_ext(evals);
             });
-        // We need 3 challenges: the first one can be the identity element, while the other 2 are randomly generated
+        // We actually need 2 random challenges, but we also return the identity element as the
+        // "first challenge" to be able to batch easily with iterators
         [Challenge { elements: E::ONE }]
             .into_iter()
             .chain((0..2).map(|_| transcript.read_challenge()))
@@ -390,7 +397,6 @@ where
         let ctx = QKVCtx {
             node_id: id,
             sumcheck_poly_aux: vp_aux,
-            padded_matrix_shape: self.unpadded_shape.next_power_of_two(),
             unpadded_shape: self.unpadded_shape.clone(),
         };
 
@@ -468,10 +474,10 @@ where
         })?;
 
         // compute claims about the bias polynomials
-        let (bias_claims, evals_pre_bias): (Vec<_>, Vec<_>) = try_unzip(
+        let (bias_claims, evals_pre_bias): (Vec<_>, Vec<_>) = try_unzip_parallel(
             last_claims
-                .iter()
-                .zip([&self.q_bias, &self.k_bias, &self.v_bias])
+                .par_iter()
+                .zip([&self.q_bias, &self.k_bias, &self.v_bias].par_iter())
                 .map(|(&claim, bias_vector)| {
                     let (_, point_for_column) =
                         Self::split_claim_point(&claim.point, output_num_vars_2d)?;
@@ -518,19 +524,27 @@ where
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
 
         // get claims for all the MLEs involved in sum-check
-        let sumcheck_evals = state.get_mle_final_evaluations();
+        let sumcheck_evals = state
+            .get_mle_final_evaluations()
+            .chunks(2) // each chunk refers to a pair of (input, weight matrix) MLEs in the sumcheck
+            .map(|evals| (evals[0], evals[1]))
+            .collect_vec();
 
         // Build claims corresponding to each evaluation, splitting between claims related to the input matrix
         // and claims related to the weight matrices
-        let (input_claims, weight_claims): (Vec<_>, Vec<_>) = try_unzip(last_claims.iter().zip(
-            sumcheck_evals.chunks(2) // each chunk refers to a pair of (input, weight matrix) MLEs in the sumcheck
-        ).map(|(&claim, evals)| {
-            let (point_for_input, point_for_weight) = Self::build_points(&claim.point, &proof.point, output_num_vars_2d)?;
-            anyhow::Ok((
-                Claim::new(point_for_input, evals[0]),
-                Claim::new(point_for_weight, evals[1]),
-            ))
-        }))?;
+        let (input_claims, weight_claims): (Vec<_>, Vec<_>) = try_unzip(
+            last_claims
+                .iter()
+                .zip(&sumcheck_evals)
+                .map(|(&claim, evals)| {
+                    let (point_for_input, point_for_weight) =
+                        Self::build_points(&claim.point, &proof.point, output_num_vars_2d)?;
+                    anyhow::Ok((
+                        Claim::new(point_for_input, evals.0),
+                        Claim::new(point_for_weight, evals.1),
+                    ))
+                }),
+        )?;
 
         // debug: check input claims
         debug_assert!(input_claims.iter().all(|claim| {
@@ -569,7 +583,7 @@ where
         let proof = QKVProof {
             sumcheck: proof,
             aggregation_proof,
-            individual_claims: sumcheck_evals,
+            individual_claims: sumcheck_evals.try_into().unwrap(),
             pre_bias_evals: evals_pre_bias,
         };
 
@@ -587,7 +601,7 @@ impl<E> OpInfo for QKVCtx<E> {
     ) -> Vec<Vec<usize>> {
         let weight_shape = match padding_mode {
             PaddingMode::NoPadding => &self.unpadded_shape,
-            PaddingMode::Padding => &self.padded_matrix_shape,
+            PaddingMode::Padding => &self.unpadded_shape.next_power_of_two(),
         };
 
         assert_eq!(
@@ -610,9 +624,10 @@ impl<E> OpInfo for QKVCtx<E> {
     }
 
     fn describe(&self) -> String {
+        let padded_matrix_shape = self.unpadded_shape.next_power_of_two();
         format!(
             "QKV [{},{}]",
-            self.padded_matrix_shape[0], self.padded_matrix_shape[1]
+            padded_matrix_shape[0], padded_matrix_shape[1]
         )
     }
 
@@ -696,7 +711,7 @@ where
         // Build claims corresponding to each evaluation of the MLEs involved in the batched sumcheck,
         // splitting between claims related to the input matrix and claims related to the weight matrices
         let (input_claims, weight_claims): (Vec<_>, Vec<_>) = try_unzip(last_claims.iter().zip(
-            proof.individual_claims.chunks(2) // each chunk refers to a pair of (input, weight matrix) MLEs in the sumcheck
+            proof.individual_claims.iter() // each chunk refers to a pair of (input, weight matrix) MLEs in the sumcheck
         ).map(|(&claim, evals)| {
             let (point_for_input, point_for_weight) = QKV::<Element>::build_points(
                 &claim.point,
@@ -704,8 +719,8 @@ where
                 output_num_vars,
             )?;
             anyhow::Ok((
-                Claim::new(point_for_input, evals[0]),
-                Claim::new(point_for_weight, evals[1]),
+                Claim::new(point_for_input, evals.0),
+                Claim::new(point_for_weight, evals.1),
             ))
         }))?;
 
