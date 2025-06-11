@@ -70,6 +70,9 @@ impl<N> OpInfo for Add<N> {
         input_shapes: &[Vec<usize>],
         padding_mode: PaddingMode,
     ) -> Vec<Vec<usize>> {
+        if let Some((_, og_shape)) = &self.operand {
+            assert!(*og_shape == Shape::from_it(&input_shapes[0]), "Add layer operand shape mismatch: {:?} vs {:?}", og_shape, Shape::from_it(&input_shapes[0]));
+        }
         match padding_mode {
             PaddingMode::NoPadding => input_shapes.to_vec(),
             PaddingMode::Padding => input_shapes

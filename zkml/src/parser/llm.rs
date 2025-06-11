@@ -89,7 +89,7 @@ impl GPT2Model {
     /// Creates a Model<f32> from the GPT2Model. Currently it does NOT support the embeddings and positional nor
     /// multiple passes.
     /// User input shape is the shape of the user input tensor.
-    pub fn to_graph_model(
+    pub fn to_provable_model(
         self,
         c: &LLMConfig,
         user_input_shape: Shape,

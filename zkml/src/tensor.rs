@@ -1769,7 +1769,9 @@ impl<T> Tensor<T> {
 /// Structure that holds a shape of a tensor.
 /// NOTE: it is currently being phased in incrementally the codebase currently. There will be places where we still use Vec<usize>
 #[derive(
-    Debug, Clone, derive_more::From, derive_more::Into, derive_more::AsRef, Serialize, Deserialize,
+    Debug, Clone, derive_more::From, derive_more::Into, 
+    derive_more::AsRef, Serialize, Deserialize, 
+    PartialEq, Eq
 )]
 pub struct Shape(Vec<usize>);
 

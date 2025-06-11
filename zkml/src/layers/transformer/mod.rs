@@ -443,7 +443,7 @@ mod test {
             vec![1, config.embedding_size],
             gpt2_output.inputs_embeds.clone(),
         );
-        let model = llm_model.to_graph_model(&config, Shape::from(input.get_shape()))?;
+        let model = llm_model.to_provable_model(&config, Shape::from(input.get_shape()))?;
         let output = model.run_float(&[input.clone()])?[0].clone();
         assert!(
             is_close(expected_output, &output.get_data()),
