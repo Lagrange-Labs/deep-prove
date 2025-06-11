@@ -69,6 +69,7 @@ pub trait Number:
     fn is_negative(&self) -> bool;
     fn to_f32(&self) -> anyhow::Result<f32>;
     fn from_f32(f: f32) -> anyhow::Result<Self>;
+    fn to_usize(&self) -> usize;
 }
 
 impl Number for Element {
@@ -103,6 +104,9 @@ impl Number for Element {
     fn from_f32(f: f32) -> anyhow::Result<Self> {
         Ok(f as Element)
     }
+    fn to_usize(&self) -> usize {
+        *self as usize
+    }
 }
 impl Number for f32 {
     const MIN: f32 = f32::MIN;
@@ -135,6 +139,9 @@ impl Number for f32 {
     fn from_f32(f: f32) -> anyhow::Result<Self> {
         Ok(f)
     }
+    fn to_usize(&self) -> usize {
+        *self as usize
+    }
 }
 impl Number for GoldilocksExt2 {
     const MIN: GoldilocksExt2 = GoldilocksExt2::ZERO;
@@ -161,6 +168,9 @@ impl Number for GoldilocksExt2 {
     }
     fn from_f32(_: f32) -> anyhow::Result<Self> {
         unreachable!("Called from_f32 for Goldilocks")
+    }
+    fn to_usize(&self) -> usize {
+        unreachable!("Called to_usize for Goldilocks")
     }
 }
 

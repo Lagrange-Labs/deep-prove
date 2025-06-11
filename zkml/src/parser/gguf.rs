@@ -220,6 +220,37 @@ impl Attention<f32> {
     }
 }
 
+impl Positional<f32> {
+    pub fn from_loader(loader: &FileTensorLoader, c: &LLMConfig) -> anyhow::Result<Self> {
+        match c.specific_config {
+            LLMVariant::GPT2 => {
+                let position_embd = loader.get_tensor("position_embd.weight")?;
+                let shape = position_embd.get_shape();
+                ensure!(
+                    shape[0] == c.context_length,
+                    "position_embd must have shape [{}] vs given {:?}",
+                    c.context_length,
+                    position_embd.get_shape()
+                );
+                ensure!(
+                    shape[1] == c.embedding_size,
+                    "position_embd must have shape [{}] vs given {:?}",
+                    c.embedding_size,
+                    position_embd.get_shape()
+                );
+                Ok(Self::Learned(position_embd))
+            }
+        }
+    }
+}
+impl Embeddings<f32> {
+    // TODO: make that a trait ? or part of the Layer enum ?
+    pub fn from_loader(loader: &FileTensorLoader) -> anyhow::Result<Self> {
+        let emb_tensor = loader.get_tensor("token_embd.weight")?;
+        Ok(Embeddings::new(emb_tensor))
+    }
+}
+
 fn dequantize(qtensor: Arc<QTensor>) -> anyhow::Result<Tensor<f32>> {
     let shape = qtensor.shape().dims().to_vec();
 

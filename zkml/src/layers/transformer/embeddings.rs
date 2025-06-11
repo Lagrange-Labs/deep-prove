@@ -1,15 +1,13 @@
+use anyhow::ensure;
+use ff_ext::ExtensionField;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
-    Tensor,
-    layers::provable::OpInfo,
-    padding::PaddingMode,
-    parser::{gguf::FileTensorLoader, json},
-    tensor::Number,
+    layers::provable::{Evaluate, LayerOut, OpInfo}, padding::PaddingMode, tensor::Number, Tensor
 };
 
 #[derive(Debug, Clone)]
-pub struct Embeddings<N: Number> {
+pub struct Embeddings<N> {
     pub emb: Tensor<N>,
 }
 
@@ -45,24 +43,18 @@ impl<N: Number> OpInfo for Embeddings<N> {
     }
 }
 
-impl Embeddings<f32> {
-    // TODO: make that a trait ? or part of the Layer enum ?
-    pub fn from_loader(loader: &FileTensorLoader) -> anyhow::Result<Self> {
-        let emb_tensor = loader.get_tensor("token_embd.weight")?;
-        Ok(Embeddings::new(emb_tensor))
-    }
-    pub fn from_json(l: &json::FileTensorLoader) -> anyhow::Result<Self> {
-        let emb_tensor = l.get_tensor("token_embd.weight")?;
-        Ok(Embeddings::new(emb_tensor))
-    }
-}
-
-impl<N: Number> Embeddings<N> {
-    pub fn forward(&self, x: &Tensor<usize>) -> anyhow::Result<Tensor<N>> {
-        assert!(
-            x.get_shape().len() == 1,
+impl<N: Number> Evaluate<N> for Embeddings<N> {
+    fn evaluate<E: ExtensionField>(
+        &self,
+        inputs: &[&Tensor<N>],
+        _unpadded_input_shapes: Vec<Vec<usize>>,
+    ) -> anyhow::Result<LayerOut<N, E>> {
+        ensure!(
+            inputs.iter().all(|x| x.get_shape().len() == 1),
             "embeddings only support 1d tensors"
         );
+        ensure!(inputs.len() == 1, "embeddings only support 1 input tensor");
+        let x = inputs[0];
         let seq_len = x.get_shape()[0];
         let vocab_size = self.emb.get_shape()[0];
         let emb_size = self.emb.get_shape()[1];
@@ -70,7 +62,8 @@ impl<N: Number> Embeddings<N> {
         let emb = x
             .get_data()
             .par_iter()
-            .flat_map(|&idx| {
+            .flat_map(|&v| {
+                let idx = v.to_usize();
                 assert!(
                     idx < vocab_size,
                     "idx {} out of bounds for vocab size {}",
@@ -82,7 +75,7 @@ impl<N: Number> Embeddings<N> {
             })
             .collect::<Vec<_>>();
         let out_shape = vec![seq_len, emb_size];
-        Ok(Tensor::new(out_shape, emb))
+        Ok(LayerOut::from_vec(vec![Tensor::new(out_shape, emb)]))
     }
 }
 
@@ -129,12 +122,12 @@ mod tests {
         // generate random indices
         let input_data = generate_unique_random_indices(seq_len, vocab_size);
         let x: Tensor<usize> = Tensor::new(vec![seq_len], input_data.clone());
-        let out = embeddings.forward(&x)?;
-        assert_eq!(out.get_shape(), vec![seq_len, emb_size]);
+        let out = embeddings.evaluate(&[&x], vec![vec![seq_len]])?;
+        assert_eq!(out.outputs()[0].get_shape(), vec![seq_len, emb_size]);
         // for each input index, check that the embedding vector is the correct one
         for (idx, table_idx) in input_data.iter().enumerate() {
             let emb = emb_vector(*table_idx);
-            let out_emb = out.get_data()[idx * emb_size..(idx + 1) * emb_size].to_vec();
+            let out_emb = out.outputs()[0].get_data()[idx * emb_size..(idx + 1) * emb_size].to_vec();
             assert_eq!(emb, out_emb);
         }
         Ok(())

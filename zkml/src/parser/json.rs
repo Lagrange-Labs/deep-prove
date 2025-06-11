@@ -3,10 +3,9 @@ use std::{collections::HashMap, path::Path};
 use anyhow::{Context, bail, ensure};
 use serde::Deserialize;
 
+use crate::layers::transformer::embeddings::Embeddings;
 use crate::{
-    Tensor,
-    layers::transformer::layernorm::LayerNorm,
-    parser::llm::{Attention, FeedForward, LLMConfig, LLMVariant},
+    layers::transformer::{layernorm::LayerNorm, positional::Positional}, parser::llm::{Attention, FeedForward, LLMConfig, LLMVariant}, Tensor
 };
 
 impl LLMConfig {
@@ -217,6 +216,36 @@ fn unfuse_crate_tensors(
     );
 
     Ok(tensors_data)
+}
+
+impl Positional<f32> {
+    pub fn from_json(l: &FileTensorLoader, c: &LLMConfig) -> anyhow::Result<Self> {
+        let position_embd = l.get_tensor("position_embd.weight")?;
+        ensure!(
+            position_embd.get_shape().len() == 2,
+            "position_embd must be 2d"
+        );
+        ensure!(
+            position_embd.get_shape()[0] == c.context_length,
+            "position_embd must have shape [0] [{}] vs given {:?}",
+            c.context_length,
+            position_embd.get_shape()
+        );
+        ensure!(
+            position_embd.get_shape()[1] == c.embedding_size,
+            "position_embd must have shape [1] [{}] vs given {:?}",
+            c.embedding_size,
+            position_embd.get_shape()
+        );
+        Ok(Self::Learned(position_embd))
+    }
+}
+
+impl Embeddings<f32> {
+    pub fn from_json(l: &FileTensorLoader) -> anyhow::Result<Self> {
+        let emb_tensor = l.get_tensor("token_embd.weight")?;
+        Ok(Embeddings::new(emb_tensor))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
