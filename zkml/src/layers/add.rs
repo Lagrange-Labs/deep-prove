@@ -15,15 +15,17 @@ use super::provable::LayerOut;
 /// If there is two inputs, no static weight, then the output shape is the same as the first input.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Add<N> {
-    operand: Option<Tensor<N>>,
+    operand: Option<(Tensor<N>, Shape)>,
 }
 
 impl<N: Number> Add<N> {
     pub fn new() -> Self {
         Self { operand: None }
     }
-    pub fn new_with(operand: Option<Tensor<N>>) -> Self {
-        Self { operand }
+    pub fn new_with(operand: Tensor<N>, unpadded_shape: Shape) -> Self {
+        Self {
+            operand: Some((operand, unpadded_shape)),
+        }
     }
 }
 
@@ -48,19 +50,13 @@ impl<N: Number> Evaluate<N> for Add<N> {
                 "Add operand can't be None if there is only one input"
             );
             ensure!(
-                inputs[0].get_shape().iter().product::<usize>()
-                    == self
-                        .operand
-                        .as_ref()
-                        .unwrap()
-                        .get_shape()
-                        .iter()
-                        .product::<usize>(),
+                Shape::from_it(inputs[0].get_shape()).numel()
+                    == Shape::from_it(self.operand.as_ref().unwrap().0.get_shape()).numel(),
                 "Add layer expects input and operand to have the same shape: {:?} vs {:?}",
                 inputs[0].get_shape(),
-                self.operand.as_ref().unwrap().get_shape()
+                self.operand.as_ref().unwrap().0.get_shape()
             );
-            inputs[0].add(self.operand.as_ref().unwrap())
+            inputs[0].add(&self.operand.as_ref().unwrap().0)
         } else {
             bail!("Add layer expects 1 or 2 inputs, got {}", inputs.len());
         };
@@ -133,7 +129,7 @@ mod test {
                 );
             }
         }
-        let add = Add::new_with(Some(t1.clone()));
+        let add = Add::new_with(t1.clone(), t1.get_shape().into());
         let result = add
             .evaluate::<GoldilocksExt2>(&[&t2], vec![vec![2, 2]])
             .unwrap();

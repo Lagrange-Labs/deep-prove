@@ -15,7 +15,6 @@ use crate::{
     model::{Model, ToIterator},
     parser::{check_filter, safe_conv2d_shape, safe_maxpool2d_shape},
     tensor::Shape,
-    try_unzip,
 };
 type GarbagePad = Option<(Shape, Shape)>;
 
