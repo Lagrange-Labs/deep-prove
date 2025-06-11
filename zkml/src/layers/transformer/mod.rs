@@ -449,8 +449,8 @@ mod test {
         )?;
         let expected_output = &&gpt2_output.final_output();
         let input = Tensor::new(
-            vec![1, config.embedding_size],
-            gpt2_output.inputs_embeds.clone(),
+            vec![1],
+            vec![gpt2_output.input_ids as f32],
         );
         let model = llm_model.to_provable_model(&config, Shape::from(input.get_shape()))?;
         let output = model.run_float(&[input.clone()])?[0].clone();

@@ -94,7 +94,9 @@ impl GPT2Model {
     ) -> anyhow::Result<Model<f32>> {
         let mut model =
             Model::new_from_input_shapes(vec![user_input_shape.into_vec()], PaddingMode::NoPadding);
-        let mut last_node_id = None;
+
+        let mut last_node_id = Some(model.add_consecutive_layer(Layer::Embeddings(self.embeddings), None)?);
+        last_node_id = Some(model.add_consecutive_layer(Layer::Positional(self.positional), last_node_id)?);
         for block in self.blocks {
             last_node_id = Some(block.write_to_model(&mut model, last_node_id, c)?);
         }
