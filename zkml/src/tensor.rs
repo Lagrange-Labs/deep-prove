@@ -70,6 +70,7 @@ pub trait Number:
     fn to_f32(&self) -> anyhow::Result<f32>;
     fn from_f32(f: f32) -> anyhow::Result<Self>;
     fn to_usize(&self) -> usize;
+    fn from_usize(u: usize) -> Self;
 }
 
 impl Number for Element {
@@ -107,6 +108,9 @@ impl Number for Element {
     fn to_usize(&self) -> usize {
         *self as usize
     }
+    fn from_usize(u: usize) -> Self {
+        u as Element
+    }
 }
 impl Number for f32 {
     const MIN: f32 = f32::MIN;
@@ -142,6 +146,9 @@ impl Number for f32 {
     fn to_usize(&self) -> usize {
         *self as usize
     }
+    fn from_usize(u: usize) -> Self {
+        u as f32
+    }
 }
 impl Number for GoldilocksExt2 {
     const MIN: GoldilocksExt2 = GoldilocksExt2::ZERO;
@@ -171,6 +178,9 @@ impl Number for GoldilocksExt2 {
     }
     fn to_usize(&self) -> usize {
         unreachable!("Called to_usize for Goldilocks")
+    }
+    fn from_usize(u: usize) -> Self {
+        unreachable!("Called from_usize for Goldilocks")
     }
 }
 
@@ -809,6 +819,15 @@ impl<T> Tensor<T>
 where
     T: Number,
 {
+    pub fn argmax(&self) -> usize {
+        self.data.iter().enumerate().fold((0,T::MIN), |acc, x| {
+            match acc.1.compare(&x.1) {
+                Ordering::Less => (x.0, *x.1),
+                _ => acc,
+            }
+        }).0
+    }
+
     pub fn reshape(mut self, new_shape: Vec<usize>) -> Tensor<T> {
         assert!(
             self.shape.iter().product::<usize>() == new_shape.iter().product::<usize>(),
