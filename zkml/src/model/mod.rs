@@ -1236,12 +1236,14 @@ pub(crate) mod test {
 
         model.describe();
 
-        // quantize and pad input tensor
+        // quantize input tensor
         let input_tensors = float_inputs
             .into_iter()
             .zip(&md.input)
-            .map(|(tensor, s)| tensor.quantize(s).pad_next_power_of_two())
+            .map(|(tensor, s)| tensor.quantize(s))
             .collect_vec();
+
+        let input_tensors = model.prepare_inputs(input_tensors).unwrap();
 
         let trace = model.run(&input_tensors)?;
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"model");

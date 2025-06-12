@@ -35,7 +35,7 @@ impl<E: ExtensionField> Context<E> {
         }
     }
 }
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct Proof<E: ExtensionField> {
     sumcheck: IOPProof<E>,
@@ -83,7 +83,7 @@ where
         self.claims.push(claim);
         Ok(())
     }
-    pub fn prove<T: Transcript<E>>(self, ctx: &Context<E>, t: &mut T) -> anyhow::Result<Proof<E>> {
+    pub fn prove<T: Transcript<E>>(self, t: &mut T) -> anyhow::Result<Proof<E>> {
         let challenges = t.read_challenges(self.claims.len());
 
         let beta_evals = challenges
@@ -97,7 +97,7 @@ where
                     .collect_vec()
             })
             .collect::<Vec<_>>();
-        let final_beta = (0..1 << ctx.vp_info.max_num_variables)
+        let final_beta = (0..1 << self.poly.num_vars())
             .into_par_iter()
             .map(|i| {
                 beta_evals
@@ -229,7 +229,7 @@ mod test {
         for (r_i, y_i) in claims.clone().into_iter() {
             prover.add_claim(Claim::new(r_i, y_i))?;
         }
-        let proof = prover.prove(&ctx, &mut t)?;
+        let proof = prover.prove(&mut t)?;
         // VERIFIER PART
         let mut t = default_transcript();
         let mut verifier = Verifier::new(&ctx);

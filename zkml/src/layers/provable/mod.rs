@@ -423,7 +423,7 @@ where
             LayerCtx::Dense(dense_ctx) => dense_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::MatMul(mat_ctx) => mat_ctx.output_shapes(input_shapes, padding_mode),
-            LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
+            LayerCtx::QKV(qkv_ctx) => qkv_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
             LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
@@ -450,7 +450,7 @@ where
             LayerCtx::Dense(dense_ctx) => dense_ctx.num_outputs(num_inputs),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.num_outputs(num_inputs),
             LayerCtx::MatMul(mat_ctx) => mat_ctx.num_outputs(num_inputs),
-            LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
+            LayerCtx::QKV(qkv_ctx) => qkv_ctx.num_outputs(num_inputs),
             LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
             LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
@@ -473,7 +473,7 @@ where
             LayerCtx::Dense(dense_ctx) => dense_ctx.describe(),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.describe(),
             LayerCtx::MatMul(mat_ctx) => mat_ctx.describe(),
-            LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
+            LayerCtx::QKV(qkv_ctx) => qkv_ctx.describe(),
             LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
             LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
@@ -496,7 +496,7 @@ where
             LayerCtx::Dense(dense_ctx) => dense_ctx.is_provable(),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.is_provable(),
             LayerCtx::MatMul(mat_ctx) => mat_ctx.is_provable(),
-            LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
+            LayerCtx::QKV(qkv_ctx) => qkv_ctx.is_provable(),
             LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
             LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
             LayerCtx::Activation(activation_ctx) => activation_ctx.is_provable(),
@@ -551,8 +551,8 @@ where
             (LayerCtx::MatMul(matmul_ctx), LayerProof::MatMul(proof)) => {
                 matmul_ctx.verify(proof, last_claims, verifier, shape_step)
             }
-            (LayerCtx::QKV, LayerProof::QKV) => {
-                unimplemented!("QKV layer not implemented")
+            (LayerCtx::QKV(qkv_ctx), LayerProof::QKV(proof)) => {
+                qkv_ctx.verify(proof, last_claims, verifier, shape_step)
             }
             (LayerCtx::MhaQK, LayerProof::MhaQK) => {
                 unimplemented!("MHA_QK layer not implemented")
