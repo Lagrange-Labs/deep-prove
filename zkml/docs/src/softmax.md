@@ -55,6 +55,21 @@ The Softmax layer is used to inside a transformer to map a tensor of weighted va
  
  Using the formula provided by [zkLLM][1] we can find a suitable bound for the error in normalisation. This error occurs due to rounding in quantisation which can mean the final sum does not always equal $`\frac{1}{\theta}`$. To prove we are in an acceptable range during setup an error bound is determined and we range check the difference between the sum of $`Y`$ and $`\frac{1}{\theta}`$ to be within this range.
 
+ To calculate this range we denote by $`B_{M}`$ the integer such that $`\exp(-\gamma \cdot B_{M}/\sqrt{s}) \approx 0`$ and $`B_{L}`$ the value such that $`\exp(-\gamma \cdot B_{L}/\sqrt{s}) \approx 1`$. 
+
+ We work out the optimal value of $`B_{M}`$ as 
+ $$ \begin{align*} B_{M} := \frac{\sqrt{s}\cdot(\ln(2h)+\ln(1/\theta))}{2\cdot\gamma}.\end{align*} $$
+
+ This allows us to calculate the allowable error bound for $`L1`$-error, $`\epsilon`$, as 
+
+ $$ \begin{align*} \epsilon := C\cdot \exp\left(\frac{\gamma}{2\sqrt{s}}\right)+(h-1)\cdot\exp\left(\frac{-\gamma\cdot B_{M}}{\sqrt{s}}\right),\end{align*} $$
+
+ in the above the constant $`C`$ is defined as 
+
+ $$\begin{align*} C:= \exp\left(\frac{\gamma B_{L}}{\sqrt{s}}\right)+\frac{\theta\cdot\exp\left(\frac{\gamma B_{M}}{\sqrt{s}}\right)}{2} - 1.\end{align*}$$
+
+ We then range check that the sum of the output is within the range $`(1\pm\epsilon)\cdot\frac{1}{\theta}`$.
+
 ### Diagram
 
 Below is a diagram of how everything ties together (The error range check is omitted for space). Boxes with a green Background are values calculated by the prover, yellow background indicates a lookup table, blue background indicates a claim from an already proven step and no background is information the prover and the verifier can calculate independently. In addition the boxes higlighted in orange are committed to and opening proofs are provided for them.
