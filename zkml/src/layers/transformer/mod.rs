@@ -41,8 +41,10 @@ mod test {
         layers::{
             activation::GELU,
             add::{self, Add},
+            concat_matmul::{self, ConcatMatMul},
             matrix_mul::{MatMul, OperandMatrix},
             provable::Evaluate,
+            reshape::Reshape,
         },
         model::Model,
         padding::PaddingMode,
@@ -55,7 +57,7 @@ mod test {
         tensor::{Number, Shape},
     };
 
-    use super::{layernorm, mha, qkv};
+    use super::{layernorm, mha, qkv, softmax};
 
     struct FlatFFN<N> {
         layernorm: layernorm::LayerNorm<N>,
