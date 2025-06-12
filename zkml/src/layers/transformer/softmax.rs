@@ -63,10 +63,10 @@ impl<N: Number> Default for Softmax<N> {
 }
 
 impl<N: Number> Softmax<N> {
-    pub fn new_with_scale(scale: N) -> Softmax<N> {
+    pub fn new_with_scale(scale: N, max_context_size: usize) -> Softmax<N> {
         Softmax {
             scalar: scale,
-            max_size: 1024usize,
+            max_size: max_context_size,
             quant_info: None,
         }
     }
@@ -395,7 +395,7 @@ mod tests {
     fn test_quantise() {
         // For now we test with GPT2 like parameters
         let scale = 1.0f32 / 768.0f32.sqrt();
-        let softmax = Softmax::<f32>::new_with_scale(scale);
+        let softmax = Softmax::<f32>::new_with_scale(scale, 1024);
 
         for num_tokens in 1015..1025 {
             // Make random q and k vectors
@@ -466,7 +466,7 @@ mod tests {
 
     #[test]
     fn test_softmax_with_scale() {
-        let softmax = Softmax::new_with_scale(2.0);
+        let softmax = Softmax::new_with_scale(2.0, 1024);
         let input = Tensor::new(vec![2, 3], vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         let output = softmax
             .evaluate::<GoldilocksExt2>(&[&input], vec![vec![2, 3]])

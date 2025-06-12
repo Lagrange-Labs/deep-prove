@@ -170,7 +170,8 @@ impl Attention<f32> {
         );
         let reshape_qkt = Reshape::new_squeeze(1);
         let mha = MhaQK::new(c.num_heads, c.head_dim());
-        let softmax = Softmax::<f32>::new_with_scale((1.0 / (c.head_dim() as f32)).sqrt());
+        let softmax =
+            Softmax::<f32>::new_with_scale((1.0 / (c.head_dim() as f32)).sqrt(), c.context_length);
         let qkt_v = ConcatMatMul::new_with_permute(vec![1, 0, 2]);
         let out = Dense::new(self.out, self.out_bias);
         let reshape_merged = Reshape::new_fixed(vec![vec![1, c.hidden_size]]);
