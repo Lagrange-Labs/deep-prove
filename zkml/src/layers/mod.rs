@@ -42,8 +42,13 @@ use crate::{
         requant::{Requant, RequantProof},
         reshape::Reshape,
         transformer::{
-            embeddings::Embeddings, layernorm::LayerNorm, logits::Logits, mha::MhaQK,
-            positional::Positional, qkv::QKV, softmax::Softmax,
+            embeddings::Embeddings,
+            layernorm::LayerNorm,
+            logits::Logits,
+            mha::MhaQK,
+            positional::Positional,
+            qkv::{QKV, QKVCtx, QKVProof},
+            softmax::Softmax,
         },
     },
     lookup::context::LookupWitnessGen,
@@ -105,7 +110,7 @@ where
     Requant(RequantCtx),
     Pooling(PoolingCtx),
     Table(TableCtx<E>),
-    QKV,
+    QKV(QKVCtx<E>),
     MhaQK,
     ConcatMatMul,
     LayerNorm,
@@ -132,7 +137,7 @@ where
     Activation(ActivationProof<E, PCS>),
     Requant(RequantProof<E, PCS>),
     Pooling(PoolingProof<E, PCS>),
-    QKV,
+    QKV(QKVProof<E>),
     MhaQK,
     ConcatMatMul,
     LayerNorm,
@@ -153,7 +158,7 @@ where
         match self {
             Self::Dense(_) => "Dense".to_string(),
             Self::MatMul(_) => "Matrix Multiplication".to_string(),
-            Self::QKV => "QKV".to_string(),
+            Self::QKV(_) => "QKV".to_string(),
             Self::MhaQK => "MHA_QK".to_string(),
             Self::ConcatMatMul => "ConcatMatMul".to_string(),
             Self::LayerNorm => "LayerNorm".to_string(),
@@ -421,7 +426,7 @@ where
     fn step_info(&self, id: NodeId, aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         match self {
             Layer::Dense(dense) => dense.step_info(id, aux),
-            Layer::QKV(_qkv) => unimplemented!("QKV proving layer not implemented"),
+            Layer::QKV(qkv) => qkv.step_info(id, aux),
             Layer::MhaQK(_mha) => unimplemented!("MHA_QK proving layer not implemented"),
             Layer::ConcatMatMul(_concat_matmul) => {
                 unimplemented!("ConcatMatMul proving layer not implemented")
@@ -458,7 +463,7 @@ impl PadOp for Layer<Element> {
         Ok(match self {
             Layer::Dense(dense) => Layer::Dense(dense.pad_node(si)?),
             Layer::Convolution(convolution) => Layer::Convolution(convolution.pad_node(si)?),
-            Layer::QKV(_qkv) => unimplemented!("QKV layer not implemented"),
+            Layer::QKV(qkv) => Layer::QKV(qkv.pad_node(si)?),
             Layer::MhaQK(_mha) => unimplemented!("MHA_QK layer not implemented"),
             Layer::ConcatMatMul(_concat_matmul) => {
                 unimplemented!("ConcatMatMul layer not implemented")
@@ -508,9 +513,8 @@ where
             (Layer::MatMul(m), LayerCtx::MatMul(info)) => {
                 m.prove(node_id, info, last_claims, step_data, prover)
             }
-            (Layer::QKV(_qkv), LayerCtx::QKV) => {
-                unimplemented!("QKV layer not implemented")
-                // qkv.prove(node_id, info, last_claims, step_data, prover)
+            (Layer::QKV(qkv), LayerCtx::QKV(info)) => {
+                qkv.prove(node_id, info, last_claims, step_data, prover)
             }
             (Layer::MhaQK(_mha), LayerCtx::MhaQK) => {
                 unimplemented!("MHA_QK layer not implemented")
@@ -567,7 +571,7 @@ where
                 convolution.gen_lookup_witness(id, gen, ctx, step_data)
             }
             Layer::MatMul(m) => m.gen_lookup_witness(id, gen, ctx, step_data),
-            Layer::QKV(_qkv) => unimplemented!("QKV layer not implemented"),
+            Layer::QKV(qkv) => qkv.gen_lookup_witness(id, gen, ctx, step_data),
             Layer::MhaQK(_mha) => unimplemented!("MHA_QK layer not implemented"),
             Layer::ConcatMatMul(_concat_matmul) => {
                 unimplemented!("ConcatMatMul layer not implemented")
@@ -712,7 +716,7 @@ where
         match self {
             Self::Dense(_) => "Dense".to_string(),
             Self::MatMul(_) => "Matmul".to_string(),
-            Self::QKV => "QKV".to_string(),
+            Self::QKV(_) => "QKV".to_string(),
             Self::MhaQK => "MHA_QK".to_string(),
             Self::ConcatMatMul => "ConcatMatMul".to_string(),
             Self::LayerNorm => "LayerNorm".to_string(),
@@ -733,7 +737,7 @@ where
         match self {
             LayerProof::Dense(..) => None,
             LayerProof::MatMul(..) => None,
-            LayerProof::QKV => None,
+            LayerProof::QKV(..) => None,
             LayerProof::MhaQK => None,
             LayerProof::ConcatMatMul => None,
             LayerProof::LayerNorm => None,

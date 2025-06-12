@@ -366,14 +366,13 @@ impl<N> Activation<N> {
 
         // We need to prove that the output of this step is the input to following activation function
         let mut same_poly_prover = same_poly::Prover::<E>::new(output.to_vec().into_mle());
-        let same_poly_ctx = same_poly::Context::<E>::new(last_claim.point.len());
         same_poly_prover.add_claim(last_claim.clone())?;
         // Activation proofs have two columns, input and output
         let input_claim = logup_proof.output_claims()[0].clone();
         let output_claim = logup_proof.output_claims()[1].clone();
 
         same_poly_prover.add_claim(output_claim)?;
-        let claim_acc_proof = same_poly_prover.prove(&same_poly_ctx, prover.transcript)?;
+        let claim_acc_proof = same_poly_prover.prove(prover.transcript)?;
 
         // Add commitment claims to prover
         let commits = [input_claim.clone(), claim_acc_proof.extract_claim()]
