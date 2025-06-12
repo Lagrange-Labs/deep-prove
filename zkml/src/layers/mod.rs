@@ -41,7 +41,12 @@ use crate::{
         pooling::Pooling,
         requant::{Requant, RequantProof},
         reshape::Reshape,
-        transformer::{layernorm::LayerNorm, mha::MhaQK, qkv::{QKV, QKVCtx, QKVProof}, softmax::Softmax},
+        transformer::{
+            layernorm::LayerNorm,
+            mha::MhaQK,
+            qkv::{QKV, QKVCtx, QKVProof},
+            softmax::Softmax,
+        },
     },
     lookup::context::LookupWitnessGen,
     model::StepData,

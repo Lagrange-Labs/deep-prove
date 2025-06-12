@@ -834,8 +834,9 @@ mod tests {
 
     use crate::{
         layers::Layer,
-        model::{test::prove_model, Model},
-        padding::ShapeData, tensor::Shape,
+        model::{Model, test::prove_model},
+        padding::ShapeData,
+        tensor::Shape,
     };
 
     use super::*;
@@ -973,27 +974,33 @@ mod tests {
 
         let unpadded_output_shapes =
             layer.output_shapes(&vec![unpadded_input_shape.clone()], PaddingMode::NoPadding);
-        assert_eq!(unpadded_output_shapes, 
-            si.unpadded_output_shapes().into_iter().map(|shape| 
-                shape.into_vec()
-            ).collect_vec(),
+        assert_eq!(
+            unpadded_output_shapes,
+            si.unpadded_output_shapes()
+                .into_iter()
+                .map(|shape| shape.into_vec())
+                .collect_vec(),
         );
         // check unpadded output shapes for padded layer
         let unpadded_output_shapes =
             padded_layer.output_shapes(&vec![unpadded_input_shape.clone()], PaddingMode::NoPadding);
-        assert_eq!(unpadded_output_shapes, 
-            si.unpadded_output_shapes().into_iter().map(|shape| 
-                shape.into_vec()
-            ).collect_vec(),
+        assert_eq!(
+            unpadded_output_shapes,
+            si.unpadded_output_shapes()
+                .into_iter()
+                .map(|shape| shape.into_vec())
+                .collect_vec(),
         );
         // check padded output shapes
         let padded_input_shape = unpadded_input_shape.next_power_of_two();
         let padded_output_shapes =
             padded_layer.output_shapes(&vec![padded_input_shape], PaddingMode::Padding);
-        assert_eq!(padded_output_shapes, 
-            si.padded_output_shapes().into_iter().map(|shape| 
-                shape.into_vec()
-            ).collect_vec(),
+        assert_eq!(
+            padded_output_shapes,
+            si.padded_output_shapes()
+                .into_iter()
+                .map(|shape| shape.into_vec())
+                .collect_vec(),
         );
 
         assert_eq!(padded_layer.q.get_shape(), padded_weight_shape);
@@ -1035,27 +1042,32 @@ mod tests {
 
         let unpadded_output_shapes =
             layer.output_shapes(&vec![unpadded_input_shape.clone()], PaddingMode::NoPadding);
-        assert_eq!(unpadded_output_shapes, 
-            si.unpadded_output_shapes().into_iter().map(|shape| 
-                shape.into_vec()
-            ).collect_vec(),
+        assert_eq!(
+            unpadded_output_shapes,
+            si.unpadded_output_shapes()
+                .into_iter()
+                .map(|shape| shape.into_vec())
+                .collect_vec(),
         );
         // check unpadded output shapes for padded layer
         let unpadded_output_shapes =
             padded_layer.output_shapes(&vec![unpadded_input_shape.clone()], PaddingMode::NoPadding);
-        assert_eq!(unpadded_output_shapes, 
-            si.unpadded_output_shapes().into_iter().map(|shape| 
-                shape.into_vec()
-            ).collect_vec(),
+        assert_eq!(
+            unpadded_output_shapes,
+            si.unpadded_output_shapes()
+                .into_iter()
+                .map(|shape| shape.into_vec())
+                .collect_vec(),
         );
         // check padded output shapes
         let padded_output_shapes =
             padded_layer.output_shapes(&vec![unpadded_input_shape], PaddingMode::Padding);
         assert_eq!(
-            padded_output_shapes, 
-            si.padded_output_shapes().into_iter().map(|shape| 
-                shape.into_vec()
-            ).collect_vec(),
+            padded_output_shapes,
+            si.padded_output_shapes()
+                .into_iter()
+                .map(|shape| shape.into_vec())
+                .collect_vec(),
         );
 
         assert_eq!(padded_layer.q.get_shape(), weight_shape);
