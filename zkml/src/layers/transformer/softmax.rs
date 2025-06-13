@@ -1,4 +1,6 @@
 //! This layer applies the softmax function to the last dimension of the input tensor
+use anyhow::ensure;
+
 use crate::{
     Element, Tensor,
     layers::provable::{Evaluate, LayerOut, OpInfo, QuantizeOp},
@@ -7,15 +9,29 @@ use crate::{
 
 #[derive(Debug, Clone)]
 pub struct Softmax<N> {
+    // By default, it's equal to 1
     pub scale: N,
+    // By default, softmax is going to be applied on the full tensor.
+    // You can specificy a dimen to apply softmax on. For example, for a tensor  of shape [2,3,4],
+    // if apply_on_dim = 2, then softmax will be applied on every chunks of 3 * 4 elements each.
+    pub apply_on_dim: Option<usize>,
 }
 
 impl<N: Number> Softmax<N> {
-    pub fn new_with_scale(scale: N) -> Self {
-        Self { scale }
-    }
     pub fn new() -> Self {
-        Self { scale: N::unit() }
+        Self {
+            scale: N::unit(),
+            apply_on_dim: None,
+        }
+    }
+    pub fn with_scale(self, scale: N) -> Self {
+        Self { scale, ..self }
+    }
+    pub fn with_dim(self, dim: usize) -> Self {
+        Self {
+            apply_on_dim: Some(dim),
+            ..self
+        }
     }
 }
 
@@ -25,9 +41,14 @@ impl Evaluate<f32> for Softmax<f32> {
         inputs: &[&crate::Tensor<f32>],
         _unpadded_input_shapes: Vec<Vec<usize>>,
     ) -> anyhow::Result<LayerOut<f32, E>> {
+        ensure!(
+            inputs.len() == 1,
+            "softmax expects exactly one input tensor currently"
+        );
         let input = inputs[0];
+        let dim = self.apply_on_dim.unwrap_or(input.get_shape().len() - 1);
         let output = input
-            .slices_last_dim()
+            .slice_on_dim(dim)
             .map(|vec| {
                 let sum = vec.iter().map(|x| self.scale * x.exp()).sum::<f32>();
                 vec.iter()
@@ -116,7 +137,7 @@ mod tests {
 
     #[test]
     fn test_softmax_with_scale() {
-        let softmax = Softmax::new_with_scale(2.0);
+        let softmax = Softmax::new().with_scale(2.0);
         let input = Tensor::new(vec![2, 3], vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         let output = softmax
             .evaluate::<GoldilocksExt2>(&[&input], vec![vec![2, 3]])

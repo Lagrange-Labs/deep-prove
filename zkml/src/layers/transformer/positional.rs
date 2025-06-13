@@ -2,7 +2,10 @@ use anyhow::ensure;
 use ff_ext::ExtensionField;
 
 use crate::{
-    layers::provable::{Evaluate, LayerOut, OpInfo}, padding::PaddingMode, tensor::Number, NextPowerOfTwo, Tensor
+    NextPowerOfTwo, Tensor,
+    layers::provable::{Evaluate, LayerOut, OpInfo},
+    padding::PaddingMode,
+    tensor::Number,
 };
 
 #[derive(Debug, Clone)]
@@ -32,19 +35,22 @@ impl<N: Number> Evaluate<N> for Positional<N> {
             "positional embeddings only support 2d tensors"
         );
 
-        let outputs = inputs.iter().map(|x| {
-            match self {
-                Self::Learned(pos) => {
-                    let sub_pos = pos.slice_2d(0, x.get_shape()[0]);
-                    assert_eq!(sub_pos.get_shape(), x.get_shape());
-                    // we basically add the positional embeddings for each position in the input tensor
-                    Ok(x.add(&sub_pos))
+        let outputs = inputs
+            .iter()
+            .map(|x| {
+                match self {
+                    Self::Learned(pos) => {
+                        let sub_pos = pos.slice_2d(0, x.get_shape()[0]);
+                        assert_eq!(sub_pos.get_shape(), x.get_shape());
+                        // we basically add the positional embeddings for each position in the input tensor
+                        Ok(x.add(&sub_pos))
+                    }
+                    Self::Rope => {
+                        anyhow::bail!("Rope not implemented");
+                    }
                 }
-                Self::Rope => {
-                    anyhow::bail!("Rope not implemented");
-                }
-            }
-        }).collect::<anyhow::Result<Vec<_>>>()?;
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
         Ok(LayerOut::from_vec(outputs))
     }
 }
@@ -62,15 +68,19 @@ impl<N: Number> OpInfo for Positional<N> {
             s
         }
     }
-    
+
     fn num_outputs(&self, num_inputs: usize) -> usize {
         num_inputs
     }
-    
+
     fn describe(&self) -> String {
-        format!("Positional({:?}x{:?})", self.get_shape()[0], self.get_shape()[1])
+        format!(
+            "Positional({:?}x{:?})",
+            self.get_shape()[0],
+            self.get_shape()[1]
+        )
     }
-    
+
     fn is_provable(&self) -> bool {
         true
     }

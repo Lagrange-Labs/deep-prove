@@ -30,7 +30,9 @@ use requant::RequantCtx;
 use transcript::Transcript;
 
 use crate::{
-    iop::context::{ContextAux, ShapeStep, TableCtx}, layers::{
+    Context, Element, ScalingStrategy,
+    iop::context::{ContextAux, ShapeStep, TableCtx},
+    layers::{
         activation::{Activation, ActivationProof},
         add::Add,
         concat_matmul::ConcatMatMul,
@@ -39,8 +41,16 @@ use crate::{
         pooling::Pooling,
         requant::{Requant, RequantProof},
         reshape::Reshape,
-        transformer::{embeddings::Embeddings, layernorm::LayerNorm, mha::MhaQK, positional::Positional, qkv::QKV, softmax::Softmax},
-    }, lookup::context::LookupWitnessGen, model::StepData, padding::{PaddingMode, ShapeInfo}, quantization::ScalingFactor, tensor::{Number, Tensor}, Context, Element, ScalingStrategy
+        transformer::{
+            embeddings::Embeddings, layernorm::LayerNorm, mha::MhaQK, positional::Positional,
+            qkv::QKV, softmax::Softmax,
+        },
+    },
+    lookup::context::LookupWitnessGen,
+    model::StepData,
+    padding::{PaddingMode, ShapeInfo},
+    quantization::ScalingFactor,
+    tensor::{Number, Tensor},
 };
 use activation::ActivationCtx;
 use convolution::{ConvCtx, ConvProof, SchoolBookConv, SchoolBookConvCtx};
@@ -418,8 +428,12 @@ where
             }
             Layer::Softmax(_softmax) => unimplemented!("Softmax proving layer not implemented"),
             Layer::Add(_add) => unimplemented!("Add proving layer not implemented"),
-            Layer::Positional(_positional) => unimplemented!("Positional proving layer not implemented"),
-            Layer::Embeddings(_embeddings) => unimplemented!("Embeddings proving layer not implemented"),
+            Layer::Positional(_positional) => {
+                unimplemented!("Positional proving layer not implemented")
+            }
+            Layer::Embeddings(_embeddings) => {
+                unimplemented!("Embeddings proving layer not implemented")
+            }
             Layer::Reshape(_reshape) => Ok((LayerCtx::Reshape, aux)),
             Layer::MatMul(mat) => mat.step_info(id, aux),
             Layer::Convolution(conv) => conv.step_info(id, aux),

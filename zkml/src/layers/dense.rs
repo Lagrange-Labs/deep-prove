@@ -173,6 +173,13 @@ impl<N: Number> Evaluate<N> for Dense<N> {
         let input = inputs[0];
         Ok(LayerOut::from_vec(vec![if input.get_shape().len() != 1 {
             let flat_input = input.flatten();
+            assert!(
+                flat_input.get_data().len() == self.matrix.ncols_2d(),
+                "flat input length {} (from shape {:?}) vs matrix ncols {}",
+                flat_input.get_data().len(),
+                input.get_shape(),
+                self.matrix.ncols_2d()
+            );
             let matvec = self.matrix.matvec(&flat_input);
             matvec.add(&self.bias)
         } else {

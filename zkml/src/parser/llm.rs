@@ -1,23 +1,11 @@
 use anyhow::bail;
 
 use crate::{
-    Tensor,
     layers::{
-        Layer,
-        activation::{Activation, GELU},
-        add,
-        concat_matmul::ConcatMatMul,
-        dense::Dense,
-        provable::{Edge, Node, NodeId},
-        reshape::Reshape,
-        transformer::{
-            embeddings::Embeddings, layernorm::LayerNorm, mha::MhaQK, positional::Positional,
-            qkv::QKV, softmax::Softmax,
-        },
-    },
-    model::Model,
-    padding::PaddingMode,
-    tensor::{Number, Shape},
+        activation::{Activation, GELU}, add, concat_matmul::ConcatMatMul, dense::Dense, matrix_mul::MatMul, provable::{Edge, Node, NodeId}, reshape::Reshape, transformer::{
+            causal_mask, embeddings::Embeddings, layernorm::LayerNorm, mha::MhaQK, positional::Positional, qkv::QKV, softmax::Softmax
+        }, Layer
+    }, model::Model, padding::PaddingMode, tensor::{Number, Shape}, Tensor
 };
 
 /// Intermediary struct to hold the config of the model.
@@ -95,8 +83,10 @@ impl GPT2Model {
         let mut model =
             Model::new_from_input_shapes(vec![user_input_shape.into_vec()], PaddingMode::NoPadding);
 
-        let mut last_node_id = Some(model.add_consecutive_layer(Layer::Embeddings(self.embeddings), None)?);
-        last_node_id = Some(model.add_consecutive_layer(Layer::Positional(self.positional), last_node_id)?);
+        let mut last_node_id =
+            Some(model.add_consecutive_layer(Layer::Embeddings(self.embeddings), None)?);
+        last_node_id =
+            Some(model.add_consecutive_layer(Layer::Positional(self.positional), last_node_id)?);
         for block in self.blocks {
             last_node_id = Some(block.write_to_model(&mut model, last_node_id, c)?);
         }
@@ -134,18 +124,21 @@ impl FeedForward<f32> {
         input_node_id: NodeId,
     ) -> anyhow::Result<NodeId> {
         let layernorm = self.norm;
-        let up = Dense::new(self.up, self.up_bias);
+        //let up = MatMul::new_constant(self.up, self.up_bias);
+        // TODO bias
+        let up = MatMul::new_constant(self.up)?;
         let activation = GELU::new();
-        let down = Dense::new(self.down, self.down_bias);
+        //let down = MatMul::new_constant(self.down, self.down_bias);
+        let down = MatMul::new_constant(self.down)?;
         let add = add::Add::new();
         let last_node_id =
             model.add_consecutive_layer(Layer::LayerNorm(layernorm), Some(input_node_id))?;
-        let last_node_id = model.add_consecutive_layer(Layer::Dense(up), Some(last_node_id))?;
+        let last_node_id = model.add_consecutive_layer(Layer::MatMul(up), Some(last_node_id))?;
         let last_node_id = model.add_consecutive_layer(
             Layer::Activation(Activation::Gelu(activation)),
             Some(last_node_id),
         )?;
-        let last_node_id = model.add_consecutive_layer(Layer::Dense(down), Some(last_node_id))?;
+        let last_node_id = model.add_consecutive_layer(Layer::MatMul(down), Some(last_node_id))?;
         model.add_node(Node::new(
             vec![Edge::new(input_node_id, 0), Edge::new(last_node_id, 0)],
             Layer::Add(add),
@@ -168,12 +161,12 @@ impl Attention<f32> {
             self.v,
             self.v_bias,
         );
-        let reshape_qkt = Reshape::new_squeeze(1);
         let mha = MhaQK::new(c.num_heads, c.head_dim());
-        let softmax = Softmax::<f32>::new_with_scale((1.0 / (c.head_dim() as f32)).sqrt());
+        let softmax = Softmax::<f32>::new().with_scale((1.0 / (c.head_dim() as f32)).sqrt());
         let qkt_v = ConcatMatMul::new_with_permute(vec![1, 0, 2]);
-        let out = Dense::new(self.out, self.out_bias);
-        let reshape_merged = Reshape::new_fixed(vec![vec![1, c.hidden_size]]);
+        //let out = MatMul::new_constant(self.out, self.out_bias);
+        let out = MatMul::new_constant(self.out)?;
+        let reshape_merged = Reshape::new_subspace(1..=2,vec![c.hidden_size]);
         // input is [seq_len, emb_size]
         let last_node_id =
             model.add_consecutive_layer(Layer::LayerNorm(self.norm), input_node_id)?;
@@ -183,26 +176,21 @@ impl Attention<f32> {
         // * first one is [num_heads, seq_len] (Q @ K^T - all heads concatenated)
         // * second one is [num_heads, seq_len, head_dim] (V)
         let mha_id = model.add_consecutive_layer(Layer::MhaQK(mha), Some(last_node_id))?;
+
         // same output shape as QKT but now we have softmaxed values
         let last_node_id = model.add_node(Node::new(
             vec![Edge::new(mha_id, 0)],
             Layer::Softmax(softmax),
         ))?;
 
-        // We reshape to [num_heads, 1, seq_len] such concat_matmul can work, since it expects tensors of same shape
-        // so we want to do matmul oover matrices of [1,seq_len] @ [seq_len, head_dim] for each head
-        let qkt_reshaped_id = model.add_node(Node::new(
-            vec![Edge::new(last_node_id, 0)],
-            Layer::Reshape(reshape_qkt),
-        ))?;
         let last_node_id = model.add_node(Node::new(
             // here we take the first output of softmax (QKT) and the second output of MhaQK (V)
-            vec![Edge::new(qkt_reshaped_id, 0), Edge::new(mha_id, 1)],
+            vec![Edge::new(last_node_id, 0), Edge::new(mha_id, 1)],
             Layer::ConcatMatMul(qkt_v),
         ))?;
         let last_node_id =
             model.add_consecutive_layer(Layer::Reshape(reshape_merged), Some(last_node_id))?;
-        let last_node_id = model.add_consecutive_layer(Layer::Dense(out), Some(last_node_id))?;
+        let last_node_id = model.add_consecutive_layer(Layer::MatMul(out), Some(last_node_id))?;
         let last_node_id = model.add_node(Node::new(
             vec![
                 Edge {
@@ -217,13 +205,4 @@ impl Attention<f32> {
         ))?;
         self.feedforward.write_to_model(model, last_node_id)
     }
-}
-
-
-#[cfg(test)]
-mod test {
-    use crate::parser::json::test::{TINY_GPT2_DEBUG_NAME, TINY_GPT2_NAME};
-
-    use super::*;
-    
 }

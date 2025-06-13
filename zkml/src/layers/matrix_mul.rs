@@ -159,6 +159,10 @@ impl<T> MatMul<T> {
     pub fn new(left_matrix: OperandMatrix<T>, right_matrix: OperandMatrix<T>) -> Result<Self> {
         Self::new_internal(left_matrix, right_matrix, None)
     }
+    pub fn new_constant(right: Tensor<T>) -> Result<Self> {
+        let right_matrix = OperandMatrix::new_weight_matrix(right);
+        Self::new_internal(OperandMatrix::Input, right_matrix, None)
+    }
 
     fn new_internal(
         left_matrix: OperandMatrix<T>,

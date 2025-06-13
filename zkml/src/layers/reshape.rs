@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::ops::{Range, RangeBounds};
 
 use crate::{
     layers::provable::{QuantizeOp, QuantizeOutput},
@@ -29,8 +29,10 @@ impl Reshape {
     pub fn new_fixed(new_dim: Vec<Vec<usize>>) -> Self {
         Self::Full(new_dim)
     }
-    pub fn new_subspace(to_remove: Range<usize>, to_add: Vec<usize>) -> Self {
-        Self::Subspace((to_remove, to_add))
+    pub fn new_subspace<R: RangeBounds<usize>>(to_remove: R, to_add: Vec<usize>) -> Self {
+        let start = range_start(&to_remove).expect("invalid start bound");
+        let end = range_end(&to_remove).expect("invalid end bound");
+        Self::Subspace((Range { start, end }, to_add))
     }
     pub fn new_squeeze(index: usize) -> Self {
         Self::Squeeze(index)
@@ -133,6 +135,22 @@ impl QuantizeOp for Reshape {
     }
 }
 
+fn range_start<R: RangeBounds<usize>>(range: &R) -> Option<usize> {
+    match range.start_bound() {
+        std::ops::Bound::Included(&s) => Some(s),
+        std::ops::Bound::Excluded(&s) => Some(s + 1),
+        std::ops::Bound::Unbounded => None,
+    }
+}
+
+fn range_end<R: RangeBounds<usize>>(range: &R) -> Option<usize> {
+    match range.end_bound() {
+        std::ops::Bound::Included(&e) => Some(e + 1),
+        std::ops::Bound::Excluded(&e) => Some(e),
+        std::ops::Bound::Unbounded => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use goldilocks::GoldilocksExt2;
@@ -183,6 +201,31 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         let reshape = Reshape::new_subspace(1..2, vec![3, 4]);
+        let output = reshape
+            .evaluate::<GoldilocksExt2>(&[&input], vec![])
+            .expect("reshape shouldn't fail");
+        assert_eq!(output.outputs[0].get_shape(), vec![2, 3, 4]);
+        assert_eq!(
+            output.outputs[0].get_data(),
+            (0..24).map(|i| i as Element).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_reshape_subspace_range_inclusive() {
+        let input = Tensor::<Element>::new(
+            vec![2, 6, 2],
+            (0..24).map(|i| i as Element).collect::<Vec<_>>(),
+        );
+        println!(
+            "expected output: {:?}",
+            input
+                .get_shape()
+                .clone()
+                .splice(1..2, vec![3, 4])
+                .collect::<Vec<_>>()
+        );
+        let reshape = Reshape::new_subspace(1..=2, vec![3, 4]);
         let output = reshape
             .evaluate::<GoldilocksExt2>(&[&input], vec![])
             .expect("reshape shouldn't fail");

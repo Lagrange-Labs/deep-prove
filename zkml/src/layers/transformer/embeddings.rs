@@ -3,7 +3,10 @@ use ff_ext::ExtensionField;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
-    layers::provable::{Evaluate, LayerOut, OpInfo}, padding::PaddingMode, tensor::Number, Tensor
+    Tensor,
+    layers::provable::{Evaluate, LayerOut, OpInfo},
+    padding::PaddingMode,
+    tensor::Number,
 };
 
 #[derive(Debug, Clone)]
@@ -121,14 +124,18 @@ mod tests {
         let embeddings = Embeddings::new(emb_tensor);
 
         // generate random indices
-        let input_data = generate_unique_random_indices(seq_len, vocab_size).into_iter().map(|x| Element::from(x as Element)).collect::<Vec<_>>();
+        let input_data = generate_unique_random_indices(seq_len, vocab_size)
+            .into_iter()
+            .map(|x| Element::from(x as Element))
+            .collect::<Vec<_>>();
         let x = Tensor::new(vec![seq_len], input_data.clone());
         let out = embeddings.evaluate::<GoldilocksExt2>(&[&x], vec![vec![seq_len]])?;
         assert_eq!(out.outputs()[0].get_shape(), vec![seq_len, emb_size]);
         // for each input index, check that the embedding vector is the correct one
         for (idx, table_idx) in input_data.iter().enumerate() {
             let emb = emb_vector(*table_idx as usize);
-            let out_emb = out.outputs()[0].get_data()[idx * emb_size..(idx + 1) * emb_size].to_vec();
+            let out_emb =
+                out.outputs()[0].get_data()[idx * emb_size..(idx + 1) * emb_size].to_vec();
             assert_eq!(emb, out_emb);
         }
         Ok(())

@@ -1,16 +1,37 @@
+use crate::Tensor;
+
 pub mod embeddings;
 pub mod layernorm;
+pub mod logits;
 pub mod mha;
 pub mod positional;
 pub mod qkv;
 pub mod softmax;
-pub mod logits;
+
+/// Normally q_len == seq_len when the input is contains multiple tokens.
+/// However, if the input contains 1 token, (e.g. with caching for example) then
+/// q_len == 1 and seq_len > 1 if we are down multiple inference steps.
+pub fn causal_mask(num_heads: usize, q_len: usize, seq_len: usize) -> Tensor<f32> {
+    assert!(q_len == 1 || q_len == seq_len);
+    let mask_len = num_heads * q_len * seq_len;
+    let mut mask = vec![0.0; mask_len];
+    for h in 0..num_heads {
+        for i in 0..q_len {
+            for j in 0..seq_len {
+                if j > i {
+                    mask[h * q_len * seq_len + i * seq_len + j] = -1e9;
+                }
+            }
+        }
+    }
+    Tensor::new(vec![num_heads, q_len, seq_len], mask)
+}
 
 #[cfg(test)]
 mod test {
     use std::fs::File;
 
-    use anyhow::Context;
+    use anyhow::{Context, ensure};
     use goldilocks::GoldilocksExt2;
     use serde::Deserialize;
 
@@ -21,8 +42,10 @@ mod test {
             add::{self, Add},
             concat_matmul::{self, ConcatMatMul},
             dense::Dense,
+            matrix_mul::{Config, MatMul, OperandMatrix},
             provable::Evaluate,
             reshape::{self, Reshape},
+            transformer::causal_mask,
         },
         model::Model,
         padding::PaddingMode,
@@ -39,18 +62,32 @@ mod test {
 
     struct FlatFFN<N> {
         layernorm: layernorm::LayerNorm<N>,
-        up: Dense<N>,
+        up: MatMul<N>,
         activation: GELU<N>,
-        down: Dense<N>,
+        down: MatMul<N>,
         add: Add<N>,
     }
 
     impl FlatFFN<f32> {
         pub fn new_from_gguf(_c: &LLMConfig, ffn: FeedForward<f32>) -> Self {
             let layernorm = ffn.norm;
-            let up = Dense::new(ffn.up, ffn.up_bias);
+            let up = {
+                // normally we would do this
+                // Dense::new(ffn.up, ffn.up_bias);
+                // but since we are multiplying this matrix FOR EACH TOKEN in the sequence,
+                // this becomes a matrix multiplication in practice.
+                let weight = OperandMatrix::new_weight_matrix(ffn.up);
+                let left = OperandMatrix::Input;
+                MatMul::new(left, weight).expect("failed to create MatMul")
+            };
             let activation = GELU::new();
-            let down = Dense::new(ffn.down, ffn.down_bias);
+            let down = {
+                // normally we would do this
+                // Dense::new(ffn.down, ffn.down_bias);
+                let weight = OperandMatrix::new_weight_matrix(ffn.down);
+                let left = OperandMatrix::Input;
+                MatMul::new(left, weight).expect("failed to create MatMul")
+            };
             let add = add::Add::new();
             Self {
                 layernorm,
@@ -98,9 +135,20 @@ mod test {
     impl<N: Number> FlatFFN<N> {
         pub fn random(hidden_size: usize, up_size: usize) -> Self {
             let layernorm = layernorm::LayerNorm::random(hidden_size);
-            let up = Dense::random(vec![up_size, hidden_size]);
+            let up = {
+                let weight =
+                    OperandMatrix::new_weight_matrix(Tensor::random(&[up_size, hidden_size]));
+                let left = OperandMatrix::Input;
+                MatMul::new(left, weight).expect("failed to create MatMul")
+            };
             let activation = GELU::new();
-            let down = Dense::random(vec![hidden_size, up_size]);
+            let down = {
+                // Dense::random(vec![up_size, hidden_size]);
+                let weight =
+                    OperandMatrix::new_weight_matrix(Tensor::random(&[hidden_size, up_size]));
+                let left = OperandMatrix::Input;
+                MatMul::new(left, weight).expect("failed to create MatMul")
+            };
             let add = add::Add::new();
             Self {
                 layernorm,
@@ -127,7 +175,7 @@ mod test {
         layernorm: layernorm::LayerNorm<N>,
         mha: mha::MhaQK,
         softmax: softmax::Softmax<N>,
-        out: Dense<N>,
+        out: MatMul<N>,
         reshape_merged: Reshape,
         reshape_qkt: Reshape,
         add: add::Add<N>,
@@ -135,25 +183,37 @@ mod test {
     }
 
     impl FlatAttention<f32> {
-        pub fn new_from_gguf(c: &LLMConfig, att: Attention<f32>) -> Self {
+        pub fn new_from_parser(c: &LLMConfig, att: Attention<f32>) -> Self {
             let qkv = qkv::QKV::new(att.q, att.q_bias, att.k, att.k_bias, att.v, att.v_bias);
             let reshape_qkt = reshape::Reshape::new_squeeze(1);
             let mha = mha::MhaQK::new(c.num_heads, c.head_dim());
             let ffn = FlatFFN::new_from_gguf(c, att.feedforward);
+
+            // Debug the permutation used for ConcatMatMul
+            let permutation = vec![1, 0, 2];
+
+            // Debug the reshape_merged operation
+            let reshape_merged = Reshape::new_subspace(1..=2, vec![c.hidden_size]);
+            let out = {
+                let weight = OperandMatrix::new_weight_matrix(att.out);
+                let left = OperandMatrix::Input;
+                MatMul::new(left, weight).expect("failed to create MatMul")
+            };
+
             Self {
-                out: Dense::new(att.out, att.out_bias),
+                out,
                 hidden_size: c.hidden_size,
                 num_heads: c.num_heads,
                 head_dim: c.head_dim(),
                 qkv,
-                qkt_v: concat_matmul::ConcatMatMul::new_with_permute(vec![1, 0, 2]),
-                softmax: softmax::Softmax::new_with_scale((1.0 / (c.head_dim() as f32)).sqrt()),
+                qkt_v: concat_matmul::ConcatMatMul::new_with_permute(permutation),
+                softmax: softmax::Softmax::new().with_scale((1.0 / (c.head_dim() as f32)).sqrt()),
                 layernorm: att.norm,
                 mha,
-                reshape_merged: Reshape::new_fixed(vec![vec![1, c.hidden_size]]),
+                reshape_merged,
                 reshape_qkt,
+                add: Add::new(),
                 ffn,
-                add: add::Add::new(),
             }
         }
 
@@ -163,61 +223,100 @@ mod test {
             input: &Tensor<f32>,
             gpt2_output: Option<&GPT2LayerOutput>,
         ) -> anyhow::Result<Tensor<f32>> {
-            assert_eq!(input.get_shape().len(), 2);
+            ensure!(input.get_shape().len() == 2);
             let seq_len = input.get_shape()[0];
+
             let normed = self
                 .layernorm
                 .evaluate::<GoldilocksExt2>(&vec![input], vec![])?;
+
             if let Some(gpt2_output) = gpt2_output {
-                assert!(gpt2_output.is_layernorm_close(normed.outputs()));
+                ensure!(gpt2_output.is_layernorm_close(normed.outputs()));
             }
             let qkv = self
                 .qkv
                 .evaluate::<GoldilocksExt2>(&normed.outputs(), vec![])?;
+
             if let Some(gpt2_output) = gpt2_output {
-                assert!(gpt2_output.is_qkv_close(qkv.outputs()));
+                ensure!(gpt2_output.is_qkv_close(qkv.outputs()));
             }
             let mha = self
                 .mha
                 .evaluate::<GoldilocksExt2>(&qkv.outputs(), vec![])?;
+            // first, we need to apply causal mask before softmax
+            //let causal_mask = causal_mask(self.num_heads, seq_len, seq_len);
+            //let masked_attention_scores = mha.outputs()[0].add(&causal_mask);
             // apply softmax + rescale on the first output, Q @ K^T
             // NOTE that we apply softmax row by row
             let softmaxed = self
                 .softmax
                 .evaluate::<GoldilocksExt2>(&[mha.outputs()[0]], vec![])?;
-            #[cfg(test)]
-            {
-                let qkt_shape = softmaxed.outputs()[0].get_shape();
-                let v_shape = mha.outputs()[1].get_shape();
-                println!("qkt shape: {:?}, v shape: {:?}", qkt_shape, v_shape);
-                assert_eq!(v_shape, vec![self.num_heads, seq_len, self.head_dim]);
-                // qk is now of shape [num_heads,seq_len]
-                assert_eq!(qkt_shape, vec![self.num_heads, seq_len]);
+
+            assert_eq!(
+                softmaxed.outputs()[0].get_shape()[0],
+                mha.outputs()[1].get_shape()[0],
+                "First dimension must match for ConcatMatMul: {:?} vs {:?}",
+                softmaxed.outputs()[0].get_shape(),
+                mha.outputs()[1].get_shape()
+            );
+
+            // For each head, the matrix multiplication dimensions should align:
+            // [seq_len, seq_len] @ [seq_len, head_dim] -> [seq_len, head_dim]
+            assert_eq!(
+                softmaxed.outputs()[0].get_shape()[2],
+                mha.outputs()[1].get_shape()[1],
+                "Inner dimensions must match for matrix multiplication: {:?} vs {:?}",
+                softmaxed.outputs()[0].get_shape(),
+                mha.outputs()[1].get_shape()
+            );
+            if let Some(gpt2_output) = gpt2_output {
+                assert!(
+                    gpt2_output.is_attention_weights_close(&softmaxed.outputs()[0]),
+                    "attention_weights_close given {:?} vs computed {:?}",
+                    gpt2_output.attn_weights,
+                    softmaxed.outputs()[0].get_data()
+                );
             }
-            // We reshape to [num_heads, 1, seq_len] such concat_matmul can work, since it expects tensors of same shape
-            let qkt_reshaped = self
-                .reshape_qkt
-                .evaluate::<GoldilocksExt2>(&softmaxed.outputs(), vec![])?;
+
             // now we can project back with V
-            // We go from [num_heads, 1, head_dim] → transpose back to [1, h, head_dim]
+            // We go from [num_heads, seq_len, head_dim] → transpose back to [seq_len, num_heads, head_dim]
             let qkt_v = self.qkt_v.evaluate::<GoldilocksExt2>(
-                &vec![qkt_reshaped.outputs()[0], mha.outputs()[1]],
+                &vec![softmaxed.outputs()[0], mha.outputs()[1]],
                 vec![],
             )?;
-            // → and reshape to [1, hidden_size]
+            // → and reshape to [seq_len, hidden_size]
             let merged = self
                 .reshape_merged
                 .evaluate::<GoldilocksExt2>(&qkt_v.outputs(), vec![])?;
             if let Some(gpt2_output) = gpt2_output {
-                assert!(gpt2_output.is_attention_mha_output_close(merged.outputs()));
+                ensure!(
+                    gpt2_output.is_attention_mha_output_close(merged.outputs()),
+                    "attention_mha_outputcomputed: {:?} vs  expected {:?}",
+                    merged.outputs(),
+                    gpt2_output.attn_output
+                );
             }
-            // now we do the final projection - still [1,hidden_size]
+            println!("DEBUG: out step");
+            // now we do the final projection - still [seq_len,hidden_size]
+            println!("DEBUG: out INPUT: {:?}", merged.outputs()[0]);
+            println!("DEBUG: from gpt2: {:?}", gpt2_output.unwrap().attn_output);
+            println!("DEBUG: out matrix: {:?}", self.out.right_matrix);
             let projected = self
                 .out
                 .evaluate::<GoldilocksExt2>(&merged.outputs(), vec![])?;
+            println!("DEBUG: output projection: {:?}", projected.outputs()[0]);
+            println!(
+                "DEBUG: output projection from gpt2: {:?}",
+                gpt2_output.unwrap().attn_output_proj
+            );
             if let Some(gpt2_output) = gpt2_output {
-                assert!(gpt2_output.is_attention_output_proj_close(projected.outputs()));
+                ensure!(gpt2_output.is_attention_output_proj_close(projected.outputs()));
             }
+
+            println!(
+                "DEBUG: projected shape: {:?}",
+                projected.outputs()[0].get_shape()
+            );
             // and then residual connection, [1, hidden_size]
             let out = self.add.evaluate::<GoldilocksExt2>(
                 &vec![input, &projected.outputs()[0]],
@@ -226,8 +325,10 @@ mod test {
                     projected.outputs()[0].get_shape().to_vec(),
                 ],
             )?;
+
+            println!("DEBUG: add shape: {:?}", out.outputs()[0].get_shape());
             if let Some(gpt2_output) = gpt2_output {
-                assert!(gpt2_output.is_residual_attn_close(out.outputs()));
+                ensure!(gpt2_output.is_residual_attn_close(out.outputs()));
             }
             // and then FFN
             let ffn_out = self.ffn.evaluate(&out.outputs()[0], gpt2_output)?;
@@ -243,7 +344,16 @@ mod test {
             let qkv = qkv::QKV::random(emb_size, hidden_size);
             let mha = mha::MhaQK::new(num_heads, head_size);
             let layernorm = layernorm::LayerNorm::random(emb_size);
-            let out = Dense::random(vec![hidden_size, hidden_size]);
+            // let out = Dense::random(vec![hidden_size, hidden_size]);
+            let out = {
+                let weight = OperandMatrix::new_weight_matrix(Tensor::random(&vec![
+                    hidden_size,
+                    hidden_size,
+                ]));
+                let left = OperandMatrix::Input;
+                MatMul::new(left, weight).expect("failed to create MatMul")
+            };
+
             let ffn = FlatFFN::random(hidden_size, hidden_size);
             Self {
                 out,
@@ -252,12 +362,12 @@ mod test {
                 head_dim: head_size,
                 qkv,
                 qkt_v: concat_matmul::ConcatMatMul::new_with_permute(vec![1, 0, 2]),
-                softmax: softmax::Softmax::new_with_scale(
-                    N::from_f32((1.0 / (head_size as f32)).sqrt()).unwrap(),
-                ),
+                softmax: softmax::Softmax::new()
+                    .with_scale(N::from_f32((1.0 / (head_size as f32)).sqrt()).unwrap()),
                 layernorm,
                 mha,
-                reshape_merged: Reshape::new_fixed(vec![vec![1, hidden_size]]),
+                // reshape_merged: Reshape::new_fixed(vec![vec![1, hidden_size]]),
+                reshape_merged: Reshape::new_subspace(1..=2, vec![hidden_size]),
                 reshape_qkt: Reshape::new_squeeze(1),
                 add: Add::new(),
                 ffn,
@@ -282,7 +392,7 @@ mod test {
         let config = LLMConfig::from_content(&loader)?;
         let LLMModel::GPT2(mut model) = config.model(&loader)?;
         println!("model: {:?}", config.specific_config);
-        let mut att = FlatAttention::new_from_gguf(&config, model.blocks.remove(0));
+        let mut att = FlatAttention::new_from_parser(&config, model.blocks.remove(0));
         let input = Tensor::<f32>::random(&[1, config.embedding_size]);
         let output = att.forward(&input, None).unwrap();
         println!("output shape: {:?}", output.get_shape());
@@ -291,10 +401,9 @@ mod test {
 
     #[derive(Debug, Deserialize)]
     struct GPT2Output {
-        #[allow(dead_code)]
         token: String,
-        #[allow(dead_code)]
-        input_ids: u32,
+        input_ids: Vec<u32>,
+        // flattened input embeddings
         inputs_embeds: Vec<f32>,
         layers: Vec<GPT2LayerOutput>,
     }
@@ -318,6 +427,7 @@ mod test {
         k: Vec<f32>,
         v: Vec<f32>,
         attn_output: Vec<f32>,
+        attn_weights: Vec<f32>,
         attn_output_proj: Vec<f32>,
         residual_attn: Vec<f32>,
         ffn_up: Vec<f32>,
@@ -337,6 +447,9 @@ mod test {
             q_close && k_close && v_close
         }
 
+        pub fn is_attention_weights_close(&self, attention_weights: &Tensor<f32>) -> bool {
+            is_close(attention_weights.get_data(), &self.attn_weights)
+        }
         pub fn is_layernorm_close(&self, layernorm: Vec<&Tensor<f32>>) -> bool {
             is_close(layernorm[0].get_data(), &self.ln1_out)
         }
@@ -383,12 +496,19 @@ mod test {
                 .context(format!("failed to open file {}", debug_output_path.clone()))?,
         )?;
         let input = Tensor::new(
-            vec![1],
-            vec![gpt2_output.input_ids as f32],
+            vec![gpt2_output.input_ids.len()],
+            gpt2_output.input_ids.iter().map(|x| *x as f32).collect(),
         );
-        let embedded = llm_model.embeddings.evaluate::<GoldilocksExt2>(&vec![&input], vec![])?;
-        let positionned = llm_model.positional.evaluate::<GoldilocksExt2>(&vec![embedded.outputs()[0]], vec![])?;
-        assert!(is_close(&positionned.outputs()[0].get_data(), &gpt2_output.inputs_embeds));
+        let embedded = llm_model
+            .embeddings
+            .evaluate::<GoldilocksExt2>(&vec![&input], vec![])?;
+        let positionned = llm_model
+            .positional
+            .evaluate::<GoldilocksExt2>(&vec![embedded.outputs()[0]], vec![])?;
+        assert!(is_close(
+            &positionned.outputs()[0].get_data(),
+            &gpt2_output.inputs_embeds
+        ));
         Ok(())
     }
 
@@ -406,16 +526,16 @@ mod test {
                 .context(format!("failed to open file {}", debug_output_path.clone()))?,
         )?;
         let input = Tensor::new(
-            vec![1, config.embedding_size],
+            vec![gpt2_output.input_ids.len(), config.embedding_size],
             gpt2_output.inputs_embeds.clone(),
         );
         let LLMModel::GPT2(mut model) = config.model_json(&loader)?;
         println!("model: {:?}", config.specific_config);
         // Try to run with the flat attention implementation
         let first_attention = model.blocks.remove(0);
-        let mut att = FlatAttention::new_from_gguf(&config, first_attention.clone());
+        let mut att = FlatAttention::new_from_parser(&config, first_attention.clone());
         let first_layer_output = gpt2_output.layers.get(0).expect("no layers in output");
-        let output = att.forward(&input, Some(first_layer_output)).unwrap();
+        let output = att.forward(&input, Some(first_layer_output))?;
         println!("flat output: {:?}", output.get_shape());
         let expected_output = &first_layer_output.manual_output;
         assert!(is_close(expected_output, &output.get_data()));
@@ -450,7 +570,7 @@ mod test {
         let expected_output = &&gpt2_output.final_output();
         let input = Tensor::new(
             vec![1],
-            vec![gpt2_output.input_ids as f32],
+            gpt2_output.input_ids.iter().map(|x| *x as f32).collect(),
         );
         let model = llm_model.to_provable_model(&config, Shape::from(input.get_shape()))?;
         let output = model.run_float(&[input.clone()])?[0].clone();

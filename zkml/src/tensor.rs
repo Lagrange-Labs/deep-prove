@@ -820,12 +820,14 @@ where
     T: Number,
 {
     pub fn argmax(&self) -> usize {
-        self.data.iter().enumerate().fold((0,T::MIN), |acc, x| {
-            match acc.1.compare(&x.1) {
+        self.data
+            .iter()
+            .enumerate()
+            .fold((0, T::MIN), |acc, x| match acc.1.compare(&x.1) {
                 Ordering::Less => (x.0, *x.1),
                 _ => acc,
-            }
-        }).0
+            })
+            .0
     }
 
     pub fn reshape(mut self, new_shape: Vec<usize>) -> Tensor<T> {
@@ -913,7 +915,7 @@ where
     /// Element-wise multiplication
     pub fn mul(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(
-            self.shape == other.shape,
+            Shape::from_it(&self.shape).numel() == Shape::from_it(&other.shape).numel(),
             "Shape mismatch for multiplication: {:?} != {:?}",
             self.shape,
             other.shape
@@ -1745,7 +1747,13 @@ impl<T: Number> Tensor<T> {
             assert_eq!(common_shape + 1, self.shape.len());
         } else {
             assert_eq!(common_shape, self.shape.len());
-            assert_eq!(other.shape.first().unwrap(), &1);
+            assert_eq!(
+                other.shape.first().unwrap(),
+                &1,
+                "concat: self.shape: {:?}, other.shape: {:?}",
+                self.shape,
+                other.shape
+            );
         }
         // then the new shape has this higher dimension + 1 simply
         // common_shape since 0-based indexing
@@ -1791,6 +1799,11 @@ impl<T> Tensor<T> {
     pub fn slices_last_dim(&self) -> impl Iterator<Item = &[T]> {
         let last_dim = *self.shape.last().unwrap();
         let stride = last_dim;
+        self.data.chunks(stride)
+    }
+
+    pub fn slice_on_dim(&self, dim: usize) -> impl Iterator<Item = &[T]> {
+        let stride = self.shape[dim..].iter().product();
         self.data.chunks(stride)
     }
 }

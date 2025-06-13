@@ -3,9 +3,10 @@ use std::{collections::HashMap, path::Path};
 use anyhow::{Context, bail, ensure};
 use serde::Deserialize;
 
-use crate::layers::transformer::embeddings::Embeddings;
 use crate::{
-    layers::transformer::{layernorm::LayerNorm, positional::Positional}, parser::llm::{Attention, FeedForward, LLMConfig, LLMVariant}, Tensor
+    Tensor,
+    layers::transformer::{embeddings::Embeddings, layernorm::LayerNorm, positional::Positional},
+    parser::llm::{Attention, FeedForward, LLMConfig, LLMVariant},
 };
 
 impl LLMConfig {
@@ -57,8 +58,14 @@ impl FeedForward<f32> {
         let down = l.get_tensor("ffn_down.weight")?;
         let down_bias = l.get_tensor("ffn_down.bias")?;
         ensure!(
-            down.get_shape()[0] == c.embedding_size,
-            "down must have shape {:?} vs embedding_size: {}",
+            up.get_shape()[0] == c.hidden_size,
+            "up have shape {:?} but in features should be equal to hidden_size: {}",
+            up.get_shape(),
+            c.hidden_size
+        );
+        ensure!(
+            down.get_shape()[1] == c.embedding_size,
+            "down have shape {:?} but out features should be equal to embedding_size: {}",
             down.get_shape(),
             c.embedding_size
         );
