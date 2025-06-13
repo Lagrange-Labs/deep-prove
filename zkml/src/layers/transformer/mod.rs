@@ -569,7 +569,7 @@ mod test {
         )?;
         let expected_output = &&gpt2_output.final_output();
         let input = Tensor::new(
-            vec![1],
+            vec![gpt2_output.input_ids.len()],
             gpt2_output.input_ids.iter().map(|x| *x as f32).collect(),
         );
         let model = llm_model.to_provable_model(&config, Shape::from(input.get_shape()))?;
