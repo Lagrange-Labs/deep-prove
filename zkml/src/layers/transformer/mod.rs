@@ -32,6 +32,7 @@ mod test {
     use std::fs::File;
 
     use anyhow::{Context, ensure};
+    use ark_std::rand::{Rng, thread_rng};
     use goldilocks::GoldilocksExt2;
     use serde::Deserialize;
 
@@ -41,11 +42,9 @@ mod test {
             activation::GELU,
             add::{self, Add},
             concat_matmul::{self, ConcatMatMul},
-            dense::Dense,
-            matrix_mul::{Config, MatMul, OperandMatrix},
+            matrix_mul::{MatMul, OperandMatrix},
             provable::Evaluate,
-            reshape::{self, Reshape},
-            transformer::causal_mask,
+            reshape::Reshape,
         },
         model::Model,
         padding::PaddingMode,
@@ -166,7 +165,9 @@ mod test {
     // Once this flat impl is consistent, then we can compare with the graph version.
     // Once that is consistent too, we can delete.
     struct FlatAttention<N> {
+        #[allow(dead_code)]
         num_heads: usize,
+        #[allow(dead_code)]
         head_dim: usize,
         #[allow(dead_code)]
         hidden_size: usize,
@@ -177,7 +178,6 @@ mod test {
         softmax: softmax::Softmax<N>,
         out: MatMul<N>,
         reshape_merged: Reshape,
-        reshape_qkt: Reshape,
         add: add::Add<N>,
         ffn: FlatFFN<N>,
     }
@@ -185,7 +185,6 @@ mod test {
     impl FlatAttention<f32> {
         pub fn new_from_parser(c: &LLMConfig, att: Attention<f32>) -> Self {
             let qkv = qkv::QKV::new(att.q, att.q_bias, att.k, att.k_bias, att.v, att.v_bias);
-            let reshape_qkt = reshape::Reshape::new_squeeze(1);
             let mha = mha::MhaQK::new(c.num_heads, c.head_dim());
             let ffn = FlatFFN::new_from_gguf(c, att.feedforward);
 
@@ -211,7 +210,6 @@ mod test {
                 layernorm: att.norm,
                 mha,
                 reshape_merged,
-                reshape_qkt,
                 add: Add::new(),
                 ffn,
             }
@@ -224,7 +222,6 @@ mod test {
             gpt2_output: Option<&GPT2LayerOutput>,
         ) -> anyhow::Result<Tensor<f32>> {
             ensure!(input.get_shape().len() == 2);
-            let seq_len = input.get_shape()[0];
 
             let normed = self
                 .layernorm
@@ -244,8 +241,8 @@ mod test {
                 .mha
                 .evaluate::<GoldilocksExt2>(&qkv.outputs(), vec![])?;
             // first, we need to apply causal mask before softmax
-            //let causal_mask = causal_mask(self.num_heads, seq_len, seq_len);
-            //let masked_attention_scores = mha.outputs()[0].add(&causal_mask);
+            // let causal_mask = causal_mask(self.num_heads, seq_len, seq_len);
+            // let masked_attention_scores = mha.outputs()[0].add(&causal_mask);
             // apply softmax + rescale on the first output, Q @ K^T
             // NOTE that we apply softmax row by row
             let softmaxed = self
@@ -296,27 +293,14 @@ mod test {
                     gpt2_output.attn_output
                 );
             }
-            println!("DEBUG: out step");
             // now we do the final projection - still [seq_len,hidden_size]
-            println!("DEBUG: out INPUT: {:?}", merged.outputs()[0]);
-            println!("DEBUG: from gpt2: {:?}", gpt2_output.unwrap().attn_output);
-            println!("DEBUG: out matrix: {:?}", self.out.right_matrix);
             let projected = self
                 .out
                 .evaluate::<GoldilocksExt2>(&merged.outputs(), vec![])?;
-            println!("DEBUG: output projection: {:?}", projected.outputs()[0]);
-            println!(
-                "DEBUG: output projection from gpt2: {:?}",
-                gpt2_output.unwrap().attn_output_proj
-            );
             if let Some(gpt2_output) = gpt2_output {
                 ensure!(gpt2_output.is_attention_output_proj_close(projected.outputs()));
             }
 
-            println!(
-                "DEBUG: projected shape: {:?}",
-                projected.outputs()[0].get_shape()
-            );
             // and then residual connection, [1, hidden_size]
             let out = self.add.evaluate::<GoldilocksExt2>(
                 &vec![input, &projected.outputs()[0]],
@@ -326,7 +310,6 @@ mod test {
                 ],
             )?;
 
-            println!("DEBUG: add shape: {:?}", out.outputs()[0].get_shape());
             if let Some(gpt2_output) = gpt2_output {
                 ensure!(gpt2_output.is_residual_attn_close(out.outputs()));
             }
@@ -368,7 +351,6 @@ mod test {
                 mha,
                 // reshape_merged: Reshape::new_fixed(vec![vec![1, hidden_size]]),
                 reshape_merged: Reshape::new_subspace(1..=2, vec![hidden_size]),
-                reshape_qkt: Reshape::new_squeeze(1),
                 add: Add::new(),
                 ffn,
             }
@@ -392,15 +374,18 @@ mod test {
         let config = LLMConfig::from_content(&loader)?;
         let LLMModel::GPT2(mut model) = config.model(&loader)?;
         println!("model: {:?}", config.specific_config);
-        let mut att = FlatAttention::new_from_parser(&config, model.blocks.remove(0));
-        let input = Tensor::<f32>::random(&[1, config.embedding_size]);
-        let output = att.forward(&input, None).unwrap();
-        println!("output shape: {:?}", output.get_shape());
+        for seq_len in [1, 10] {
+            let input = Tensor::<f32>::random(&[seq_len, config.embedding_size]);
+            let mut att = FlatAttention::new_from_parser(&config, model.blocks.remove(0));
+            let flat_output = att.forward(&input, None).unwrap();
+            println!("output shape: {:?}", flat_output.get_shape());
+        }
         Ok(())
     }
 
     #[derive(Debug, Deserialize)]
     struct GPT2Output {
+        #[allow(dead_code)]
         token: String,
         input_ids: Vec<u32>,
         // flattened input embeddings
@@ -572,12 +557,21 @@ mod test {
             vec![gpt2_output.input_ids.len()],
             gpt2_output.input_ids.iter().map(|x| *x as f32).collect(),
         );
+        // also test on a single random token
+        let max_token = thread_rng().gen_range(0..llm_model.embeddings.emb.get_shape()[0]);
+        let single_input = Tensor::new(vec![1], vec![max_token as f32]);
+        let model = llm_model
+            .clone()
+            .to_provable_model(&config, Shape::from(single_input.get_shape()))?;
+        model.run_float(&[single_input.clone()])?;
+
         let model = llm_model.to_provable_model(&config, Shape::from(input.get_shape()))?;
         let output = model.run_float(&[input.clone()])?[0].clone();
         assert!(
             is_close(expected_output, &output.get_data()),
             "graph output differs"
         );
+
         Ok(())
     }
 }

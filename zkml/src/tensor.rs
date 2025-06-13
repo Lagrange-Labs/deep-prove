@@ -179,7 +179,7 @@ impl Number for GoldilocksExt2 {
     fn to_usize(&self) -> usize {
         unreachable!("Called to_usize for Goldilocks")
     }
-    fn from_usize(u: usize) -> Self {
+    fn from_usize(_: usize) -> Self {
         unreachable!("Called from_usize for Goldilocks")
     }
 }

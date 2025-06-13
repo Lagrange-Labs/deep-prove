@@ -138,14 +138,19 @@ impl FeedForward<f32> {
         // Use the new LayerNorm::from_loader
         let norm = LayerNorm::from_loader(&ffn_norm_loader, &c)?;
 
-        let up = loader.get_tensor("ffn_up.weight")?;
+        let up = loader.get_tensor("ffn_up.weight")?.transpose();
         let up_bias = loader.get_tensor("ffn_up.bias")?;
-        let down = loader.get_tensor("ffn_down.weight")?;
+        let down = loader.get_tensor("ffn_down.weight")?.transpose();
         let down_bias = loader.get_tensor("ffn_down.bias")?;
-
         ensure!(
-            down.get_shape()[0] == c.embedding_size,
-            "down must have shape {:?} vs embedding_size: {}",
+            up.get_shape()[0] == c.hidden_size,
+            "up have shape {:?} but in features should be equal to hidden_size: {}",
+            up.get_shape(),
+            c.hidden_size
+        );
+        ensure!(
+            down.get_shape()[1] == c.embedding_size,
+            "down have shape {:?} but out features should be equal to embedding_size: {}",
             down.get_shape(),
             c.embedding_size
         );

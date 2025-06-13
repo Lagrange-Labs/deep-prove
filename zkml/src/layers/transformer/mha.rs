@@ -265,7 +265,7 @@ pub fn infinitizer<N: Number>(
 mod test {
     use goldilocks::GoldilocksExt2;
 
-    use crate::{Element, layers::transformer::causal_mask};
+    use crate::Element;
 
     use super::*;
 

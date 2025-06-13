@@ -27,9 +27,11 @@ impl<N: Number> OpInfo for Embeddings<N> {
         _padding_mode: PaddingMode,
     ) -> Vec<Vec<usize>> {
         assert_eq!(input_shapes.len(), 1);
-        assert_eq!(input_shapes[0].len(), 1);
         // for each input, we output an embedding vector
-        vec![vec![input_shapes[0][0], self.emb.get_shape()[1]]]
+        input_shapes
+            .iter()
+            .map(|shape| vec![shape[0], self.emb.get_shape()[1]])
+            .collect()
     }
 
     fn num_outputs(&self, num_inputs: usize) -> usize {
