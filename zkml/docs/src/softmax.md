@@ -28,7 +28,6 @@ The Softmax layer is used to inside a transformer to map a tensor of weighted va
  Due to the highly non-linear nature, and the fact that the $`\exp`$ function has no natural analogue over a finite field $`\mathbb{F}`$, we employ lookups to prove correct execution of softmax. The technique is largely based on that proposed in [zkLLM][1], the notable differences being due to Deep Proves use of the Goldilocks field we perform quantisation differently. 
 
   ### Exponential Tables
-
  In order to reuse lookup tables between softmax layers we assume that the scaling factor of the quantised inputs is the same everytime. For this we pick a suitable power of $`2`$ (in our case $`2^{24}`$) and consider our quantised values $`q`$ to be such that if $`x\in\mathbb{R}`$ then $`2^{24} \cdot x = q`$. 
 
  Additionally it is assumed that all inputs to the $`\exp`$ lookup are negative, this is to give better stability. This can always be achieved by subtracting a suitable constant before the lookup, and then multiplying the output by a suitable constant after.
@@ -38,6 +37,14 @@ The Softmax layer is used to inside a transformer to map a tensor of weighted va
  The below image demonstrates how this lookup works:
 
  ![EXP Lookup](./img/EXP-Lookups.png)
+
+ For a more illustrative example consider the following. We have input matrices $Q, K$ and these both have scale factor $`2^{-s}`$ where $`s\in\mathbb{R}`$. (same scaling factor for sake of explanation + representation as power of two since scale factors are always positive)
+
+Then we calculate $Q\cdot K^{\intercal}$ and this now has scale factor $`2^{-2s}`$. If we were doing this as we normally do this would mean $`s_{1} = 2^{-s}, s_{2} = 2^{-s}`$ and we haven’t defined $`s_{3}`$ yet (normally we rescale by $`\frac{s_{1}\cdot s_{2}}{s_{3}}`$). So we stick with $`s_{1} \cdot s_{2}`$ as the multiplier and then the exponential lookup table expects its input column to have multiplier $`2^{24}`$. So as long as $`s_{1} \cdot s_{2} > 2^{-24}`$ we can perform the lookup (without requantising first). If $`s_{1}\cdot s_{2} > 2^{-24}`$, then we can find some $y\in\mathbb{R}$ such that $`s_{1} \cdot s_{2} \cdot 2^{-y} = 2^{-24}`$. So then prover take $`Q\cdot K^{\intercal}`$ and multiply by $`2^{y}`$ (rounded so that it can be converted into a field element). Now the prover can directly pass into the lookup and they use this to obtain the softmax output.
+
+To see this in further detail observe that $`q\in Q$ and $k \in K`$ were both quantised numbers (so they are integers), they correspond to floats as $`q = 2^{s} \cdot x_{q}`$ and $`k = 2^{s}\cdot x_{k}`$. So after the matrix multiplication we would have $`qk = 2^{s} \cdot 2^{s} \cdot x_{q} \cdot x_{k}`$ then we also have that $`\frac{qk}{2^{2s}} = x_{q} \cdot x_{k}`$ - we stay on the bigger type with bigger bitsize so no need for “s3” - or we consider s3=1, i.e. requant range == output range of the operation.
+
+Since $`qk = 2^{2s} \cdot x_{q} \cdot x_{k}`$ in order use the same lookup table each time we want the power of two to always be $`24`$. So find $`y`$ that satisfies $`2s + y = 24`$ and multiply both sides by $`2^{y}`$. Now we have $`2^{y} \cdot qk = 2^{24}\cdot x_{q} \cdot x_{k}`$. In order to get back to float we just have divide by $`2^{24}`$ giving $`\frac{2^{y}\cdot qk}{2^{24}} = x_{q}\cdot x_{k}`$.
 
  ### Normalisation
 

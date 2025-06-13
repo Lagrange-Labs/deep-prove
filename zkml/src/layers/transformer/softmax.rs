@@ -276,7 +276,7 @@ impl Evaluate<Element> for Softmax<Element> {
         // First we heck that we have some quantisation info.
         ensure!(
             self.quant_info.is_some(),
-            "Could not evaluate quantised softmax because the operation ahs not been quantised"
+            "Could not evaluate quantised softmax because the operation has not been quantised"
         );
         // Check that we only have one input
         ensure!(
