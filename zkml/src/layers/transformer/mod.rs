@@ -604,7 +604,6 @@ mod test {
             output,
             &gpt2_output.logits[0..5]
         );
-
         Ok(())
     }
 }

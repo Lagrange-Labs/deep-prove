@@ -1,8 +1,7 @@
-use crate::{model::llm::LLMTokenizer};
+use crate::{model::llm::LLMTokenizer, Tensor};
 use anyhow::bail;
 
 use crate::{
-    Tensor,
     layers::{
         Layer,
         activation::{Activation, GELU},
