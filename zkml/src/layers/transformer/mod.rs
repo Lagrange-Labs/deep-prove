@@ -391,16 +391,22 @@ mod test {
         // flattened input embeddings
         inputs_embeds: Vec<f32>,
         layers: Vec<GPT2LayerOutput>,
+        // output of final projection before logits selection
+        logits: Vec<f32>,
+        // the new token generated for this input
+        next_token_id: u32,
     }
 
     impl GPT2Output {
-        pub fn final_output(&self) -> &Vec<f32> {
-            self.layers
-                .last()
-                .unwrap()
-                .manual_output_with_final_ln
-                .as_ref()
-                .unwrap()
+        pub fn final_output(&self) -> Vec<f32> {
+            //self.logits.clone()
+            vec![self.next_token_id as f32]
+            // self.layers
+            //    .last()
+            //    .unwrap()
+            //    .manual_output_with_final_ln
+            //    .as_ref(
+            //    .unwrap()
         }
     }
 
@@ -418,6 +424,7 @@ mod test {
         ffn_up: Vec<f32>,
         manual_output: Vec<f32>,
         // Optional field for the final layer with LayerNorm applied
+        #[allow(dead_code)]
         manual_output_with_final_ln: Option<Vec<f32>>,
     }
 
@@ -497,6 +504,7 @@ mod test {
         Ok(())
     }
 
+    /// Compares the flat implementation vs the graph implementation for the first layer
     #[test]
     fn test_read_gpt2_pytorch_output_first() -> anyhow::Result<()> {
         let model_weights_path = json::test::get_json_file(TINY_GPT2_NAME)?;
@@ -538,6 +546,8 @@ mod test {
         Ok(())
     }
 
+    /// Compares the graph implementation vs the output of the pytorch model over
+    /// all passes including to the final logits selection.
     #[test]
     fn test_gpt2_model_full_pass() -> anyhow::Result<()> {
         let model_weights_path = json::test::get_json_file(TINY_GPT2_NAME)?;
@@ -569,9 +579,11 @@ mod test {
         let output = model.run_float(&[input.clone()])?[0].clone();
         assert!(
             is_close(expected_output, &output.get_data()),
-            "graph output differs"
+            "graph output differs: {:?} vs {:?}: LOGITS {:?}",
+            expected_output,
+            output.get_data(),
+            &gpt2_output.logits[0..5]
         );
-
         Ok(())
     }
 }

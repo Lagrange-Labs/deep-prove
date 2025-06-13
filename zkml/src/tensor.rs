@@ -2430,4 +2430,11 @@ mod test {
         let permuted = shape.permute(&[1, 0, 2]);
         assert_eq!(permuted.0, vec![3, 2, 4]);
     }
+
+    #[test]
+    fn test_tensor_argmax() {
+        let tensor = Tensor::<Element>::new(vec![3], vec![1, 2, 3]);
+        let argmax = tensor.argmax();
+        assert_eq!(argmax, 2);
+    }
 }

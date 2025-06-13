@@ -1,23 +1,11 @@
 use anyhow::bail;
 
 use crate::{
-    Tensor,
     layers::{
-        Layer,
-        activation::{Activation, GELU},
-        add,
-        concat_matmul::ConcatMatMul,
-        matrix_mul::MatMul,
-        provable::{Edge, Node, NodeId},
-        reshape::Reshape,
-        transformer::{
-            embeddings::Embeddings, layernorm::LayerNorm, mha::MhaQK, positional::Positional,
-            qkv::QKV, softmax::Softmax,
-        },
-    },
-    model::Model,
-    padding::PaddingMode,
-    tensor::{Number, Shape},
+        activation::{Activation, GELU}, add, concat_matmul::ConcatMatMul, matrix_mul::MatMul, provable::{Edge, Node, NodeId}, reshape::Reshape, transformer::{
+            embeddings::Embeddings, layernorm::LayerNorm, logits::Logits, mha::MhaQK, positional::Positional, qkv::QKV, softmax::Softmax
+        }, Layer
+    }, model::Model, padding::PaddingMode, tensor::{Number, Shape}, Tensor
 };
 
 /// Intermediary struct to hold the config of the model.
@@ -68,6 +56,8 @@ pub struct GPT2Model {
     pub blocks: Vec<Attention<f32>>,
     /// Final LayerNorm applied after all transformer blocks (ln_f in GPT-2)
     pub final_norm: LayerNorm<f32>,
+    /// final projection on token sizes to before selecting next token
+    pub final_proj: MatMul<f32>,
 }
 
 impl GPT2Model {
@@ -76,12 +66,14 @@ impl GPT2Model {
         positional: Positional<f32>,
         blocks: Vec<Attention<f32>>,
         final_norm: LayerNorm<f32>,
+        final_proj: MatMul<f32>,
     ) -> Self {
         Self {
             embeddings,
             positional,
             blocks,
             final_norm,
+            final_proj,
         }
     }
     /// Creates a Model<f32> from the GPT2Model. Currently it does NOT support the embeddings and positional nor
@@ -102,7 +94,11 @@ impl GPT2Model {
         for block in self.blocks {
             last_node_id = Some(block.write_to_model(&mut model, last_node_id, c)?);
         }
-        model.add_consecutive_layer(Layer::LayerNorm(self.final_norm), last_node_id)?;
+        last_node_id =
+            Some(model.add_consecutive_layer(Layer::LayerNorm(self.final_norm), last_node_id)?);
+        last_node_id =
+            Some(model.add_consecutive_layer(Layer::MatMul(self.final_proj), last_node_id)?);
+        model.add_consecutive_layer(Layer::Logits(Logits::Argmax), last_node_id)?;
         model.route_output(None)?;
         Ok(model)
     }

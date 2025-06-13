@@ -13,7 +13,10 @@ use candle_core::{CpuStorage, Device, Storage, quantized::gguf_file::Content};
 
 use crate::{
     Tensor,
-    layers::transformer::{embeddings::Embeddings, layernorm::LayerNorm, positional::Positional},
+    layers::{
+        matrix_mul::MatMul,
+        transformer::{embeddings::Embeddings, layernorm::LayerNorm, positional::Positional},
+    },
     parser::llm::{Attention, FeedForward, GPT2Model, LLMConfig, LLMModel, LLMVariant},
 };
 
@@ -95,28 +98,9 @@ impl LLMVariant {
             Self::GPT2 => Ok(LLMModel::GPT2(GPT2Model::from_loader(l, config)?)),
         }
     }
-    pub fn model_json(
-        &self,
-        l: &json::FileTensorLoader,
-        config: &LLMConfig,
-    ) -> anyhow::Result<LLMModel> {
-        match self {
-            Self::GPT2 => Ok(LLMModel::GPT2(GPT2Model::from_json(l, config)?)),
-        }
-    }
 }
 
 impl GPT2Model {
-    pub fn from_json(l: &json::FileTensorLoader, config: &LLMConfig) -> anyhow::Result<Self> {
-        let embeddings = Embeddings::from_json(l)?;
-        let positional = Positional::from_json(l, config)?;
-        let num_layers = config.num_block;
-        let blocks = (0..num_layers)
-            .map(|i| Attention::from_json(&l.pp(&format!("blk.{i}.")), &config))
-            .collect::<anyhow::Result<Vec<Attention<f32>>>>()?;
-        let final_norm = LayerNorm::from_json(&l.pp("output_"), config)?;
-        Ok(Self::new(embeddings, positional, blocks, final_norm))
-    }
     pub fn from_loader(loader: &FileTensorLoader, config: &LLMConfig) -> anyhow::Result<Self> {
         let embeddings = Embeddings::from_loader(loader)?;
         let positional = Positional::from_loader(loader, config)?;
@@ -125,7 +109,11 @@ impl GPT2Model {
             .map(|i| Attention::from_loader(&loader.pp(&format!("blk.{i}.")), &config))
             .collect::<anyhow::Result<Vec<Attention<f32>>>>()?;
         let final_norm = LayerNorm::from_loader(&loader.pp("output_"), config)?;
-        Ok(Self::new(embeddings, positional, blocks, final_norm))
+        let proj_weights = loader.get_tensor("output.weight")?.transpose();
+        let final_proj = MatMul::new_constant(proj_weights)?;
+        Ok(Self::new(
+            embeddings, positional, blocks, final_norm, final_proj,
+        ))
     }
 }
 
@@ -531,7 +519,7 @@ pub mod tests {
 
     // https://docs.rs/candle-transformers/latest/src/candle_transformers/models/llama.rs.html#517-535
     #[test]
-    #[ignore = "just a test to explore gguf internal structure"]
+    //#[ignore = "just a test to explore gguf internal structure"]
     fn test_load_and_inspect_gpt2_gguf() -> anyhow::Result<()> {
         let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
 

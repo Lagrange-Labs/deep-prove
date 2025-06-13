@@ -153,6 +153,17 @@ pub fn argmax<T: PartialOrd>(v: &[T]) -> Option<usize> {
     Some(max_index)
 }
 
+pub fn argmax_slice<N: Number>(v: &[N]) -> Option<usize> {
+    if v.is_empty() {
+        return None;
+    }
+    Some(v.iter().enumerate().fold((0, N::MIN), |acc, x| match acc.1.compare(&x.1) {
+        Ordering::Less => (x.0, *x.1),
+        _ => acc,
+    })
+    .0)
+}
+
 pub trait NextPowerOfTwo {
     /// Returns a new vector where each element is the next power of two.
     fn next_power_of_two(&self) -> Self;
@@ -246,8 +257,11 @@ mod test {
     }
 }
 
+use std::cmp::Ordering;
 #[cfg(test)]
 use std::sync::Once;
+
+use crate::tensor::Number;
 
 #[cfg(test)]
 static INIT: Once = Once::new();

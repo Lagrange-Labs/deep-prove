@@ -260,8 +260,32 @@ output_json = {
     "token_embeds_only": to_list(token_embeds_only),
     "pos_embeds_only": to_list(pos_embeds_only),
     "inputs_embeds": to_list(inputs_embeds),
-    "layers": layer_debug_outputs
+    "layers": layer_debug_outputs,
+    "final_output": to_list(manual_output_with_final_ln) if manual_output_with_final_ln is not None else None,
 }
+
+# Get the final token prediction using argmax
+with torch.no_grad():
+    # Get our manual prediction
+    manual_logits = model.lm_head(manual_output_with_final_ln)
+    
+    # Get official model's final projection
+    official_outputs = model(input_ids)
+    official_logits = official_outputs.logits
+    
+    # Compare the final projections
+    logits_diff = (manual_logits - official_logits).abs().max()
+    print(f"🔍 Final projection comparison:")
+    print(f"  Max difference in logits: {logits_diff.item():.6f}")
+    print(f"  Logits match: {torch.allclose(manual_logits, official_logits, atol=1e-5)}")
+    
+    # Use argmax for debug output
+    next_token = torch.argmax(manual_logits[:, -1, :], dim=-1)
+    
+    output_json["next_token_id"] = next_token.item()
+    output_json["logits"] = to_list(manual_logits)
+    print(f"LOGITS: {output_json['logits'][0:5]}")
+    output_json["logits_max_diff"] = logits_diff.item()
 
 # Save the debug tensor outputs
 output_debug_fname = os.path.join(args.output_dir, f"{args.model_name.replace('-', '_')}_debug_output.json")

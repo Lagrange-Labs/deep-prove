@@ -5,8 +5,11 @@ use serde::Deserialize;
 
 use crate::{
     Tensor,
-    layers::transformer::{embeddings::Embeddings, layernorm::LayerNorm, positional::Positional},
-    parser::llm::{Attention, FeedForward, LLMConfig, LLMVariant},
+    layers::{
+        matrix_mul::MatMul,
+        transformer::{embeddings::Embeddings, layernorm::LayerNorm, positional::Positional},
+    },
+    parser::llm::{Attention, FeedForward, GPT2Model, LLMConfig, LLMModel, LLMVariant},
 };
 
 impl LLMConfig {
@@ -31,6 +34,11 @@ impl LLMConfig {
 }
 
 impl LLMVariant {
+    pub fn model_json(&self, l: &FileTensorLoader, config: &LLMConfig) -> anyhow::Result<LLMModel> {
+        match self {
+            Self::GPT2 => Ok(LLMModel::GPT2(GPT2Model::from_json(l, config)?)),
+        }
+    }
     pub fn from_json(l: &FileTensorLoader) -> anyhow::Result<Self> {
         let variant_value = l
             .get_metadata("model_name")
@@ -47,6 +55,22 @@ impl LLMVariant {
             "sshleifer/tiny-gpt2" => Ok(Self::GPT2),
             a => bail!("unsupported architecture: {:?}", a),
         }
+    }
+}
+impl GPT2Model {
+    pub fn from_json(l: &FileTensorLoader, config: &LLMConfig) -> anyhow::Result<Self> {
+        let embeddings = Embeddings::from_json(l)?;
+        let positional = Positional::from_json(l, config)?;
+        let num_layers = config.num_block;
+        let blocks = (0..num_layers)
+            .map(|i| Attention::from_json(&l.pp(&format!("blk.{i}.")), &config))
+            .collect::<anyhow::Result<Vec<Attention<f32>>>>()?;
+        let final_norm = LayerNorm::from_json(&l.pp("output_"), config)?;
+        let proj_weights = l.get_tensor("output.weight")?.transpose();
+        let final_proj = MatMul::new_constant(proj_weights)?;
+        Ok(Self::new(
+            embeddings, positional, blocks, final_norm, final_proj,
+        ))
     }
 }
 
