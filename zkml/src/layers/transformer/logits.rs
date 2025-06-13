@@ -1,5 +1,5 @@
-use anyhow::ensure;
 use crate::argmax_slice;
+use anyhow::ensure;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -24,9 +24,15 @@ impl<N: Number> Evaluate<N> for Logits {
                 let indices = inputs
                     .iter()
                     .map(|input| {
-                        ensure!(input.get_shape().len() >= 2, "Argmax is for tensors of rank >= 2");
+                        ensure!(
+                            input.get_shape().len() >= 2,
+                            "Argmax is for tensors of rank >= 2"
+                        );
                         let last_row = input.slice_on_dim(1).last().unwrap();
-                        Ok(Tensor::new(vec![1], vec![N::from_usize(argmax_slice(last_row).unwrap())]))
+                        Ok(Tensor::new(
+                            vec![1],
+                            vec![N::from_usize(argmax_slice(last_row).unwrap())],
+                        ))
                     })
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 Ok(LayerOut::from_vec(indices))

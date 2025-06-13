@@ -157,11 +157,15 @@ pub fn argmax_slice<N: Number>(v: &[N]) -> Option<usize> {
     if v.is_empty() {
         return None;
     }
-    Some(v.iter().enumerate().fold((0, N::MIN), |acc, x| match acc.1.compare(&x.1) {
-        Ordering::Less => (x.0, *x.1),
-        _ => acc,
-    })
-    .0)
+    Some(
+        v.iter()
+            .enumerate()
+            .fold((0, N::MIN), |acc, x| match acc.1.compare(&x.1) {
+                Ordering::Less => (x.0, *x.1),
+                _ => acc,
+            })
+            .0,
+    )
 }
 
 pub trait NextPowerOfTwo {

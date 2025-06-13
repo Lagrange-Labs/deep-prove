@@ -1,11 +1,23 @@
 use anyhow::bail;
 
 use crate::{
+    Tensor,
     layers::{
-        activation::{Activation, GELU}, add, concat_matmul::ConcatMatMul, matrix_mul::MatMul, provable::{Edge, Node, NodeId}, reshape::Reshape, transformer::{
-            embeddings::Embeddings, layernorm::LayerNorm, logits::Logits, mha::MhaQK, positional::Positional, qkv::QKV, softmax::Softmax
-        }, Layer
-    }, model::Model, padding::PaddingMode, tensor::{Number, Shape}, Tensor
+        Layer,
+        activation::{Activation, GELU},
+        add,
+        concat_matmul::ConcatMatMul,
+        matrix_mul::MatMul,
+        provable::{Edge, Node, NodeId},
+        reshape::Reshape,
+        transformer::{
+            embeddings::Embeddings, layernorm::LayerNorm, logits::Logits, mha::MhaQK,
+            positional::Positional, qkv::QKV, softmax::Softmax,
+        },
+    },
+    model::Model,
+    padding::PaddingMode,
+    tensor::{Number, Shape},
 };
 
 /// Intermediary struct to hold the config of the model.

@@ -399,7 +399,7 @@ mod test {
 
     impl GPT2Output {
         pub fn final_output(&self) -> Vec<f32> {
-            //self.logits.clone()
+            // self.logits.clone()
             vec![self.next_token_id as f32]
             // self.layers
             //    .last()
