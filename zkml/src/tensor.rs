@@ -921,7 +921,7 @@ where
     /// Element-wise multiplication
     pub fn mul(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(
-            self.shape.product() == other.shape.product(),
+            self.shape.numel() == other.shape.numel(),
             "Shape mismatch for multiplication: {:?} != {:?}",
             self.shape,
             other.shape
@@ -2035,6 +2035,9 @@ impl Shape {
     }
     pub fn product(&self) -> usize {
         self.0.iter().product()
+    }
+    pub fn numel(&self) -> usize {
+        self.product()
     }
 }
 

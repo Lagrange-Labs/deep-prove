@@ -1,8 +1,7 @@
-use crate::model::llm::LLMTokenizer;
+use crate::{model::llm::LLMTokenizer, Tensor};
 use anyhow::bail;
 
 use crate::{
-    Tensor,
     layers::{
         Layer,
         activation::{Activation, GELU},
@@ -164,8 +163,10 @@ impl GPT2Model {
         let mut model =
             Model::new_from_input_shapes(vec![user_input_shape], PaddingMode::NoPadding);
 
-        let mut last_node_id = Some(model.add_consecutive_layer(Layer::Embeddings(self.embeddings), None)?);
-        last_node_id = Some(model.add_consecutive_layer(Layer::Positional(self.positional), last_node_id)?);
+        let mut last_node_id =
+            Some(model.add_consecutive_layer(Layer::Embeddings(self.embeddings), None)?);
+        last_node_id =
+            Some(model.add_consecutive_layer(Layer::Positional(self.positional), last_node_id)?);
         for block in self.blocks {
             last_node_id = Some(block.write_to_model(&mut model, last_node_id, c)?);
         }
