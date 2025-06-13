@@ -248,8 +248,8 @@ mod test {
                 .mha
                 .evaluate::<GoldilocksExt2>(&qkv.outputs(), vec![])?;
             // first, we need to apply causal mask before softmax
-            //let causal_mask = causal_mask(self.num_heads, seq_len, seq_len);
-            //let masked_attention_scores = mha.outputs()[0].add(&causal_mask);
+            // let causal_mask = causal_mask(self.num_heads, seq_len, seq_len);
+            // let masked_attention_scores = mha.outputs()[0].add(&causal_mask);
             // apply softmax + rescale on the first output, Q @ K^T
             // NOTE that we apply softmax row by row
             let softmaxed = self
@@ -604,6 +604,7 @@ mod test {
             output,
             &gpt2_output.logits[0..5]
         );
+
         Ok(())
     }
 }
