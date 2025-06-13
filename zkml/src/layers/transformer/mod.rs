@@ -158,7 +158,10 @@ mod test {
                 head_dim: c.head_dim(),
                 qkv,
                 qkt_v: concat_matmul::ConcatMatMul::new_with_permute(vec![1, 0, 2]),
-                softmax: softmax::Softmax::new_with_scale((1.0 / (c.head_dim() as f32)).sqrt()),
+                softmax: softmax::Softmax::new_with_scale(
+                    (1.0 / (c.head_dim() as f32)).sqrt(),
+                    c.context_length,
+                ),
                 layernorm: att.norm,
                 mha,
                 reshape_merged: Reshape::new_fixed(vec![vec![1, c.hidden_size]]),
@@ -264,7 +267,8 @@ mod test {
                 qkv,
                 qkt_v: concat_matmul::ConcatMatMul::new_with_permute(vec![1, 0, 2]),
                 softmax: softmax::Softmax::new_with_scale(
-                    N::from_f32((1.0 / (head_size as f32)).sqrt()).unwrap(),
+                    N::from_f32(1.0f32 / (head_size as f32).sqrt()).unwrap(),
+                    1024usize,
                 ),
                 layernorm,
                 mha,
