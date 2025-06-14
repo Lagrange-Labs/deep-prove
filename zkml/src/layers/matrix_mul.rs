@@ -15,13 +15,7 @@ use tracing::debug;
 use transcript::Transcript;
 
 use crate::{
-    Claim, Element, Prover, ScalingFactor, ScalingStrategy,
-    iop::{context::ContextAux, verifier::Verifier},
-    layers::LayerProof,
-    model::StepData,
-    padding::{PaddingMode, ShapeInfo, pad_matmul},
-    quantization,
-    tensor::{Number, Tensor},
+    iop::{context::ContextAux, verifier::Verifier}, layers::LayerProof, model::StepData, padding::{pad_matmul, PaddingMode, ShapeInfo}, quantization::{self, bias_scaling_matmul}, tensor::{Number, Tensor}, Claim, Element, Prover, ScalingFactor, ScalingStrategy
 };
 
 use super::{
@@ -127,6 +121,7 @@ impl<T> OperandMatrix<T> {
 pub struct MatMul<T> {
     pub(crate) left_matrix: OperandMatrix<T>,
     pub(crate) right_matrix: OperandMatrix<T>,
+    pub(crate) bias: Option<Tensor<T>>,
     pub(crate) config: Option<Config>,
 }
 
@@ -157,16 +152,24 @@ pub struct MatMulProof<E: ExtensionField> {
 
 impl<T> MatMul<T> {
     pub fn new(left_matrix: OperandMatrix<T>, right_matrix: OperandMatrix<T>) -> Result<Self> {
-        Self::new_internal(left_matrix, right_matrix, None)
+        Self::new_internal(left_matrix, right_matrix, None,None)
     }
-    pub fn new_constant(right: Tensor<T>) -> Result<Self> {
+    pub fn new_with_config(
+        left_matrix: OperandMatrix<T>,
+        right_matrix: OperandMatrix<T>,
+        bias: Option<Tensor<T>>,
+        config: Config,
+    ) -> Result<Self> {
+        Self::new_internal(left_matrix, right_matrix, bias, Some(config))
+    }
+    pub fn new_constant(right: Tensor<T>, bias: Option<Tensor<T>>) -> Result<Self> {
         let right_matrix = OperandMatrix::new_weight_matrix(right);
-        Self::new_internal(OperandMatrix::Input, right_matrix, None)
+        Self::new_internal(OperandMatrix::Input, right_matrix, bias,None)
     }
-
     fn new_internal(
         left_matrix: OperandMatrix<T>,
         right_matrix: OperandMatrix<T>,
+        bias: Option<Tensor<T>>,
         config: Option<Config>,
     ) -> Result<Self> {
         ensure!(
@@ -192,26 +195,35 @@ impl<T> MatMul<T> {
                 another layer"))?,
             _ => (), // all other configurations are allowed
         }
+        if let Some(bt) = bias.as_ref() {
+            ensure!(bt.get_shape().len() == 1, "Bias must be a 1D tensor");
+            match right_matrix {
+                OperandMatrix::Weigth(ref mat) => {
+                    ensure!(
+                        mat.tensor.get_shape()[1] == bt.get_shape()[0],
+                        "bias shape {:?} is incompatible with right matrix shape {:?}",
+                        bt.get_shape(),
+                        mat.tensor.get_shape(),
+                    );
+                }
+                OperandMatrix::Input => (),
+            }
+        }
         Ok(Self {
             left_matrix,
             right_matrix,
             config,
+            bias: None,
         })
     }
 
-    pub fn new_with_config(
-        left_matrix: OperandMatrix<T>,
-        right_matrix: OperandMatrix<T>,
-        config: Config,
-    ) -> Result<Self> {
-        Self::new_internal(left_matrix, right_matrix, Some(config))
-    }
+   
 
     pub fn op(&self, inputs: Vec<&Tensor<T>>) -> Result<Tensor<T>>
     where
         T: Number,
     {
-        Ok(match (&self.left_matrix, &self.right_matrix) {
+        let matmul = match (&self.left_matrix, &self.right_matrix) {
             (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => panic!(
                 "Found layer with 2 constant matrices, which is useless as the 
                 product can be directly used instead"
@@ -276,7 +288,12 @@ impl<T> MatMul<T> {
                 );
                 inputs[0].matmul(transposed_matrix.as_ref().unwrap_or(inputs[1]))
             }
-        })
+        };
+        if let Some(bias) = self.bias.as_ref() {
+            Ok(matmul.add(&bias))
+        } else {
+            Ok(matmul)
+        }
     }
 
     pub fn is_right_transposed(&self) -> bool {
@@ -289,7 +306,8 @@ impl<T> MatMul<T> {
     {
         let left_matrix = self.left_matrix.pad_next_power_of_two();
         let right_matrix = self.right_matrix.pad_next_power_of_two();
-        Self::new(left_matrix, right_matrix)
+        let bias = self.bias.map(|bias| bias.pad_next_power_of_two());
+        Self::new_internal(left_matrix, right_matrix, bias, self.config)
     }
 
     pub(crate) fn num_inputs(&self) -> usize {
@@ -481,6 +499,7 @@ impl MatMul<f32> {
         self,
         left_scaling: &ScalingFactor,
         right_scaling: &ScalingFactor,
+        bias_scaling: Option<ScalingFactor>,
     ) -> MatMul<Element> {
         let left_matrix = match self.left_matrix {
             OperandMatrix::Weigth(mat) => OperandMatrix::Weigth(WeightMatrix {
@@ -496,9 +515,11 @@ impl MatMul<f32> {
             }),
             OperandMatrix::Input => OperandMatrix::Input, /* No need to quantize since it's an input, not a constant in the model */
         };
+        let bias = self.bias.map(|bias| bias.quantize(&bias_scaling.expect("Bias scaling is required for matmul with bias")));
         MatMul {
             left_matrix,
             right_matrix,
+            bias,
             config: self.config,
         }
     }
@@ -546,7 +567,8 @@ impl MatMul<f32> {
                 ))?,
             };
         let multiplier = left_matrix_scaling.m(&right_matrix_scaling, &output_scaling);
-        let quantized = self.quantize(&left_matrix_scaling, &right_matrix_scaling);
+        let bias_scaling = self.bias.as_ref().map(|_bias| bias_scaling_matmul(&input_scaling[0], &output_scaling));
+        let quantized = self.quantize(&left_matrix_scaling, &right_matrix_scaling,bias_scaling);
         let output_bitsize = quantized.output_bitsize(*quantization::MIN, *quantization::MAX);
         let requant = Requant::from_multiplier(multiplier, output_bitsize);
 
@@ -1100,6 +1122,7 @@ mod tests {
             MatMul::new_with_config(
                 OperandMatrix::Input,
                 OperandMatrix::new_weight_matrix(matrix),
+                None,
                 Config::TransposeB,
             )
             .unwrap()
@@ -1325,6 +1348,7 @@ mod tests {
         let matmul = MatMul::new_with_config(
             OperandMatrix::Input,
             OperandMatrix::Input,
+            None,
             Config::TransposeB,
         )
         .unwrap();
@@ -1376,6 +1400,7 @@ mod tests {
         let matmul = MatMul::new_with_config(
             OperandMatrix::Input,
             OperandMatrix::Input,
+            None,
             Config::TransposeB,
         )
         .unwrap();
@@ -1385,6 +1410,7 @@ mod tests {
         let matmul = MatMul::new_with_config(
             OperandMatrix::Input,
             OperandMatrix::new_weight_matrix(Tensor::random(&matrix_shape)),
+            None,
             Config::TransposeB,
         )
         .unwrap();

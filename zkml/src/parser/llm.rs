@@ -146,10 +146,10 @@ impl FeedForward<f32> {
         let layernorm = self.norm;
         // let up = MatMul::new_constant(self.up, self.up_bias);
         // TODO bias
-        let up = MatMul::new_constant(self.up)?;
+        let up = MatMul::new_constant(self.up,Some(self.up_bias))?;
         let activation = GELU::new();
         // let down = MatMul::new_constant(self.down, self.down_bias);
-        let down = MatMul::new_constant(self.down)?;
+        let down = MatMul::new_constant(self.down,Some(self.down_bias))?;
         let add = add::Add::new();
         let last_node_id =
             model.add_consecutive_layer(Layer::LayerNorm(layernorm), Some(input_node_id))?;
@@ -184,8 +184,7 @@ impl Attention<f32> {
         let mha = MhaQK::new(c.num_heads, c.head_dim());
         let softmax = Softmax::<f32>::new().with_scale((1.0 / (c.head_dim() as f32)).sqrt());
         let qkt_v = ConcatMatMul::new_with_permute(vec![1, 0, 2]);
-        // let out = MatMul::new_constant(self.out, self.out_bias);
-        let out = MatMul::new_constant(self.out)?;
+        let out = MatMul::new_constant(self.out,Some(self.out_bias))?;
         let reshape_merged = Reshape::new_subspace(1..=2, vec![c.hidden_size]);
         // input is [seq_len, emb_size]
         let last_node_id =

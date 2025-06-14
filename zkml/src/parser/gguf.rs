@@ -110,7 +110,9 @@ impl GPT2Model {
             .collect::<anyhow::Result<Vec<Attention<f32>>>>()?;
         let final_norm = LayerNorm::from_loader(&loader.pp("output_"), config)?;
         let proj_weights = loader.get_tensor("output.weight")?.transpose();
-        let final_proj = MatMul::new_constant(proj_weights)?;
+        //  there might or not be a bias
+        let proj_bias = loader.get_tensor("output.bias").ok();
+        let final_proj = MatMul::new_constant(proj_weights,proj_bias)?;
         Ok(Self::new(
             embeddings, positional, blocks, final_norm, final_proj,
         ))

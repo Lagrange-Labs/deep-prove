@@ -146,6 +146,7 @@ impl<N: Number> Evaluate<N> for MhaQK {
                     matmul::MatMul::new_with_config(
                         OperandMatrix::Input,
                         OperandMatrix::Input,
+                        None, // no bias here
                         matmul::Config::TransposeB,
                     )?
                     .evaluate::<E>(&[&mini_q, &mini_k], vec![])?

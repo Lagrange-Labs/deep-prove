@@ -67,7 +67,8 @@ impl GPT2Model {
             .collect::<anyhow::Result<Vec<Attention<f32>>>>()?;
         let final_norm = LayerNorm::from_json(&l.pp("output_"), config)?;
         let proj_weights = l.get_tensor("output.weight")?.transpose();
-        let final_proj = MatMul::new_constant(proj_weights)?;
+        let proj_bias = l.get_tensor("output.bias").ok();
+        let final_proj = MatMul::new_constant(proj_weights,proj_bias)?;
         Ok(Self::new(
             embeddings, positional, blocks, final_norm, final_proj,
         ))
