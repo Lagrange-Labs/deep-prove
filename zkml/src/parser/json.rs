@@ -5,8 +5,11 @@ use serde::Deserialize;
 
 use crate::{
     Tensor,
-    layers::transformer::layernorm::LayerNorm,
-    parser::llm::{Attention, FeedForward, LLMConfig, LLMVariant},
+    layers::{
+        matrix_mul::MatMul,
+        transformer::{embeddings::Embeddings, layernorm::LayerNorm, positional::Positional},
+    },
+    parser::llm::{Attention, FeedForward, GPT2Model, LLMConfig, LLMModel, LLMVariant},
 };
 
 impl LLMConfig {
@@ -31,6 +34,11 @@ impl LLMConfig {
 }
 
 impl LLMVariant {
+    pub fn model_json(&self, l: &FileTensorLoader, config: &LLMConfig) -> anyhow::Result<LLMModel> {
+        match self {
+            Self::GPT2 => Ok(LLMModel::GPT2(GPT2Model::from_json(l, config)?)),
+        }
+    }
     pub fn from_json(l: &FileTensorLoader) -> anyhow::Result<Self> {
         let variant_value = l
             .get_metadata("model_name")
@@ -49,6 +57,23 @@ impl LLMVariant {
         }
     }
 }
+impl GPT2Model {
+    pub fn from_json(l: &FileTensorLoader, config: &LLMConfig) -> anyhow::Result<Self> {
+        let embeddings = Embeddings::from_json(l)?;
+        let positional = Positional::from_json(l, config)?;
+        let num_layers = config.num_block;
+        let blocks = (0..num_layers)
+            .map(|i| Attention::from_json(&l.pp(&format!("blk.{i}.")), &config))
+            .collect::<anyhow::Result<Vec<Attention<f32>>>>()?;
+        let final_norm = LayerNorm::from_json(&l.pp("output_"), config)?;
+        let proj_weights = l.get_tensor("output.weight")?.transpose();
+        let proj_bias = l.get_tensor("output.bias").ok();
+        let final_proj = MatMul::new_constant(proj_weights, proj_bias)?;
+        Ok(Self::new(
+            embeddings, positional, blocks, final_norm, final_proj,
+        ))
+    }
+}
 
 impl FeedForward<f32> {
     pub fn from_json(l: &FileTensorLoader, c: &LLMConfig) -> anyhow::Result<Self> {
@@ -58,8 +83,14 @@ impl FeedForward<f32> {
         let down = l.get_tensor("ffn_down.weight")?;
         let down_bias = l.get_tensor("ffn_down.bias")?;
         ensure!(
-            down.get_shape()[0] == c.embedding_size,
-            "down must have shape {:?} vs embedding_size: {}",
+            up.get_shape()[0] == c.hidden_size,
+            "up have shape {:?} but in features should be equal to hidden_size: {}",
+            up.get_shape(),
+            c.hidden_size
+        );
+        ensure!(
+            down.get_shape()[1] == c.embedding_size,
+            "down have shape {:?} but out features should be equal to embedding_size: {}",
             down.get_shape(),
             c.embedding_size
         );
@@ -217,6 +248,36 @@ fn unfuse_crate_tensors(
     );
 
     Ok(tensors_data)
+}
+
+impl Positional<f32> {
+    pub fn from_json(l: &FileTensorLoader, c: &LLMConfig) -> anyhow::Result<Self> {
+        let position_embd = l.get_tensor("position_embd.weight")?;
+        ensure!(
+            position_embd.get_shape().len() == 2,
+            "position_embd must be 2d"
+        );
+        ensure!(
+            position_embd.get_shape()[0] == c.context_length,
+            "position_embd must have shape [0] [{}] vs given {:?}",
+            c.context_length,
+            position_embd.get_shape()
+        );
+        ensure!(
+            position_embd.get_shape()[1] == c.embedding_size,
+            "position_embd must have shape [1] [{}] vs given {:?}",
+            c.embedding_size,
+            position_embd.get_shape()
+        );
+        Ok(Self::Learned(position_embd))
+    }
+}
+
+impl Embeddings<f32> {
+    pub fn from_json(l: &FileTensorLoader) -> anyhow::Result<Self> {
+        let emb_tensor = l.get_tensor("token_embd.weight")?;
+        Ok(Embeddings::new(emb_tensor))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

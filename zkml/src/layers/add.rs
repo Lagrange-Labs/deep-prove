@@ -15,6 +15,7 @@ use super::provable::LayerOut;
 /// If there is two inputs, no static weight, then the output shape is the same as the first input.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Add<N> {
+    /// shape is the unpadded shape of the operand
     operand: Option<(Tensor<N>, Shape)>,
 }
 

@@ -13,7 +13,10 @@ use candle_core::{CpuStorage, Device, Storage, quantized::gguf_file::Content};
 
 use crate::{
     Tensor,
-    layers::transformer::{embeddings::Embeddings, layernorm::LayerNorm, positional::Positional},
+    layers::{
+        matrix_mul::MatMul,
+        transformer::{embeddings::Embeddings, layernorm::LayerNorm, positional::Positional},
+    },
     parser::llm::{Attention, FeedForward, GPT2Model, LLMConfig, LLMModel, LLMVariant},
 };
 
@@ -95,28 +98,9 @@ impl LLMVariant {
             Self::GPT2 => Ok(LLMModel::GPT2(GPT2Model::from_loader(l, config)?)),
         }
     }
-    pub fn model_json(
-        &self,
-        l: &json::FileTensorLoader,
-        config: &LLMConfig,
-    ) -> anyhow::Result<LLMModel> {
-        match self {
-            Self::GPT2 => Ok(LLMModel::GPT2(GPT2Model::from_json(l, config)?)),
-        }
-    }
 }
 
 impl GPT2Model {
-    pub fn from_json(l: &json::FileTensorLoader, config: &LLMConfig) -> anyhow::Result<Self> {
-        let embeddings = Embeddings::from_json(l)?;
-        let positional = Positional::from_json(l, config)?;
-        let num_layers = config.num_block;
-        let blocks = (0..num_layers)
-            .map(|i| Attention::from_json(&l.pp(&format!("blk.{i}.")), &config))
-            .collect::<anyhow::Result<Vec<Attention<f32>>>>()?;
-        let final_norm = LayerNorm::from_json(&l.pp("output_"), config)?;
-        Ok(Self::new(embeddings, positional, blocks, final_norm))
-    }
     pub fn from_loader(loader: &FileTensorLoader, config: &LLMConfig) -> anyhow::Result<Self> {
         let embeddings = Embeddings::from_loader(loader)?;
         let positional = Positional::from_loader(loader, config)?;
@@ -125,7 +109,13 @@ impl GPT2Model {
             .map(|i| Attention::from_loader(&loader.pp(&format!("blk.{i}.")), &config))
             .collect::<anyhow::Result<Vec<Attention<f32>>>>()?;
         let final_norm = LayerNorm::from_loader(&loader.pp("output_"), config)?;
-        Ok(Self::new(embeddings, positional, blocks, final_norm))
+        let proj_weights = loader.get_tensor("output.weight")?.transpose();
+        //  there might or not be a bias
+        let proj_bias = loader.get_tensor("output.bias").ok();
+        let final_proj = MatMul::new_constant(proj_weights, proj_bias)?;
+        Ok(Self::new(
+            embeddings, positional, blocks, final_norm, final_proj,
+        ))
     }
 }
 
@@ -138,14 +128,19 @@ impl FeedForward<f32> {
         // Use the new LayerNorm::from_loader
         let norm = LayerNorm::from_loader(&ffn_norm_loader, &c)?;
 
-        let up = loader.get_tensor("ffn_up.weight")?;
+        let up = loader.get_tensor("ffn_up.weight")?.transpose();
         let up_bias = loader.get_tensor("ffn_up.bias")?;
-        let down = loader.get_tensor("ffn_down.weight")?;
+        let down = loader.get_tensor("ffn_down.weight")?.transpose();
         let down_bias = loader.get_tensor("ffn_down.bias")?;
-
         ensure!(
-            down.get_shape()[0] == c.embedding_size,
-            "down must have shape {:?} vs embedding_size: {}",
+            up.get_shape()[0] == c.hidden_size,
+            "up have shape {:?} but in features should be equal to hidden_size: {}",
+            up.get_shape(),
+            c.hidden_size
+        );
+        ensure!(
+            down.get_shape()[1] == c.embedding_size,
+            "down have shape {:?} but out features should be equal to embedding_size: {}",
             down.get_shape(),
             c.embedding_size
         );
@@ -217,6 +212,37 @@ impl Attention<f32> {
             v_bias,
             feedforward: ff,
         })
+    }
+}
+
+impl Positional<f32> {
+    pub fn from_loader(loader: &FileTensorLoader, c: &LLMConfig) -> anyhow::Result<Self> {
+        match c.specific_config {
+            LLMVariant::GPT2 => {
+                let position_embd = loader.get_tensor("position_embd.weight")?;
+                let shape = position_embd.get_shape();
+                ensure!(
+                    shape[0] == c.context_length,
+                    "position_embd must have shape [{}] vs given {:?}",
+                    c.context_length,
+                    position_embd.get_shape()
+                );
+                ensure!(
+                    shape[1] == c.embedding_size,
+                    "position_embd must have shape [{}] vs given {:?}",
+                    c.embedding_size,
+                    position_embd.get_shape()
+                );
+                Ok(Self::Learned(position_embd))
+            }
+        }
+    }
+}
+impl Embeddings<f32> {
+    // TODO: make that a trait ? or part of the Layer enum ?
+    pub fn from_loader(loader: &FileTensorLoader) -> anyhow::Result<Self> {
+        let emb_tensor = loader.get_tensor("token_embd.weight")?;
+        Ok(Embeddings::new(emb_tensor))
     }
 }
 
@@ -495,7 +521,7 @@ pub mod tests {
 
     // https://docs.rs/candle-transformers/latest/src/candle_transformers/models/llama.rs.html#517-535
     #[test]
-    #[ignore = "just a test to explore gguf internal structure"]
+    //#[ignore = "just a test to explore gguf internal structure"]
     fn test_load_and_inspect_gpt2_gguf() -> anyhow::Result<()> {
         let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
 

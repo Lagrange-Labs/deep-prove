@@ -57,7 +57,7 @@ print(model)
 print("\n" + "="*50 + "\n")
 # --- End Architectural Investigation ---
 # Input
-input_text = "Hello"
+input_text = "The dog is cute"
 input_ids = tokenizer.encode(input_text, return_tensors="pt")
 
 # Run through model to get reference
@@ -125,7 +125,7 @@ with torch.no_grad():
         # c. Core attention mechanism
         attn_scores = torch.matmul(q, k.transpose(-2, -1)) / (q.size(-1) ** 0.5)
         mask = torch.tril(torch.ones_like(attn_scores[0, 0])).unsqueeze(0).unsqueeze(0)
-        attn_scores = attn_scores.masked_fill(mask == 0, float("-inf"))
+        attn_scores = attn_scores.masked_fill(mask == 0, -1e9)
         attn_weights = torch.softmax(attn_scores, dim=-1)
         attn_weights_after_dropout = layer.attn.attn_dropout(attn_weights)
         attn_output_merged = torch.matmul(attn_weights_after_dropout, v)
@@ -260,8 +260,32 @@ output_json = {
     "token_embeds_only": to_list(token_embeds_only),
     "pos_embeds_only": to_list(pos_embeds_only),
     "inputs_embeds": to_list(inputs_embeds),
-    "layers": layer_debug_outputs
+    "layers": layer_debug_outputs,
+    "final_output": to_list(manual_output_with_final_ln) if manual_output_with_final_ln is not None else None,
 }
+
+# Get the final token prediction using argmax
+with torch.no_grad():
+    # Get our manual prediction
+    manual_logits = model.lm_head(manual_output_with_final_ln)
+    
+    # Get official model's final projection
+    official_outputs = model(input_ids)
+    official_logits = official_outputs.logits
+    
+    # Compare the final projections
+    logits_diff = (manual_logits - official_logits).abs().max()
+    print(f"🔍 Final projection comparison:")
+    print(f"  Max difference in logits: {logits_diff.item():.6f}")
+    print(f"  Logits match: {torch.allclose(manual_logits, official_logits, atol=1e-5)}")
+    
+    # Use argmax for debug output
+    next_token = torch.argmax(manual_logits[:, -1, :], dim=-1)
+    
+    output_json["next_token_id"] = next_token.item()
+    output_json["logits"] = to_list(manual_logits)
+    print(f"LOGITS: {output_json['logits'][0:5]}")
+    output_json["logits_max_diff"] = logits_diff.item()
 
 # Save the debug tensor outputs
 output_debug_fname = os.path.join(args.output_dir, f"{args.model_name.replace('-', '_')}_debug_output.json")
@@ -352,20 +376,24 @@ for name, tensor in state_dict.items():
                     H = processed_tensor.shape[0] # hidden_size
                     W_q_orig, W_k_orig, W_v_orig = processed_tensor.split(H, dim=1)
 
-                    # Transpose each component to [out, in] before flattening
                     current_data_list = W_q_orig.flatten().tolist() + \
                                         W_k_orig.flatten().tolist() + \
                                         W_v_orig.flatten().tolist()
                     # Shape for JSON is 1D concatenated data
                     current_shape = [len(current_data_list)]
-                    print(f"ℹ️ Exporting {name} (as attn_qkv.weight): Original Conv1D shape {list(processed_tensor.shape)}. Exporting concatenated W_q.T, W_k.T, W_v.T data as 1D array, shape {current_shape}.")
-
+                    print(f"ℹ️ Exporting {name} : Original Conv1D shape {list(processed_tensor.shape)}. Exporting concatenated W_q.T, W_k.T, W_v.T data as 1D array, shape {current_shape}.")
+                elif hf_subname == "attn.c_proj.weight":
+                     current_shape = list(processed_tensor.shape)
+                     current_data_list = processed_tensor.numpy().flatten().tolist()
+                     print(f"ℹ️ Exporting {name}: Original Conv1D shape {list(processed_tensor.shape)}, NOT transposing.")
+                     print(f"\t\t{current_data_list}\n")
                 elif hf_subname.endswith(".weight"): # Other Conv1D weights (e.g., mlp.c_fc, mlp.c_proj, attn.c_proj)
                     # These are [in_features, out_features]. Transpose to [out_features, in_features].
-                    transposed_tensor = processed_tensor.T
+                    transposed_tensor = processed_tensor
                     current_shape = list(transposed_tensor.shape)
                     current_data_list = transposed_tensor.numpy().flatten().tolist()
                     print(f"ℹ️ Exporting {name}: Original Conv1D shape {list(processed_tensor.shape)}, transposing to {current_shape} for export.")
+                    print(f"\t\t{current_data_list}\n")
                 
                 # For Conv1D biases (hf_subname.endswith(".bias")):
                 # No special handling here, they fall through to the `current_data_list is None` block.

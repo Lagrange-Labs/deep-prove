@@ -69,6 +69,8 @@ pub trait Number:
     fn is_negative(&self) -> bool;
     fn to_f32(&self) -> anyhow::Result<f32>;
     fn from_f32(f: f32) -> anyhow::Result<Self>;
+    fn to_usize(&self) -> usize;
+    fn from_usize(u: usize) -> Self;
 }
 
 impl Number for Element {
@@ -103,6 +105,12 @@ impl Number for Element {
     fn from_f32(f: f32) -> anyhow::Result<Self> {
         Ok(f as Element)
     }
+    fn to_usize(&self) -> usize {
+        *self as usize
+    }
+    fn from_usize(u: usize) -> Self {
+        u as Element
+    }
 }
 impl Number for f32 {
     const MIN: f32 = f32::MIN;
@@ -135,6 +143,12 @@ impl Number for f32 {
     fn from_f32(f: f32) -> anyhow::Result<Self> {
         Ok(f)
     }
+    fn to_usize(&self) -> usize {
+        *self as usize
+    }
+    fn from_usize(u: usize) -> Self {
+        u as f32
+    }
 }
 impl Number for GoldilocksExt2 {
     const MIN: GoldilocksExt2 = GoldilocksExt2::ZERO;
@@ -161,6 +175,12 @@ impl Number for GoldilocksExt2 {
     }
     fn from_f32(_: f32) -> anyhow::Result<Self> {
         unreachable!("Called from_f32 for Goldilocks")
+    }
+    fn to_usize(&self) -> usize {
+        unreachable!("Called to_usize for Goldilocks")
+    }
+    fn from_usize(_: usize) -> Self {
+        unreachable!("Called from_usize for Goldilocks")
     }
 }
 
@@ -799,6 +819,17 @@ impl<T> Tensor<T>
 where
     T: Number,
 {
+    pub fn argmax(&self) -> usize {
+        self.data
+            .iter()
+            .enumerate()
+            .fold((0, T::MIN), |acc, x| match acc.1.compare(&x.1) {
+                Ordering::Less => (x.0, *x.1),
+                _ => acc,
+            })
+            .0
+    }
+
     pub fn reshape(mut self, new_shape: Vec<usize>) -> Tensor<T> {
         assert!(
             self.shape.iter().product::<usize>() == new_shape.iter().product::<usize>(),
@@ -884,7 +915,7 @@ where
     /// Element-wise multiplication
     pub fn mul(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(
-            self.shape == other.shape,
+            Shape::from_it(&self.shape).numel() == Shape::from_it(&other.shape).numel(),
             "Shape mismatch for multiplication: {:?} != {:?}",
             self.shape,
             other.shape
@@ -1716,7 +1747,13 @@ impl<T: Number> Tensor<T> {
             assert_eq!(common_shape + 1, self.shape.len());
         } else {
             assert_eq!(common_shape, self.shape.len());
-            assert_eq!(other.shape.first().unwrap(), &1);
+            assert_eq!(
+                other.shape.first().unwrap(),
+                &1,
+                "concat: self.shape: {:?}, other.shape: {:?}",
+                self.shape,
+                other.shape
+            );
         }
         // then the new shape has this higher dimension + 1 simply
         // common_shape since 0-based indexing
@@ -1762,6 +1799,11 @@ impl<T> Tensor<T> {
     pub fn slices_last_dim(&self) -> impl Iterator<Item = &[T]> {
         let last_dim = *self.shape.last().unwrap();
         let stride = last_dim;
+        self.data.chunks(stride)
+    }
+
+    pub fn slice_on_dim(&self, dim: usize) -> impl Iterator<Item = &[T]> {
+        let stride = self.shape[dim..].iter().product();
         self.data.chunks(stride)
     }
 }
@@ -2387,5 +2429,12 @@ mod test {
         let shape = Shape(vec![2, 3, 4]);
         let permuted = shape.permute(&[1, 0, 2]);
         assert_eq!(permuted.0, vec![3, 2, 4]);
+    }
+
+    #[test]
+    fn test_tensor_argmax() {
+        let tensor = Tensor::<Element>::new(vec![3], vec![1, 2, 3]);
+        let argmax = tensor.argmax();
+        assert_eq!(argmax, 2);
     }
 }
