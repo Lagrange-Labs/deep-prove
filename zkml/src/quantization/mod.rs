@@ -162,10 +162,10 @@ pub fn model_scaling_factor_from_tensor_and_bias(
 
 pub fn bias_scaling_matmul(input: &ScalingFactor, output: &ScalingFactor) -> ScalingFactor {
     let min_quantized = -(1 << (2 * (*BIT_LEN) - 1)) + 1;
-        let max_quantized = (1 << (2 * (*BIT_LEN) - 1)) - 1;
+    let max_quantized = (1 << (2 * (*BIT_LEN) - 1)) - 1;
     ScalingFactor::from_scale(
-            input.scale() * output.scale(),
-            Some((min_quantized, max_quantized)),
+        input.scale() * output.scale(),
+        Some((min_quantized, max_quantized)),
     )
 }
 

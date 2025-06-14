@@ -112,7 +112,7 @@ impl GPT2Model {
         let proj_weights = loader.get_tensor("output.weight")?.transpose();
         //  there might or not be a bias
         let proj_bias = loader.get_tensor("output.bias").ok();
-        let final_proj = MatMul::new_constant(proj_weights,proj_bias)?;
+        let final_proj = MatMul::new_constant(proj_weights, proj_bias)?;
         Ok(Self::new(
             embeddings, positional, blocks, final_norm, final_proj,
         ))

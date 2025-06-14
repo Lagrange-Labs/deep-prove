@@ -15,7 +15,13 @@ use tracing::debug;
 use transcript::Transcript;
 
 use crate::{
-    iop::{context::ContextAux, verifier::Verifier}, layers::LayerProof, model::StepData, padding::{pad_matmul, PaddingMode, ShapeInfo}, quantization::{self, bias_scaling_matmul}, tensor::{Number, Tensor}, Claim, Element, Prover, ScalingFactor, ScalingStrategy
+    Claim, Element, Prover, ScalingFactor, ScalingStrategy,
+    iop::{context::ContextAux, verifier::Verifier},
+    layers::LayerProof,
+    model::StepData,
+    padding::{PaddingMode, ShapeInfo, pad_matmul},
+    quantization::{self, bias_scaling_matmul},
+    tensor::{Number, Tensor},
 };
 
 use super::{
@@ -152,7 +158,7 @@ pub struct MatMulProof<E: ExtensionField> {
 
 impl<T> MatMul<T> {
     pub fn new(left_matrix: OperandMatrix<T>, right_matrix: OperandMatrix<T>) -> Result<Self> {
-        Self::new_internal(left_matrix, right_matrix, None,None)
+        Self::new_internal(left_matrix, right_matrix, None, None)
     }
     pub fn new_with_config(
         left_matrix: OperandMatrix<T>,
@@ -164,7 +170,7 @@ impl<T> MatMul<T> {
     }
     pub fn new_constant(right: Tensor<T>, bias: Option<Tensor<T>>) -> Result<Self> {
         let right_matrix = OperandMatrix::new_weight_matrix(right);
-        Self::new_internal(OperandMatrix::Input, right_matrix, bias,None)
+        Self::new_internal(OperandMatrix::Input, right_matrix, bias, None)
     }
     fn new_internal(
         left_matrix: OperandMatrix<T>,
@@ -216,8 +222,6 @@ impl<T> MatMul<T> {
             bias: None,
         })
     }
-
-   
 
     pub fn op(&self, inputs: Vec<&Tensor<T>>) -> Result<Tensor<T>>
     where
@@ -515,7 +519,9 @@ impl MatMul<f32> {
             }),
             OperandMatrix::Input => OperandMatrix::Input, /* No need to quantize since it's an input, not a constant in the model */
         };
-        let bias = self.bias.map(|bias| bias.quantize(&bias_scaling.expect("Bias scaling is required for matmul with bias")));
+        let bias = self.bias.map(|bias| {
+            bias.quantize(&bias_scaling.expect("Bias scaling is required for matmul with bias"))
+        });
         MatMul {
             left_matrix,
             right_matrix,
@@ -567,8 +573,11 @@ impl MatMul<f32> {
                 ))?,
             };
         let multiplier = left_matrix_scaling.m(&right_matrix_scaling, &output_scaling);
-        let bias_scaling = self.bias.as_ref().map(|_bias| bias_scaling_matmul(&input_scaling[0], &output_scaling));
-        let quantized = self.quantize(&left_matrix_scaling, &right_matrix_scaling,bias_scaling);
+        let bias_scaling = self
+            .bias
+            .as_ref()
+            .map(|_bias| bias_scaling_matmul(&input_scaling[0], &output_scaling));
+        let quantized = self.quantize(&left_matrix_scaling, &right_matrix_scaling, bias_scaling);
         let output_bitsize = quantized.output_bitsize(*quantization::MIN, *quantization::MAX);
         let requant = Requant::from_multiplier(multiplier, output_bitsize);
 
