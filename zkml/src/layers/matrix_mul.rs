@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 
 use ff_ext::ExtensionField;
 use itertools::Itertools;
@@ -702,6 +702,9 @@ impl MatMul<Element> {
         T: Transcript<E>,
         PCS: PolynomialCommitmentScheme<E>,
     {
+        if let Some(_bias) = self.bias.as_ref() {
+            bail!("Bias is not supported yet for proving");
+        }
         let num_inputs = inputs.len();
         let (right_matrix, is_right_constant) = match &self.right_matrix {
             OperandMatrix::Weigth(mat) => (&Tensor::<E>::from(&mat.tensor), true),
