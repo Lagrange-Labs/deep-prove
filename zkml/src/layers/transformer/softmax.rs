@@ -18,11 +18,11 @@ use multilinear_extensions::util::ceil_log2;
 use serde::{Deserialize, Serialize};
 
 /// The base 2 logarithm of the scale factor used in exponential lookup tables
-const LOG_SCALE_FACTOR: usize = 24;
+pub(crate) const LOG_SCALE_FACTOR: usize = 24;
 /// The scale factor for our fixed point arithmetic
-const SCALE_FACTOR: usize = 1 << LOG_SCALE_FACTOR;
+pub(crate) const SCALE_FACTOR: usize = 1 << LOG_SCALE_FACTOR;
 /// The scale factor of the outputs of the `exp` lookup
-const OUTPUT_SCALE_FACTOR: usize = 1 << (LOG_SCALE_FACTOR - 1);
+pub(crate) const OUTPUT_SCALE_FACTOR: usize = 1 << (LOG_SCALE_FACTOR - 1);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Stores data about the Softmax operation, which is used to map a tensor of values to a tensor of probability distributions.
@@ -169,7 +169,7 @@ impl<N: Number> Softmax<N> {
 /// Calculates the error as an [`f32`] when applying softmax as described in zkLLM.
 /// This functions returns the error togeter with the value `bkm` such that anything smaller
 /// than `bkm` should be mapped to zero.
-fn calc_softmax_error(
+pub(crate) fn calc_softmax_error(
     bl: i128,
     max_context_size: f32,
     output_sf: f32,

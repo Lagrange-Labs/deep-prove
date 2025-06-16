@@ -15,11 +15,12 @@ use transcript::Transcript;
 
 use super::{logup_gkr::error::LogUpError, witness::LogUpWitness};
 use crate::{
-    Context, Element,
+    Claim, Context, Element,
     iop::ChallengeStorage,
     layers::{
         activation::Relu,
         provable::{NodeId, ProvableOp},
+        transformer::softmax::{LOG_SCALE_FACTOR, OUTPUT_SCALE_FACTOR, SCALE_FACTOR},
     },
     model::{InferenceTrace, ToIterator},
     quantization::{self, Fieldizer},
@@ -36,6 +37,8 @@ pub enum TableType {
     Range,
     /// Table used for clamping values, the inner [`usize`] denotes the maximum bit length a value can be before clamping to use this table
     Clamping(usize),
+    /// Table type used for computing Softmax, the first inner [`usize`] denotes the value such that the temprature is 1/(sqrt(val)), the second [`usize`] is the table size and the [`Element`] is the point at which we map everything to zero
+    Softmax(usize, usize, Element),
 }
 
 impl TableType {
@@ -98,6 +101,33 @@ impl TableType {
                     .unzip();
                 (comb, vec![col_one, col_two])
             }
+            TableType::Softmax(val, size, bkm) => {
+                let float_temperature = 1.0f32 / (*val as f32).sqrt();
+                let table_size = 1i128 << size;
+                let base = 1i128 << (LOG_SCALE_FACTOR - 8);
+                let (merged_lookup, (in_column, out_column)): (
+                    Vec<Element>,
+                    (Vec<E::BaseField>, Vec<E::BaseField>),
+                ) = (0i128..table_size)
+                    .map(|j| {
+                        let prod = base * j;
+                        let out_elem = if prod > *bkm {
+                            0i128
+                        } else {
+                            let float_exp =
+                                (-prod as f32 / (SCALE_FACTOR as f32 * float_temperature)).exp();
+                            (float_exp * OUTPUT_SCALE_FACTOR as f32).round() as Element
+                        };
+                        let in_field: E = j.to_field();
+                        let out_field: E = out_elem.to_field();
+                        (
+                            j + COLUMN_SEPARATOR * out_elem,
+                            (in_field.as_bases()[0], out_field.as_bases()[0]),
+                        )
+                    })
+                    .unzip();
+                (merged_lookup, vec![in_column, out_column])
+            }
         }
     }
 
@@ -105,7 +135,8 @@ impl TableType {
         match self {
             TableType::Relu => "Relu".to_string(),
             TableType::Range => "Range".to_string(),
-            TableType::Clamping(size) => format!("Clamping: {size}"),
+            TableType::Clamping(size) => format!("Clamping: {}", size),
+            TableType::Softmax(temp, ..) => format!("Softmax - temperature: {}", temp),
         }
     }
 
@@ -185,6 +216,21 @@ impl TableType {
 
                 Ok(vec![first_column, second_col_eval])
             }
+            TableType::Softmax(_, size, ..) => {
+                if point.len() != *size {
+                    return Err(LogUpError::VerifierError(format!(
+                        "Point was not the correct size to produce a softmax table evaluation, point size: {}, expected: {}",
+                        point.len(),
+                        *size
+                    )));
+                }
+
+                Ok(vec![
+                    point.iter().enumerate().fold(E::ZERO, |acc, (index, p)| {
+                        acc + *p * E::from_canonical_u64(1u64 << index)
+                    }),
+                ])
+            }
         }
     }
 
@@ -196,6 +242,7 @@ impl TableType {
                 E::ONE
             }
             TableType::Clamping(_) => transcript.get_and_append_challenge(b"Clamping").elements,
+            TableType::Softmax(..) => transcript.get_and_append_challenge(b"Softmax").elements,
         }
     }
 
@@ -204,6 +251,48 @@ impl TableType {
         match self {
             TableType::Range | TableType::Relu => *quantization::BIT_LEN,
             TableType::Clamping(bits) => *bits,
+            TableType::Softmax(_, bits, _) => *bits,
+        }
+    }
+
+    /// Function that returns any MLEs that have to be committed for this [`TableType`]
+    pub fn committed_columns<E: ExtensionField>(&self) -> Option<DenseMultilinearExtension<E>> {
+        match self {
+            TableType::Softmax(val, size, bkm) => {
+                let float_temperature = 1.0f32 / (*val as f32).sqrt();
+                let table_size = 1i128 << size;
+                let base = 1i128 << (LOG_SCALE_FACTOR - 8);
+                let out_column = (0i128..table_size)
+                    .map(|j| {
+                        let prod = base * j;
+                        let out_elem = if prod > *bkm {
+                            0i128
+                        } else {
+                            let float_exp =
+                                (-prod as f32 / (SCALE_FACTOR as f32 * float_temperature)).exp();
+                            (float_exp * OUTPUT_SCALE_FACTOR as f32).round() as Element
+                        };
+
+                        let out_field: E = out_elem.to_field();
+                        out_field.as_bases()[0]
+                    })
+                    .collect::<Vec<E::BaseField>>();
+                Some(DenseMultilinearExtension::<E>::from_evaluations_vec(
+                    *size, out_column,
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// Method that takes all of the claims output by a logup table proof and outputs only those that need to be checked via commitment opening (excluding the multiplicity poly claim)
+    pub fn table_claims<E: ExtensionField>(&self, claims: &[Claim<E>]) -> Vec<Claim<E>> {
+        match self {
+            TableType::Softmax(..) => {
+                // For Softmax we just need the output column claim so the last of the slice
+                vec![claims.last().cloned().unwrap()]
+            }
+            _ => vec![],
         }
     }
 }
