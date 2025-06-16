@@ -122,6 +122,19 @@ where
                 table_proof.output_claims().first().unwrap().clone(),
             )?;
 
+            // Add any table poly claims to the commitment prover
+            let table_type = table_witness.table_type();
+            let table_poly_claims = table_type.table_claims(table_proof.output_claims());
+
+            if !table_poly_claims.is_empty() {
+                // If the table poly claims aren't empty there should only be 1
+                self.commit_prover.add_table_claim(
+                    &self.ctx.commitment_ctx,
+                    table_type,
+                    table_poly_claims[0].clone(),
+                )?;
+            }
+
             self.table_proofs.push(TableProof {
                 multiplicity_commit,
                 lookup: table_proof,

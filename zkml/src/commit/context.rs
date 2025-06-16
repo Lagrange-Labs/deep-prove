@@ -3,7 +3,11 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::{Claim, default_transcript, layers::provable::NodeId};
+use crate::{
+    Claim, default_transcript,
+    layers::provable::NodeId,
+    lookup::context::{LookupContext, TableType},
+};
 use ff_ext::ExtensionField;
 
 use anyhow::{Context, Result, anyhow, ensure};
@@ -29,11 +33,13 @@ where
     prover_params: PCS::ProverParam,
     /// Verifier parameters for the [`PolynomialCommitmentScheme`]
     verifier_params: PCS::VerifierParam,
-    /// This field contains a [`HashMap`] where the key is a [`NodeId`] and the value is a vector of tuples of [`PolynomialCommitmentScheme::CommitmentWithWitness`]  and [`DenseMultilinearExtension<E>`] corresponding to that ID.
+    /// This field contains a [`BTreeMap`] where the key is a [`NodeId`] and the value is a vector of tuples of [`PolynomialCommitmentScheme::CommitmentWithWitness`]  and [`DenseMultilinearExtension<E>`] corresponding to that ID.
     model_comms_map: BTreeMap<
         NodeId,
         BTreeMap<PolyId, (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
     >,
+    /// This field contains a [`BTreeMap`] relating to lookup tables used by the model
+    table_comms_map: HashMap<TableType, (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
 }
 
 impl<E, PCS> CommitmentContext<E, PCS>
@@ -46,6 +52,7 @@ where
     pub fn new(
         witness_poly_size: usize,
         polys: Vec<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>,
+        lookup_ctx: &LookupContext,
     ) -> Result<CommitmentContext<E, PCS>> {
         // Find the maximum size so we can generate params
         let max_poly_size = polys
@@ -83,10 +90,16 @@ where
                 ))
             })
             .collect::<Result<BTreeMap<NodeId, _>, _>>()?;
+
+        let table_comms_map = lookup_ctx.iter().filter_map(|table_type| {
+            table_type.committed_columns().and_then(|poly| {let commit = PCS::commit(&prover_params, &poly).ok()?; Some((*table_type, (commit, poly)))})
+        }).collect::<HashMap<TableType, (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>>();
+
         Ok(CommitmentContext {
             prover_params,
             verifier_params,
             model_comms_map,
+            table_comms_map,
         })
     }
 
@@ -261,6 +274,25 @@ where
             })
     }
 
+    /// Adds a claim about a table polynomial
+    pub fn add_table_claim(
+        &mut self,
+        ctx: &CommitmentContext<E, PCS>,
+        table_type: TableType,
+        claim: Claim<E>,
+    ) -> Result<()> {
+        let table_commitment = ctx
+            .table_comms_map
+            .get(&table_type)
+            .cloned()
+            .ok_or(anyhow!(
+                "No table commitments stored for table of type: {}",
+                table_type.name()
+            ))?;
+
+        self.add_witness_claim(table_commitment, claim)
+    }
+
     /// Produce the [`ModelOpeningProof`] for this inference trace.
     pub fn prove<T: Transcript<E>>(
         &mut self,
@@ -337,6 +369,7 @@ where
     E: ExtensionField,
 {
     model_comms_map: HashMap<NodeId, BTreeMap<PolyId, PCS::Commitment>>,
+    table_comms_map: HashMap<TableType, PCS::Commitment>,
     claims: Vec<VerifierClaim<E, PCS>>,
     trivial_claims: Vec<VerifierClaim<E, PCS>>,
 }
@@ -362,8 +395,16 @@ where
                 )
             })
             .collect::<HashMap<NodeId, _>>();
+
+        let table_comms_map = ctx
+            .table_comms_map
+            .iter()
+            .map(|(table_type, (comm, _))| (*table_type, PCS::get_pure_commitment(comm)))
+            .collect::<HashMap<TableType, PCS::Commitment>>();
+
         CommitmentVerifier {
             model_comms_map,
+            table_comms_map,
             claims: vec![],
             trivial_claims: vec![],
         }
@@ -408,6 +449,16 @@ where
             })
     }
 
+    /// Adds a claim about a table polynomial
+    pub fn add_table_claim(&mut self, table_type: TableType, claim: Claim<E>) -> Result<()> {
+        let table_commitment = self.table_comms_map.remove(&table_type).ok_or(anyhow!(
+            "No table commitments stored for table of type: {}",
+            table_type.name()
+        ))?;
+
+        self.add_witness_claim(table_commitment, claim)
+    }
+
     /// Verify the [`ModelOpeningProof`] for this inference trace.
     pub fn verify<T: Transcript<E>>(
         &mut self,
@@ -420,6 +471,12 @@ where
             self.model_comms_map.is_empty(),
             "Not all model commits have been used, had {} remaining",
             self.model_comms_map.len()
+        );
+        // Check all the table commitments have been used
+        ensure!(
+            self.table_comms_map.is_empty(),
+            "Not all table commits have been used, had {} remaining",
+            self.table_comms_map.len()
         );
 
         // Prepare the parts that go into the batch proof
