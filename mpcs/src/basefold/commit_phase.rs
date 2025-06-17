@@ -9,7 +9,7 @@ use super::{
 use crate::util::{
     arithmetic::{interpolate_over_boolean_hypercube, interpolate2_weights},
     field_type_index_ext, field_type_iter_ext, field_type_par_iter_ext,
-    hash::write_digest_to_transcript,
+    hash::MerkleHasher,
     log2_strict,
     merkle_tree::MerkleTree,
 };
@@ -30,11 +30,14 @@ use super::structure::BasefoldCommitmentWithWitness;
 pub fn commit_phase<E: ExtensionField, Spec: BasefoldSpec<E>>(
     pp: &<Spec::EncodingScheme as EncodingScheme<E>>::ProverParameters,
     point: &[E],
-    comm: &BasefoldCommitmentWithWitness<E>,
+    comm: &BasefoldCommitmentWithWitness<E, Spec::MerkleHasher>,
     transcript: &mut impl Transcript<E>,
     num_vars: usize,
     num_rounds: usize,
-) -> (Vec<MerkleTree<E>>, BasefoldCommitPhaseProof<E>)
+) -> (
+    Vec<MerkleTree<E, Spec::MerkleHasher>>,
+    BasefoldCommitPhaseProof<E, <Spec::MerkleHasher as MerkleHasher<E>>::Digest>,
+)
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
@@ -95,7 +98,7 @@ where
         );
 
         if i > 0 {
-            let running_tree = MerkleTree::<E>::from_inner_leaves(
+            let running_tree = MerkleTree::<E, Spec::MerkleHasher>::from_inner_leaves(
                 running_tree_inner,
                 FieldType::Ext(running_oracle),
             );
@@ -113,9 +116,14 @@ where
             // Then the oracle will be used to fold to the next oracle in the next
             // round. After that, this oracle is free to be moved to build the
             // complete Merkle tree.
-            running_tree_inner = MerkleTree::<E>::compute_inner_ext(&new_running_oracle);
-            let running_root = MerkleTree::<E>::root_from_inner(&running_tree_inner);
-            write_digest_to_transcript(&running_root, transcript);
+            running_tree_inner =
+                MerkleTree::<E, Spec::MerkleHasher>::compute_inner_ext(&new_running_oracle);
+            let running_root =
+                MerkleTree::<E, Spec::MerkleHasher>::root_from_inner(&running_tree_inner);
+            <Spec::MerkleHasher as MerkleHasher<E>>::digest_to_transcript(
+                &running_root,
+                transcript,
+            );
             roots.push(running_root.clone());
 
             running_oracle = new_running_oracle;
@@ -179,12 +187,15 @@ where
 pub fn batch_commit_phase<E: ExtensionField, Spec: BasefoldSpec<E>>(
     pp: &<Spec::EncodingScheme as EncodingScheme<E>>::ProverParameters,
     point: &[E],
-    comms: &[BasefoldCommitmentWithWitness<E>],
+    comms: &[BasefoldCommitmentWithWitness<E, Spec::MerkleHasher>],
     transcript: &mut impl Transcript<E>,
     num_vars: usize,
     num_rounds: usize,
     coeffs: &[E],
-) -> (Vec<MerkleTree<E>>, BasefoldCommitPhaseProof<E>)
+) -> (
+    Vec<MerkleTree<E, Spec::MerkleHasher>>,
+    BasefoldCommitPhaseProof<E, <Spec::MerkleHasher as MerkleHasher<E>>::Digest>,
+)
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
@@ -251,7 +262,7 @@ where
             .elements;
 
         if i > 0 {
-            let running_tree = MerkleTree::<E>::from_inner_leaves(
+            let running_tree = MerkleTree::<E, Spec::MerkleHasher>::from_inner_leaves(
                 running_tree_inner,
                 FieldType::Ext(new_running_oracle.clone()),
             );
@@ -286,9 +297,14 @@ where
                 sum_check_challenge_round(&mut eq, &mut sum_of_all_evals_for_sumcheck, challenge);
             sumcheck_messages.push(last_sumcheck_message.clone());
 
-            running_tree_inner = MerkleTree::<E>::compute_inner_ext(&new_running_oracle);
-            let running_root = MerkleTree::<E>::root_from_inner(&running_tree_inner);
-            write_digest_to_transcript(&running_root, transcript);
+            running_tree_inner =
+                MerkleTree::<E, Spec::MerkleHasher>::compute_inner_ext(&new_running_oracle);
+            let running_root =
+                MerkleTree::<E, Spec::MerkleHasher>::root_from_inner(&running_tree_inner);
+            <Spec::MerkleHasher as MerkleHasher<E>>::digest_to_transcript(
+                &running_root,
+                transcript,
+            );
             roots.push(running_root);
         } else {
             // Clear the value so the compiler does not think they are moved
@@ -348,11 +364,14 @@ pub fn simple_batch_commit_phase<E: ExtensionField, Spec: BasefoldSpec<E>>(
     pp: &<Spec::EncodingScheme as EncodingScheme<E>>::ProverParameters,
     point: &[E],
     batch_coeffs: &[E],
-    comm: &BasefoldCommitmentWithWitness<E>,
+    comm: &BasefoldCommitmentWithWitness<E, Spec::MerkleHasher>,
     transcript: &mut impl Transcript<E>,
     num_vars: usize,
     num_rounds: usize,
-) -> (Vec<MerkleTree<E>>, BasefoldCommitPhaseProof<E>)
+) -> (
+    Vec<MerkleTree<E, Spec::MerkleHasher>>,
+    BasefoldCommitPhaseProof<E, <Spec::MerkleHasher as MerkleHasher<E>>::Digest>,
+)
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
@@ -414,7 +433,7 @@ where
         );
 
         if i > 0 {
-            let running_tree = MerkleTree::<E>::from_inner_leaves(
+            let running_tree = MerkleTree::<E, Spec::MerkleHasher>::from_inner_leaves(
                 running_tree_inner,
                 FieldType::Ext(running_oracle),
             );
@@ -424,9 +443,14 @@ where
         if i < num_rounds - 1 {
             last_sumcheck_message =
                 sum_check_challenge_round(&mut eq, &mut running_evals, challenge);
-            running_tree_inner = MerkleTree::<E>::compute_inner_ext(&new_running_oracle);
-            let running_root = MerkleTree::<E>::root_from_inner(&running_tree_inner);
-            write_digest_to_transcript(&running_root, transcript);
+            running_tree_inner =
+                MerkleTree::<E, Spec::MerkleHasher>::compute_inner_ext(&new_running_oracle);
+            let running_root =
+                MerkleTree::<E, Spec::MerkleHasher>::root_from_inner(&running_tree_inner);
+            <Spec::MerkleHasher as MerkleHasher<E>>::digest_to_transcript(
+                &running_root,
+                transcript,
+            );
             roots.push(running_root);
             running_oracle = new_running_oracle;
         } else {

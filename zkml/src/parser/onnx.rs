@@ -1,5 +1,4 @@
 use crate::{
-    ModelType,
     layers::{
         Layer,
         activation::Activation,
@@ -49,7 +48,7 @@ macro_rules! ensure_onnx {
     }
 
 pub fn from_path(path: &str) -> Result<Model<f32>> {
-    let model_type = ModelType::from_onnx(path).context("can't prove unknown model:")?;
+    // let model_type = ModelType::from_onnx(path).context("can't prove unknown model:")?;
     let model = {
         let pmodel = tract_onnx::onnx()
             .model_for_path(path)?
@@ -81,11 +80,11 @@ pub fn from_path(path: &str) -> Result<Model<f32>> {
             )),
         })
         .collect::<Result<Vec<_>, _>>()?;
-    if model_type == ModelType::CNN || model_type == ModelType::MLP {
-        if input_shape[0] == 1 {
-            input_shape.remove(0);
-        }
+    // if model_type == ModelType::CNN || model_type == ModelType::MLP {
+    if input_shape[0] == 1 {
+        input_shape.remove(0);
     }
+    //}
 
     let mut pmodel =
         Model::new_from_input_shapes(vec![input_shape.to_vec()], PaddingMode::NoPadding);
