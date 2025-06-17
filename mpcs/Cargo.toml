@@ -14,6 +14,8 @@ aes = { workspace = true }
 ark-std.workspace = true
 bitvec = { workspace = true }
 ctr = { workspace = true }
+blake3.workspace = true
+ff.workspace = true
 ff_ext = { path = "../ff_ext" }
 itertools.workspace = true
 multilinear_extensions = { path = "../multilinear_extensions" }
@@ -40,6 +42,7 @@ benchmark = ["parallel"]
 default = ["parallel"] # Add "sanity-check" to debug
 parallel = ["dep:rayon"]
 print-trace = ["ark-std/print-trace"]
+blake = []
 sanity-check = []
 
 [[bench]]

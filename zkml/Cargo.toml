@@ -20,6 +20,10 @@ path = "src/bin/worker.rs"
 name = "deep-prove-cli"
 path = "src/bin/cli/main.rs"
 
+[features]
+default = []
+blake = ["mpcs/blake"]
+
 [dependencies]
 anyhow.workspace = true
 ark-std.workspace = true

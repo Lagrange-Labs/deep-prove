@@ -5,7 +5,8 @@ use ff_ext::{ExtensionField, GoldilocksExt2};
 
 use itertools::{Itertools, chain};
 use mpcs::{
-    Basefold, BasefoldBasecodeParams, BasefoldRSParams, Evaluation, PolynomialCommitmentScheme,
+    Basefold, BasefoldBasecodeParams, BasefoldRSParams, Evaluation, Hasher,
+    PolynomialCommitmentScheme,
     test_util::{
         commit_polys_individually, gen_rand_poly_base, gen_rand_poly_ext, gen_rand_polys,
         get_point_from_challenge, get_points_from_challenge, setup_pcs,
@@ -19,9 +20,11 @@ use multilinear_extensions::{
 };
 use transcript::{BasicTranscript, Transcript};
 
-type PcsGoldilocksRSCode = Basefold<GoldilocksExt2, BasefoldRSParams>;
-type PcsGoldilocksBasecode = Basefold<GoldilocksExt2, BasefoldBasecodeParams>;
+// For now given transcript doesn't impact perf so much, we can keep it simple
 type T = BasicTranscript<GoldilocksExt2>;
+
+type PcsGoldilocksRSCode = Basefold<GoldilocksExt2, BasefoldRSParams<Hasher>>;
+type PcsGoldilocksBasecode = Basefold<GoldilocksExt2, BasefoldBasecodeParams<Hasher>>;
 type E = GoldilocksExt2;
 
 const NUM_SAMPLES: usize = 10;

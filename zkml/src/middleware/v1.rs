@@ -2,7 +2,7 @@ use std::{io::BufReader, path::Path};
 
 use anyhow::{Context, ensure};
 use ff_ext::GoldilocksExt2;
-use mpcs::{Basefold, BasefoldRSParams};
+use mpcs::{Basefold, BasefoldRSParams, Hasher};
 use serde::{Deserialize, Serialize};
 
 use crate::quantization::QUANTIZATION_RANGE;
@@ -10,7 +10,7 @@ use crate::quantization::QUANTIZATION_RANGE;
 use super::{Element, Model, ModelMetadata, ProofG};
 
 /// A type of the proof for the `v1` of the protocol
-pub type Proof = ProofG<GoldilocksExt2, Basefold<GoldilocksExt2, BasefoldRSParams>>;
+pub type Proof = ProofG<GoldilocksExt2, Basefold<GoldilocksExt2, BasefoldRSParams<Hasher>>>;
 
 /// Inputs to the model
 #[derive(Clone, Serialize, Deserialize)]

@@ -6,6 +6,8 @@ use std::{
     time,
 };
 use timed_core::Output;
+#[cfg(feature = "blake")]
+use transcript::blake::BlakeTranscript;
 use zkml::{
     model::Model,
     quantization::{AbsoluteMax, InferenceObserver, ModelMetadata},
@@ -15,7 +17,7 @@ use anyhow::{Context as CC, Result, bail, ensure};
 use clap::Parser;
 use csv::WriterBuilder;
 use ff_ext::GoldilocksExt2;
-use mpcs::{Basefold, BasefoldRSParams};
+use mpcs::{Basefold, BasefoldRSParams, Hasher};
 use tracing::{debug, info};
 use tracing_subscriber::{EnvFilter, fmt};
 use zkml::FloatOnnxLoader;
@@ -26,7 +28,30 @@ use zkml::{Context, Element, Prover, argmax, default_transcript, verify};
 use rmp_serde::encode::to_vec_named;
 
 type F = GoldilocksExt2;
-type Pcs<E> = Basefold<E, BasefoldRSParams>;
+// the hasher type is chosen depending on the feature flag inside the mpcs crate
+type Pcs<E> = Basefold<E, BasefoldRSParams<Hasher>>;
+
+// Choose transcript implementation at compile time
+#[cfg(feature = "blake")]
+type Transcript = BlakeTranscript;
+
+#[cfg(not(feature = "blake"))]
+type Transcript = transcript::basic::BasicTranscript<F>;
+
+// Create a new transcript instance
+fn new_transcript() -> Transcript {
+    #[cfg(feature = "blake")]
+    {
+        use transcript::blake::BlakeTranscript;
+        println!("using blake transcript");
+        BlakeTranscript::new(b"bench")
+    }
+    #[cfg(not(feature = "blake"))]
+    {
+        println!("using basic transcript");
+        default_transcript()
+    }
+}
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -355,7 +380,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         }
         info!("[+] Running prover");
         let io = trace.to_verifier_io();
-        let mut prover_transcript = default_transcript();
+        let mut prover_transcript = new_transcript();
         let prover = Prover::<_, _, _>::new(ctx.as_ref().unwrap(), &mut prover_transcript);
         let proof = bencher.r(CSV_PROVING, move || {
             prover.prove(trace).expect("unable to generate proof")
@@ -367,7 +392,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         bencher.set(CSV_PROOF_SIZE, format!("{proof_size_kb:.3}"));
 
         info!("[+] Running verifier");
-        let mut verifier_transcript = default_transcript();
+        let mut verifier_transcript = new_transcript();
         bencher.r(CSV_VERIFYING, || {
             verify::<_, _, _>(
                 ctx.as_ref().unwrap().clone(),
@@ -462,7 +487,8 @@ impl CSVBencher {
             .create(true)
             .append(file_exists)
             .write(true)
-            .open(fname)?;
+            .open(fname)
+            .context(format!("opening file {fname}"))?;
         let mut writer = WriterBuilder::new()
             .has_headers(!file_exists)
             .from_writer(file);
@@ -474,11 +500,15 @@ impl CSVBencher {
             .collect();
 
         if !file_exists {
-            writer.write_record(&self.headers)?;
+            writer
+                .write_record(&self.headers)
+                .context(format!("writing headers to {fname}"))?;
         }
 
-        writer.write_record(&values)?;
-        writer.flush()?;
+        writer
+            .write_record(&values)
+            .context(format!("writing values to {fname}"))?;
+        writer.flush().context(format!("flushing file {fname}"))?;
         Ok(())
     }
 }

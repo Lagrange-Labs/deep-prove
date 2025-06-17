@@ -17,3 +17,4 @@ p3-field.workspace = true
 poseidon.workspace = true
 serde.workspace = true
 p3-poseidon2 = { workspace = true }
+blake3.workspace = true

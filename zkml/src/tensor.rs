@@ -1460,8 +1460,11 @@ where
         );
         // Validate shapes
         assert_eq!(
-            c_size, k_c,
-            "Input {c_size} and kernel {k_c} channels must match!"
+            c_size,
+            k_c,
+            "Input {c_size} and kernel {k_c} channels must match! {:?} vs kernel {:?}",
+            self.get_shape(),
+            kernels.get_shape()
         );
         assert_eq!(
             bias.shape.as_ref(),

@@ -6,7 +6,7 @@ use axum::{Json, Router, routing::get};
 use clap::Parser;
 use ff_ext::GoldilocksExt2;
 use futures::{FutureExt, StreamExt};
-use mpcs::{Basefold, BasefoldRSParams};
+use mpcs::{Basefold, BasefoldRSParams, Hasher};
 use reqwest::StatusCode;
 use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
 
@@ -33,7 +33,7 @@ mod lagrange {
 }
 
 type F = GoldilocksExt2;
-type Pcs<E> = Basefold<E, BasefoldRSParams>;
+type Pcs<E> = Basefold<E, BasefoldRSParams<Hasher>>;
 
 fn run_model_v1(model: DeepProveRequestV1) -> Result<Vec<ProofV1>> {
     info!("Proving inference");

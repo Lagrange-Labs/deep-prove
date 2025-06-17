@@ -5,7 +5,8 @@ use criterion::*;
 use ff_ext::GoldilocksExt2;
 use itertools::Itertools;
 use mpcs::{
-    Basefold, BasefoldBasecodeParams, BasefoldSpec, EncodingScheme, PolynomialCommitmentScheme,
+    Basefold, BasefoldBasecodeParams, BasefoldSpec, EncodingScheme, Hasher,
+    PolynomialCommitmentScheme,
     util::{
         arithmetic::interpolate_field_type_over_boolean_hypercube,
         plonky2_util::reverse_index_bits_in_place_field_type,
@@ -18,7 +19,7 @@ use rand::{SeedableRng, rngs::OsRng};
 use rand_chacha::ChaCha8Rng;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
-type Pcs = Basefold<GoldilocksExt2, BasefoldBasecodeParams>;
+type Pcs = Basefold<GoldilocksExt2, BasefoldBasecodeParams<Hasher>>;
 type E = GoldilocksExt2;
 
 const NUM_SAMPLES: usize = 10;
@@ -68,7 +69,7 @@ fn bench_encoding(c: &mut Criterion, is_base: bool) {
                                 interpolate_field_type_over_boolean_hypercube(&mut coeffs);
 
                                 let mut codeword =
-                                    <<BasefoldBasecodeParams as BasefoldSpec<E>>::EncodingScheme as EncodingScheme<E>>::encode(
+                                    <<BasefoldBasecodeParams<Hasher> as BasefoldSpec<E>>::EncodingScheme as EncodingScheme<E>>::encode(
                                         &pp.encoding_params,
                                         &coeffs,
                                     );

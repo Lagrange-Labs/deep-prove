@@ -83,6 +83,8 @@ parser.add_argument("--distribution", action="store_true",
                     help="Show distribution of model weights")
 parser.add_argument("--without-bias", action="store_true",
                     help="Don't use bias in the layers of the model (optional)")
+parser.add_argument("--without-maxpool", action="store_true",
+                    help="Don't use maxpool layers in the model (optional)")
 
 args = parser.parse_args()
 
@@ -170,18 +172,27 @@ print(' '.join(f'{classes[labels[j]]:5s}' for j in range(batch_size)))
 # take 3-channel images (instead of 1-channel images as it was defined).
 
 
-def estimate_params(c1, c2, fc1, fc2, fc3, use_bias=True):
+def estimate_params(c1, c2, fc1, fc2, fc3, use_bias=True, use_maxpool=True):
     bias_term = 1 if use_bias else 0
     conv1_params = (3 * 5 * 5 + bias_term) * c1
     conv2_params = (c1 * 5 * 5 + bias_term) * c2
-    fc1_params = (c2 * 5 * 5 + bias_term) * fc1
+    
+    # Calculate the size of the flattened features after conv layers
+    if use_maxpool:
+        # With maxpool: 32x32 -> 16x16 -> 8x8
+        flattened_size = c2 * 5 * 5
+    else:
+        # Without maxpool: 32x32 -> 28x28 -> 24x24
+        flattened_size = c2 * 24 * 24
+        
+    fc1_params = (flattened_size + bias_term) * fc1
     fc2_params = (fc1 + bias_term) * fc2
     fc3_params = (fc2 + bias_term) * fc3
     return conv1_params + conv2_params + fc1_params + fc2_params + fc3_params
 
 
 class Net(nn.Module):
-    def __init__(self, target_params=None, use_bias=True):
+    def __init__(self, target_params=None, use_bias=True, use_maxpool=True):
         super().__init__()
 
         # Default values
@@ -190,23 +201,42 @@ class Net(nn.Module):
 
         if target_params:
             # Adjust parameters iteratively to fit within target
-            scale = (target_params / estimate_params(c1, c2,
-                     fc1, fc2, fc3, use_bias=use_bias)) ** 0.5
+            scale = (target_params / estimate_params(c1, c2, fc1, fc2, fc3, use_bias=use_bias, use_maxpool=use_maxpool)) ** 0.5
             c1, c2 = int(c1 * scale), int(c2 * scale)
             fc1, fc2 = int(fc1 * scale), int(fc2 * scale)
 
             # Recalculate to get final parameter count
-            final_params = estimate_params(
-                c1, c2, fc1, fc2, fc3, use_bias=use_bias)
-            assert abs(final_params - target_params) / \
-                target_params <= 0.05, "Final params exceed 5% tolerance"
+            final_params = estimate_params(c1, c2, fc1, fc2, fc3, use_bias=use_bias, use_maxpool=use_maxpool)
+            
+            # Print detailed parameter breakdown before assertion
+            print("\n📊 Parameter Count Breakdown:")
+            print(f"  Target parameters: {target_params:,}")
+            print(f"  Final parameters: {final_params:,}")
+            print(f"  Difference: {abs(final_params - target_params):,}")
+            print(f"  Percentage difference: {abs(final_params - target_params) / target_params * 100:.2f}%")
+            print("\nLayer-wise breakdown:")
+            bias_term = 1 if use_bias else 0
+            conv1_params = (3 * 5 * 5 + bias_term) * c1
+            conv2_params = (c1 * 5 * 5 + bias_term) * c2
+            flattened_size = c2 * (5 if use_maxpool else 24) * (5 if use_maxpool else 24)
+            fc1_params = (flattened_size + bias_term) * fc1
+            fc2_params = (fc1 + bias_term) * fc2
+            fc3_params = (fc2 + bias_term) * fc3
+            print(f"  Conv1: {conv1_params:,} parameters")
+            print(f"  Conv2: {conv2_params:,} parameters")
+            print(f"  FC1: {fc1_params:,} parameters")
+            print(f"  FC2: {fc2_params:,} parameters")
+            print(f"  FC3: {fc3_params:,} parameters")
+            print(f"  Total: {conv1_params + conv2_params + fc1_params + fc2_params + fc3_params:,} parameters")
+            
+            assert abs(final_params - target_params) / target_params <= 0.05, "Final params exceed 5% tolerance"
 
         # Create layers with or without bias based on use_bias parameter
         self.quant = QuantStub()
         self.conv1 = nn.Conv2d(3, c1, 5, bias=use_bias)
-        self.pool = nn.MaxPool2d(2, 2)
+        self.pool = nn.MaxPool2d(2, 2) if use_maxpool else nn.Identity()
         self.conv2 = nn.Conv2d(c1, c2, 5, bias=use_bias)
-        self.fc1 = nn.Linear(c2 * 5 * 5, fc1, bias=use_bias)
+        self.fc1 = nn.Linear(c2 * (5 if use_maxpool else 24) * (5 if use_maxpool else 24), fc1, bias=use_bias)
         self.fc2 = nn.Linear(fc1, fc2, bias=use_bias)
         self.fc3 = nn.Linear(fc2, fc3, bias=use_bias)
         self.dequant = DeQuantStub()
@@ -215,7 +245,6 @@ class Net(nn.Module):
         x = self.quant(x)
         x = self.pool(F.relu(self.conv1(x)))
         x = self.pool(F.relu(self.conv2(x)))
-        # x = torch.flatten(x, 1)
         x = x.reshape(x.size(0), -1)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
@@ -246,11 +275,11 @@ class Net(nn.Module):
 #         return x
 
 with_bias = not args.without_bias
+use_maxpool = not args.without_maxpool
 if args.num_params:
-    print(
-        f"🏗️ Initializing neural network with target parameter count: {args.num_params:,}...")
+    print(f"🏗️ Initializing neural network with target parameter count: {args.num_params:,}...")
     try:
-        net = Net(target_params=args.num_params, use_bias=with_bias)
+        net = Net(target_params=args.num_params, use_bias=with_bias, use_maxpool=use_maxpool)
         total_params = sum(p.numel() for p in net.parameters())
         print(f"✅ Model created with {total_params:,} parameters")
         print(f"   Conv1: {net.conv1.out_channels} channels")
@@ -260,14 +289,15 @@ if args.num_params:
         print(f"   Using bias: {with_bias}")
     except AssertionError as e:
         print(f"❌ Error: {e}")
-        print(f"Using default model instead with bias: {with_bias}.")
-        net = Net(use_bias=with_bias)  # Use default parameters
+        print(f"Using default model instead with bias: {with_bias} and maxpool: {use_maxpool}.")
+        net = Net(use_bias=with_bias, use_maxpool=use_maxpool)  # Use default parameters
 else:
     print("🏗️ Initializing default neural network...")
-    net = Net(use_bias=with_bias)  # Use the default parameters
+    net = Net(use_bias=with_bias, use_maxpool=use_maxpool)  # Use the default parameters
     total_params = sum(p.numel() for p in net.parameters())
     print(f"✅ Default model created with {total_params:,} parameters")
     print(f"   Using bias: {with_bias}")
+    print(f"   Using maxpool: {use_maxpool}")
 
 # Add after class definition
 print("🏗️ Initializing neural network...")

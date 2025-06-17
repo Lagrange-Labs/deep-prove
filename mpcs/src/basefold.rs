@@ -12,7 +12,7 @@ use crate::{
         },
         expression::{Expression, Query, Rotation},
         ext_to_usize,
-        hash::{Digest, write_digest_to_transcript},
+        hash::MerkleHasher,
         log2_strict,
         merkle_tree::MerkleTree,
         multiply_poly,
@@ -270,10 +270,10 @@ where
     type Param = BasefoldParams<E, Spec>;
     type ProverParam = BasefoldProverParams<E, Spec>;
     type VerifierParam = BasefoldVerifierParams<E, Spec>;
-    type CommitmentWithWitness = BasefoldCommitmentWithWitness<E>;
-    type Commitment = BasefoldCommitment<E>;
-    type CommitmentChunk = Digest<E::BaseField>;
-    type Proof = BasefoldProof<E>;
+    type CommitmentWithWitness = BasefoldCommitmentWithWitness<E, Spec::MerkleHasher>;
+    type Commitment = BasefoldCommitment<<Spec::MerkleHasher as MerkleHasher<E>>::Digest>;
+    type CommitmentChunk = <Spec::MerkleHasher as MerkleHasher<E>>::Digest;
+    type Proof = BasefoldProof<E, <Spec::MerkleHasher as MerkleHasher<E>>::Digest>;
 
     fn setup(poly_size: usize) -> Result<Self::Param, Error> {
         let pp = <Spec::EncodingScheme as EncodingScheme<E>>::setup(log2_strict(poly_size));
@@ -320,7 +320,7 @@ where
         //  (2) The encoding of the coefficient vector (need an interpolation)
         let ret = match Self::get_poly_bh_evals_and_codeword(pp, poly) {
             PolyEvalsCodeword::Normal((bh_evals, codeword)) => {
-                let codeword_tree = MerkleTree::<E>::from_leaves(codeword);
+                let codeword_tree = MerkleTree::<E, Spec::MerkleHasher>::from_leaves(codeword);
 
                 // All these values are stored in the `CommitmentWithWitness` because
                 // they are useful in opening, and we don't want to recompute them.
@@ -333,7 +333,7 @@ where
                 })
             }
             PolyEvalsCodeword::TooSmall(evals) => {
-                let codeword_tree = MerkleTree::<E>::from_leaves(evals.clone());
+                let codeword_tree = MerkleTree::<E, Spec::MerkleHasher>::from_leaves(evals.clone());
 
                 // All these values are stored in the `CommitmentWithWitness` because
                 // they are useful in opening, and we don't want to recompute them.
@@ -409,7 +409,8 @@ where
                         }
                     })
                     .collect::<(Vec<_>, Vec<_>)>();
-                let codeword_tree = MerkleTree::<E>::from_batch_leaves(codewords);
+                let codeword_tree =
+                    MerkleTree::<E, Spec::MerkleHasher>::from_batch_leaves(codewords);
                 Self::CommitmentWithWitness {
                     codeword_tree,
                     polynomials_bh_evals: bh_evals,
@@ -429,7 +430,8 @@ where
                         }
                     })
                     .collect::<Vec<_>>();
-                let codeword_tree = MerkleTree::<E>::from_batch_leaves(bh_evals.clone());
+                let codeword_tree =
+                    MerkleTree::<E, Spec::MerkleHasher>::from_batch_leaves(bh_evals.clone());
                 Self::CommitmentWithWitness {
                     codeword_tree,
                     polynomials_bh_evals: bh_evals,
@@ -450,7 +452,7 @@ where
         comm: &Self::Commitment,
         transcript: &mut impl Transcript<E>,
     ) -> Result<(), Error> {
-        write_digest_to_transcript(&comm.root(), transcript);
+        <Spec::MerkleHasher as MerkleHasher<E>>::digest_to_transcript(&comm.root(), transcript);
         Ok(())
     }
 
@@ -870,7 +872,8 @@ where
 
         if proof.is_trivial() {
             let trivial_proof = &proof.trivial_proof;
-            let merkle_tree = MerkleTree::<E>::from_batch_leaves(trivial_proof.clone());
+            let merkle_tree =
+                MerkleTree::<E, Spec::MerkleHasher>::from_batch_leaves(trivial_proof.clone());
             if comm.root() == merkle_tree.root() {
                 let computed_eval = DenseMultilinearExtension::<E> {
                     evaluations: trivial_proof[0].clone(),
@@ -909,7 +912,9 @@ where
                     .elements,
             );
             if i < num_rounds - 1 {
-                write_digest_to_transcript(&roots[i], transcript);
+                <Spec::MerkleHasher as MerkleHasher<E>>::digest_to_transcript(
+                    &roots[i], transcript,
+                );
             }
         }
 
@@ -1042,7 +1047,9 @@ where
                     .elements,
             );
             if i < num_rounds - 1 {
-                write_digest_to_transcript(&roots[i], transcript);
+                <Spec::MerkleHasher as MerkleHasher<E>>::digest_to_transcript(
+                    &roots[i], transcript,
+                );
             }
         }
         let final_message = &proof.final_message;
@@ -1107,7 +1114,8 @@ where
 
         if proof.is_trivial() {
             let trivial_proof = &proof.trivial_proof;
-            let merkle_tree = MerkleTree::<E>::from_batch_leaves(trivial_proof.clone());
+            let merkle_tree =
+                MerkleTree::<E, Spec::MerkleHasher>::from_batch_leaves(trivial_proof.clone());
             if comm.root() == merkle_tree.root() {
                 return Ok(());
             } else {
@@ -1144,7 +1152,9 @@ where
                     .elements,
             );
             if i < num_rounds - 1 {
-                write_digest_to_transcript(&roots[i], transcript);
+                <Spec::MerkleHasher as MerkleHasher<E>>::digest_to_transcript(
+                    &roots[i], transcript,
+                );
             }
         }
         let final_message = &proof.final_message;
@@ -1217,10 +1227,15 @@ mod test {
         },
     };
 
+    #[cfg(feature = "blake")]
+    use crate::util::hash::BlakeHasher as Hasher;
+    #[cfg(not(feature = "blake"))]
+    use crate::util::hash::PoseidonHasher as Hasher;
+
     use super::{BasefoldRSParams, structure::BasefoldBasecodeParams};
 
-    type PcsGoldilocksRSCode = Basefold<GoldilocksExt2, BasefoldRSParams>;
-    type PcsGoldilocksBaseCode = Basefold<GoldilocksExt2, BasefoldBasecodeParams>;
+    type PcsGoldilocksRSCode = Basefold<GoldilocksExt2, BasefoldRSParams<Hasher>>;
+    type PcsGoldilocksBaseCode = Basefold<GoldilocksExt2, BasefoldBasecodeParams<Hasher>>;
 
     #[test]
     fn commit_open_verify_goldilocks() {

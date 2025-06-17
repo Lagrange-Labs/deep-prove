@@ -5,7 +5,6 @@ use multilinear_extensions::mle::DenseMultilinearExtension;
 use serde::{Serialize, de::DeserializeOwned};
 use std::fmt::Debug;
 use transcript::{BasicTranscript, Transcript};
-use util::hash::Digest;
 
 pub mod sum_check;
 pub mod util;
@@ -226,8 +225,7 @@ pub trait PolynomialCommitmentScheme<E: ExtensionField>: Clone + Debug {
     ) -> Result<(), Error>;
 }
 
-pub trait NoninteractivePCS<E: ExtensionField>:
-    PolynomialCommitmentScheme<E, CommitmentChunk = Digest<E::BaseField>>
+pub trait NoninteractivePCS<E: ExtensionField>: PolynomialCommitmentScheme<E>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
@@ -337,6 +335,11 @@ pub use basefold::{
     one_level_interp_hc,
 };
 use multilinear_extensions::virtual_poly::ArcMultilinearExtension;
+
+#[cfg(feature = "blake")]
+pub use crate::util::hash::BlakeHasher as Hasher;
+#[cfg(not(feature = "blake"))]
+pub use crate::util::hash::PoseidonHasher as Hasher;
 
 fn validate_input<E: ExtensionField>(
     function: &str,

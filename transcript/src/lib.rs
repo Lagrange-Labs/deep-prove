@@ -3,6 +3,7 @@
 //! Transcript APIs are placeholders; the actual logic is to be implemented later.
 
 pub mod basic;
+pub mod blake;
 mod statistics;
 pub mod synchronized;
 pub use basic::BasicTranscript;
