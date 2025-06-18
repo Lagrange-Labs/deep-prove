@@ -19,22 +19,24 @@ impl<N: Number> Evaluate<N> for Logits {
         inputs: &[&crate::Tensor<N>],
         _unpadded_input_shapes: Vec<Vec<usize>>,
     ) -> anyhow::Result<crate::layers::provable::LayerOut<N, E>> {
+        ensure!(
+                inputs.iter().all(|i|i.get_shape().len() >= 2),
+                            "Argmax is for tensors of rank >= 2"
+                        );
+
         match self {
             Logits::Argmax => {
                 let indices = inputs
                     .iter()
-                    .map(|input| {
-                        ensure!(
-                            input.get_shape().len() >= 2,
-                            "Argmax is for tensors of rank >= 2"
-                        );
-                        let last_row = input.slices_last_dim().last().unwrap();
-                        Ok(Tensor::new(
-                            vec![1],
-                            vec![N::from_usize(argmax_slice(last_row).unwrap())],
-                        ))
+                    .flat_map(|input| {
+                        input.slices_last_dim().map(|row| {
+                            Tensor::new(
+                                vec![1],
+                                vec![N::from_usize(argmax_slice(row).unwrap())],
+                            )
+                        }).collect::<Vec<_>>()
                     })
-                    .collect::<anyhow::Result<Vec<_>>>()?;
+                    .collect::<Vec<_>>();
                 Ok(LayerOut::from_vec(indices))
             }
         }
