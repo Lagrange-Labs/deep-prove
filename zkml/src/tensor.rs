@@ -1735,7 +1735,7 @@ impl<T: Number> Tensor<T> {
     pub fn concat(&mut self, other: Self) {
         // make sure that the all dimension but the highest one are the same
         let common_shape = self.shape.len().min(other.shape.len());
-        if common_shape < self.shape.len() {
+        let added_higher = if common_shape < self.shape.len() {
             assert!(
                 self.shape
                     .iter()
@@ -1745,19 +1745,14 @@ impl<T: Number> Tensor<T> {
                     .all(|(a, b)| a == b)
             );
             assert_eq!(common_shape + 1, self.shape.len());
+            1
         } else {
             assert_eq!(common_shape, self.shape.len());
-            assert_eq!(
-                other.shape.first().unwrap(),
-                &1,
-                "concat: self.shape: {:?}, other.shape: {:?}",
-                self.shape,
-                other.shape
-            );
-        }
+            *other.shape.first().unwrap()
+        };
         // then the new shape has this higher dimension + 1 simply
         // common_shape since 0-based indexing
-        *self.shape.get_mut(0).unwrap() += 1;
+        *self.shape.get_mut(0).unwrap() += added_higher;
         self.data.extend(other.data);
     }
     pub fn permute3d(&self, order: &[usize]) -> Self {
@@ -1797,14 +1792,26 @@ impl<T> Tensor<T> {
     /// Returns an iterator that yields slices of the last dimension.
     /// For a tensor of shape [2,3,3], it will yield 6 slices (2*3) of 3 elements each.
     pub fn slices_last_dim(&self) -> impl Iterator<Item = &[T]> {
-        let last_dim = *self.shape.last().unwrap();
-        let stride = last_dim;
-        self.data.chunks(stride)
+        let (it, _) = self.slice_on_dim(self.shape.len() - 2);
+        it
     }
 
-    pub fn slice_on_dim(&self, dim: usize) -> impl Iterator<Item = &[T]> {
-        let stride = self.shape[dim..].iter().product();
-        self.data.chunks(stride)
+    /// Returns an iterator of slices whose length corresponds to the subspace 
+    /// the dimension represents. Note dim is the dimension _index_ (0-based indexing).
+    /// Example: if dimension is [2,3,4], and we call `slice_on_dim(1)`, 
+    /// it will yield 2x3 slices of 4 elements each. If we call `slice_on_dim(0)`,
+    /// it will yield 2 slices of 3x4=12 element each.
+    /// If dim is the last dimension, it will simply yield a slice of the whole tensor.
+    /// The shape returned is the shape of each slice. The shape is the same as the shape of the tensor
+    /// if the dim is the last dimension or more
+    pub fn slice_on_dim(&self, dim: usize) -> (impl Iterator<Item = &[T]>, Shape){
+        assert!(dim < self.shape.len(),"can't slice on dim {:?} if shape is {:?}", dim, self.shape);
+        let (stride,shape)= if dim < self.shape.len() - 1 {
+            (self.shape[dim+1..].iter().product(),Shape::from_it(&self.shape[dim+1..]))
+        } else {
+            (self.shape.iter().product(),Shape::from_it(&self.shape))
+        };
+        (self.data.chunks(stride),shape)
     }
 }
 
@@ -1849,6 +1856,12 @@ impl Shape {
 
     pub fn dim(&self, index: usize) -> usize {
         self.0[index]
+    }
+
+    pub fn unsqueeze(&self, index: usize) -> Self {
+        let mut new_shape = self.0.clone();
+        new_shape.insert(index, 1);
+        Self(new_shape)
     }
 
     pub fn permute(&self, permutation: &[usize]) -> Self {
@@ -2422,6 +2435,31 @@ mod test {
         assert_eq!(slices.next().unwrap(), &[16, 17, 18]);
         // No more slices
         assert_eq!(slices.next(), None);
+    }
+
+    #[test]
+    fn test_tensor_slice_on_dim() {
+        let tensor = Tensor::<Element>::new(vec![2, 3, 3], vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
+        let (mut slices ,shape) = tensor.slice_on_dim(1);
+        assert_eq!(shape,Shape(vec![3]));
+        assert_eq!(slices.next().unwrap(), &[1, 2, 3]);
+        assert_eq!(slices.next().unwrap(), &[4, 5, 6]);
+        assert_eq!(slices.next().unwrap(), &[7, 8, 9]);
+        assert_eq!(slices.next().unwrap(), &[10, 11, 12]);
+        assert_eq!(slices.next().unwrap(), &[13, 14, 15]);
+        assert_eq!(slices.next().unwrap(), &[16, 17, 18]);
+        assert_eq!(slices.next(), None);
+
+        let (mut slices ,shape) = tensor.slice_on_dim(0);
+        assert_eq!(shape,Shape(vec![3,3]));
+        assert_eq!(slices.next().unwrap(), &[1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(slices.next().unwrap(), &[10, 11, 12, 13, 14, 15, 16, 17, 18]);
+        assert_eq!(slices.next(), None);
+
+        let (slices,shape) = tensor.slice_on_dim(2);
+        assert_eq!(shape,Shape::from_it(&tensor.get_shape()));
+        let data = slices.flatten().cloned().collect::<Vec<_>>();
+        assert_eq!(data, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
     }
 
     #[test]

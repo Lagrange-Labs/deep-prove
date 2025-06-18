@@ -219,7 +219,7 @@ impl<T> MatMul<T> {
             left_matrix,
             right_matrix,
             config,
-            bias: None,
+            bias,
         })
     }
 
@@ -294,7 +294,8 @@ impl<T> MatMul<T> {
             }
         };
         if let Some(bias) = self.bias.as_ref() {
-            Ok(matmul.add(&bias))
+            println!("matmul shape {:?} with bias {:?}", matmul.get_shape(), bias.get_shape());
+            Ok(matmul.add_dim2(&bias))
         } else {
             Ok(matmul)
         }

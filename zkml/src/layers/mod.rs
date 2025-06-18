@@ -30,27 +30,12 @@ use requant::RequantCtx;
 use transcript::Transcript;
 
 use crate::{
-    Context, Element, ScalingStrategy,
-    iop::context::{ContextAux, ShapeStep, TableCtx},
-    layers::{
-        activation::{Activation, ActivationProof},
-        add::Add,
-        concat_matmul::ConcatMatMul,
-        convolution::Convolution,
-        dense::Dense,
-        pooling::Pooling,
-        requant::{Requant, RequantProof},
-        reshape::Reshape,
-        transformer::{
+    iop::context::{ContextAux, ShapeStep, TableCtx}, layers::{
+        activation::{Activation, ActivationProof}, add::Add, concat_matmul::ConcatMatMul, convolution::Convolution, dense::Dense, pooling::Pooling, requant::{Requant, RequantProof}, reshape::Reshape, transformer::{
             embeddings::Embeddings, layernorm::LayerNorm, logits::Logits, mha::MhaQK,
             positional::Positional, qkv::QKV, softmax::Softmax,
-        },
-    },
-    lookup::context::LookupWitnessGen,
-    model::StepData,
-    padding::{PaddingMode, ShapeInfo},
-    quantization::ScalingFactor,
-    tensor::{Number, Tensor},
+        }
+    }, lookup::context::LookupWitnessGen, model::StepData, padding::{PaddingMode, ShapeInfo}, quantization::ScalingFactor, tensor::{Number, Tensor}, Context, Element, ScalingStrategy
 };
 use activation::ActivationCtx;
 use convolution::{ConvCtx, ConvProof, SchoolBookConv, SchoolBookConvCtx};

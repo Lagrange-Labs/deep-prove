@@ -28,7 +28,7 @@ impl<N: Number> Evaluate<N> for Logits {
                             input.get_shape().len() >= 2,
                             "Argmax is for tensors of rank >= 2"
                         );
-                        let last_row = input.slice_on_dim(1).last().unwrap();
+                        let last_row = input.slices_last_dim().last().unwrap();
                         Ok(Tensor::new(
                             vec![1],
                             vec![N::from_usize(argmax_slice(last_row).unwrap())],

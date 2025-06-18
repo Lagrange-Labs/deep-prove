@@ -117,9 +117,15 @@ mod test {
             let act = self
                 .activation
                 .evaluate::<GoldilocksExt2>(&up.outputs(), vec![])?;
+            if let Some(gpt2_output) = output {
+                assert!(gpt2_output.is_ffn_after_gelu_close(act.outputs()));
+            }
             let down = self
                 .down
                 .evaluate::<GoldilocksExt2>(&act.outputs(), vec![])?;
+            if let Some(gpt2_output) = output {
+                assert!(gpt2_output.is_ffn_after_down_close(down.outputs()));
+            }
             let out = self.add.evaluate::<GoldilocksExt2>(
                 &vec![input, &down.outputs()[0]],
                 vec![
@@ -206,7 +212,7 @@ mod test {
                 head_dim: c.head_dim(),
                 qkv,
                 qkt_v: concat_matmul::ConcatMatMul::new_with_permute(permutation),
-                softmax: softmax::Softmax::new().with_scale((1.0 / (c.head_dim() as f32)).sqrt()),
+                softmax: softmax::Softmax::new().with_scale((1.0 / (c.head_dim() as f32)).sqrt()).on_dim(1),
                 layernorm: att.norm,
                 mha,
                 reshape_merged,
@@ -240,9 +246,7 @@ mod test {
             let mha = self
                 .mha
                 .evaluate::<GoldilocksExt2>(&qkv.outputs(), vec![])?;
-            // first, we need to apply causal mask before softmax
-            // let causal_mask = causal_mask(self.num_heads, seq_len, seq_len);
-            // let masked_attention_scores = mha.outputs()[0].add(&causal_mask);
+            println!("mha: {:?}", mha.outputs()[0].get_data());
             // apply softmax + rescale on the first output, Q @ K^T
             // NOTE that we apply softmax row by row
             let softmaxed = self
@@ -426,6 +430,8 @@ mod test {
         // Optional field for the final layer with LayerNorm applied
         #[allow(dead_code)]
         manual_output_with_final_ln: Option<Vec<f32>>,
+        ffn_after_gelu: Vec<f32>,
+        ffn_after_down: Vec<f32>,
     }
 
     impl GPT2LayerOutput {
@@ -459,6 +465,12 @@ mod test {
         }
         pub fn is_ffn_up_close(&self, ffn_up: Vec<&Tensor<f32>>) -> bool {
             is_close(ffn_up[0].get_data(), &self.ffn_up)
+        }
+        pub fn is_ffn_after_gelu_close(&self, output: Vec<&Tensor<f32>>) -> bool {
+            is_close(output[0].get_data(), &self.ffn_after_gelu)
+        }
+        pub fn is_ffn_after_down_close(&self, output: Vec<&Tensor<f32>>) -> bool {
+            is_close(output[0].get_data(), &self.ffn_after_down)
         }
     }
 

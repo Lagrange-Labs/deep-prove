@@ -239,7 +239,10 @@ with torch.no_grad():
             "ffn_activated": to_list(ffn_activated),
             "ffn_output_proj": to_list(ffn_output),
             "manual_output": to_list(manual_output),
-            "automated_output": to_list(automated_output)
+            "automated_output": to_list(automated_output),
+            "ffn_after_gelu": to_list(ffn_activated),
+            "ffn_after_down": to_list(ffn_output),
+            "ffn_after_add": to_list(manual_output)
         }
         
         # Add final LayerNorm output if this is the last layer
