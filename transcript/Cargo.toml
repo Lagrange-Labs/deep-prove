@@ -16,3 +16,4 @@ ff_ext = { path = "../ff_ext" }
 goldilocks.workspace = true
 poseidon.workspace = true
 serde.workspace = true
+blake3.workspace = true

@@ -3,6 +3,7 @@
 //! Transcript APIs are placeholders; the actual logic is to be implemented later.
 
 pub mod basic;
+pub mod blake;
 mod statistics;
 pub mod synchronized;
 pub use basic::BasicTranscript;
@@ -16,6 +17,7 @@ pub struct Challenge<F> {
 
 use ff_ext::ExtensionField;
 use goldilocks::SmallField;
+
 /// The Transcript trait
 pub trait Transcript<E: ExtensionField>: Clone {
     /// Append a slice of base field elements to the transcript.

@@ -8,6 +8,14 @@ readme.workspace = true
 repository.workspace = true
 version.workspace = true
 
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"
+
+[features]
+default = []
+blake = ["mpcs/blake"]
+
 [dependencies]
 anyhow.workspace = true
 ark-std.workspace = true

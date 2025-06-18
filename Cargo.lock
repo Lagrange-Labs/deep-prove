@@ -238,6 +238,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "blake3"
+version = "1.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3888aaa89e4b2a40fca9848e400f6a658a5a3978de7be858e209cafa8be9a4a0"
+dependencies = [
+ "arrayref",
+ "arrayvec",
+ "cc",
+ "cfg-if",
+ "constant_time_eq",
+ "serde",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1381,6 +1395,7 @@ dependencies = [
  "aes",
  "ark-std",
  "bitvec",
+ "blake3",
  "criterion 0.6.0",
  "ctr",
  "ff",
@@ -2785,6 +2800,7 @@ dependencies = [
 name = "transcript"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "crossbeam-channel",
  "ff",
  "ff_ext",
