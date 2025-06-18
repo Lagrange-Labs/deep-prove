@@ -551,7 +551,9 @@ mod test {
             Model::new_from_input_shapes(vec![input.get_shape()], PaddingMode::NoPadding);
         let _last_node_id = first_attention.write_to_model(&mut model, None, &config)?;
         model.route_output(None)?;
+        let output1 = model.run::<GoldilocksExt2>(&[input.clone()])?;
         let output = model.run_float(&[input.clone()])?;
+        assert_eq!(output1.outputs()?[0].get_data(),output[0].get_data());
         println!("graph output: {:?}", output[0].get_shape());
         assert!(
             is_close(expected_output, &output[0].get_data()),
