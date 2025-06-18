@@ -50,12 +50,15 @@ impl Evaluate<f32> for Softmax<f32> {
         let dim = self.apply_on_dim.unwrap_or(input.get_shape().len() - 1);
         let output = input
             .slice_on_dim(dim)
-            .0.map(|vec| {
-                let scaled = vec.iter().map(|x| self.scale * x).map(|x| x.exp()).collect::<Vec<_>>();
+            .0
+            .map(|vec| {
+                let scaled = vec
+                    .iter()
+                    .map(|x| self.scale * x)
+                    .map(|x| x.exp())
+                    .collect::<Vec<_>>();
                 let sum = scaled.iter().sum::<f32>();
-                scaled.iter()
-                    .map(|x| x / sum)
-                    .collect::<Vec<_>>()
+                scaled.iter().map(|x| x / sum).collect::<Vec<_>>()
             })
             .flatten()
             .collect::<Vec<_>>();
@@ -139,16 +142,20 @@ mod tests {
             .unwrap();
         let out = output.outputs()[0];
         assert_eq!(out.get_shape(), vec![2, 3, 4]);
-        let (slices ,_) = out.slice_on_dim(1);
+        let (slices, _) = out.slice_on_dim(1);
         let acceptable_range = 0.99..1.01;
         for slice in slices {
-            assert!(acceptable_range.contains(&slice.iter().sum::<f32>()), "{:?}",out.get_data());
+            assert!(
+                acceptable_range.contains(&slice.iter().sum::<f32>()),
+                "{:?}",
+                out.get_data()
+            );
         }
     }
 
     #[test]
     fn test_softmax_with_scale() {
-        let scale = 1.0/2.0;
+        let scale = 1.0 / 2.0;
         let softmax = Softmax::new().with_scale(scale);
         let input = Tensor::new(vec![2, 3], vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         let output = softmax
@@ -158,9 +165,9 @@ mod tests {
         assert_eq!(
             output.outputs[0].get_data(),
             vec![
-                1.0 / 6.0 ,
-                1.0 / 6.0 ,
-                1.0 / 6.0 ,
+                1.0 / 6.0,
+                1.0 / 6.0,
+                1.0 / 6.0,
                 1.0 / 6.0,
                 1.0 / 6.0,
                 1.0 / 6.0

@@ -1796,22 +1796,30 @@ impl<T> Tensor<T> {
         it
     }
 
-    /// Returns an iterator of slices whose length corresponds to the subspace 
+    /// Returns an iterator of slices whose length corresponds to the subspace
     /// the dimension represents. Note dim is the dimension _index_ (0-based indexing).
-    /// Example: if dimension is [2,3,4], and we call `slice_on_dim(1)`, 
+    /// Example: if dimension is [2,3,4], and we call `slice_on_dim(1)`,
     /// it will yield 2x3 slices of 4 elements each. If we call `slice_on_dim(0)`,
     /// it will yield 2 slices of 3x4=12 element each.
     /// If dim is the last dimension, it will simply yield a slice of the whole tensor.
     /// The shape returned is the shape of each slice. The shape is the same as the shape of the tensor
     /// if the dim is the last dimension or more
-    pub fn slice_on_dim(&self, dim: usize) -> (impl Iterator<Item = &[T]>, Shape){
-        assert!(dim < self.shape.len(),"can't slice on dim {:?} if shape is {:?}", dim, self.shape);
-        let (stride,shape)= if dim < self.shape.len() - 1 {
-            (self.shape[dim+1..].iter().product(),Shape::from_it(&self.shape[dim+1..]))
+    pub fn slice_on_dim(&self, dim: usize) -> (impl Iterator<Item = &[T]>, Shape) {
+        assert!(
+            dim < self.shape.len(),
+            "can't slice on dim {:?} if shape is {:?}",
+            dim,
+            self.shape
+        );
+        let (stride, shape) = if dim < self.shape.len() - 1 {
+            (
+                self.shape[dim + 1..].iter().product(),
+                Shape::from_it(&self.shape[dim + 1..]),
+            )
         } else {
-            (self.shape.iter().product(),Shape::from_it(&self.shape))
+            (self.shape.iter().product(), Shape::from_it(&self.shape))
         };
-        (self.data.chunks(stride),shape)
+        (self.data.chunks(stride), shape)
     }
 }
 
@@ -2439,9 +2447,14 @@ mod test {
 
     #[test]
     fn test_tensor_slice_on_dim() {
-        let tensor = Tensor::<Element>::new(vec![2, 3, 3], vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
-        let (mut slices ,shape) = tensor.slice_on_dim(1);
-        assert_eq!(shape,Shape(vec![3]));
+        let tensor = Tensor::<Element>::new(
+            vec![2, 3, 3],
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+            ],
+        );
+        let (mut slices, shape) = tensor.slice_on_dim(1);
+        assert_eq!(shape, Shape(vec![3]));
         assert_eq!(slices.next().unwrap(), &[1, 2, 3]);
         assert_eq!(slices.next().unwrap(), &[4, 5, 6]);
         assert_eq!(slices.next().unwrap(), &[7, 8, 9]);
@@ -2450,16 +2463,24 @@ mod test {
         assert_eq!(slices.next().unwrap(), &[16, 17, 18]);
         assert_eq!(slices.next(), None);
 
-        let (mut slices ,shape) = tensor.slice_on_dim(0);
-        assert_eq!(shape,Shape(vec![3,3]));
+        let (mut slices, shape) = tensor.slice_on_dim(0);
+        assert_eq!(shape, Shape(vec![3, 3]));
         assert_eq!(slices.next().unwrap(), &[1, 2, 3, 4, 5, 6, 7, 8, 9]);
-        assert_eq!(slices.next().unwrap(), &[10, 11, 12, 13, 14, 15, 16, 17, 18]);
+        assert_eq!(
+            slices.next().unwrap(),
+            &[10, 11, 12, 13, 14, 15, 16, 17, 18]
+        );
         assert_eq!(slices.next(), None);
 
-        let (slices,shape) = tensor.slice_on_dim(2);
-        assert_eq!(shape,Shape::from_it(&tensor.get_shape()));
+        let (slices, shape) = tensor.slice_on_dim(2);
+        assert_eq!(shape, Shape::from_it(&tensor.get_shape()));
         let data = slices.flatten().cloned().collect::<Vec<_>>();
-        assert_eq!(data, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
+        assert_eq!(
+            data,
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+            ]
+        );
     }
 
     #[test]

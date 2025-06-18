@@ -294,7 +294,6 @@ impl<T> MatMul<T> {
             }
         };
         if let Some(bias) = self.bias.as_ref() {
-            println!("matmul shape {:?} with bias {:?}", matmul.get_shape(), bias.get_shape());
             Ok(matmul.add_dim2(&bias))
         } else {
             Ok(matmul)

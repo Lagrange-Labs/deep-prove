@@ -212,7 +212,9 @@ mod test {
                 head_dim: c.head_dim(),
                 qkv,
                 qkt_v: concat_matmul::ConcatMatMul::new_with_permute(permutation),
-                softmax: softmax::Softmax::new().with_scale((1.0 / (c.head_dim() as f32)).sqrt()).on_dim(1),
+                softmax: softmax::Softmax::new()
+                    .with_scale((1.0 / (c.head_dim() as f32)).sqrt())
+                    .on_dim(1),
                 layernorm: att.norm,
                 mha,
                 reshape_merged,

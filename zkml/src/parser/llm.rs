@@ -182,7 +182,9 @@ impl Attention<f32> {
             self.v_bias,
         );
         let mha = MhaQK::new(c.num_heads, c.head_dim());
-        let softmax = Softmax::<f32>::new().with_scale((1.0 / (c.head_dim() as f32)).sqrt()).on_dim(1);
+        let softmax = Softmax::<f32>::new()
+            .with_scale((1.0 / (c.head_dim() as f32)).sqrt())
+            .on_dim(1);
         let qkt_v = ConcatMatMul::new_with_permute(vec![1, 0, 2]);
         let out = MatMul::new_constant(self.out, Some(self.out_bias))?;
         let reshape_merged = Reshape::new_subspace(1..=2, vec![c.hidden_size]);

@@ -335,21 +335,20 @@ mod test {
         let infinitized = zeroified.add(&minus_infinity);
         assert_eq!(zeroified.get_shape(), input.get_shape());
         assert_eq!(infinitized.get_shape(), input.get_shape());
-        let (slice_it, _) = infinitized
-            .slice_on_dim(0);
+        let (slice_it, _) = infinitized.slice_on_dim(0);
         slice_it.enumerate().all(|(head_idx, head)| {
-                head.chunks(q_len).enumerate().all(|(q_idx, q)| {
-                    q.iter().enumerate().all(|(i, v)| {
-                        let input_value = input.get(vec![head_idx, q_idx, i]);
-                        // if we are less than the q_len, we dont have causal mask
-                        if i <= q_idx {
-                            input_value == *v
-                        } else {
-                            // otherwise we have causal mask
-                            *v == Element::MIN
-                        }
-                    })
+            head.chunks(q_len).enumerate().all(|(q_idx, q)| {
+                q.iter().enumerate().all(|(i, v)| {
+                    let input_value = input.get(vec![head_idx, q_idx, i]);
+                    // if we are less than the q_len, we dont have causal mask
+                    if i <= q_idx {
+                        input_value == *v
+                    } else {
+                        // otherwise we have causal mask
+                        *v == Element::MIN
+                    }
                 })
-            });
+            })
+        });
     }
 }
