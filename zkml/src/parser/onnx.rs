@@ -85,7 +85,6 @@ pub fn from_path(path: &str) -> Result<Model<f32>> {
         input_shape.remove(0);
     }
     //}
-
     let mut pmodel =
         Model::new_from_input_shapes(vec![input_shape.to_vec()], PaddingMode::NoPadding);
     let mut it = inference_order[1..].iter().peekable();
@@ -317,7 +316,7 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
     node: &OnnxNode,
     iter: &mut Peekable<I>,
 ) -> Result<(NodeId, CustomNode)> {
-    let _matrix = downcast_to::<EinSum>(node)?;
+    let _matrix = downcast_to::<EinSum>(node).context(format!("Gemm {} is not a EinSum node", node.name))?;
     // TODO: we only support matvec for now for onnx models
     // Fetch the input which is constant (e.g. the weights)
     ensure_onnx!(
@@ -334,19 +333,8 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
         return err(format!("Gemm {} has no constant input", node.name));
     };
     let mut weight = extract_const_tensor(model.node(weight_link.node))?;
-    // here maybe the weights are still in 3d shape, so we need to flatten the input portion
-    // since it's always [out, in...], we just take everything after the first dimension and flatten it
     let mut weight_shape = weight.get_shape();
-    if weight_shape.len() > 2 {
-        let input_flattened = weight_shape[1..].iter().product::<usize>();
-        weight_shape = vec![weight_shape[0], input_flattened];
-        weight.shape = weight_shape.clone();
-    }
-    ensure_onnx!(
-        weight.is_matrix(),
-        "Weight for Gemm must be a matrix: {:?}",
-        weight.get_shape()
-    );
+
     // find the input node
     let Some(input_link) = node.inputs.iter().find(|&x| x.node != weight_link.node) else {
         return err(format!("Gemm {} has no input", node.name));
@@ -354,9 +342,49 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
 
     // check if the weight matrix needs to be transposed
     let input_node = model.node(input_link.node);
-    let input_shape = get_node_output_shape(input_node, input_link.slot)?;
-    // NOTE: flatten the input shape always because tract_onnx can skip the Flatten layer
-    let mut input_shape = vec![input_shape.iter().product::<usize>()];
+    let raw_input_shape = get_node_output_shape(input_node, input_link.slot)?;
+    let input_size_flattened = raw_input_shape.iter().product::<usize>();
+    let mut input_shape = vec![input_size_flattened];
+
+    if weight_shape.len() > 2 {
+        let weight_size_flattened = weight.get_data().len();
+        ensure_onnx!(
+            weight_size_flattened % input_size_flattened == 0,
+            "Weight size {} is not divisible by input size {}",
+            weight_size_flattened,
+            input_size_flattened
+        );
+        let out_features = weight_size_flattened / input_size_flattened;
+
+        if *weight_shape.last().unwrap() == out_features {
+            // Layout is likely [...in_features, out_features].
+            let in_features = weight_size_flattened / out_features;
+            weight.shape = vec![in_features, out_features];
+            // Transpose to get [out_features, in_features] for subsequent logic.
+            weight = weight.transpose();
+        } else if weight_shape[0] == out_features {
+            // Layout is likely [out_features, ...in_features].
+            let in_features = weight_shape[1..].iter().product::<usize>();
+            ensure_onnx!(
+                in_features == input_size_flattened,
+                "Incompatible shapes for Gemm: expected flattened input of size {}, got {}",
+                in_features,
+                input_size_flattened
+            );
+            weight.shape = vec![out_features, in_features];
+        } else {
+            return err(format!(
+                "Could not determine layout of weights for Gemm. Shape: {:?}, expecting output dim of size {}",
+                weight_shape, out_features
+            ));
+        }
+        weight_shape = weight.get_shape();
+    }
+    ensure_onnx!(
+        weight.is_matrix(),
+        "Weight for Gemm must be a matrix: {:?}",
+        weight.get_shape()
+    );
 
     if input_shape.len() != 1 {
         assert!(
