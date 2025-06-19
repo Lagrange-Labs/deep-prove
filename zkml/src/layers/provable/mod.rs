@@ -160,6 +160,13 @@ impl<T, E: ExtensionField> LayerOut<T, E> {
             _ => None,
         }
     }
+
+    pub fn try_softmax_data(&self) -> Option<&SoftmaxData<E>> {
+        match self.proving_data {
+            ProvingData::Softmax(ref softmax_data) => Some(softmax_data),
+            _ => None,
+        }
+    }
 }
 /// Represents the proving context for a given node, altogether with the input
 /// and output edges of the node
@@ -446,7 +453,7 @@ where
             LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
             LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
-            LayerCtx::Softmax => unimplemented!("Softmax layer not implemented"),
+            LayerCtx::Softmax(softmax_ctx) => softmax_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Add => unimplemented!("Add layer not implemented"),
             LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
             LayerCtx::Embeddings => unimplemented!("Embeddings layer not implemented"),
@@ -473,7 +480,7 @@ where
             LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
             LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
-            LayerCtx::Softmax => unimplemented!("Softmax layer not implemented"),
+            LayerCtx::Softmax(softmax_ctx) => softmax_ctx.num_outputs(num_inputs),
             LayerCtx::Add => unimplemented!("Add layer not implemented"),
             LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
             LayerCtx::Embeddings => unimplemented!("Embeddings layer not implemented"),
@@ -496,7 +503,7 @@ where
             LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
             LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
-            LayerCtx::Softmax => unimplemented!("Softmax layer not implemented"),
+            LayerCtx::Softmax(softmax_ctx) => softmax_ctx.describe(),
             LayerCtx::Add => unimplemented!("Add layer not implemented"),
             LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
             LayerCtx::Embeddings => unimplemented!("Embeddings layer not implemented"),
@@ -520,7 +527,7 @@ where
             LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
             LayerCtx::Activation(activation_ctx) => activation_ctx.is_provable(),
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
-            LayerCtx::Softmax => unimplemented!("Softmax layer not implemented"),
+            LayerCtx::Softmax(softmax_ctx) => softmax_ctx.is_provable(),
             LayerCtx::Add => unimplemented!("Add layer not implemented"),
             LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
             LayerCtx::Embeddings => unimplemented!("Embeddings layer not implemented"),
@@ -599,6 +606,9 @@ where
             }
             (LayerCtx::Pooling(pooling_ctx), LayerProof::Pooling(proof)) => {
                 pooling_ctx.verify(proof, last_claims, verifier, shape_step)
+            }
+            (LayerCtx::Softmax(softmax_ctx), LayerProof::Softmax(proof)) => {
+                softmax_ctx.verify(proof, last_claims, verifier, shape_step)
             }
             (LayerCtx::SchoolBookConvolution(_), _)
             | (LayerCtx::Table(_), _)
