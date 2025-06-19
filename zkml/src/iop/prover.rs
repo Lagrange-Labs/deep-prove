@@ -12,7 +12,7 @@ use crate::{
         provable::{NodeId, OpInfo, ProvableOp},
     },
     lookup::{
-        context::{LookupWitness, TABLE_POLY_ID_OFFSET, generate_lookup_witnesses},
+        context::{LookupWitness, generate_lookup_witnesses},
         logup_gkr::prover::batch_prove as logup_batch_prove,
         witness::LogUpWitness,
     },
@@ -107,8 +107,6 @@ where
 
     #[timed::timed_instrument(level = "debug")]
     fn prove_tables(&mut self) -> anyhow::Result<()> {
-        let mut poly_id = TABLE_POLY_ID_OFFSET;
-
         self.table_witness.iter().try_for_each(|table_witness| {
             let logup_input = table_witness.get_logup_input(&self.challenge_storage)?;
             let comm_with_wit = table_witness
@@ -145,7 +143,6 @@ where
                 lookup: table_proof,
             });
 
-            poly_id += 1;
             Ok(())
         })
     }

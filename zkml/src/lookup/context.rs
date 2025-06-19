@@ -37,12 +37,14 @@ pub enum TableType {
     Range,
     /// Table used for clamping values, the inner [`usize`] denotes the maximum bit length a value can be before clamping to use this table
     Clamping(usize),
-    /// Table type used for computing Softmax, the first inner [`usize`] denotes the value such that the temprature is 1/(sqrt(val)), the second [`usize`] is the table size and the [`Element`] is the point at which we map everything to zero
-    Softmax(usize, usize, Element),
+    /// Table type used for computing Softmax, the first inner [`u32`] denotes the result of calling [`f32::to_bits`] on the temperature value, the second [`usize`] is the table size and the [`Element`] is the point at which we map everything to zero
+    Softmax(u32, usize, Element),
+    /// Table used for checking the normalisation error in Softmax operations, the inner [`Element`] is the absoloute value of the allowable error
+    ErrorTable(Element),
 }
 
 impl TableType {
-    fn get_merged_table_column<E: ExtensionField>(
+    pub fn get_merged_table_column<E: ExtensionField>(
         &self,
         column_separator: Element,
     ) -> (Vec<Element>, Vec<Vec<E::BaseField>>) {
@@ -102,7 +104,7 @@ impl TableType {
                 (comb, vec![col_one, col_two])
             }
             TableType::Softmax(val, size, bkm) => {
-                let float_temperature = 1.0f32 / (*val as f32).sqrt();
+                let float_temperature = f32::from_bits(*val);
                 let table_size = 1i128 << size;
                 let base = 1i128 << (LOG_SCALE_FACTOR - 8);
                 let (merged_lookup, (in_column, out_column)): (
@@ -128,6 +130,23 @@ impl TableType {
                     .unzip();
                 (merged_lookup, vec![in_column, out_column])
             }
+            TableType::ErrorTable(allowable_error) => {
+                // Work out the minimum and maximum elements of the table
+                let table_min = -*allowable_error;
+                let table_max = *allowable_error;
+                // Work out the full table size
+                let table_size = 1usize << ceil_log2(2 * *allowable_error as usize);
+                let (element_out, field): (Vec<Element>, Vec<E::BaseField>) = (table_min
+                    ..=table_max)
+                    .map(|elem| {
+                        let f: E = elem.to_field();
+                        (elem, f.as_bases()[0])
+                    })
+                    .chain(std::iter::repeat((0i128, E::BaseField::ZERO)))
+                    .take(table_size)
+                    .unzip();
+                (element_out, vec![field])
+            }
         }
     }
 
@@ -137,6 +156,9 @@ impl TableType {
             TableType::Range => "Range".to_string(),
             TableType::Clamping(size) => format!("Clamping: {}", size),
             TableType::Softmax(temp, ..) => format!("Softmax - temperature: {}", temp),
+            TableType::ErrorTable(allowable_error) => {
+                format!("Error Table - allowable error: {}", allowable_error)
+            }
         }
     }
 
@@ -231,13 +253,14 @@ impl TableType {
                     }),
                 ])
             }
+            TableType::ErrorTable(..) => Ok(vec![]),
         }
     }
 
     pub fn generate_challenge<E: ExtensionField, T: Transcript<E>>(&self, transcript: &mut T) -> E {
         match self {
             TableType::Relu => transcript.get_and_append_challenge(b"Relu").elements,
-            TableType::Range => {
+            TableType::Range | TableType::ErrorTable(..) => {
                 // Theres only one column for a range check so we don't need to generate a challenge
                 E::ONE
             }
@@ -252,6 +275,7 @@ impl TableType {
             TableType::Range | TableType::Relu => *quantization::BIT_LEN,
             TableType::Clamping(bits) => *bits,
             TableType::Softmax(_, bits, _) => *bits,
+            TableType::ErrorTable(allowable_error) => ceil_log2(2 * *allowable_error as usize),
         }
     }
 
@@ -259,7 +283,7 @@ impl TableType {
     pub fn committed_columns<E: ExtensionField>(&self) -> Option<DenseMultilinearExtension<E>> {
         match self {
             TableType::Softmax(val, size, bkm) => {
-                let float_temperature = 1.0f32 / (*val as f32).sqrt();
+                let float_temperature = f32::from_bits(*val);
                 let table_size = 1i128 << size;
                 let base = 1i128 << (LOG_SCALE_FACTOR - 8);
                 let out_column = (0i128..table_size)
@@ -281,6 +305,25 @@ impl TableType {
                     *size, out_column,
                 ))
             }
+            TableType::ErrorTable(allowable_error) => {
+                // Work out the minimum and maximum elements of the table
+                let table_min = -*allowable_error;
+                let table_max = *allowable_error;
+                // Work out the full table size
+                let num_vars = ceil_log2(2 * *allowable_error as usize);
+                let table_size = 1usize << num_vars;
+                let column = (table_min..=table_max)
+                    .map(|elem| {
+                        let f: E = elem.to_field();
+                        f.as_bases()[0]
+                    })
+                    .chain(std::iter::repeat(E::BaseField::ZERO))
+                    .take(table_size)
+                    .collect::<Vec<E::BaseField>>();
+                Some(DenseMultilinearExtension::<E>::from_evaluations_vec(
+                    num_vars, column,
+                ))
+            }
             _ => None,
         }
     }
@@ -288,10 +331,11 @@ impl TableType {
     /// Method that takes all of the claims output by a logup table proof and outputs only those that need to be checked via commitment opening (excluding the multiplicity poly claim)
     pub fn table_claims<E: ExtensionField>(&self, claims: &[Claim<E>]) -> Vec<Claim<E>> {
         match self {
-            TableType::Softmax(..) => {
-                // For Softmax we just need the output column claim so the last of the slice
+            TableType::Softmax(..) | TableType::ErrorTable(..) => {
+                // For Softmax and Error Table we just need the output column claim so the last of the slice
                 vec![claims.last().cloned().unwrap()]
             }
+
             _ => vec![],
         }
     }
@@ -403,6 +447,16 @@ where
             let (table_column, column_evals) =
                 table_type.get_merged_table_column::<E>(COLUMN_SEPARATOR);
 
+            for key in table_lookup_data.keys() {
+                let check = table_column.contains(key);
+                if !check {
+                    println!(
+                        "Tried to lookup key: {}, for table: {}",
+                        key,
+                        table_type.name()
+                    );
+                }
+            }
             let multiplicities = table_column
                 .iter()
                 .map(|table_val| {

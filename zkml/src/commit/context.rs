@@ -536,6 +536,6 @@ where
             proof.batch_proof(),
             transcript,
         )
-        .map_err(|e| anyhow!("Error in PCS bathc verification: {:?}", e))
+        .map_err(|e| anyhow!("Error in PCS batch verification: {:?}", e))
     }
 }
