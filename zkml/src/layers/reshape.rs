@@ -50,10 +50,6 @@ impl Reshape {
                 .iter()
                 .map(|shape| {
                     let mut new_shape = shape.clone();
-                    println!(
-                        "moving from shape {:?} by splice({:?},{:?})",
-                        shape, to_remove, to_add
-                    );
                     new_shape.splice(to_remove.clone(), to_add.clone());
                     new_shape
                 })

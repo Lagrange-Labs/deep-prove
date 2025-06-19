@@ -20,6 +20,34 @@ use crate::{
     tensor::{Number, Shape},
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, derive_more::From, derive_more::Into)]
+pub struct Token(usize);
+
+// i64 is the type used by token_to_id
+impl From<i64> for Token {
+    fn from(t: i64) -> Self {
+        Self(t as usize)
+    }
+}
+
+impl From<Token> for i64 {
+    fn from(t: Token) -> Self {
+        t.0 as i64
+    }
+}
+
+impl From<&Token> for i64 {
+    fn from(t: &Token) -> Self {
+        t.0 as i64
+    }
+}
+
+impl Token {
+    pub fn to_number<N: Number>(&self) -> N {
+        N::from_usize(self.0)
+    }
+}
+
 /// Intermediary struct to hold the config of the model.
 #[derive(Debug, Clone)]
 pub struct LLMConfig {
@@ -54,11 +82,25 @@ impl LLMVariant {
             a => bail!("unsupported architecture: {:?}", a),
         }
     }
+    /// Signals the end of the sequence token, e.g. when should the generation stop.
+    pub fn eos_token(&self) -> Token {
+        match self {
+            Self::GPT2 => 50256usize.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub enum LLMModel {
     GPT2(GPT2Model),
+}
+
+impl LLMModel {
+    pub fn to_provable_model(self, c: &LLMConfig, user_input_shape: Shape) -> anyhow::Result<Model<f32>> {
+        match self {
+            Self::GPT2(model) => model.to_provable_model(c, user_input_shape),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

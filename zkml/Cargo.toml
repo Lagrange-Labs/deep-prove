@@ -52,3 +52,5 @@ transcript = { version = "0.1.0", path = "../transcript" }
 
 [dev-dependencies]
 ndarray = "0.16.1"
+rust_tokenizers = "8.1.1"
+tiktoken-rs = "0.7.0"

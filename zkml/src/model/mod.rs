@@ -22,7 +22,7 @@ use crate::{
 
 pub(crate) mod iterator;
 pub(crate) mod trace;
-// pub mod driver;
+pub mod llm;
 pub use iterator::ToIterator;
 pub use trace::{InferenceStep, InferenceTrace, StepData};
 

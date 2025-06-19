@@ -33,6 +33,7 @@ use crate::{
 
 pub trait Number:
     Copy
+    + PartialEq
     + Clone
     + Send
     + Sync
