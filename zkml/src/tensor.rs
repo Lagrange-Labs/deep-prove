@@ -1726,35 +1726,7 @@ impl<T: Number> Tensor<T> {
             og_shape: vec![0],
         }
     }
-    // Concatenate the other tensor to the first one.
-    // RESTRICTIOn: self shape is [a1,a2...,an] we
-    // expect other shape to be [a2...,an] OR [1, a2...,an]
-    // The new shape of self will be [a1+1,...an]
-    // In other words, we only concatenate another vector if it's exactly size of the highest dimension
-    // If it's 2d, then we expect other to be a vector
-    pub fn concat(&mut self, other: Self) {
-        // make sure that the all dimension but the highest one are the same
-        let common_shape = self.shape.len().min(other.shape.len());
-        let added_higher = if common_shape < self.shape.len() {
-            assert!(
-                self.shape
-                    .iter()
-                    .rev()
-                    .zip(other.shape.iter().rev())
-                    .take(common_shape)
-                    .all(|(a, b)| a == b)
-            );
-            assert_eq!(common_shape + 1, self.shape.len());
-            1
-        } else {
-            assert_eq!(common_shape, self.shape.len());
-            *other.shape.first().unwrap()
-        };
-        // then the new shape has this higher dimension + 1 simply
-        // common_shape since 0-based indexing
-        *self.shape.get_mut(0).unwrap() += added_higher;
-        self.data.extend(other.data);
-    }
+
     pub fn permute3d(&self, order: &[usize]) -> Self {
         assert!(self.shape.len() == 3 && order.len() == 3);
         assert!(order.iter().all(|x| *x < 3));
@@ -1791,7 +1763,7 @@ impl<T: Number> Tensor<T> {
 impl<T> Tensor<T> {
     /// Returns an iterator that yields slices of the last dimension.
     /// For a tensor of shape [2,3,3], it will yield 6 slices (2*3) of 3 elements each.
-    pub fn slices_last_dim(&self) -> impl Iterator<Item = &[T]> {
+    pub fn slice_last_dim(&self) -> impl Iterator<Item = &[T]> {
         let (it, _) = self.slice_on_dim(self.shape.len() - 2);
         it
     }
@@ -1820,6 +1792,61 @@ impl<T> Tensor<T> {
             (self.shape.iter().product(), Shape::from_it(&self.shape))
         };
         (self.data.chunks(stride), shape)
+    }
+
+    // Concatenate the other tensor to the first one.
+    // RESTRICTIOn: self shape is [a1,a2...,an] we
+    // expect other shape to be [a2...,an] OR [1, a2...,an]
+    // The new shape of self will be [a1+1,...an]
+    // In other words, we only concatenate another vector if it's exactly size of the highest dimension
+    // If it's 2d, then we expect other to be a vector
+    pub fn concat(&mut self, other: Self) {
+        // make sure that the all dimension but the highest one are the same
+        let common_shape = self.shape.len().min(other.shape.len());
+        let added_higher = if common_shape < self.shape.len() {
+            assert!(
+                self.shape
+                    .iter()
+                    .rev()
+                    .zip(other.shape.iter().rev())
+                    .take(common_shape)
+                    .all(|(a, b)| a == b)
+            );
+            assert_eq!(common_shape + 1, self.shape.len());
+            1
+        } else {
+            assert_eq!(common_shape, self.shape.len());
+            *other.shape.first().unwrap()
+        };
+        // then the new shape has this higher dimension + 1 simply
+        // common_shape since 0-based indexing
+        *self.shape.get_mut(0).unwrap() += added_higher;
+        self.data.extend(other.data);
+    }
+    /// Stack all the tensors in the iterator into a single tensor using `concat()`
+    /// Note this naively increase the highest dimension. If you wish to stack along a new higher dimension,
+    /// call `unsqueeze(0)` on the first or all tensors first.
+    /// e.g. [2,3] and [2,3] will be stacked into [4,3] naively. Calling `unsqueeze(0)` on both
+    /// will stack into [2,2,3].
+    pub fn stack_all<I: IntoIterator<Item = Self>>(tensors: I) -> anyhow::Result<Self> {
+        let mut it = tensors.into_iter();
+        let mut first = it
+            .next()
+            .ok_or(anyhow::anyhow!("Can't concat an empty list of tensors"))?;
+        for tensor in it {
+            first.concat(tensor);
+        }
+        Ok(first)
+    }
+
+    pub fn unsqueeze(self, index: usize) -> Self {
+        let mut new_shape = self.shape.clone();
+        new_shape.insert(index, 1);
+        Self {
+            data: self.data,
+            shape: new_shape,
+            og_shape: self.og_shape.clone(),
+        }
     }
 }
 
@@ -2427,7 +2454,7 @@ mod test {
             ],
         );
 
-        let mut slices = tensor.slices_last_dim();
+        let mut slices = tensor.slice_last_dim();
 
         // First slice
         assert_eq!(slices.next().unwrap(), &[1, 2, 3]);
@@ -2495,5 +2522,27 @@ mod test {
         let tensor = Tensor::<Element>::new(vec![3], vec![1, 2, 3]);
         let argmax = tensor.argmax();
         assert_eq!(argmax, 2);
+    }
+
+    #[test]
+    fn test_tensor_stack_all() {
+        let tensors = vec![
+            Tensor::<Element>::new(vec![2, 3], vec![1, 2, 3, 4, 5, 6]),
+            Tensor::<Element>::new(vec![2, 3], vec![7, 8, 9, 10, 11, 12]),
+        ];
+        let stacked = Tensor::<Element>::stack_all(tensors.clone()).unwrap();
+        assert_eq!(stacked.get_shape(), vec![4, 3]);
+        assert_eq!(
+            stacked.get_data(),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        );
+
+        let stacked =
+            Tensor::<Element>::stack_all(tensors.into_iter().map(|t| t.unsqueeze(0))).unwrap();
+        assert_eq!(stacked.get_shape(), vec![2, 2, 3]);
+        assert_eq!(
+            stacked.get_data(),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        );
     }
 }

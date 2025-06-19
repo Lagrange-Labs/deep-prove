@@ -16,27 +16,32 @@ pub enum Logits {
 impl<N: Number> Evaluate<N> for Logits {
     fn evaluate<E: ff_ext::ExtensionField>(
         &self,
-        inputs: &[&crate::Tensor<N>],
+        inputs: &[&Tensor<N>],
         _unpadded_input_shapes: Vec<Vec<usize>>,
-    ) -> anyhow::Result<crate::layers::provable::LayerOut<N, E>> {
+    ) -> anyhow::Result<LayerOut<N, E>> {
         ensure!(
-                inputs.iter().all(|i|i.get_shape().len() >= 2),
-                            "Argmax is for tensors of rank >= 2"
-                        );
+            inputs.iter().all(|i| i.get_shape().len() >= 2),
+            "Argmax is for tensors of rank >= 2"
+        );
 
         match self {
             Logits::Argmax => {
                 let indices = inputs
                     .iter()
-                    .flat_map(|input| {
-                        input.slices_last_dim().map(|row| {
-                            Tensor::new(
-                                vec![1],
-                                vec![N::from_usize(argmax_slice(row).unwrap())],
-                            )
-                        }).collect::<Vec<_>>()
+                    .map(|input| {
+                        let rows = input
+                            .slice_last_dim()
+                            .map(|row| {
+                                Tensor::new(
+                                    // we want to stack along a new dimension so we unsqueeze manually here
+                                    vec![1, 1],
+                                    vec![N::from_usize(argmax_slice(row).unwrap())],
+                                )
+                            })
+                            .collect::<Vec<_>>();
+                        Tensor::stack_all(rows)
                     })
-                    .collect::<Vec<_>>();
+                    .collect::<anyhow::Result<Vec<_>>>()?;
                 Ok(LayerOut::from_vec(indices))
             }
         }
@@ -74,11 +79,13 @@ mod test {
 
     #[test]
     fn test_logits_argmax() -> anyhow::Result<()> {
-        let input = Tensor::new(vec![3, 2], vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        let input = Tensor::new(vec![3, 2], vec![0.0, 1.0, 3.0, 2.0, 4.0, 5.0]);
         let logits = Logits::Argmax;
         let out = logits.evaluate::<GoldilocksExt2>(&[&input], vec![])?;
+        // first slice is [0,1] so argmax here is 1
+        // second slice is [3,2] so argmax here is 0
         // the last dimension is [4,5] so argmax here is 1
-        assert_eq!(out.outputs()[0].get_data(), vec![1.0]);
+        assert_eq!(out.outputs()[0].get_data(), vec![1.0, 0.0, 1.0]);
         Ok(())
     }
 }

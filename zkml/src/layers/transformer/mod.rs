@@ -37,7 +37,7 @@ mod test {
     use serde::Deserialize;
 
     use crate::{
-        Tensor,
+        Tensor, init_test_logging,
         layers::{
             activation::GELU,
             add::{self, Add},
@@ -553,7 +553,7 @@ mod test {
         model.route_output(None)?;
         let output1 = model.run::<GoldilocksExt2>(&[input.clone()])?;
         let output = model.run_float(&[input.clone()])?;
-        assert_eq!(output1.outputs()?[0].get_data(),output[0].get_data());
+        assert_eq!(output1.outputs()?[0].get_data(), output[0].get_data());
         println!("graph output: {:?}", output[0].get_shape());
         assert!(
             is_close(expected_output, &output[0].get_data()),
@@ -566,6 +566,7 @@ mod test {
     /// all passes including to the final logits selection.
     #[test]
     fn test_gpt2_model_full_pass() -> anyhow::Result<()> {
+        init_test_logging("INFO");
         let model_weights_path = json::test::get_json_file(TINY_GPT2_NAME)?;
         let debug_output_path = json::test::get_json_file(TINY_GPT2_DEBUG_NAME)?;
         // too big to run in JSON mode - need to switch format
@@ -589,15 +590,19 @@ mod test {
         let model = llm_model
             .clone()
             .to_provable_model(&config, Shape::from(single_input.get_shape()))?;
+        model.describe();
         model.run_float(&[single_input.clone()])?;
 
         let model = llm_model.to_provable_model(&config, Shape::from(input.get_shape()))?;
         let output = model.run_float(&[input.clone()])?[0].clone();
+        // since the expected output is only for one token, but our model generates logits for all tokens,
+        // we take the last element of the model output
+        let output = output.slice_last_dim().last().unwrap().clone();
         assert!(
-            is_close(expected_output, &output.get_data()),
+            is_close(expected_output, &output),
             "graph output differs: {:?} vs {:?}: LOGITS {:?}",
             expected_output,
-            output.get_data(),
+            output,
             &gpt2_output.logits[0..5]
         );
         Ok(())
