@@ -100,8 +100,9 @@ where
         observer: impl Observer<N>,
     ) -> anyhow::Result<InferenceTrace<'_, E, N>>
     where
-        E::BaseField: Serialize + DeserializeOwned,
         E: ExtensionField + Serialize + DeserializeOwned,
+        E::BaseField: Serialize + DeserializeOwned,
+        Layer<N>: Evaluate<N>,
     {
         let eos_token: N = self.config.specific_config.eos_token().to_number();
         let mut seq_len = input.len();
