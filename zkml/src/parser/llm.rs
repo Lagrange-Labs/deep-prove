@@ -3,17 +3,10 @@ use anyhow::bail;
 use crate::{
     Tensor,
     layers::{
-        Layer,
-        activation::{Activation, GELU},
-        add,
-        concat_matmul::ConcatMatMul,
-        matrix_mul::MatMul,
-        provable::{Edge, Node, NodeId},
-        reshape::Reshape,
-        transformer::{
+        activation::{Activation, GELU}, add, concat_matmul::ConcatMatMul, matrix_mul::MatMul, provable::{Edge, Node, NodeId}, reshape::Reshape, transformer::{
             embeddings::Embeddings, layernorm::LayerNorm, logits::Logits, mha::MhaQK,
             positional::Positional, qkv::QKV, softmax::Softmax,
-        },
+        }, Layer
     },
     model::Model,
     padding::PaddingMode,
@@ -226,13 +219,4 @@ impl Attention<f32> {
         ))?;
         self.feedforward.write_to_model(model, last_node_id)
     }
-}
-
-
-#[cfg(test)]
-mod test {
-    use crate::parser::json::test::{TINY_GPT2_DEBUG_NAME, TINY_GPT2_NAME};
-
-    use super::*;
-    
 }
