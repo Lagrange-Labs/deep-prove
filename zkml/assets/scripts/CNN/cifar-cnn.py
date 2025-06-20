@@ -257,7 +257,7 @@ if args.num_params:
         print(f"   Conv2: {net.conv2.out_channels} channels")
         print(f"   FC1: {net.fc1.out_features} features")
         print(f"   FC2: {net.fc2.out_features} features")
-        print(f"   Using bias: {args.with_bias}")
+        print(f"   Using bias: {with_bias}")
     except AssertionError as e:
         print(f"❌ Error: {e}")
         print(f"Using default model instead with bias: {with_bias}.")

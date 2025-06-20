@@ -15,7 +15,6 @@ use tract_onnx::prelude::*;
 pub struct FloatOnnxLoader<S: ScalingStrategy> {
     model_path: String,
     scaling_strategy: S,
-    model_type: Option<ModelType>,
     keep_float: bool,
 }
 
@@ -40,21 +39,13 @@ impl<S: ScalingStrategy> FloatOnnxLoader<S> {
         self.scaling_strategy = scaling_strategy;
         self
     }
-    pub fn with_model_type(mut self, model_type: ModelType) -> Self {
-        self.model_type = Some(model_type);
-        self
-    }
     pub fn with_keep_float(mut self, keep_float: bool) -> Self {
         self.keep_float = keep_float;
         self
     }
 
     pub fn build(self) -> Result<(ProvableModel<Element>, ModelMetadata)> {
-        if let Some(model_type) = self.model_type {
-            model_type.validate(&self.model_path)?;
-        }
         let float_model = load_float_model(&self.model_path)?;
-        println!("Input shape: {:?}", float_model.input_shapes());
         let mut kept_float = None;
         if self.keep_float {
             kept_float = Some(float_model.clone());
@@ -182,48 +173,6 @@ pub fn check_cnn_input(input_shape: &[usize]) -> Result<()> {
 pub fn safe_maxpool2d_shape(input_shape: &[usize]) -> Result<Vec<usize>> {
     check_cnn_input(input_shape).context("maxpool2d: invalid input shape")?;
     Ok(maxpool2d_shape(input_shape))
-}
-
-/// Enum representing the different types of models that can be loaded
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModelType {
-    MLP,
-    CNN,
-}
-
-impl ModelType {
-    /// Analyze the given filepath and determine if it matches this model type
-    pub fn validate(&self, filepath: &str) -> Result<()> {
-        match self {
-            ModelType::CNN => {
-                if !is_cnn(filepath)? {
-                    bail!("Model is not a valid CNN architecture");
-                }
-                Ok(())
-            }
-            ModelType::MLP => {
-                if !is_mlp(filepath)? {
-                    bail!("Model is not a valid MLP architecture");
-                }
-                Ok(())
-            }
-        }
-    }
-    pub fn from_onnx(filepath: &str) -> Result<ModelType> {
-        let is_mlp = is_mlp(filepath);
-        if is_mlp.is_ok() {
-            return Ok(ModelType::MLP);
-        }
-        let is_cnn = is_cnn(filepath);
-        if is_cnn.is_ok() {
-            return Ok(ModelType::CNN);
-        }
-        bail!(
-            "Model is not a valid MLP or CNN architecture: not mlp: {} and not cnn: {}",
-            is_mlp.unwrap_err(),
-            is_cnn.unwrap_err()
-        )
-    }
 }
 
 /// Unified model loading function that handles both MLP and CNN models
