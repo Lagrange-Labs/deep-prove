@@ -1,5 +1,4 @@
 use crate::{
-    ModelType,
     layers::{
         Layer,
         activation::Activation,
@@ -9,6 +8,7 @@ use crate::{
     },
     model::Model,
     padding::PaddingMode,
+    tensor::Shape,
 };
 use anyhow::{Context, Result, bail, ensure};
 use std::{collections::HashMap, iter::Peekable};
@@ -24,7 +24,10 @@ use tract_onnx::{
             source::TypedSource,
         },
     },
-    tract_hir::ops::{cnn::PaddingSpec, konst::Const},
+    tract_hir::{
+        internal::AxisOp,
+        ops::{cnn::PaddingSpec, konst::Const},
+    },
 };
 
 type OnnxModel = Graph<TypedFact, Box<dyn TypedOp + 'static>>;
@@ -49,7 +52,6 @@ macro_rules! ensure_onnx {
     }
 
 pub fn from_path(path: &str) -> Result<Model<f32>> {
-    let model_type = ModelType::from_onnx(path).context("can't prove unknown model:")?;
     let model = {
         let pmodel = tract_onnx::onnx()
             .model_for_path(path)?
@@ -73,18 +75,11 @@ pub fn from_path(path: &str) -> Result<Model<f32>> {
         .shape
         .to_tvec()
         .into_iter()
-        .map(|x| match x {
-            TDim::Val(v) => Ok(v as usize),
-            _ => err(format!(
-                "Input {} has unknown input shape: {:?}",
-                input_node.name, x
-            )),
-        })
+        .map(|x| tdim_to_usize(&x))
         .collect::<Result<Vec<_>, _>>()?;
-    if model_type == ModelType::CNN || model_type == ModelType::MLP {
-        if input_shape[0] == 1 {
-            input_shape.remove(0);
-        }
+    // remove batch dimension if it's 1 as we dont support batching yet
+    if input_shape[0] == 1 {
+        input_shape.remove(0);
     }
 
     let mut pmodel =
@@ -151,6 +146,7 @@ impl<'a, I: Iterator<Item = &'a usize> + Sized> ParserFactory<'a, I> {
         m.insert("Relu", load_relu as LoadFn<'a, I>);
         m.insert("Flatten", load_flatten as LoadFn<'a, I>);
         m.insert("Pool", load_maxpool as LoadFn<'a, I>);
+        m.insert("Reshape", load_reshape as LoadFn<'a, I>);
         ParserFactory(m)
     }
 
@@ -191,9 +187,54 @@ impl<'a, I: Iterator<Item = &'a usize> + Sized> ParserFactory<'a, I> {
             );
             Ok((node_id, node))
         } else {
-            err(format!("Unknown node type: {op_name}"))
+            err(format!("Unknown node type: {op_name}: {:?}", curr_node))
         }
     }
+}
+
+fn load_reshape<'a, I: Iterator<Item = &'a usize> + Sized>(
+    _model: &OnnxModel,
+    node_id: NodeId,
+    node: &OnnxNode,
+    _iter: &mut Peekable<I>,
+) -> Result<(NodeId, CustomNode)> {
+    ensure_onnx!(
+        node.inputs.len() == 1,
+        "Reshape {} must have 1 input",
+        node.name
+    );
+    let reshape_node = downcast_to::<AxisOp>(node)?;
+    let AxisOp::Reshape(_, ref current_shape, ref new_shape) = reshape_node else {
+        return err(format!("Reshape {} is not a Reshape node", node.name));
+    };
+    let current_shape: Shape = current_shape
+        .iter()
+        .map(|x| tdim_to_usize(x))
+        .collect::<Result<Vec<_>>>()?
+        .into();
+    let new_shape: Shape = new_shape
+        .iter()
+        .map(|x| tdim_to_usize(x))
+        .collect::<Result<Vec<_>>>()?
+        .into();
+    ensure_onnx!(
+        current_shape.numel() == new_shape.numel(),
+        "Reshape {} has incompatible shapes: {:?} -> {:?}",
+        node.name,
+        current_shape,
+        new_shape
+    );
+    // Currently we only support reshape to flatten so we enforce that the reshape is a flattening operation
+    ensure_onnx!(
+        new_shape.rank() == 1,
+        "Reshape {} is not a flattening operation: only supported operation is flattening WIP",
+        node.name
+    );
+    let provable_node = ProvableNode::new(
+        vec![Edge::new(node.inputs[0].node, node.inputs[0].slot)],
+        Layer::Flatten(crate::layers::flatten::Flatten),
+    );
+    Ok((node_id, provable_node))
 }
 
 fn load_flatten<'a, I: Iterator<Item = &'a usize> + Sized>(
@@ -615,6 +656,13 @@ fn downcast_to<T: Op>(node: &OnnxNode) -> Result<&T> {
             node.name,
             std::any::type_name::<T>()
         )),
+    }
+}
+
+fn tdim_to_usize(tdim: &TDim) -> anyhow::Result<usize> {
+    match tdim {
+        TDim::Val(v) => Ok(*v as usize),
+        _ => bail!("Unsupported dimension: {:?}", tdim),
     }
 }
 

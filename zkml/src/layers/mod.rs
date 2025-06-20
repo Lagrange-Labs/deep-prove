@@ -475,7 +475,6 @@ impl PadOp for Layer<Element> {
             Layer::Add(_add) => unimplemented!("Add layer not implemented"),
             Layer::Logits(_logits) => unimplemented!("Logits layer not implemented"),
             Layer::Positional(_positional) => unimplemented!("Positional layer not implemented"),
-            Layer::Reshape(_reshape) => unimplemented!("Reshape layer not implemented"),
             Layer::Embeddings(_embeddings) => unimplemented!("Embeddings layer not implemented"),
             Layer::MatMul(mat) => Layer::MatMul(mat.pad_node(si)?),
             Layer::SchoolBookConvolution(school_book_conv) => {
@@ -485,6 +484,7 @@ impl PadOp for Layer<Element> {
             Layer::Requant(requant) => Layer::Requant(requant.pad_node(si)?),
             Layer::Pooling(pooling) => Layer::Pooling(pooling.pad_node(si)?),
             Layer::Flatten(flatten) => Layer::Flatten(flatten.pad_node(si)?),
+            Layer::Reshape(_reshape) => unimplemented!("Reshape layer not implemented"),
         })
     }
 }
