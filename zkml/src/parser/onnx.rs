@@ -1,9 +1,14 @@
 use crate::{
     layers::{
-        activation::Activation, convolution::Convolution, pooling::{Maxpool2D, Pooling, MAXPOOL2D_KERNEL_SIZE}, provable::{Edge, Node as ProvableNode, NodeId, OpInfo}, Layer
+        Layer,
+        activation::Activation,
+        convolution::Convolution,
+        pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
+        provable::{Edge, Node as ProvableNode, NodeId, OpInfo},
     },
     model::Model,
-    padding::PaddingMode, tensor::Shape,
+    padding::PaddingMode,
+    tensor::Shape,
 };
 use anyhow::{Context, Result, bail, ensure};
 use std::{collections::HashMap, iter::Peekable};
@@ -19,7 +24,10 @@ use tract_onnx::{
             source::TypedSource,
         },
     },
-    tract_hir::{internal::AxisOp, ops::{cnn::PaddingSpec, konst::Const}},
+    tract_hir::{
+        internal::AxisOp,
+        ops::{cnn::PaddingSpec, konst::Const},
+    },
 };
 
 type OnnxModel = Graph<TypedFact, Box<dyn TypedOp + 'static>>;
@@ -67,7 +75,7 @@ pub fn from_path(path: &str) -> Result<Model<f32>> {
         .shape
         .to_tvec()
         .into_iter()
-        .map(|x|tdim_to_usize(&x))
+        .map(|x| tdim_to_usize(&x))
         .collect::<Result<Vec<_>, _>>()?;
     // remove batch dimension if it's 1 as we dont support batching yet
     if input_shape[0] == 1 {
@@ -196,11 +204,19 @@ fn load_reshape<'a, I: Iterator<Item = &'a usize> + Sized>(
         node.name
     );
     let reshape_node = downcast_to::<AxisOp>(node)?;
-    let AxisOp::Reshape(_,ref current_shape,ref new_shape) = reshape_node else {
+    let AxisOp::Reshape(_, ref current_shape, ref new_shape) = reshape_node else {
         return err(format!("Reshape {} is not a Reshape node", node.name));
     };
-    let current_shape :Shape = current_shape.iter().map(|x| tdim_to_usize(x)).collect::<Result<Vec<_>>>()?.into();
-    let new_shape :Shape = new_shape.iter().map(|x| tdim_to_usize(x)).collect::<Result<Vec<_>>>()?.into();
+    let current_shape: Shape = current_shape
+        .iter()
+        .map(|x| tdim_to_usize(x))
+        .collect::<Result<Vec<_>>>()?
+        .into();
+    let new_shape: Shape = new_shape
+        .iter()
+        .map(|x| tdim_to_usize(x))
+        .collect::<Result<Vec<_>>>()?
+        .into();
     ensure_onnx!(
         current_shape.numel() == new_shape.numel(),
         "Reshape {} has incompatible shapes: {:?} -> {:?}",
