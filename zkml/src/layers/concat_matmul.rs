@@ -136,10 +136,6 @@ impl OpInfo for ConcatMatMul {
             mat_result_shape = mat_result_shape.next_power_of_two()
         }
         if let Some(ref permute) = self.permute {
-            println!(
-                "ConcatMatMul: Permute: {:?} over resulting shape {:?}",
-                permute, mat_result_shape
-            );
             mat_result_shape = mat_result_shape.permute(permute);
         }
         vec![mat_result_shape]

@@ -50,13 +50,9 @@ impl Reshape {
             Reshape::Subspace((to_remove, to_add)) => input_shapes
                 .iter()
                 .map(|shape| {
-                    let mut new_shape = shape.clone().into_vec();
-                    println!(
-                        "moving from shape {:?} by splice({:?},{:?})",
-                        shape, to_remove, to_add
-                    );
+                    let mut new_shape = shape.clone();
                     new_shape.splice(to_remove.clone(), to_add.clone());
-                    Shape::new(new_shape)
+                    new_shape
                 })
                 .collect::<Vec<Shape>>(),
         };
