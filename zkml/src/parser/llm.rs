@@ -1,3 +1,4 @@
+use crate::model::llm::LLMTokenizer;
 use anyhow::bail;
 
 use crate::{
@@ -17,13 +18,19 @@ use crate::{
     },
     model::Model,
     padding::PaddingMode,
+    parser::gguf,
     tensor::{Number, Shape},
 };
+use rust_tokenizers::{
+    tokenizer::{Gpt2Tokenizer, Tokenizer as RT},
+    vocab::Vocab,
+};
+use std::{collections::HashMap, env, fs, path::Path, process};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, derive_more::From, derive_more::Into)]
 pub struct Token(usize);
 
-// i64 is the type used by token_to_id
+// i64 is the type used by token_to_i
 impl From<i64> for Token {
     fn from(t: i64) -> Self {
         Self(t as usize)
@@ -39,6 +46,18 @@ impl From<Token> for i64 {
 impl From<&Token> for i64 {
     fn from(t: &Token) -> Self {
         t.0 as i64
+    }
+}
+
+impl From<u32> for Token {
+    fn from(t: u32) -> Self {
+        Self(t as usize)
+    }
+}
+
+impl From<&Token> for u32 {
+    fn from(t: &Token) -> Self {
+        t.0 as u32
     }
 }
 
@@ -96,7 +115,11 @@ pub enum LLMModel {
 }
 
 impl LLMModel {
-    pub fn to_provable_model(self, c: &LLMConfig, user_input_shape: Shape) -> anyhow::Result<Model<f32>> {
+    pub fn to_provable_model(
+        self,
+        c: &LLMConfig,
+        user_input_shape: Shape,
+    ) -> anyhow::Result<Model<f32>> {
         match self {
             Self::GPT2(model) => model.to_provable_model(c, user_input_shape),
         }
@@ -267,5 +290,88 @@ impl Attention<f32> {
             Layer::Add(add::Add::new()),
         ))?;
         self.feedforward.write_to_model(model, last_node_id)
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) const INTERNAL_BOS: &str = "<|startoftext|>";
+pub(crate) const INTERNAL_EOS: &str = "<|endoftext|>";
+
+#[allow(dead_code)]
+pub struct TokenizerData {
+    tokens: Vec<String>,
+    merges: Vec<String>,
+    special_tokens: HashMap<String, u32>,
+}
+
+impl TokenizerData {
+    #[allow(dead_code)]
+    pub fn new(
+        tokens: Vec<String>,
+        merges: Vec<String>,
+        special_tokens: HashMap<String, u32>,
+    ) -> Self {
+        Self {
+            tokens,
+            merges,
+            special_tokens,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn load_tokenizer_from_gguf(path: impl AsRef<Path>) -> anyhow::Result<impl LLMTokenizer> {
+        let loader = gguf::FileTensorLoader::from_path(path)?;
+        let tokenizer = TokenizerData::from_loader(&loader)?.into_tokenizer();
+        Ok(tokenizer)
+    }
+
+    #[allow(dead_code)]
+    pub fn into_tokenizer(self) -> impl LLMTokenizer {
+        let temp_dir = env::temp_dir();
+        let pid = process::id();
+        let vocab_path = temp_dir.join(format!("vocab-{}.json", pid));
+        let merges_path = temp_dir.join(format!("merges-{}.txt", pid));
+
+        // Prepare vocab.json content
+        let values: HashMap<String, i64> = self
+            .tokens
+            .into_iter()
+            .enumerate()
+            .map(|(i, s)| (s, i as i64))
+            .collect();
+        let vocab_file = fs::File::create(&vocab_path).unwrap();
+        serde_json::to_writer(vocab_file, &values).unwrap();
+
+        // Prepare merges.txt content
+        let merges_content = self.merges.join("\n");
+        fs::write(&merges_path, merges_content).unwrap();
+
+        let tokenizer = Gpt2Tokenizer::from_file(
+            vocab_path.to_str().unwrap(),
+            merges_path.to_str().unwrap(),
+            false,
+        )
+        .unwrap();
+
+        // Clean up
+        fs::remove_file(vocab_path).ok();
+        fs::remove_file(merges_path).ok();
+
+        tokenizer
+    }
+}
+
+impl LLMTokenizer for Gpt2Tokenizer {
+    fn tokenize(&self, sentence: &str) -> Vec<Token> {
+        let tokenized = self.tokenize_list(&[sentence]);
+        tokenized
+            .into_iter()
+            .take(1)
+            .flat_map(|s| s.into_iter().map(|t| self.vocab().token_to_id(&t).into()))
+            .collect::<Vec<_>>()
+    }
+    fn detokenize(&self, ids: &[Token]) -> String {
+        let tokens = ids.iter().map(|i| i.into()).collect::<Vec<i64>>();
+        self.decode(&tokens, true, true)
     }
 }

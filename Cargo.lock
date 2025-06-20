@@ -6193,21 +6193,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tiktoken-rs"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25563eeba904d770acf527e8b370fe9a5547bacd20ff84a0b6c3bc41288e5625"
-dependencies = [
- "anyhow",
- "base64",
- "bstr",
- "fancy-regex",
- "lazy_static",
- "regex",
- "rustc-hash",
-]
-
-[[package]]
 name = "time"
 version = "0.3.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7911,7 +7896,6 @@ dependencies = [
  "statrs",
  "sumcheck",
  "thiserror 2.0.12",
- "tiktoken-rs",
  "timed",
  "timed-core",
  "tracing",

@@ -1,9 +1,11 @@
 use anyhow::ensure;
 use ff_ext::ExtensionField;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
-    layers::provable::{Evaluate, LayerOut, OpInfo}, padding::PaddingMode, tensor::{Number, Shape}, Tensor
+    Tensor,
+    layers::provable::{Evaluate, LayerOut, OpInfo},
+    padding::PaddingMode,
+    tensor::{Number, Shape},
 };
 
 #[derive(Debug, Clone)]
@@ -53,10 +55,11 @@ impl<N: Number> Evaluate<N> for Embeddings<N> {
     ) -> anyhow::Result<LayerOut<N, E>> {
         ensure!(
             inputs.iter().all(|x| {
-                let shape : Shape = x.get_shape().into(); 
+                let shape: Shape = x.get_shape().into();
                 shape.rank() == 2 && shape.dim(1) == 1
             }),
-            "embeddings only support 2d tensors with 1 value: {:?}", inputs.iter().map(|x| x.get_shape()).collect::<Vec<_>>()
+            "embeddings only support 2d tensors with 1 value: {:?}",
+            inputs.iter().map(|x| x.get_shape()).collect::<Vec<_>>()
         );
         ensure!(inputs.len() == 1, "embeddings only support 1 input tensor");
         let x = inputs[0];
@@ -64,7 +67,8 @@ impl<N: Number> Evaluate<N> for Embeddings<N> {
         let vocab_size = self.emb.get_shape()[0];
         let emb_size = self.emb.get_shape()[1];
         let emb_data = self.emb.get_data();
-        let emb = x.slice_last_dim()
+        let emb = x
+            .slice_last_dim()
             .flat_map(|v| {
                 let idx = v[0].to_usize();
                 assert!(

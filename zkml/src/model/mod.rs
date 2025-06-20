@@ -21,8 +21,8 @@ use crate::{
 };
 
 pub(crate) mod iterator;
-pub(crate) mod trace;
 pub mod llm;
+pub(crate) mod trace;
 pub use iterator::ToIterator;
 pub use trace::{InferenceStep, InferenceTrace, StepData};
 
