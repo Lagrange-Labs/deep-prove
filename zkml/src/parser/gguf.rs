@@ -174,9 +174,12 @@ impl Attention<f32> {
         let mut unfused_weights =
             unfuse_tensors(qkv_weight_candle, embedding_size * embedding_size)?;
         ensure!(unfused_weights.len() == 3, "qkv_weight must have 3 chunks");
-        let q = crate::Tensor::new(vec![embedding_size, hidden_size], unfused_weights.remove(0));
-        let k = crate::Tensor::new(vec![embedding_size, hidden_size], unfused_weights.remove(0));
-        let v = crate::Tensor::new(vec![embedding_size, hidden_size], unfused_weights.remove(0));
+        let q = crate::Tensor::new(vec![embedding_size, hidden_size], unfused_weights.remove(0))
+            .transpose();
+        let k = crate::Tensor::new(vec![embedding_size, hidden_size], unfused_weights.remove(0))
+            .transpose();
+        let v = crate::Tensor::new(vec![embedding_size, hidden_size], unfused_weights.remove(0))
+            .transpose();
 
         let qkv_bias_qtensor = loader.get_qtensor("attn_qkv.bias")?;
         let qkv_bias_candle = qkv_bias_qtensor.dequantize(&Device::Cpu)?;
@@ -190,7 +193,10 @@ impl Attention<f32> {
         // Use new LayerNorm::from_loader
         let norm = LayerNorm::from_loader(&attn_norm_loader, &c)?;
 
-        let out = loader.get_tensor("attn_output.weight")?;
+        // attn_output.weight is stored as [out_features, in_features] in GGUF (same as PyTorch)
+        // Our MatMul layer expects the right-hand constant to be in the orientation [in_features, out_features],
+        // so we transpose it once here after loading.
+        let out = loader.get_tensor("attn_output.weight")?.transpose();
         let out_bias = loader.get_tensor("attn_output.bias")?;
         ensure!(
             out.get_shape().as_slice() == &[embedding_size, embedding_size],

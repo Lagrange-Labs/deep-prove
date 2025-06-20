@@ -29,6 +29,7 @@ pub trait Observer<N: Number> {
 pub struct Driver<N: Number> {
     model: Model<N>,
     config: LLMConfig,
+    max_context: Option<usize>,
 }
 
 impl Driver<f32> {
@@ -67,7 +68,11 @@ impl Driver<f32> {
         // need to provide one.
         let init_user_shape = Shape::from(vec![1, config.embedding_size]);
         let model = llm_model.to_provable_model(&config, init_user_shape)?;
-        Ok(Self { model, config })
+        Ok(Self {
+            model,
+            config,
+            max_context: None,
+        })
     }
 }
 
@@ -75,8 +80,16 @@ impl<N: Number> Driver<N>
 where
     Layer<N>: Evaluate<N>,
 {
-    pub fn new(model: Model<N>, config: LLMConfig) -> Self {
-        Self { model, config }
+    pub fn new(model: Model<N>, config: LLMConfig, max_context: Option<usize>) -> Self {
+        Self {
+            model,
+            config,
+            max_context,
+        }
+    }
+    pub fn with_max_context(mut self, max_context: usize) -> Self {
+        self.max_context = Some(max_context);
+        self
     }
 
     /// Runs take the _already_ tokenized input and run the model until the maximum sequence length is reached OR until a eos token is generated.
@@ -104,7 +117,8 @@ where
             vec![input.len(), 1],
             input.into_iter().map(|t| t.to_number()).collect::<Vec<_>>(),
         );
-        while seq_len < self.config.context_length {
+        let max_window = self.max_context.unwrap_or(self.config.context_length);
+        while seq_len < max_window {
             trace = self
                 .model
                 .run::<E>(&[tensor.clone()])
@@ -156,11 +170,11 @@ impl<N: Number, T: LLMTokenizer> Observer<N> for LLMTokenizerObserver<T> {
                 .as_slice(),
         );
         println!(
-            "seq_len {}: new token: {:?}\n\t-{}\n\t-{:?}",
+            "seq_len {}: new token: {:?}\n\t-{}", //\n\t-{:?}",
             step,
             &new_token,
-            self.input.clone() + &new_text,
-            tensor.get_data()
+            (self.input.clone() + &new_text).trim(),
+            // tensor.get_data()
         );
     }
 }
@@ -180,40 +194,13 @@ mod test {
 
     use super::*;
     use goldilocks::GoldilocksExt2;
-    use rust_tokenizers::{
-        tokenizer::{Gpt2Tokenizer, Tokenizer},
-        vocab::Vocab,
-    };
-
-    fn tokenize_sentence(tokenizer: &Gpt2Tokenizer, sentence: &str) -> Vec<Token> {
-        let tokenized = tokenizer.tokenize_list(&[sentence]);
-        tokenized
-            .into_iter()
-            .take(1)
-            .flat_map(|s| {
-                s.into_iter()
-                    .map(|t| tokenizer.vocab().token_to_id(&t).into())
-            })
-            .collect::<Vec<_>>()
-    }
-
-    fn detokenize(tokenizer: &Gpt2Tokenizer, ids: &[Token]) -> String {
-        let tokens = ids.iter().map(|i| i.into()).collect::<Vec<i64>>();
-        tokenizer.decode(&tokens, true, true)
-    }
+    use rust_tokenizers::tokenizer::Tokenizer;
 
     #[test]
-    //#[ignore = "a test to see the tokenizer in action"]
     fn test_llm_driver() -> anyhow::Result<()> {
-        let merge_path = file_cache::ensure_downloaded(
-            "https://huggingface.co/openai-community/gpt2/resolve/main/merges.txt",
-        )?;
-        let vocab_path = file_cache::ensure_downloaded(
-            "https://huggingface.co/openai-community/gpt2/resolve/main/vocab.json",
-        )?;
         let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
-        let driver = Driver::load_model(&model_path)?;
-        let sentence = "The";
+        let driver = Driver::load_model(&model_path)?.with_max_context(10);
+        let sentence = "The sky is";
 
         // Best to load the tokenizer from the gguf file if it's available.
         let tokenizer = TokenizerData::load_tokenizer_from_gguf(&model_path)?;
