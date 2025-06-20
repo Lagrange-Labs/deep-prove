@@ -40,7 +40,8 @@ use crate::{
         requant::{Requant, RequantProof},
         reshape::Reshape,
         transformer::{
-            embeddings::Embeddings, layernorm::LayerNorm, logits::Logits, mha::MhaQK, positional::Positional, qkv::QKV, softmax::Softmax
+            embeddings::Embeddings, layernorm::LayerNorm, logits::Logits, mha::MhaQK,
+            positional::Positional, qkv::QKV, softmax::Softmax,
         },
     }, lookup::context::LookupWitnessGen, model::StepData, padding::{PaddingMode, ShapeInfo}, quantization::ScalingFactor, tensor::{Number, Shape, Tensor}, Context, Element, ScalingStrategy
 };
