@@ -227,3 +227,12 @@ impl Attention<f32> {
         self.feedforward.write_to_model(model, last_node_id)
     }
 }
+
+
+#[cfg(test)]
+mod test {
+    use crate::parser::json::test::{TINY_GPT2_DEBUG_NAME, TINY_GPT2_NAME};
+
+    use super::*;
+    
+}

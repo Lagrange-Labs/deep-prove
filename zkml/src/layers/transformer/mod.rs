@@ -597,7 +597,7 @@ mod test {
         let output = model.run_float(&[input.clone()])?[0].clone();
         // since the expected output is only for one token, but our model generates logits for all tokens,
         // we take the last element of the model output
-        let output = output.slice_last_dim().last().unwrap().clone();
+        let output = output.slice_last_dim().last().unwrap();
         assert!(
             is_close(expected_output, &output),
             "graph output differs: {:?} vs {:?}: LOGITS {:?}",
