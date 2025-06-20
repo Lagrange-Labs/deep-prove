@@ -1726,7 +1726,6 @@ impl<T: Number> Tensor<T> {
             og_shape: vec![0],
         }
     }
-
     pub fn permute3d(&self, order: &[usize]) -> Self {
         assert!(self.shape.len() == 3 && order.len() == 3);
         assert!(order.iter().all(|x| *x < 3));

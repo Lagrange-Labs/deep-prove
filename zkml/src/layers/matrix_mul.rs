@@ -172,6 +172,7 @@ impl<T> MatMul<T> {
         let right_matrix = OperandMatrix::new_weight_matrix(right);
         Self::new_internal(OperandMatrix::Input, right_matrix, bias, None)
     }
+
     fn new_internal(
         left_matrix: OperandMatrix<T>,
         right_matrix: OperandMatrix<T>,
