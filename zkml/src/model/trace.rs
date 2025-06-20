@@ -11,6 +11,7 @@ use crate::{
     quantization::{Fieldizer, ModelMetadata, TensorFielder},
 };
 
+#[derive(Debug, Clone, Default)]
 pub struct Trace<'a, E: ExtensionField, N, D> {
     pub(crate) steps: HashMap<NodeId, InferenceStep<'a, E, N, D>>,
     pub(crate) input: Vec<Tensor<D>>,
@@ -157,6 +158,7 @@ impl<'a, E: ExtensionField> InferenceTrace<'a, E, Element> {
 }
 
 /// Data found in the trace for each node of the model
+#[derive(Debug, Clone)]
 pub struct InferenceStep<'a, E: ExtensionField, N, D> {
     pub(crate) op: &'a Layer<N>,
     pub(crate) step_data: StepData<D, E>,
@@ -171,6 +173,7 @@ impl<'a, E: ExtensionField, N, D> InferenceStep<'a, E, N, D> {
 
 /// Data about the input and output tensors in a trace
 /// for each node in the model
+#[derive(Debug, Clone)]
 pub struct StepData<D, E: ExtensionField> {
     pub(crate) inputs: Vec<Tensor<D>>,
     pub(crate) outputs: LayerOut<D, E>,

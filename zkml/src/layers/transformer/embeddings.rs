@@ -1,12 +1,11 @@
 use anyhow::ensure;
 use ff_ext::ExtensionField;
-use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use crate::{
     Tensor,
     layers::provable::{Evaluate, LayerOut, OpInfo},
     padding::PaddingMode,
-    tensor::Number,
+    tensor::{Number, Shape},
 };
 
 #[derive(Debug, Clone)]
@@ -55,8 +54,12 @@ impl<N: Number> Evaluate<N> for Embeddings<N> {
         _unpadded_input_shapes: Vec<Vec<usize>>,
     ) -> anyhow::Result<LayerOut<N, E>> {
         ensure!(
-            inputs.iter().all(|x| x.get_shape().len() == 1),
-            "embeddings only support 1d tensors"
+            inputs.iter().all(|x| {
+                let shape: Shape = x.get_shape().into();
+                shape.rank() == 2 && shape.dim(1) == 1
+            }),
+            "embeddings only support 2d tensors with 1 value: {:?}",
+            inputs.iter().map(|x| x.get_shape()).collect::<Vec<_>>()
         );
         ensure!(inputs.len() == 1, "embeddings only support 1 input tensor");
         let x = inputs[0];
@@ -65,10 +68,9 @@ impl<N: Number> Evaluate<N> for Embeddings<N> {
         let emb_size = self.emb.get_shape()[1];
         let emb_data = self.emb.get_data();
         let emb = x
-            .get_data()
-            .par_iter()
-            .flat_map(|&v| {
-                let idx = v.to_usize();
+            .slice_last_dim()
+            .flat_map(|v| {
+                let idx = v[0].to_usize();
                 assert!(
                     idx < vocab_size,
                     "idx {} out of bounds for vocab size {}",
@@ -130,7 +132,7 @@ mod tests {
             .into_iter()
             .map(|x| Element::from(x as Element))
             .collect::<Vec<_>>();
-        let x = Tensor::new(vec![seq_len], input_data.clone());
+        let x = Tensor::new(vec![seq_len, 1], input_data.clone());
         let out = embeddings.evaluate::<GoldilocksExt2>(&[&x], vec![vec![seq_len]])?;
         assert_eq!(out.outputs()[0].get_shape(), vec![seq_len, emb_size]);
         // for each input index, check that the embedding vector is the correct one
