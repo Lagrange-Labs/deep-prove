@@ -194,7 +194,6 @@ mod test {
 
     use super::*;
     use ff_ext::GoldilocksExt2;
-    use rust_tokenizers::tokenizer::Tokenizer;
 
     #[test]
     fn test_llm_driver() -> anyhow::Result<()> {
