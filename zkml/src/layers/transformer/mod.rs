@@ -248,6 +248,7 @@ mod test {
             let mha = self
                 .mha
                 .evaluate::<GoldilocksExt2>(&qkv.outputs(), vec![])?;
+            println!("mha: {:?}", mha.outputs()[0].get_data());
             // apply softmax + rescale on the first output, Q @ K^T
             // NOTE that we apply softmax row by row
             let softmaxed = self
