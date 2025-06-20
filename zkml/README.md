@@ -52,7 +52,7 @@ ZKML is built on cryptographic techniques that allow for efficient proof generat
 
 To get started with ZKML, ensure you have the following prerequisites:
 
-- **Python 3.6 or higher**
+- **Python 3.10 or higher**
 - **Rust and Cargo** (latest stable)
 - **EZKL** (optional, for comparisons)
 
