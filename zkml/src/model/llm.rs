@@ -21,6 +21,10 @@ use crate::{
     tensor::{Number, Shape},
 };
 
+pub trait Observer<N: Number> {
+    fn observe<E: ExtensionField>(&self, step: usize, trace: &InferenceTrace<'_, E, N>);
+}
+
 #[derive(Debug, Clone)]
 pub struct Driver<N: Number> {
     model: Model<N>,
@@ -80,7 +84,7 @@ where
     pub fn run<E>(
         &self,
         input: Vec<Token>,
-        #[cfg(test)] tokenizer: impl LLMTokenizer,
+        observer: impl Observer<N>,
     ) -> anyhow::Result<InferenceTrace<'_, E, N>>
     where
         E::BaseField: Serialize + DeserializeOwned,
@@ -127,26 +131,37 @@ where
             debug_assert!(new_token.len() == 1, "New token must be a single token");
             tensor.concat(Tensor::new(vec![1, 1], vec![new_token[0]]));
             debug_assert_eq!(tensor.get_shape()[0], seq_len);
-            #[cfg(test)]
-            {
-                let sentence = tokenizer.detokenize(
-                    tensor
-                        .get_data()
-                        .iter()
-                        .map(|t| Token::from(t.to_usize()))
-                        .collect::<Vec<_>>()
-                        .as_slice(),
-                );
-                println!(
-                    "seq_len {}: new token: {:?}\n\t-{}\n\t-{:?}",
-                    seq_len,
-                    &new_token,
-                    sentence,
-                    tensor.get_data()
-                );
-            }
+            observer.observe(seq_len - user_len, &trace);
         }
         Ok(trace)
+    }
+}
+
+pub struct LLMTokenizerObserver<T: LLMTokenizer> {
+    input: String,
+    tokenizer: T,
+}
+
+impl<N: Number, T: LLMTokenizer> Observer<N> for LLMTokenizerObserver<T> {
+    fn observe<E: ExtensionField>(&self, step: usize, trace: &InferenceTrace<'_, E, N>) {
+        let tensor = trace.output.last().unwrap();
+        let new_token = tensor.get_data().last().unwrap();
+        let new_token = Token::from(new_token.to_usize());
+        let new_text = self.tokenizer.detokenize(
+            tensor
+                .get_data()
+                .iter()
+                .map(|t| Token::from(t.to_usize()))
+                .collect::<Vec<_>>()
+                .as_slice(),
+        );
+        println!(
+            "seq_len {}: new token: {:?}\n\t-{}\n\t-{:?}",
+            step,
+            &new_token,
+            self.input.clone() + &new_text,
+            tensor.get_data()
+        );
     }
 }
 
@@ -188,8 +203,8 @@ mod test {
     }
 
     #[test]
-    #[ignore = "a test to see the tokenizer in action"]
-    fn test_load_model() -> anyhow::Result<()> {
+    //#[ignore = "a test to see the tokenizer in action"]
+    fn test_llm_driver() -> anyhow::Result<()> {
         let merge_path = file_cache::ensure_downloaded(
             "https://huggingface.co/openai-community/gpt2/resolve/main/merges.txt",
         )?;
@@ -198,20 +213,21 @@ mod test {
         )?;
         let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
         let driver = Driver::load_model(&model_path)?;
-        let tokenizer = Gpt2Tokenizer::from_file(vocab_path, merge_path, false)?;
-        let sentence = "The sky is";
-        let user_tokens = tokenize_sentence(&tokenizer, sentence);
-        let detokenized = detokenize(&tokenizer, &user_tokens);
-        assert_eq!(detokenized, sentence);
-        println!("sentence: {}", sentence);
-        println!("user_tokens: {:?}", user_tokens);
+        let sentence = "The";
 
         // Best to load the tokenizer from the gguf file if it's available.
         let tokenizer = TokenizerData::load_tokenizer_from_gguf(&model_path)?;
         let user_tokens = tokenizer.tokenize(sentence);
         let detokenized = tokenizer.detokenize(&user_tokens);
         assert_eq!(detokenized, sentence);
-        let trace = driver.run::<GoldilocksExt2>(user_tokens, tokenizer)?;
+        println!("user input in tokens: {:?}", user_tokens);
+        let trace = driver.run::<GoldilocksExt2>(
+            user_tokens,
+            LLMTokenizerObserver {
+                input: sentence.to_string(),
+                tokenizer,
+            },
+        )?;
         let _output = trace
             .output
             .last()
