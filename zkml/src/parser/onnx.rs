@@ -169,6 +169,7 @@ impl<'a, I: Iterator<Item = &'a usize> + Sized> ParserFactory<'a, I> {
             .keys()
             .find(|&&layer_name| op_name.contains(layer_name))
         {
+            debug!("current node {:?}", curr_node.op);
             let parser = self.0.get(layer_name).unwrap();
             let (node_id, mut node) = parser(model, *curr_node_id, curr_node, iter)?;
             if first_node {
@@ -379,6 +380,10 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
         let input_flattened = weight_shape[1..].iter().product::<usize>();
         weight_shape = vec![weight_shape[0], input_flattened];
         weight.shape = weight_shape.clone();
+    } else if weight_shape.len() == 1 {
+        // A Gemm is always a matrix - so if there's only one dimension, we need to add 1 to 
+        // to the output features
+        weight.shape.insert(0, 1);
     }
     ensure_onnx!(
         weight.is_matrix(),
