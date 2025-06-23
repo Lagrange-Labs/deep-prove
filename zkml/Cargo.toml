@@ -8,6 +8,14 @@ readme.workspace = true
 repository.workspace = true
 version.workspace = true
 
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"
+
+[[bin]]
+name = "worker"
+path = "src/bin/worker.rs"
+
 [dependencies]
 anyhow.workspace = true
 ark-std.workspace = true
@@ -50,5 +58,23 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 tract-onnx = "^0.21"
 transcript = { version = "0.1.0", path = "../transcript" }
 
+# worker-related dependencies
+alloy = { version = "1.0" }
+tonic = { version = "0.12.3", features = ["transport", "tls", "tls-roots", "tls-webpki-roots", "gzip"] }
+tokio = { version = "1.42", features = ["rt-multi-thread", "macros"] }
+futures = { version = "0.3.30" }
+prost = { version = "0.13.3" }
+prost-types = { version = "0.13.3" }
+prost-wkt-types = { version = "0.6.0" }
+rustls = { version = "0.23.16", features = ["ring"] }
+tokio-stream = { version = "0.1.17" }
+grpc-worker = { git = "https://github.com/Lagrange-Labs/grpc-worker-rs", branch = "main" }
+
 [dev-dependencies]
 ndarray = "0.16.1"
+
+[build-dependencies]
+# worker-related dependencies
+miette = { version = "7.2", features = ["fancy"] }
+protox = { version = "0.7.1" }
+tonic-build = { version = "0.12.3" }

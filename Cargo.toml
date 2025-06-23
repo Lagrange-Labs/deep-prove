@@ -43,6 +43,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 timed = { git = "https://github.com/nikkolasg/timed-rs" }
 timed-core = { git = "https://github.com/nikkolasg/timed-rs" }
 
+
 # Test must run fast, but still provides stacktraces.
 [profile.test]
 opt-level = 3
