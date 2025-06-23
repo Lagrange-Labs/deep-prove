@@ -381,7 +381,7 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
         weight_shape = vec![weight_shape[0], input_flattened];
         weight.shape = weight_shape.clone();
     } else if weight_shape.len() == 1 {
-        // A Gemm is always a matrix - so if there's only one dimension, we need to add 1 to 
+        // A Gemm is always a matrix - so if there's only one dimension, we need to add 1 to
         // to the output features
         weight.shape.insert(0, 1);
     }
