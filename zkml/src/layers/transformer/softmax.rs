@@ -1,5 +1,6 @@
 //! This layer applies the softmax function to the last dimension of the input tensor
 use anyhow::ensure;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Element, Tensor,
@@ -7,7 +8,7 @@ use crate::{
     tensor::Number,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Softmax<N> {
     // By default, it's equal to 1
     pub scale: N,

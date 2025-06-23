@@ -249,7 +249,7 @@ where
     type EncodingScheme = RSCode<RSCodeDefaultSpec>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub struct Basefold<E: ExtensionField, Spec: BasefoldSpec<E>>(PhantomData<(E, Spec)>);
 
 impl<E: ExtensionField, Spec: BasefoldSpec<E>> Serialize for Basefold<E, Spec> {

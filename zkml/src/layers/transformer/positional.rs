@@ -1,5 +1,6 @@
 use anyhow::ensure;
 use ff_ext::ExtensionField;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     NextPowerOfTwo, Tensor,
@@ -8,7 +9,7 @@ use crate::{
     tensor::Number,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Positional<N> {
     Learned(Tensor<N>),
     // TODO

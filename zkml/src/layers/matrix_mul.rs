@@ -38,7 +38,7 @@ pub enum Config {
     TransposeB,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WeightMatrix<T> {
     /// The tensor storing the matrix
     pub(crate) tensor: Tensor<T>,
@@ -47,7 +47,7 @@ pub struct WeightMatrix<T> {
 }
 
 /// A matrix to be multiplied in the matrix multiplication layer
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum OperandMatrix<T> {
     /// The matrix is a constant matrix specified in the model
     Weigth(WeightMatrix<T>),
@@ -123,7 +123,7 @@ impl<T> OperandMatrix<T> {
 }
 
 /// Description of the layer
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MatMul<T> {
     pub(crate) left_matrix: OperandMatrix<T>,
     pub(crate) right_matrix: OperandMatrix<T>,

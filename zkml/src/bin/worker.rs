@@ -3,14 +3,149 @@ use std::str::FromStr;
 use alloy::signers::local::LocalSigner;
 use clap::Parser;
 use futures::StreamExt;
-use lagrange::{WorkerToGwRequest, worker_to_gw_request::Request};
+use goldilocks::GoldilocksExt2;
+use mpcs::{Basefold, BasefoldRSParams};
+use serde::{Deserialize, Serialize};
 use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
+
+use lagrange::{WorkerToGwRequest, worker_to_gw_request::Request};
+use zkml::{
+    Context, Element, Proof, Prover, default_transcript, model::Model, quantization::ModelMetadata,
+};
 
 pub mod lagrange {
     tonic::include_proto!("lagrange");
 
     pub const FILE_DESCRIPTOR_SET: &[u8] =
         tonic::include_file_descriptor_set!("lagrange_descriptor");
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct Input {
+    input_data: Vec<Vec<f32>>,
+    output_data: Vec<Vec<f32>>,
+    pytorch_output: Vec<Vec<f32>>,
+}
+
+// TODO: this is a copypaste from `bench.rs`.
+impl Input {
+    fn filter(&self, indices: Option<&Vec<usize>>) -> Self {
+        if let Some(indices) = indices {
+            assert!(
+                indices.iter().all(|i| *i < self.input_data.len()),
+                "Index {} is out of range (max: {})",
+                indices.iter().max().unwrap(),
+                self.input_data.len() - 1
+            );
+            let input_data = indices
+                .iter()
+                .map(|i| self.input_data[*i].clone())
+                .collect();
+            let output_data = indices
+                .iter()
+                .map(|i| self.output_data[*i].clone())
+                .collect();
+            let pytorch_output = indices
+                .iter()
+                .map(|i| self.pytorch_output[*i].clone())
+                .collect();
+            Self {
+                input_data,
+                output_data,
+                pytorch_output,
+            }
+        } else {
+            self.clone()
+        }
+    }
+
+    fn to_elements(self, md: &ModelMetadata) -> (Vec<Vec<Element>>, Vec<Vec<Element>>) {
+        let input_sf = md.input.first().unwrap();
+        let inputs = self
+            .input_data
+            .into_iter()
+            .map(|input| input.into_iter().map(|e| input_sf.quantize(&e)).collect())
+            .collect();
+        let output_sf = *md.output_scaling_factor().first().unwrap();
+        let outputs = self
+            .output_data
+            .into_iter()
+            .map(|output| output.into_iter().map(|e| output_sf.quantize(&e)).collect())
+            .collect();
+        (inputs, outputs)
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct DeepProveRequestV1 {
+    model: Model<Element>,
+    model_metadata: ModelMetadata,
+    input: Input,
+    run_indices: Option<Vec<usize>>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DeepProveResponseV1 {
+    proofs: Vec<ProofV1>,
+}
+
+#[derive(Serialize, Deserialize)]
+enum DeepProveRequest {
+    V1(DeepProveRequestV1),
+}
+
+#[derive(Serialize, Deserialize)]
+enum DeepProveResponse {
+    V1(DeepProveResponseV1),
+}
+
+type F = GoldilocksExt2;
+type Pcs<E> = Basefold<E, BasefoldRSParams>;
+type ProofV1 = Proof<GoldilocksExt2, Basefold<GoldilocksExt2, BasefoldRSParams>>;
+
+fn run_model_v1(model: DeepProveRequestV1) -> Result<Vec<ProofV1>, ()> {
+    let DeepProveRequestV1 {
+        model,
+        model_metadata,
+        input,
+        run_indices,
+    } = model;
+
+    let run_inputs = input.filter(run_indices.as_ref());
+    let (inputs, given_outputs) = run_inputs.to_elements(&model_metadata);
+
+    let input_iter = inputs.into_iter().zip(given_outputs).enumerate();
+    let mut failed_inputs = vec![];
+    let ctx =
+        Some(Context::<F, Pcs<F>>::generate(&model, None).expect("unable to generate context"));
+
+    let mut proofs = vec![];
+    for (i, (input, _given_output)) in input_iter {
+        let input_tensor = model.load_input_flat(vec![input]).unwrap();
+
+        let trace_result = model.run(&input_tensor);
+        // If model.run fails, print the error and continue to the next input
+        let trace = match trace_result {
+            Ok(trace) => trace,
+            Err(e) => {
+                tracing::info!(
+                    "[!] Error running inference for input {}/{}: {}",
+                    i + 1,
+                    0, // args.num_samples,
+                    e
+                );
+                failed_inputs.push(i);
+                continue; // Skip to the next input without writing to CSV
+            }
+        };
+        let mut prover_transcript = default_transcript();
+        let prover = Prover::<_, _, _>::new(ctx.as_ref().unwrap(), &mut prover_transcript);
+        let proof = prover.prove(trace).expect("unable to generate proof");
+
+        proofs.push(proof);
+    }
+
+    Ok(proofs)
 }
 
 #[derive(Parser)]
@@ -53,11 +188,9 @@ async fn main() -> anyhow::Result<()> {
         args.worker_class.clone(),
     )?;
 
-    println!("claims {claims:?}");
     let token = grpc_worker::auth::jwt::JWTAuth::new(claims, &wallet)?.encode()?;
     let token: MetadataValue<_> = format!("Bearer {token}").parse()?;
 
-    println!("Inserting interceptor");
     let mut client = lagrange::workers_service_client::WorkersServiceClient::with_interceptor(
         channel,
         move |mut req: tonic::Request<()>| {
@@ -66,11 +199,7 @@ async fn main() -> anyhow::Result<()> {
         },
     );
 
-    print!("opening outbound connection...");
     let outbound_rx = tokio_stream::wrappers::ReceiverStream::new(outbound_rx);
-    println!("done.");
-
-    eprint!("sending initial message...");
 
     outbound_tx
         .send(WorkerToGwRequest {
@@ -81,15 +210,10 @@ async fn main() -> anyhow::Result<()> {
         })
         .await?;
 
-    eprintln!("sent.");
-
-    eprint!("calling worker_to_gw...");
     let response = client
         .worker_to_gw(tonic::Request::new(outbound_rx))
         .await?;
-    eprintln!("done.");
 
-    eprintln!("opening inbound connection");
     let mut inbound = response.into_inner();
 
     loop {
@@ -102,13 +226,22 @@ async fn main() -> anyhow::Result<()> {
                         break;
                     }
                 };
-                println!("got inbound message from gateway: {msg:?}");
 
-                tokio::time::sleep(std::time::Duration::from_secs(args.sleep_time)).await;
+                let task: DeepProveRequest = rmp_serde::from_slice(&msg.task)?;
+
+                let result = match task {
+                    DeepProveRequest::V1(deep_prove_request_v1) => run_model_v1(deep_prove_request_v1).unwrap(),
+                };
                 outbound_tx.send(WorkerToGwRequest {
                     request: Some(Request::WorkerDone(lagrange::WorkerDone {
                         task_id: msg.task_id.clone(),
-                        reply: Some(lagrange::worker_done::Reply::TaskOutput(vec![1, 2, 3]))
+                        reply: Some(lagrange::worker_done::Reply::TaskOutput(
+                            rmp_serde::to_vec(&DeepProveResponse::V1(
+                                DeepProveResponseV1 {
+                                    proofs: result
+                                }
+                            )
+                        ).unwrap()))
                     }))
                 }).await?;
             }

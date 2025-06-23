@@ -27,7 +27,7 @@ pub use iterator::ToIterator;
 pub use trace::{InferenceStep, InferenceTrace, StepData};
 
 /// Represents a model
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Model<N> {
     pub(crate) nodes: HashMap<NodeId, Node<N>>,
     pub(crate) input_shapes: Vec<Vec<usize>>,

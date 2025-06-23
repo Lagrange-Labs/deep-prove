@@ -58,7 +58,7 @@ use dense::{DenseCtx, DenseProof};
 use matrix_mul::{MatMul, MatMulCtx, MatMulProof};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Layer<T> {
     Dense(Dense<T>),
     MatMul(MatMul<T>),

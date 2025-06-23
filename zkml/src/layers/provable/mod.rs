@@ -60,7 +60,7 @@ pub struct OutputWire {
 }
 
 /// Represents a node in a model
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Node<N> {
     pub(crate) inputs: Vec<Edge>,
     /// Vector of outgoing wires. The index in this vector means that the corresponding OutputWire

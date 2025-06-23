@@ -1,4 +1,5 @@
 use anyhow::ensure;
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::{
@@ -16,7 +17,7 @@ use burn::{
     tensor::{Tensor as BTensor, TensorData},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayerNorm<N> {
     pub gamma: Tensor<N>,
     pub beta: Tensor<N>,

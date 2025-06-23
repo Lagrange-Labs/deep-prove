@@ -20,9 +20,10 @@ use crate::{
 use anyhow::ensure;
 use ff_ext::ExtensionField;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use serde::{Deserialize, Serialize};
 
 use crate::{Tensor, layers::provable::LayerOut};
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MhaQK {
     num_heads: usize,
     head_dim: usize,

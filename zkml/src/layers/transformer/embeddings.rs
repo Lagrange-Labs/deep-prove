@@ -1,6 +1,7 @@
 use anyhow::ensure;
 use ff_ext::ExtensionField;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Tensor,
@@ -9,7 +10,7 @@ use crate::{
     tensor::Number,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Embeddings<N> {
     pub emb: Tensor<N>,
 }

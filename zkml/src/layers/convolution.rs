@@ -47,7 +47,7 @@ use super::{
 
 const IS_PROVABLE: bool = true;
 /// Convolution layer description (weights)
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Convolution<T> {
     /// NOTE: in the case of f32, the weights are native
     /// In the case of Element (i128), the weights are already fft'd
@@ -87,7 +87,7 @@ pub fn to_bits<E: ExtensionField>(mut num: usize, bitlen: usize) -> Vec<E> {
     bits
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SchoolBookConv<T>(pub(crate) Convolution<T>);
 
 /// Contains proof material related to one step of the inference for a convolution layer

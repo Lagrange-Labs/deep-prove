@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use anyhow::{Result, anyhow, ensure};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Element,
@@ -13,7 +14,7 @@ use crate::{
 use super::ScalingFactor;
 
 /// Structure holding the scaling factors of the input and output of each layer
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelMetadata {
     pub input: Vec<ScalingFactor>,
     pub(crate) input_layers_scaling: HashMap<NodeId, Vec<ScalingFactor>>,

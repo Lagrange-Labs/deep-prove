@@ -12,6 +12,7 @@
 //! prove the transpose at the same time as the matmul.
 use anyhow::ensure;
 use ff_ext::ExtensionField;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Tensor,
@@ -24,7 +25,7 @@ use crate::{
 };
 
 use super::provable::LayerOut;
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConcatMatMul {
     permute: Option<Vec<usize>>,
     /// It tells what is the maximum bit size we ever expect the output of this layer to be.

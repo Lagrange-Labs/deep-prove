@@ -1,5 +1,6 @@
 use anyhow::ensure;
 use ff_ext::ExtensionField;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Element, NextPowerOfTwo, ScalingFactor, ScalingStrategy, Tensor,
@@ -17,7 +18,7 @@ use crate::{
 /// do the matrix mult only with the last entry of the input.
 /// It also outputs only the "small" Q but with the help of caching, it outputs
 /// the full K and V matrices as if they were computed using the whole input tensor.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QKV<N> {
     pub q: Tensor<N>,
     pub q_bias: Tensor<N>,
