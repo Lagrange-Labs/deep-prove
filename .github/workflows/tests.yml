@@ -14,8 +14,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: nightly
       - run: cargo test 
 
   # Check formatting with rustfmt
@@ -28,7 +26,6 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: rustfmt
-          toolchain: nightly
       - run: cargo fmt --all
 
   lint:
@@ -40,6 +37,5 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: clippy 
-          toolchain: nightly
       - run: cargo clippy --all -- -D warnings
         
