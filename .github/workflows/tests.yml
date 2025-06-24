@@ -9,6 +9,8 @@ jobs:
     runs-on: ['hostname:hetzner-dedicated-6']
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
 
       - uses: actions/setup-python@v4
         with:
@@ -44,6 +46,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
