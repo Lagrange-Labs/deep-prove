@@ -33,6 +33,7 @@ pub static RANGE: Lazy<Element> = Lazy::new(|| *MAX - *MIN);
 pub static ZERO: Lazy<Element> = Lazy::new(|| 0);
 pub const MIN_FLOAT: f32 = -1.0;
 pub const MAX_FLOAT: f32 = 1.0;
+pub const QUANTIZATION_RANGE: std::ops::RangeInclusive<f32> = MIN_FLOAT..=MAX_FLOAT;
 
 /// Symmetric quantization scaling
 /// go from float [-a;a] to int [-2^BIT_LEN;2^BIT_LEN]

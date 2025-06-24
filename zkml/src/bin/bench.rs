@@ -11,7 +11,7 @@ use zkml::{
     quantization::{AbsoluteMax, InferenceObserver, ModelMetadata},
 };
 
-use anyhow::{Context as CC, Result, ensure};
+use anyhow::{Context as CC, Result, bail, ensure};
 use clap::Parser;
 use csv::WriterBuilder;
 use goldilocks::GoldilocksExt2;
@@ -138,8 +138,8 @@ impl InputJSON {
             .input_data
             .iter()
             .all(|v| v.iter().all(|&x| rrange.contains(&x)));
-        assert_eq!(self.input_data.len(), self.output_data.len());
-        assert_eq!(self.input_data.len(), self.pytorch_output.len());
+        ensure!(self.input_data.len() == self.output_data.len());
+        ensure!(self.input_data.len() == self.pytorch_output.len());
         ensure!(
             input_isreal,
             "can only support real model so far (input at least)"
@@ -223,9 +223,9 @@ fn run_float_model(raw_inputs: &InputJSON, model: &Model<f32>) -> Result<f32> {
 }
 
 fn read_model(args: &Args, inputs: &InputJSON) -> Result<(Model<Element>, ModelMetadata)> {
-    let calibration_inputs = inputs.filter(args.calibration_indices.as_ref());
     match args.quantization.as_ref() {
         "inference" => {
+            let calibration_inputs = inputs.filter(args.calibration_indices.as_ref());
             let strategy = InferenceObserver::new_with_representative_input(
                 calibration_inputs
                     .input_data
@@ -243,7 +243,7 @@ fn read_model(args: &Args, inputs: &InputJSON) -> Result<(Model<Element>, ModelM
                 .with_keep_float(true)
                 .build()
         }
-        _ => panic!("Unsupported quantization strategy: {}", args.quantization),
+        _ => bail!("Unsupported quantization strategy: {}", args.quantization),
     }
 }
 

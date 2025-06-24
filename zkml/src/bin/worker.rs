@@ -38,13 +38,12 @@ fn run_model_v1(model: DeepProveRequestV1) -> Result<Vec<ProofV1>> {
 
     let (inputs, given_outputs) = input.to_elements(&model_metadata);
 
-    let input_iter = inputs.into_iter().zip(given_outputs).enumerate();
     let mut failed_inputs = vec![];
     let ctx =
         Some(Context::<F, Pcs<F>>::generate(&model, None).context("unable to generate context")?);
 
     let mut proofs = vec![];
-    for (i, (input, _given_output)) in input_iter {
+    for (i, input) in inputs.into_iter().enumerate() {
         let input_tensor = model
             .load_input_flat(vec![input])
             .context("failed to call load_input_flat on the model")?;
@@ -54,7 +53,7 @@ fn run_model_v1(model: DeepProveRequestV1) -> Result<Vec<ProofV1>> {
         let trace = match trace_result {
             Ok(trace) => trace,
             Err(e) => {
-                tracing::info!(
+                tracing::error!(
                     "[!] Error running inference for input {}/{}: {}",
                     i + 1,
                     0, // args.num_samples,

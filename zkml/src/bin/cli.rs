@@ -1,7 +1,16 @@
+use std::path::{Path, PathBuf};
+
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 use lagrange::ProofChannelResponse;
 use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
 use url::Url;
+use zkml::{
+    Element, FloatOnnxLoader,
+    middleware::{DeepProveRequest, v1::Input},
+    model::Model,
+    quantization::{AbsoluteMax, ModelMetadata},
+};
 
 mod lagrange {
     tonic::include_proto!("lagrange");
@@ -31,14 +40,27 @@ enum Command {
     Submit {
         /// Path to the ONNX file of the model to prove.
         #[arg(short, long)]
-        onnx: String,
+        onnx: PathBuf,
         /// Path to the inputs to the model to prove inference for.
         #[arg(short, long)]
-        inputs: String,
+        inputs: PathBuf,
     },
 
     /// Fetch the generated proofs, if any.
     Fetch {},
+}
+
+fn parse_model<P: AsRef<Path>>(p: P) -> anyhow::Result<(Model<Element>, ModelMetadata)> {
+    let strategy = AbsoluteMax::new();
+    FloatOnnxLoader::new_with_scaling_strategy(
+        p.as_ref()
+            .as_os_str()
+            .to_str()
+            .context("failed to convert path to string")?,
+        strategy,
+    )
+    .with_keep_float(true)
+    .build()
 }
 
 #[tokio::main]
@@ -64,9 +86,32 @@ async fn main() -> anyhow::Result<()> {
 
     match args.command {
         Command::Submit { onnx, inputs } => {
+            let input = Input::from_file(&inputs).context("loading input:")?;
+            let (model, model_metadata) = parse_model(&onnx).context("parsing ONNX file")?;
             let task = tonic::Request::new(lagrange::SubmitTaskRequest {
-                task_bytes: vec![0xde, 0xad, 0xbe, 0xef],
-                user_task_id: format!(),
+                task_bytes: rmp_serde::to_vec(&DeepProveRequest::V1(
+                    zkml::middleware::v1::DeepProveRequest {
+                        model,
+                        model_metadata,
+                        input,
+                        run_indices: None,
+                    },
+                ))
+                .context("serializing inference request")?,
+                user_task_id: format!(
+                    "{}-{}-{}",
+                    onnx.file_name()
+                        .and_then(|x| x.to_str())
+                        .context("invalid ONNX file name")?,
+                    inputs
+                        .file_name()
+                        .and_then(|x| x.to_str())
+                        .context("invalid input file name")?,
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .expect("no time travel here")
+                        .as_secs()
+                ),
                 timeout: Some(
                     prost_wkt_types::Duration::try_from(std::time::Duration::from_secs(300))
                         .unwrap(),
@@ -76,7 +121,7 @@ async fn main() -> anyhow::Result<()> {
                 class: vec!["deep-prove".to_string()],
                 priority: 0,
             });
-            let response = client.submit_task().await?;
+            let response = client.submit_task(task).await?;
             println!("got the response {response:?}");
         }
         Command::Fetch {} => {
