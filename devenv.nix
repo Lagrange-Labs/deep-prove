@@ -7,7 +7,7 @@
     # General dev.
     pkgs.git
     # Rust
-    pkgs.rustup
+    pkgs.rustup pkgs.protobuf
   ];
 
   # https://devenv.sh/tasks/
