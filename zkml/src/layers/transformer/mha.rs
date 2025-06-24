@@ -10,9 +10,13 @@
 //! NOTE: it does NOT Perform the softmax per head neither the subsequent projection with the V matrix.
 //! THis is done in subsequent layers due to proving logic proving these operation separately.
 use crate::{
+    Element,
     layers::{
+        concat_matmul::ConcatMatMul,
         matrix_mul::{self as matmul, OperandMatrix},
         provable::{Evaluate, OpInfo, QuantizeOp, QuantizeOutput},
+        reshape::Reshape,
+        transformer::softmax::Softmax,
     },
     padding::PaddingMode,
     tensor::{Number, Shape},
@@ -23,22 +27,14 @@ use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 
 use crate::{Tensor, layers::provable::LayerOut};
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct MhaQK {
+pub(crate) struct MhaLinear {
     num_heads: usize,
     head_dim: usize,
 }
 
-impl MhaQK {
-    pub fn new(num_heads: usize, head_dim: usize) -> Self {
-        Self {
-            num_heads,
-            head_dim,
-        }
-    }
-}
-
-impl OpInfo for MhaQK {
+impl MhaLinear {
     fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         // // qk is now of shape [num_heads,q_len, seq_len]
         // // v is of shape [num_heads, seq_len, head_dim].
@@ -58,12 +54,12 @@ impl OpInfo for MhaQK {
             PaddingMode::Padding => {
                 vec![
                     Shape::new(vec![
-                        self.num_heads,
+                        self.num_heads.next_power_of_two(),
                         q_len.next_power_of_two(),
                         seq_len.next_power_of_two(),
                     ]),
                     Shape::new(vec![
-                        self.num_heads,
+                        self.num_heads.next_power_of_two(),
                         seq_len.next_power_of_two(),
                         self.head_dim.next_power_of_two(),
                     ]),
@@ -71,13 +67,124 @@ impl OpInfo for MhaQK {
             }
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Mha<N> {
+    linear: MhaLinear,
+    softmax: Softmax<N>,
+    final_mul: ConcatMatMul,
+    final_reshape: Reshape,
+}
+
+impl<N: Number> Mha<N> {
+    pub fn new(num_heads: usize, head_dim: usize) -> anyhow::Result<Self> {
+        let linear = MhaLinear {
+            num_heads,
+            head_dim,
+        };
+        let softmax = Softmax::new()
+            .with_scale(N::from_f32((1.0 / (head_dim as f32)).sqrt())?)
+            .on_dim(1);
+        let permutation = vec![1, 0, 2];
+        let final_mul = ConcatMatMul::new_with_permute(permutation);
+        // reshape the output from [q_len, num_heads, head_dim] to [q_len, num_heads*head_dim]
+        let final_reshape = Reshape::new_subspace(1..=2, vec![num_heads * head_dim]);
+        Ok(Self {
+            linear,
+            softmax,
+            final_mul,
+            final_reshape,
+        })
+    }
+
+    pub(crate) fn evaluate_with_softmax_out<E: ExtensionField>(
+        &self,
+        inputs: &[&Tensor<N>],
+        unpadded_input_shapes: Vec<Shape>,
+    ) -> anyhow::Result<(LayerOut<N, E>, LayerOut<N, E>)>
+    where
+        Softmax<N>: Evaluate<N>,
+    {
+        let unpadded_input_shapes = if unpadded_input_shapes.is_empty() {
+            // take input shapes from inputs
+            inputs.iter().map(|input| input.get_shape()).collect()
+        } else {
+            unpadded_input_shapes
+        };
+
+        let linear_out = self
+            .linear
+            .evaluate::<E>(inputs, unpadded_input_shapes.clone())?;
+
+        let linear_out_shapes = self
+            .linear
+            .output_shapes(&unpadded_input_shapes, PaddingMode::NoPadding);
+
+        // apply softmax
+        let soft_out = self
+            .softmax
+            .evaluate::<E>(&vec![linear_out.outputs()[0]], linear_out_shapes.clone())?;
+
+        let soft_out_shapes = self
+            .softmax
+            .output_shapes(&linear_out_shapes, PaddingMode::NoPadding);
+
+        assert_eq!(
+            soft_out.outputs()[0].get_shape()[0],
+            linear_out.outputs()[1].get_shape()[0],
+            "First dimension must match for ConcatMatMul: {:?} vs {:?}",
+            soft_out.outputs()[0].get_shape(),
+            linear_out.outputs()[1].get_shape()
+        );
+
+        // For each head, the matrix multiplication dimensions should align:
+        // [seq_len, seq_len] @ [seq_len, head_dim] -> [seq_len, head_dim]
+        assert_eq!(
+            soft_out.outputs()[0].get_shape()[2],
+            linear_out.outputs()[1].get_shape()[1],
+            "Inner dimensions must match for matrix multiplication: {:?} vs {:?}",
+            soft_out.outputs()[0].get_shape(),
+            linear_out.outputs()[1].get_shape()
+        );
+
+        let out = self.final_mul.evaluate::<E>(
+            &vec![soft_out.outputs()[0], linear_out.outputs()[1]],
+            soft_out_shapes.clone(),
+        )?;
+
+        let out_shapes = self
+            .final_mul
+            .output_shapes(&soft_out_shapes, PaddingMode::NoPadding);
+
+        let out = self.final_reshape.evaluate(&out.outputs(), out_shapes)?;
+
+        Ok((out, soft_out))
+    }
+}
+
+impl<N: Number> OpInfo for Mha<N> {
+    fn output_shapes(
+        &self,
+        input_shapes: &[Shape],
+        padding_mode: PaddingMode,
+    ) -> Vec<Shape> {
+        let linear_out_shapes = self.linear.output_shapes(input_shapes, padding_mode);
+
+        let soft_out_shapes = self.softmax.output_shapes(&linear_out_shapes, padding_mode);
+
+        let final_mul_shapes = self.final_mul.output_shapes(&soft_out_shapes, padding_mode);
+
+        self.final_reshape
+            .output_shapes(&final_mul_shapes, padding_mode)
+    }
 
     fn num_outputs(&self, _num_inputs: usize) -> usize {
-        2
+        1
     }
 
     fn describe(&self) -> String {
-        format!("MHA_QK({},{})", self.num_heads, self.head_dim).to_string()
+        format!("MHA_QK({},{})", self.linear.num_heads, self.linear.head_dim).to_string()
     }
 
     fn is_provable(&self) -> bool {
@@ -85,7 +192,7 @@ impl OpInfo for MhaQK {
     }
 }
 
-impl<N: Number> Evaluate<N> for MhaQK {
+impl<N: Number> Evaluate<N> for MhaLinear {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
@@ -139,7 +246,7 @@ impl<N: Number> Evaluate<N> for MhaQK {
                     .slice_3d(head, head + 1)
                     .reshape(vec![seq_len, self.head_dim].into()); // [seq_len, head_dim]
                 // output Q @ K^T <=> [q_len, head_dim] x [seq_len, head_dim]^T is of shape [q_len,seq_len], and v is of shape [seq_len, head_dim]
-                Ok(vec![
+                Ok((
                     matmul::MatMul::new_with_config(
                         OperandMatrix::Input,
                         OperandMatrix::Input,
@@ -150,27 +257,20 @@ impl<N: Number> Evaluate<N> for MhaQK {
                     .outputs
                     .remove(0),
                     mini_v,
-                ])
+                ))
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
         // merge back the heads together - since proving is expecting one matrix, not a list of vectors
-        let mut first_tuple = qkt_heads.remove(0).into_iter();
+        let (first_qk, first_v) = qkt_heads.remove(0);
         // here we reshape to 3d [1, ...] such that concatenation works fine with current concat implementation
-        let first_qk = first_tuple
-            .next()
-            .unwrap()
-            .reshape(vec![1, q_len, seq_len].into());
-        let first_v = first_tuple
-            .next()
-            .unwrap()
-            .reshape(vec![1, seq_len, self.head_dim].into());
+        let first_qk = first_qk.reshape(vec![1, q_len, seq_len].into());
+        let first_v = first_v.reshape(vec![1, seq_len, self.head_dim].into());
         let (qk, v) =
             qkt_heads
                 .into_iter()
-                .fold((first_qk, first_v), |(mut acc_qk, mut acc_v), head| {
-                    let mut head_it = head.into_iter();
-                    acc_qk.concat(head_it.next().unwrap());
-                    acc_v.concat(head_it.next().unwrap());
+                .fold((first_qk, first_v), |(mut acc_qk, mut acc_v), (qk, v)| {
+                    acc_qk.concat(qk);
+                    acc_v.concat(v);
                     (acc_qk, acc_v)
                 });
         assert_eq!(qk.get_shape(), vec![self.num_heads, q_len, seq_len].into());
@@ -198,8 +298,32 @@ impl<N: Number> Evaluate<N> for MhaQK {
     }
 }
 
-impl QuantizeOp for MhaQK {
-    type QuantizedOp = MhaQK;
+impl Evaluate<f32> for Mha<f32> {
+    fn evaluate<E: ExtensionField>(
+        &self,
+        inputs: &[&Tensor<f32>],
+        unpadded_input_shapes: Vec<Shape>,
+    ) -> anyhow::Result<LayerOut<f32, E>> {
+        let (out, _) = self.evaluate_with_softmax_out(inputs, unpadded_input_shapes)?;
+
+        Ok(out)
+    }
+}
+
+impl Evaluate<Element> for Mha<Element> {
+    fn evaluate<E: ExtensionField>(
+        &self,
+        inputs: &[&Tensor<Element>],
+        unpadded_input_shapes: Vec<Shape>,
+    ) -> anyhow::Result<LayerOut<Element, E>> {
+        let (out, _) = self.evaluate_with_softmax_out(inputs, unpadded_input_shapes)?;
+
+        Ok(out)
+    }
+}
+
+impl QuantizeOp for Mha<f32> {
+    type QuantizedOp = Mha<Element>;
 
     // NOTE: no requant layers after that, softmax takes care of it.
     fn quantize_op<S: crate::ScalingStrategy>(
@@ -218,7 +342,7 @@ impl QuantizeOp for MhaQK {
         );
         // there is no requant layers after that, softmax takes care of it.
         Ok(QuantizeOutput::new(
-            MhaQK::new(self.num_heads, self.head_dim),
+            Mha::new(self.linear.num_heads, self.linear.head_dim)?,
             output_scalings,
         ))
     }
@@ -300,7 +424,10 @@ mod test {
             let num_heads = 2;
             let head_dim = 4;
             let hidden_size = num_heads * head_dim;
-            let mha_qk = MhaQK::new(num_heads, head_dim);
+            let mha_qk = MhaLinear {
+                num_heads,
+                head_dim,
+            };
             let q_len = params.q_len;
             let seq_len = params.seq_len;
             let q = Tensor::<Element>::random(&vec![q_len, hidden_size].into());
