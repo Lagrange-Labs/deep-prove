@@ -7,7 +7,7 @@ use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
 use url::Url;
 use zkml::{
     Element, FloatOnnxLoader,
-    middleware::{DeepProveRequest, v1::Input},
+    middleware::{DeepProveRequest, DeepProveResponse, v1::Input},
     model::Model,
     quantization::{AbsoluteMax, ModelMetadata},
 };
@@ -73,9 +73,10 @@ async fn main() -> anyhow::Result<()> {
     let channel = tonic::transport::Channel::builder(args.gw_url.as_str().parse()?)
         .tls_config(ClientTlsConfig::new().with_enabled_roots())?
         .connect()
-        .await?;
+        .await
+        .with_context(|| format!("connecting to the GW at {}", args.gw_url))?;
 
-    let client_id: MetadataValue<_> = args.client_id.parse()?;
+    let client_id: MetadataValue<_> = args.client_id.parse().context("parsing client ID")?;
     let mut client = lagrange::clients_service_client::ClientsServiceClient::with_interceptor(
         channel,
         move |mut req: tonic::Request<()>| {
@@ -94,16 +95,17 @@ async fn main() -> anyhow::Result<()> {
                         model,
                         model_metadata,
                         input,
-                        run_indices: None,
                     },
                 ))
                 .context("serializing inference request")?,
                 user_task_id: format!(
                     "{}-{}-{}",
-                    onnx.file_name()
+                    onnx.with_extension("")
+                        .file_name()
                         .and_then(|x| x.to_str())
                         .context("invalid ONNX file name")?,
                     inputs
+                        .with_extension("")
                         .file_name()
                         .and_then(|x| x.to_str())
                         .context("invalid input file name")?,
@@ -116,14 +118,15 @@ async fn main() -> anyhow::Result<()> {
                     prost_wkt_types::Duration::try_from(std::time::Duration::from_secs(300))
                         .unwrap(),
                 ),
-                price_requested: 12_u64.to_le_bytes().to_vec(),
-                stake_requested: vec![0u8; 32],
-                class: vec!["deep-prove".to_string()],
+                price_requested: 12_u64.to_le_bytes().to_vec(), // TODO:
+                stake_requested: vec![0u8; 32],                 // TODO:
+                class: vec!["deep-prove".to_string()],          // TODO:
                 priority: 0,
             });
             let response = client.submit_task(task).await?;
             println!("got the response {response:?}");
         }
+
         Command::Fetch {} => {
             let (proof_channel_tx, proof_channel_rx) = tokio::sync::mpsc::channel(1024);
 
@@ -135,6 +138,7 @@ async fn main() -> anyhow::Result<()> {
             let mut proof_response_stream = channel.into_inner();
 
             println!("Fetching ready proofs...");
+            let mut acked_messages = Vec::new();
             while let Some(response) = proof_response_stream.message().await? {
                 let ProofChannelResponse { response } = response;
 
@@ -146,19 +150,24 @@ async fn main() -> anyhow::Result<()> {
                 } = v;
 
                 let task_id = task_id.unwrap();
+                let task_output: DeepProveResponse = rmp_serde::from_slice(&task_output)?;
+                match task_output {
+                    DeepProveResponse::V1(_) => {
+                        println!("Received proof for task {:?}", task_id.id);
+                        // TODO: write to file or whatever
+                    }
+                }
 
-                println!("Received proof for task {:?}: {task_output:?}", task_id.id);
-
-                proof_channel_tx
-                    .send(lagrange::ProofChannelRequest {
-                        request: Some(lagrange::proof_channel_request::Request::AckedMessages(
-                            lagrange::AckedMessages {
-                                acked_messages: vec![task_id],
-                            },
-                        )),
-                    })
-                    .await?;
+                acked_messages.push(task_id);
             }
+
+            proof_channel_tx
+                .send(lagrange::ProofChannelRequest {
+                    request: Some(lagrange::proof_channel_request::Request::AckedMessages(
+                        lagrange::AckedMessages { acked_messages },
+                    )),
+                })
+                .await?;
         }
     }
     Ok(())

@@ -36,7 +36,7 @@ fn run_model_v1(model: DeepProveRequestV1) -> Result<Vec<ProofV1>> {
         input,
     } = model;
 
-    let (inputs, given_outputs) = input.to_elements(&model_metadata);
+    let inputs = input.to_elements(&model_metadata);
 
     let mut failed_inputs = vec![];
     let ctx =
