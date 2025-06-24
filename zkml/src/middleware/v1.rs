@@ -75,10 +75,6 @@ pub struct DeepProveRequest {
 
     /// An array of inputs to run proving for
     pub input: Input,
-
-    /// Filter inputs for these indices only
-    // TODO: is this needed?
-    pub run_indices: Option<Vec<usize>>,
 }
 
 /// The `v1` proofs that have been computed by the worker

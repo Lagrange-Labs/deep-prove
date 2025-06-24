@@ -34,11 +34,9 @@ fn run_model_v1(model: DeepProveRequestV1) -> Result<Vec<ProofV1>> {
         model,
         model_metadata,
         input,
-        run_indices,
     } = model;
 
-    let run_inputs = input.filter(run_indices.as_ref());
-    let (inputs, given_outputs) = run_inputs.to_elements(&model_metadata);
+    let (inputs, given_outputs) = input.to_elements(&model_metadata);
 
     let input_iter = inputs.into_iter().zip(given_outputs).enumerate();
     let mut failed_inputs = vec![];
