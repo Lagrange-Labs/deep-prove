@@ -12,7 +12,11 @@ use lagrange::{WorkerToGwRequest, worker_to_gw_request::Request};
 use zkml::{
     Context, Prover, default_transcript,
     middleware::{
-        DeepProveRequest, DeepProveRequestV1, DeepProveResponse, DeepProveResponseV1, ProofV1,
+        DeepProveRequest, DeepProveResponse,
+        v1::{
+            DeepProveRequest as DeepProveRequestV1, DeepProveResponse as DeepProveResponseV1,
+            Proof as ProofV1,
+        },
     },
 };
 
