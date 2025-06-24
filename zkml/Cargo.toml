@@ -16,13 +16,17 @@ path = "src/bin/bench.rs"
 name = "worker"
 path = "src/bin/worker.rs"
 
+[[bin]]
+name = "deep-prove-cli"
+path = "src/bin/cli.rs"
+
 [dependencies]
 anyhow.workspace = true
 ark-std.workspace = true
 burn = { version = "0.17.0", features = ["ndarray"] }
 candle-core = "0.9.1"
 candle-transformers = "0.9.1"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 code-timing-macros = { version = "0.0.6", features = ["tracing"] }
 csv = "1.3.1"
 derive_builder = "0.20.2"
@@ -42,7 +46,7 @@ num-traits = "0.2.19"
 once_cell = "1.20.3"
 poseidon = { version = "0.1.0", path = "../poseidon" }
 rayon.workspace = true
-reqwest = { version = "0.12.19", features = ["blocking"] } 
+reqwest = { version = "0.12.19", features = ["blocking"] }
 rmp-serde = "1.3.0"
 serde.workspace = true
 serde_json.workspace = true
@@ -69,6 +73,7 @@ prost-wkt-types = { version = "0.6.0" }
 rustls = { version = "0.23.16", features = ["ring"] }
 tokio-stream = { version = "0.1.17" }
 grpc-worker = { git = "https://github.com/Lagrange-Labs/grpc-worker-rs", branch = "main" }
+url = "2.5.4"
 
 [dev-dependencies]
 ndarray = "0.16.1"
