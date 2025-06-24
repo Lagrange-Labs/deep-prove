@@ -1,4 +1,3 @@
-#![deny(clippy::cargo)]
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use multilinear_extensions::mle::DenseMultilinearExtension;

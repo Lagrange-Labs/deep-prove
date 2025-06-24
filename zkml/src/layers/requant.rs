@@ -150,15 +150,18 @@ where
         let num_vars = aux
             .last_output_shape
             .iter_mut()
-            .fold(Ok(None), |expected_num_vars, shape| {
+            .try_fold(None, |expected_num_vars, shape| {
                 let num_vars = shape.iter().map(|dim| ceil_log2(*dim)).sum::<usize>();
-                if let Some(vars) = expected_num_vars? {
+                if let Some(vars) = expected_num_vars {
                     ensure!(
                         vars == num_vars,
-                        "All input shapes for requant layer must have the same number of variables"
+                        "All input shapes for requant layer \
+                        must have the same number of variables"
                     );
+                    Ok(Some(vars))
+                } else {
+                    Ok(None)
                 }
-                Ok(Some(num_vars))
             })?
             .expect("No input shape found for requant layer?");
         // Set the model polys to be empty
@@ -279,6 +282,7 @@ where
         let num_vars = ceil_log2(clamping_in.len());
         // Add the witnesses to be committed
 
+        #[allow(clippy::type_complexity)]
         let (clamping_commits, clamping_evals): (
             Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
             Vec<Vec<E::BaseField>>,
@@ -301,6 +305,7 @@ where
             .into_iter()
             .unzip();
 
+        #[allow(clippy::type_complexity)]
         let (shifted_chunk_commits, shifted_chunks_evals): (
             Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
             Vec<Vec<E::BaseField>>,
@@ -464,13 +469,11 @@ impl Requant {
             -1i128
         };
 
-        let clamped = if unclamped.abs() >= *quantization::MAX {
+        if unclamped.abs() >= *quantization::MAX {
             *quantization::MAX * sign
         } else {
             unclamped
-        };
-
-        clamped
+        }
     }
 
     /// API for performing this op on a quantised tensor.
@@ -492,7 +495,9 @@ impl Requant {
 
     pub fn write_to_transcript<E: ExtensionField, T: Transcript<E>>(&self, t: &mut T) {
         t.append_field_element(&E::BaseField::from_canonical_u64(self.right_shift as u64));
-        t.append_field_element(&E::BaseField::from_canonical_u64(self.fixed_point_multiplier as u64));
+        t.append_field_element(&E::BaseField::from_canonical_u64(
+            self.fixed_point_multiplier as u64,
+        ));
     }
 
     /// Function to recombine claims of constituent MLEs into a single value to be used as the initial sumcheck evaluation
@@ -529,11 +534,7 @@ impl Requant {
     /// Method that proves requantisation was performed correctly. First it runs the lookup argument for the clamping claim and batches all the range checks
     /// for the shifted polys together. Then it performs a sumcheck that takes the output claims from the two lookup arguments and produces a new claim where all of the polynomials are
     /// evaluated at the same point. This sumcheck also checks that the output column of the clamping lookup relates to the same polynomial as `last_claim`.
-    pub(crate) fn prove_step<
-        E: ExtensionField,
-        T: Transcript<E>,
-        PCS: PolynomialCommitmentScheme<E>,
-    >(
+    pub(crate) fn prove_step<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         prover: &mut Prover<E, T, PCS>,
         last_claim: &Claim<E>,
@@ -692,11 +693,7 @@ impl RequantCtx {
     /// It verifies both lookup argument proofs, calculates the initial claim for the sumcheck proof using the lookup argument claims
     /// and then verifies the sumcheck using this initial claim. It then takes the output claims provided by the prover, checks they relate to the sumcheck
     /// subclaim, adds them to the list of claims of commitment openings and then calculates the next claim.
-    pub(crate) fn verify_requant<
-        E: ExtensionField,
-        T: Transcript<E>,
-        PCS: PolynomialCommitmentScheme<E>,
-    >(
+    pub(crate) fn verify_requant<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         verifier: &mut Verifier<E, T, PCS>,
         last_claim: &Claim<E>,
@@ -705,7 +702,7 @@ impl RequantCtx {
         column_separation_challenge: E,
     ) -> anyhow::Result<Claim<E>>
     where
-        E: Serialize + DeserializeOwned,
+        E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
         // 1. Verify the lookup proofs

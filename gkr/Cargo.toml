@@ -4,6 +4,7 @@ edition.workspace = true
 keywords.workspace = true
 license.workspace = true
 name = "gkr"
+description = "GKR implementation"
 readme.workspace = true
 repository.workspace = true
 version.workspace = true

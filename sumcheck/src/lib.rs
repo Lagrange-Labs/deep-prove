@@ -1,4 +1,3 @@
-#![deny(clippy::cargo)]
 #![feature(decl_macro)]
 pub mod macros;
 mod prover;

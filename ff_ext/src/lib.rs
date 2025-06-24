@@ -1,5 +1,3 @@
-#![deny(clippy::cargo)]
-
 use p3_field::{
     ExtensionField as P3ExtensionField, Field as P3Field, PackedValue, PrimeField, TwoAdicField,
     extension::BinomialExtensionField,

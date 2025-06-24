@@ -1,4 +1,3 @@
-#![deny(clippy::cargo)]
 //! This repo is not properly implemented
 //! Transcript APIs are placeholders; the actual logic is to be implemented later.
 

@@ -162,11 +162,11 @@ impl<F: ExtensionField> Fieldizer<F> for Element {
     }
 }
 pub(crate) trait IntoElement {
-    fn into_element(&self) -> Element;
+    fn to_element(&self) -> Element;
 }
 
 impl<F: ExtensionField> IntoElement for F {
-    fn into_element(&self) -> Element {
+    fn to_element(&self) -> Element {
         let e = self.to_canonical_u64_vec()[0] as Element;
         let modulus_half = <F::BaseField as SmallField>::MODULUS_U64 >> 1;
         // That means he's a positive number
@@ -297,7 +297,7 @@ mod test {
         let test_values = [*MIN, -100, -50, -1, 0, 1, 50, 100, *MAX];
         for &val in &test_values {
             let field_val: F = val.to_field();
-            let roundtrip = field_val.into_element();
+            let roundtrip = field_val.to_element();
 
             assert_eq!(
                 val, roundtrip,

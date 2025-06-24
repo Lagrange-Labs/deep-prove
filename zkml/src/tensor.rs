@@ -1,3 +1,5 @@
+#![allow(clippy::needless_range_loop)]
+
 use crate::{
     ScalingFactor,
     quantization::{self, MAX_FLOAT, MIN_FLOAT},
@@ -174,7 +176,10 @@ pub fn check_tensor_consistency(real_tensor: Tensor<Element>, padded_tensor: Ten
 ///
 /// The initial ROOT_OF_UNITY constant is verified to be a 32nd root of unity in the field implementation.
 pub fn get_root_of_unity<E: ExtensionField>(n: usize) -> E {
-    let mut rou = E::from_bases(&[E::BaseField::two_adic_generator(Goldilocks::TWO_ADICITY), E::BaseField::ZERO]);
+    let mut rou = E::from_bases(&[
+        E::BaseField::two_adic_generator(Goldilocks::TWO_ADICITY),
+        E::BaseField::ZERO,
+    ]);
     dbg!(rou);
 
     for _ in 0..(32 - n) {
@@ -306,7 +311,7 @@ where
             .iter()
             .flat_map(|e| {
                 index_u(e.as_slice(), n_x)
-                    .map(|e| e.into_element())
+                    .map(|e| e.to_element())
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();

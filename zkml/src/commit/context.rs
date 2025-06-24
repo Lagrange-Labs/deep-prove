@@ -30,6 +30,7 @@ where
     /// Verifier parameters for the [`PolynomialCommitmentScheme`]
     verifier_params: PCS::VerifierParam,
     /// This field contains a [`HashMap`] where the key is a [`NodeId`] and the value is a vector of tuples of [`PolynomialCommitmentScheme::CommitmentWithWitness`]  and [`DenseMultilinearExtension<E>`] corresponding to that ID.
+    #[allow(clippy::type_complexity)]
     model_comms_map: BTreeMap<
         NodeId,
         BTreeMap<PolyId, (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
@@ -113,8 +114,7 @@ where
                 comms_vec.iter().try_for_each(|(id, (comm, _))| {
                     let v_comm = PCS::get_pure_commitment(comm);
                     PCS::write_commitment(&v_comm, transcript).context(format!(
-                        "Could not write commitment for polynomial {} of node {}",
-                        id, node_id
+                        "Could not write commitment for polynomial {id} of node {node_id}"
                     ))
                 })
             })
@@ -264,6 +264,7 @@ where
         transcript: &mut T,
     ) -> Result<ModelOpeningProof<E, PCS>> {
         // Prepare the parts that go into the batch proof
+        #[allow(clippy::type_complexity)]
         let (comms, (polys, (points, evaluations))): (
             Vec<PCS::CommitmentWithWitness>,
             (
@@ -456,7 +457,7 @@ where
                     commitment_context.verifier_params(),
                     commitment,
                     point,
-                    &eval,
+                    eval,
                     proof,
                     &mut t,
                 )?;

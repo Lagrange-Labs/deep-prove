@@ -2502,7 +2502,7 @@ dependencies = [
  "quote",
  "rayon",
  "sumcheck",
- "syn 2.0.101",
+ "syn 1.0.109",
 ]
 
 [[package]]

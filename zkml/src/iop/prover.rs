@@ -12,7 +12,7 @@ use crate::{
         provable::{NodeId, OpInfo, ProvableOp},
     },
     lookup::{
-        context::{TABLE_POLY_ID_OFFSET, generate_lookup_witnesses},
+        context::{LookupWitness, TABLE_POLY_ID_OFFSET, generate_lookup_witnesses},
         logup_gkr::prover::batch_prove as logup_batch_prove,
         witness::LogUpWitness,
     },
@@ -56,6 +56,12 @@ where
     pub(crate) challenge_storage: ChallengeStorage<E>,
 }
 
+pub struct BatchFFTProof<E: ExtensionField> {
+    pub proof: sumcheck::structs::IOPProof<E>,
+    pub claims: Vec<E>,
+    pub matrix_eval: (Vec<sumcheck::structs::IOPProof<E>>, Vec<Vec<E>>),
+}
+
 impl<'a, E, T, PCS> Prover<'a, E, T, PCS>
 where
     T: Transcript<E>,
@@ -84,7 +90,6 @@ where
     ) -> anyhow::Result<()> {
         self.commit_prover
             .add_common_claims(&self.ctx.commitment_ctx, node_id, claims)
-            .map_err(|e| e.into())
     }
 
     pub(crate) fn lookup_witness(
@@ -139,7 +144,7 @@ where
     // r2: the random point produced by the sumcheck
     pub fn delegate_matrix_evaluation(
         &mut self,
-        f_middle: &mut Vec<Vec<E>>,
+        f_middle: &mut [Vec<E>],
         r1: Vec<E>,
         mut r2: Vec<E>,
         is_fft: bool,
@@ -188,7 +193,7 @@ where
     }
 
     // Compute powers of roots of unity
-    pub fn phi_pow_init(&mut self, phi_mul: &mut Vec<E>, n: usize, is_fft: bool) {
+    pub fn phi_pow_init(&mut self, phi_mul: &mut [E], n: usize, is_fft: bool) {
         let length = 1 << n;
         let rou: E = get_root_of_unity(n);
 
@@ -206,8 +211,8 @@ where
     // This is a copy-paste implementation from zkCNN paper
     pub fn phi_g_init(
         &mut self,
-        phi_g: &mut Vec<E>,
-        mid_phi_g: &mut Vec<Vec<E>>,
+        phi_g: &mut [E],
+        mid_phi_g: &mut [Vec<E>],
         rx: Vec<E>,
         scale: E,
         n: usize,
@@ -250,10 +255,10 @@ where
                 mid_phi_g[i - 1] = vec![E::ZERO; 1 << i];
                 mid_phi_g[i - 1][..(1 << (i))].copy_from_slice(&phi_g[..(1 << (i))]);
             }
-            for b in 0..(1 << (n - 1)) {
+            for (b, item) in phi_mul.iter().enumerate().take(1 << (n - 1)) {
                 let l = b;
                 let tmp1 = E::ONE - rx[0];
-                let tmp2 = rx[0] * phi_mul[b];
+                let tmp2 = rx[0] * *item;
                 phi_g[l] *= tmp1 + tmp2;
             }
         }
@@ -263,18 +268,10 @@ where
     // In particular, instead of proving y = Wx we want to prove Y = WX where Y,X are matrixes.
     // Following the matrix to matrix multiplication protocol, let y_eval = Y(r1,r2).
     // Then we want to prove a sumcheck instance of the form y_eval = sum_{i \in [n]}W(r1,i)X(i,r2).
-    pub fn prove_batch_fft(
-        &mut self,
-        r: Vec<E>,
-        x: &mut Vec<Vec<E>>,
-    ) -> (
-        sumcheck::structs::IOPProof<E>,
-        Vec<E>,
-        (Vec<sumcheck::structs::IOPProof<E>>, Vec<Vec<E>>),
-    ) {
+    pub fn prove_batch_fft(&mut self, r: Vec<E>, x: &mut [Vec<E>]) -> BatchFFTProof<E> {
         let padded_rows = 2 * x[0].len();
-        for i in 0..x.len() {
-            x[i].resize(padded_rows, E::ZERO);
+        for item in x.iter_mut() {
+            item.resize(padded_rows, E::ZERO);
         }
         // Partition r in (r1,r2)
         let mut r1 = vec![E::ZERO; x[0].len().ilog2() as usize];
@@ -298,12 +295,7 @@ where
         );
         // compute X(i,r2)
 
-        let mut f_m = x
-            .clone()
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .into_mle();
+        let mut f_m = x.iter().flatten().cloned().collect::<Vec<_>>().into_mle();
 
         f_m.fix_high_variables_in_place(&r2);
 
@@ -317,30 +309,25 @@ where
 
         let claims = state.get_mle_final_evaluations();
         let out_point = proof.point.clone();
-        (
+        BatchFFTProof {
             proof,
             claims,
-            self.delegate_matrix_evaluation(&mut f_middle, r1.clone(), out_point, false),
-        )
+            matrix_eval: self.delegate_matrix_evaluation(
+                &mut f_middle,
+                r1.clone(),
+                out_point,
+                false,
+            ),
+        }
     }
 
-    pub fn prove_batch_ifft(
-        &mut self,
-        r: Vec<E>,
-        prod: &Vec<Vec<E>>,
-    ) -> (
-        sumcheck::structs::IOPProof<E>,
-        Vec<E>,
-        (Vec<sumcheck::structs::IOPProof<E>>, Vec<Vec<E>>),
-    ) {
+    pub fn prove_batch_ifft(&mut self, r: Vec<E>, prod: &[Vec<E>]) -> BatchFFTProof<E> {
         let scale: E = E::from_canonical_u64(prod[0].len() as u64).inverse();
 
         // Partition r in (r1,r2)
         let mut r1 = vec![E::ZERO; prod[0].len().ilog2() as usize];
         let mut r2 = vec![E::ZERO; prod.len().ilog2() as usize];
-        for i in 0..r1.len() {
-            r1[i] = r[i];
-        }
+        r1.copy_from_slice(&r[..r.len()]);
         assert_eq!(
             r1[r1.len() - 1],
             E::ZERO,
@@ -363,9 +350,9 @@ where
         let f_red = w_red.into_mle();
         // compute X(i,r2)
         let mut f_m = prod
-            .clone()
-            .into_iter()
+            .iter()
             .flatten()
+            .cloned()
             .collect::<Vec<_>>()
             .into_mle();
         f_m.fix_high_variables_in_place(&r2);
@@ -379,12 +366,16 @@ where
         let claims = state.get_mle_final_evaluations();
 
         let out_point = proof.point.clone();
-        (
+        BatchFFTProof {
             proof,
             claims,
-            self.delegate_matrix_evaluation(&mut f_middle, r1.clone(), out_point, true),
-        )
-        // return Proof;
+            matrix_eval: self.delegate_matrix_evaluation(
+                &mut f_middle,
+                r1.clone(),
+                out_point,
+                true,
+            ),
+        }
     }
 
     pub fn prove<'b>(
@@ -397,7 +388,7 @@ where
         debug!("Prover : instantiate witness ctx...");
         self.instantiate_witness_ctx(&full_trace)?;
         debug!("Prover : instantiate witness ctx done...");
-        let trace = full_trace.to_field();
+        let trace = full_trace.into_field();
         // this is the random set of variables to fix at each step derived as the output of
         // sumcheck.
         // For the first step, so before the first sumcheck, we generate it from FS.
@@ -465,11 +456,14 @@ where
         &mut self,
         trace: &InferenceTrace<'b, E, Element>,
     ) -> anyhow::Result<()> {
-        (
-            self.challenge_storage,
-            self.lookup_witness,
-            self.table_witness,
-        ) = generate_lookup_witnesses::<E, T, PCS>(trace, &self.ctx, self.transcript)?;
+        let LookupWitness {
+            challenge_storage,
+            logup_witnesses,
+            table_witnesses,
+        } = generate_lookup_witnesses::<E, T, PCS>(trace, self.ctx, self.transcript)?;
+        self.challenge_storage = challenge_storage;
+        self.lookup_witness = logup_witnesses;
+        self.table_witness = table_witnesses;
 
         Ok(())
     }

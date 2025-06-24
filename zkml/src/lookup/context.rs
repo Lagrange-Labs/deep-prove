@@ -3,12 +3,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use ff_ext::ExtensionField;
-use p3_field::FieldAlgebra;
 use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::{
     mle::{DenseMultilinearExtension, IntoMLE, MultilinearExtension},
     util::ceil_log2,
 };
+use p3_field::FieldAlgebra;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::{debug, warn};
 use transcript::Transcript;
@@ -45,20 +45,21 @@ impl TableType {
     ) -> (Vec<Element>, Vec<Vec<E::BaseField>>) {
         match self {
             TableType::Relu => {
-                let (comb, field): (Vec<Element>, Vec<(E::BaseField, E::BaseField)>) =
-                    (*quantization::MIN - 1..=*quantization::MAX)
-                        .map(|i| {
-                            let out = Relu::apply(i);
-                            let i_field: E = i.to_field();
-                            let out_field: E = out.to_field();
-                            (
-                                i + out * column_separator,
-                                (i_field.as_bases()[0], out_field.as_bases()[0]),
-                            )
-                        })
-                        .unzip();
-                let (col_one, col_two): (Vec<E::BaseField>, Vec<E::BaseField>) =
-                    field.into_iter().unzip();
+                #[allow(clippy::type_complexity)]
+                let (comb, (col_one, col_two)): (
+                    Vec<Element>,
+                    (Vec<E::BaseField>, Vec<E::BaseField>),
+                ) = (*quantization::MIN - 1..=*quantization::MAX)
+                    .map(|i| {
+                        let out = Relu::apply(i);
+                        let i_field: E = i.to_field();
+                        let out_field: E = out.to_field();
+                        (
+                            i + out * column_separator,
+                            (i_field.as_bases()[0], out_field.as_bases()[0]),
+                        )
+                    })
+                    .unzip();
                 (comb, vec![col_one, col_two])
             }
             TableType::Range => {
@@ -74,7 +75,11 @@ impl TableType {
             TableType::Clamping(size) => {
                 let max = 1i128 << (size - 1);
                 let min = -max;
-                let (comb, field): (Vec<Element>, Vec<(E::BaseField, E::BaseField)>) = (min..max)
+                #[allow(clippy::type_complexity)]
+                let (comb, (col_one, col_two)): (
+                    Vec<Element>,
+                    (Vec<E::BaseField>, Vec<E::BaseField>),
+                ) = (min..max)
                     .map(|i| {
                         let out = if i < *quantization::MIN {
                             *quantization::MIN
@@ -91,8 +96,6 @@ impl TableType {
                         )
                     })
                     .unzip();
-                let (col_one, col_two): (Vec<E::BaseField>, Vec<E::BaseField>) =
-                    field.into_iter().unzip();
                 (comb, vec![col_one, col_two])
             }
         }
@@ -102,7 +105,7 @@ impl TableType {
         match self {
             TableType::Relu => "Relu".to_string(),
             TableType::Range => "Range".to_string(),
-            TableType::Clamping(size) => format!("Clamping: {}", size),
+            TableType::Clamping(size) => format!("Clamping: {size}"),
         }
     }
 
@@ -121,10 +124,9 @@ impl TableType {
                 }
 
                 Ok(vec![
-                    point
-                        .iter()
-                        .enumerate()
-                        .fold(E::ZERO, |acc, (index, p)| acc + *p * E::from_canonical_u64(1u64 << index)),
+                    point.iter().enumerate().fold(E::ZERO, |acc, (index, p)| {
+                        acc + *p * E::from_canonical_u64(1u64 << index)
+                    }),
                 ])
             }
             TableType::Relu => {
@@ -136,19 +138,16 @@ impl TableType {
                     )));
                 }
 
-                let first_column = point
-                    .iter()
-                    .enumerate()
-                    .fold(E::ZERO, |acc, (index, p)| acc + *p * E::from_canonical_u64(1u64 << index))
-                    - E::from_canonical_u64(1u64 << (*quantization::BIT_LEN - 1));
+                let first_column = point.iter().enumerate().fold(E::ZERO, |acc, (index, p)| {
+                    acc + *p * E::from_canonical_u64(1u64 << index)
+                }) - E::from_canonical_u64(1u64 << (*quantization::BIT_LEN - 1));
 
-                let second_column = point
-                    .iter()
-                    .enumerate()
-                    .take(point.len() - 1)
-                    .fold(E::ZERO, |acc, (index, p)| {
+                let second_column = point.iter().enumerate().take(point.len() - 1).fold(
+                    E::ZERO,
+                    |acc, (index, p)| {
                         acc + *p * E::from_canonical_u64(1u64 << index) * point[point.len() - 1]
-                    });
+                    },
+                );
                 Ok(vec![first_column, second_column])
             }
             TableType::Clamping(size) => {
@@ -160,11 +159,9 @@ impl TableType {
                     )));
                 }
 
-                let first_column = point
-                    .iter()
-                    .enumerate()
-                    .fold(E::ZERO, |acc, (index, p)| acc + *p * E::from_canonical_u64(1u64 << index))
-                    - E::from_canonical_u64(1u64 << (size - 1));
+                let first_column = point.iter().enumerate().fold(E::ZERO, |acc, (index, p)| {
+                    acc + *p * E::from_canonical_u64(1u64 << index)
+                }) - E::from_canonical_u64(1u64 << (size - 1));
 
                 let max = 1i128 << (size - 1);
                 let min = -max;
@@ -252,23 +249,19 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> LookupWitnessGen<E, 
 
 pub(crate) const COLUMN_SEPARATOR: Element = 1i128 << 32;
 
-pub fn generate_lookup_witnesses<
-    'a,
-    E: ExtensionField,
-    T: Transcript<E>,
-    PCS: PolynomialCommitmentScheme<E>,
->(
+pub struct LookupWitness<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> {
+    pub challenge_storage: ChallengeStorage<E>,
+
+    pub logup_witnesses: HashMap<NodeId, Vec<LogUpWitness<E, PCS>>>,
+
+    pub table_witnesses: Vec<LogUpWitness<E, PCS>>,
+}
+
+pub fn generate_lookup_witnesses<'a, E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
     trace: &InferenceTrace<'a, E, Element>,
     ctx: &Context<E, PCS>,
     transcript: &mut T,
-) -> Result<
-    (
-        ChallengeStorage<E>,
-        HashMap<NodeId, Vec<LogUpWitness<E, PCS>>>,
-        Vec<LogUpWitness<E, PCS>>,
-    ),
-    LogUpError,
->
+) -> Result<LookupWitness<E, PCS>, LogUpError>
 where
     E: ExtensionField + Serialize + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
@@ -276,14 +269,14 @@ where
     // If the lookup context is empty then there are no lookup witnesses to generate so we return default values
     if ctx.lookup.is_empty() {
         warn!("Lookup witness generation: no tables found, returning empty context TEST?");
-        return Ok((
-            ChallengeStorage {
+        return Ok(LookupWitness {
+            challenge_storage: ChallengeStorage {
                 constant_challenge: E::ZERO,
                 challenge_map: HashMap::new(),
             },
-            HashMap::new(),
-            vec![],
-        ));
+            logup_witnesses: HashMap::new(),
+            table_witnesses: vec![],
+        });
     }
 
     // Make the witness gen struct that stores relevant table lookup data
@@ -300,9 +293,7 @@ where
             .gen_lookup_witness(node_id, &mut witness_gen, ctx, &step.step_data)
             .map_err(|e| {
                 LogUpError::ParameterError(format!(
-                    "Error generating lookup witness for node {} with error: {}",
-                    node_id,
-                    e.to_string()
+                    "Error generating lookup witness for node {node_id} with error: {e}"
                 ))
             })?;
     }
@@ -358,11 +349,11 @@ where
     let challenge_storage =
         initialise_from_table_set::<E, T, _>(witness_gen.new_lookups.keys(), transcript);
 
-    Ok((
+    Ok(LookupWitness {
         challenge_storage,
-        witness_gen.logup_witnesses,
+        logup_witnesses: witness_gen.logup_witnesses,
         table_witnesses,
-    ))
+    })
 }
 
 fn initialise_from_table_set<

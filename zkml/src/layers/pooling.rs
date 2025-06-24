@@ -132,7 +132,7 @@ where
         let info = match self {
             Pooling::Maxpool2D(info) => {
                 aux.tables.insert(TableType::Range);
-                let num_vars = aux.last_output_shape.iter_mut().fold(Ok(None), |expected_num_vars, shape| {
+                let num_vars = aux.last_output_shape.iter_mut().try_fold(None, |expected_num_vars, shape| {
                     // Pooling only affects the last two dimensions
                     let total_number_dims = shape.len();
 
@@ -143,11 +143,13 @@ where
                     let num_vars = shape.iter()
                         .map(|dim| ceil_log2(*dim))
                         .sum::<usize>();
-                    if let Some(vars) = expected_num_vars? {
+                    if let Some(vars) = expected_num_vars {
                         ensure!(vars == num_vars,
                         "All input shapes for convolution must have the same number of variables");
+                        Ok(Some(vars))
+                    } else {
+                        Ok(None)
                     }
-                    Ok(Some(num_vars))
                 })?.expect("No input shape found for convolution layer?");
                 // Set the model polys to be empty
                 aux.model_polys = None;
@@ -340,7 +342,7 @@ impl Pooling {
                     .flat_map(|vector| {
                         vector
                             .iter()
-                            .map(|&a| E::from(a).into_element())
+                            .map(|&a| E::from(a).to_element())
                             .collect::<Vec<Element>>()
                     })
                     .collect::<Vec<Element>>();
@@ -350,7 +352,7 @@ impl Pooling {
         }
     }
     #[timed::timed_instrument(name = "Prover::prove_pooling_step")]
-    pub fn prove_pooling<E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
+    pub fn prove_pooling<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         prover: &mut Prover<E, T, PCS>,
         // last random claim made
@@ -364,7 +366,7 @@ impl Pooling {
     ) -> anyhow::Result<Claim<E>>
     where
         E::BaseField: Serialize + DeserializeOwned,
-        E: Serialize + DeserializeOwned,
+        E: ExtensionField + Serialize + DeserializeOwned,
     {
         assert_eq!(input.get_shape().len(), 3, "Maxpool needs 3D inputs.");
         // Should only be one prover_info for this step
@@ -534,11 +536,7 @@ impl PoolingCtx {
     pub fn output_shape(&self, input_shape: &[usize]) -> Vec<usize> {
         maxpool2d_shape(input_shape)
     }
-    pub(crate) fn verify_pooling<
-        E: ExtensionField,
-        T: Transcript<E>,
-        PCS: PolynomialCommitmentScheme<E>,
-    >(
+    pub(crate) fn verify_pooling<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         verifier: &mut Verifier<E, T, PCS>,
         last_claim: &Claim<E>,
@@ -548,7 +546,7 @@ impl PoolingCtx {
     ) -> anyhow::Result<Claim<E>>
     where
         E::BaseField: Serialize + DeserializeOwned,
-        E: Serialize + DeserializeOwned,
+        E: ExtensionField + Serialize + DeserializeOwned,
     {
         // 1. Verify the lookup proof
         let verifier_claims = verify_logup_proof(
@@ -582,7 +580,7 @@ impl PoolingCtx {
 
         // Verify the sumcheck output claim and add commitment claims to the commit verifier
         let zerocheck_point = subclaim.point_flat();
-        let beta_eval = eq_xy_eval(&verifier_claims.point(), &zerocheck_point);
+        let beta_eval = eq_xy_eval(verifier_claims.point(), &zerocheck_point);
 
         let last_claim_beta_eval = eq_xy_eval(&last_claim.point, &zerocheck_point);
 
@@ -734,6 +732,7 @@ impl Maxpool2D {
             .cloned()
             .collect::<Vec<Vec<Element>>>();
 
+        #[allow(clippy::type_complexity)]
         let (even_diff, odd_diff): (Vec<Vec<E::BaseField>>, Vec<Vec<E::BaseField>>) = new_even
             .par_chunks(padded_input_shape[2] >> 1)
             .zip(new_odd.par_chunks(padded_input_shape[2] >> 1))
@@ -806,13 +805,13 @@ mod tests {
     use ark_std::rand::{Rng, thread_rng};
     use ff_ext::{FromUniformBytes, GoldilocksExt2};
     use gkr::util::ceil_log2;
-    use p3_field::FieldAlgebra;
-    use p3_goldilocks::Goldilocks;
     use itertools::Itertools;
     use multilinear_extensions::{
         mle::{DenseMultilinearExtension, MultilinearExtension},
         virtual_poly::{ArcMultilinearExtension, VirtualPolynomial},
     };
+    use p3_field::FieldAlgebra;
+    use p3_goldilocks::Goldilocks;
     use sumcheck::structs::{IOPProverState, IOPVerifierState};
 
     type F = GoldilocksExt2;

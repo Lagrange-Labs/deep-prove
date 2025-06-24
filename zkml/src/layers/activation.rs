@@ -113,15 +113,17 @@ where
         let num_vars = aux
             .last_output_shape
             .iter_mut()
-            .fold(Ok(None), |expected_num_vars, shape| {
+            .try_fold(None, |expected_num_vars, shape| {
                 let num_vars = shape.iter().map(|dim| ceil_log2(*dim)).sum::<usize>();
-                if let Some(vars) = expected_num_vars? {
+                if let Some(vars) = expected_num_vars {
                     ensure!(
                         vars == num_vars,
                         "All input shapes for activation must have the same number of variables"
                     );
+                    Ok(Some(vars))
+                } else {
+                    Ok(None)
                 }
-                Ok(Some(num_vars))
             })?
             .expect("No input shape found for activation layer?");
         // Set the model polys to be empty
@@ -182,6 +184,7 @@ where
         );
 
         // Calculate the column_evals and also the merged lookups
+        #[allow(clippy::type_complexity)]
         let (merged_lookups, field): (Vec<Element>, Vec<(E::BaseField, E::BaseField)>) = step_data
             .inputs[0]
             .get_data()
@@ -202,6 +205,7 @@ where
         let num_vars = ceil_log2(col_one.len());
 
         // Add the witness polynomials that we need to commit to
+        #[allow(clippy::type_complexity)]
         let (commits, column_evals): (
             Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
             Vec<Vec<E::BaseField>>,
@@ -293,11 +297,7 @@ where
 
 impl Activation {
     #[timed::timed_instrument(name = "Prover::prove_activation_step")]
-    pub(crate) fn prove_step<
-        E: ExtensionField,
-        T: Transcript<E>,
-        PCS: PolynomialCommitmentScheme<E>,
-    >(
+    pub(crate) fn prove_step<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         prover: &mut Prover<E, T, PCS>,
         last_claim: &Claim<E>,
@@ -364,11 +364,7 @@ impl Activation {
 }
 
 impl ActivationCtx {
-    pub(crate) fn verify_activation<
-        E: ExtensionField,
-        T: Transcript<E>,
-        PCS: PolynomialCommitmentScheme<E>,
-    >(
+    pub(crate) fn verify_activation<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         verifier: &mut Verifier<E, T, PCS>,
         last_claim: &Claim<E>,
@@ -378,7 +374,7 @@ impl ActivationCtx {
     ) -> anyhow::Result<Claim<E>>
     where
         E::BaseField: Serialize + DeserializeOwned,
-        E: Serialize + DeserializeOwned,
+        E: ExtensionField + Serialize + DeserializeOwned,
     {
         // 1. Verify the lookup proof
         let verifier_claims = verify_logup_proof(
