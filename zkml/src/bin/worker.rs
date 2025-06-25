@@ -92,7 +92,7 @@ struct Args {
     operator_priv_key: String,
 
     /// Max message size passed through gRPC (in MBytes)
-    #[arg(long, default_value = "16")]
+    #[arg(long, default_value = "100")]
     max_message_size: usize,
 }
 
