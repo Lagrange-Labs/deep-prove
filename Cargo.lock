@@ -10502,6 +10502,7 @@ dependencies = [
  "tract-onnx",
  "transcript",
  "url",
+ "uuid 1.17.0",
 ]
 
 [[package]]

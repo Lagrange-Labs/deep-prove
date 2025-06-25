@@ -9,6 +9,7 @@ use mpcs::{Basefold, BasefoldRSParams};
 use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
 
 use lagrange::{WorkerToGwRequest, worker_to_gw_request::Request};
+use tracing::{debug, error, info};
 use zkml::{
     Context, Prover, default_transcript,
     middleware::{
@@ -30,6 +31,7 @@ type F = GoldilocksExt2;
 type Pcs<E> = Basefold<E, BasefoldRSParams>;
 
 fn run_model_v1(model: DeepProveRequestV1) -> Result<Vec<ProofV1>> {
+    info!("Proving inference");
     let DeepProveRequestV1 {
         model,
         model_metadata,
@@ -44,6 +46,7 @@ fn run_model_v1(model: DeepProveRequestV1) -> Result<Vec<ProofV1>> {
 
     let mut proofs = vec![];
     for (i, input) in inputs.into_iter().enumerate() {
+        debug!("Running input #{i}");
         let input_tensor = model
             .load_input_flat(vec![input])
             .context("failed to call load_input_flat on the model")?;
@@ -53,7 +56,7 @@ fn run_model_v1(model: DeepProveRequestV1) -> Result<Vec<ProofV1>> {
         let trace = match trace_result {
             Ok(trace) => trace,
             Err(e) => {
-                tracing::error!(
+                error!(
                     "[!] Error running inference for input {}/{}: {}",
                     i + 1,
                     0, // args.num_samples,
@@ -70,6 +73,7 @@ fn run_model_v1(model: DeepProveRequestV1) -> Result<Vec<ProofV1>> {
         proofs.push(proof);
     }
 
+    info!("Proving done.");
     Ok(proofs)
 }
 
@@ -109,7 +113,10 @@ async fn process_message_from_gw(
             }))
             .unwrap(),
         ),
-        Err(err) => lagrange::worker_done::Reply::WorkerError(err.to_string()),
+        Err(err) => {
+            error!("failed to run model: {err:?}");
+            lagrange::worker_done::Reply::WorkerError(err.to_string())
+        }
     };
 
     let reply = Request::WorkerDone(lagrange::WorkerDone {
@@ -182,13 +189,14 @@ async fn main() -> anyhow::Result<()> {
     let mut inbound = response.into_inner();
 
     loop {
+        info!("Waiting for message...");
         tokio::select! {
             Some(inbound_message) = inbound.next() => {
-
+                info!("Message received");
                 let msg = match inbound_message {
                     Ok(msg) => msg,
                     Err(e) => {
-                        println!("connection to the gateway ended with status: {e}");
+                        error!("connection to the gateway ended with status: {e}");
                         break;
                     }
                 };

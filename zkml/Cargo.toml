@@ -74,6 +74,7 @@ rustls = { version = "0.23.16", features = ["ring"] }
 tokio-stream = { version = "0.1.17" }
 grpc-worker = { git = "https://github.com/Lagrange-Labs/grpc-worker-rs", branch = "main" }
 url = "2.5.4"
+uuid = "1.17.0"
 
 [dev-dependencies]
 ndarray = "0.16.1"

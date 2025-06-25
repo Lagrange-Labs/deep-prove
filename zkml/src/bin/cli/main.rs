@@ -4,6 +4,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 use lagrange::ProofChannelResponse;
 use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
+use tracing::info;
 use url::Url;
 use zkml::{
     Element, FloatOnnxLoader,
@@ -92,6 +93,8 @@ async fn main() -> anyhow::Result<()> {
     .max_encoding_message_size(max_message_size)
     .max_decoding_message_size(max_message_size);
 
+    info!("Connection to Gateway established");
+
     match args.command {
         Command::Submit { onnx, inputs } => {
             let input = Input::from_file(&inputs).context("loading input:")?;
@@ -122,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
                         .as_secs()
                 ),
                 timeout: Some(
-                    prost_wkt_types::Duration::try_from(std::time::Duration::from_secs(300))
+                    prost_wkt_types::Duration::try_from(std::time::Duration::from_secs(60 * 15))
                         .unwrap(),
                 ),
                 price_requested: 12_u64.to_le_bytes().to_vec(), // TODO:
@@ -131,7 +134,7 @@ async fn main() -> anyhow::Result<()> {
                 priority: 0,
             });
             let response = client.submit_task(task).await?;
-            println!("got the response {response:?}");
+            info!("got the response {response:?}");
         }
 
         Command::Fetch {} => {
@@ -144,7 +147,7 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap();
             let mut proof_response_stream = channel.into_inner();
 
-            println!("Fetching ready proofs...");
+            info!("Fetching ready proofs...");
             let mut acked_messages = Vec::new();
             while let Some(response) = proof_response_stream.message().await? {
                 let ProofChannelResponse { response } = response;
@@ -160,7 +163,10 @@ async fn main() -> anyhow::Result<()> {
                 let task_output: DeepProveResponse = rmp_serde::from_slice(&task_output)?;
                 match task_output {
                     DeepProveResponse::V1(_) => {
-                        println!("Received proof for task {:?}", task_id.id);
+                        info!(
+                            "Received proof for task {}",
+                            uuid::Uuid::from_slice(&task_id.id).unwrap_or_default()
+                        );
                         // TODO: write to file or whatever
                     }
                 }
