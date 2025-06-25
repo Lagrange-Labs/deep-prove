@@ -13,7 +13,6 @@ version.workspace = true
 criterion.workspace = true
 ff_ext = { path = "../ff_ext" }
 serde.workspace = true
-unroll = { workspace = true }
 p3-challenger = { workspace = true }
 p3-field = { workspace = true }
 p3-goldilocks = { workspace = true }
