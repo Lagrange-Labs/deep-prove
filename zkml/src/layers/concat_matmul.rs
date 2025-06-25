@@ -10,6 +10,8 @@
 //! Transpose: There is the option to transpose the output of the matmul. This is useful for proving to avoid
 //! having to prove explicitly the transpose operation with a separate layer, as sumcheck based proving can directly
 //! prove the transpose at the same time as the matmul.
+use std::borrow::Borrow;
+
 use anyhow::ensure;
 use ff_ext::ExtensionField;
 use serde::{Deserialize, Serialize};
@@ -59,24 +61,24 @@ impl ConcatMatMul {
         }
     }
 
-    pub fn ensure_shape_consistency(shapes: &[Shape]) -> anyhow::Result<()> {
+    pub fn ensure_shape_consistency<S: Borrow<Shape>>(shapes: &[S]) -> anyhow::Result<()> {
         assert!(shapes.len() == 2, "ConcatMatMul expects 2 inputs");
         ensure!(
-            shapes[0].rank() == shapes[1].rank(),
+            shapes[0].borrow().rank() == shapes[1].borrow().rank(),
             "ConcatMatMul expects input shapes with same rank: {:?} vs {:?}",
-            shapes[0],
-            shapes[1]
+            shapes[0].borrow(),
+            shapes[1].borrow()
         );
         ensure!(
-            shapes[0].rank() == 3,
+            shapes[0].borrow().rank() == 3,
             "ConcatMatMul expects inputs of rank 3"
         );
         ensure!(
-            shapes[0].dim(0) == shapes[1].dim(0),
+            shapes[0].borrow().dim(0) == shapes[1].borrow().dim(0),
             "ConcatMatMul expects inputs with same highest dimension"
         );
         ensure!(
-            shapes[0].dim(2) == shapes[1].dim(1),
+            shapes[0].borrow().dim(2) == shapes[1].borrow().dim(1),
             "ConcatMatMul expects submatrices dimensions to match"
         );
         Ok(())
@@ -94,7 +96,7 @@ impl<N: Number> Evaluate<N> for ConcatMatMul {
         let b = inputs[1];
         let a_shape = a.get_shape();
         let b_shape = b.get_shape();
-        Self::ensure_shape_consistency(&[a_shape.clone(), b_shape.clone()])?;
+        Self::ensure_shape_consistency(&[&a_shape, &b_shape])?;
         let results = (0..a_shape[0])
             .map(|batch| {
                 let batch_a = a.slice_3d(batch, batch + 1).reshape(a_shape.slice(1..=2));
@@ -127,7 +129,7 @@ impl OpInfo for ConcatMatMul {
     ) -> Vec<Shape> {
         let a_shape = &input_shapes[0];
         let b_shape = &input_shapes[1];
-        Self::ensure_shape_consistency(&[a_shape.clone(), b_shape.clone()]).unwrap();
+        Self::ensure_shape_consistency(&[a_shape, b_shape]).unwrap();
         // inner matrix shapes
         let mut mat_result_shape: Shape = vec![a_shape[0], a_shape[1], b_shape[2]].into();
         if let PaddingMode::Padding = padding_mode {
