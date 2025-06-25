@@ -287,24 +287,9 @@ impl<N: Number> Evaluate<N> for MhaQk {
             acc_qk.concat(qk);
             acc_qk
         });
-        assert_eq!(qk.get_shape(), vec![self.num_heads, q_len, seq_len].into());
-        // CAUSAL MASK
-        // First it sets to 0 the part that should be ignored on each Q "sequence" for each head
-        // Then it adds minus infinity to the same part.
-        // We do it in two steps like this because during proving, given we're in integer world, the -minus-infinity
-        // would be dynamically depending on the size of Q and K^T. Also because we need to exactly fix -minus-infinity
-        // to the lowest minimum value that _softmax_ can handle, so it needs to be a constant. Just "adding the causal mask"
-        // would not give us these guarantees.
-        let zeros = zeroifier(self.num_heads, q_len, seq_len);
-        let minus_infinity = infinitizer(self.num_heads, q_len, seq_len, N::MIN);
-        let qk_zeroified = qk.mul(&zeros);
-        let qk_infinitized = qk_zeroified.add(&minus_infinity);
+        assert_eq!(qk.get_shape(), vec![self.num_heads, q_len, seq_len]);
 
-        // The next operation in transformer is softmax row by row, and then qk @ v, "row by row" - but
-        // it's actually "head by head" which is the highest dimension.
-        // So for the shapes, it's [q_len,seq_len] @ [seq_len, head_dim] = [q_len, head_dim]
-        // This is done in separate layer in the framework since we first need to prove softmax which happens separatedly
-        Ok(LayerOut::from_vec(vec![qk_infinitized]))
+        Ok(LayerOut::from_vec(vec![qk]))
     }
 }
 
