@@ -205,7 +205,7 @@ where
         // there is only one product (i.e. quadratic sumcheck)
         let dense_info = LayerCtx::Dense(DenseCtx {
             node_id: id,
-            matrix_poly_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![
+            matrix_poly_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
                 matrix_num_vars,
                 vector_num_vars,
             ]]),

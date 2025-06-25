@@ -502,7 +502,7 @@ where
 
         let conv_info = LayerCtx::Convolution(ConvCtx {
             node_id: id,
-            ifft_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![
+            ifft_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
                 ((self.filter_size()).ilog2() as usize) + 1,
                 ((self.filter_size()).ilog2() as usize) + 1,
             ]]),
