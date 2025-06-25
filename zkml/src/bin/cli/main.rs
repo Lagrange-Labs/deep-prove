@@ -30,6 +30,10 @@ struct Args {
     #[clap(short, long, env)]
     client_id: String,
 
+    /// Max message size passed through gRPC (in MBytes)
+    #[arg(long, default_value = "100")]
+    max_message_size: usize,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -77,13 +81,16 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("connecting to the GW at {}", args.gw_url))?;
 
     let client_id: MetadataValue<_> = args.client_id.parse().context("parsing client ID")?;
+    let max_message_size = args.max_message_size * 1024 * 1024;
     let mut client = lagrange::clients_service_client::ClientsServiceClient::with_interceptor(
         channel,
         move |mut req: tonic::Request<()>| {
             req.metadata_mut().insert("client_id", client_id.clone());
             Ok(req)
         },
-    );
+    )
+    .max_encoding_message_size(max_message_size)
+    .max_decoding_message_size(max_message_size);
 
     match args.command {
         Command::Submit { onnx, inputs } => {
