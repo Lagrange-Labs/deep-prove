@@ -146,7 +146,7 @@ impl InputJSON {
         );
         Ok(())
     }
-    fn to_elements(self, md: &ModelMetadata) -> (Vec<Vec<Element>>, Vec<Vec<Element>>) {
+    fn into_elements(self, md: &ModelMetadata) -> (Vec<Vec<Element>>, Vec<Vec<Element>>) {
         let input_sf = md.input.first().unwrap();
         let inputs = self
             .input_data
@@ -270,7 +270,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     let num_samples = run_inputs.output_data.len();
     let pytorch_accuracy = run_inputs.compute_pytorch_accuracy();
     info!("[+] Quantizing inputs with strategy: {}", args.quantization);
-    let (inputs, given_outputs) = run_inputs.to_elements(&md);
+    let (inputs, given_outputs) = run_inputs.into_elements(&md);
 
     // Generate context once and measure the time
     let now = time::Instant::now();

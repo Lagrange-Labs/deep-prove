@@ -277,14 +277,12 @@ where
         node_id: NodeId,
         claims: HashMap<PolyId, Claim<E>>,
     ) -> anyhow::Result<()> {
-        self.commit_verifier
-            .add_common_claims(node_id, claims)
-            .map_err(|e| e.into())
+        self.commit_verifier.add_common_claims(node_id, claims)
     }
 }
 
 /// Verifies an inference proof given a context, a proof and the input / output of the model.
-pub fn verify<E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
+pub fn verify<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
     ctx: Context<E, PCS>,
     proof: Proof<E, PCS>,
     io: IO<E>,
@@ -292,13 +290,13 @@ pub fn verify<E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentSche
 ) -> anyhow::Result<()>
 where
     E::BaseField: Serialize + DeserializeOwned,
-    E: Serialize + DeserializeOwned,
+    E: ExtensionField + Serialize + DeserializeOwned,
 {
     let verifier = Verifier::new(&ctx, transcript);
     verifier.verify(ctx, proof, io)
 }
 
-fn verify_table<E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
+fn verify_table<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
     proof: &TableProof<E, PCS>,
     table_type: TableType,
     witness_verifier: &mut CommitmentVerifier<E, PCS>,
@@ -308,7 +306,7 @@ fn verify_table<E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentSc
 ) -> anyhow::Result<()>
 where
     E::BaseField: Serialize + DeserializeOwned,
-    E: Serialize + DeserializeOwned,
+    E: ExtensionField + Serialize + DeserializeOwned,
 {
     // 1. Verify the lookup proof
     let verifier_claims = verify_logup_proof(

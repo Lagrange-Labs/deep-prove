@@ -1,7 +1,7 @@
 use ff_ext::ExtensionField;
 use multilinear_extensions::mle::FieldType;
-use rayon::prelude::*;
 use p3_field::Field;
+use rayon::prelude::*;
 
 pub fn sum_check_first_round_field_type<E: ExtensionField>(
     eq: &mut [E],

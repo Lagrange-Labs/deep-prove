@@ -81,10 +81,8 @@ pub fn from_path(path: &str) -> Result<Model<f32>> {
             )),
         })
         .collect::<Result<Vec<_>, _>>()?;
-    if model_type == ModelType::CNN || model_type == ModelType::MLP {
-        if input_shape[0] == 1 {
-            input_shape.remove(0);
-        }
+    if (model_type == ModelType::CNN || model_type == ModelType::MLP) && input_shape[0] == 1 {
+        input_shape.remove(0);
     }
 
     let mut pmodel =
@@ -362,8 +360,7 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
     if input_shape.len() != 1 {
         assert!(
             input_shape[0] == 1,
-            "First dimension of Gemm layer input should be 1. Input shape was: {:?}",
-            input_shape
+            "First dimension of Gemm layer input should be 1. Input shape was: {input_shape:?}"
         );
         input_shape.remove(0);
     }

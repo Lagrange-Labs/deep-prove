@@ -1,4 +1,6 @@
 name: "Test Suite"
+permissions:
+  contents: read
 on:
   push:
   pull_request:
@@ -12,8 +14,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: nightly
       - run: cargo test 
 
   # Check formatting with rustfmt
@@ -26,6 +26,16 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: rustfmt
-          toolchain: nightly
       - run: cargo fmt --all
+
+  lint:
+    name: cargo lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Ensure rustfmt is installed and setup problem matcher
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy 
+      - run: cargo clippy --all -- -D warnings
         

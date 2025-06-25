@@ -110,6 +110,10 @@ where
 {
     fn step_info(&self, id: NodeId, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         aux.tables.insert(TableType::Relu);
+
+        // `try_fold` would not allow returning of `Err` values from here and would short-circuit
+        // instead of looping over all values in the iterator
+        #[allow(clippy::manual_try_fold)]
         let num_vars = aux
             .last_output_shape
             .iter_mut()
@@ -182,6 +186,7 @@ where
         );
 
         // Calculate the column_evals and also the merged lookups
+        #[allow(clippy::type_complexity)]
         let (merged_lookups, field): (Vec<Element>, Vec<(E::BaseField, E::BaseField)>) = step_data
             .inputs[0]
             .get_data()
@@ -202,6 +207,7 @@ where
         let num_vars = ceil_log2(col_one.len());
 
         // Add the witness polynomials that we need to commit to
+        #[allow(clippy::type_complexity)]
         let (commits, column_evals): (
             Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
             Vec<Vec<E::BaseField>>,
@@ -293,11 +299,7 @@ where
 
 impl Activation {
     #[timed::timed_instrument(name = "Prover::prove_activation_step")]
-    pub(crate) fn prove_step<
-        E: ExtensionField,
-        T: Transcript<E>,
-        PCS: PolynomialCommitmentScheme<E>,
-    >(
+    pub(crate) fn prove_step<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         prover: &mut Prover<E, T, PCS>,
         last_claim: &Claim<E>,
@@ -364,11 +366,7 @@ impl Activation {
 }
 
 impl ActivationCtx {
-    pub(crate) fn verify_activation<
-        E: ExtensionField,
-        T: Transcript<E>,
-        PCS: PolynomialCommitmentScheme<E>,
-    >(
+    pub(crate) fn verify_activation<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         verifier: &mut Verifier<E, T, PCS>,
         last_claim: &Claim<E>,
@@ -378,7 +376,7 @@ impl ActivationCtx {
     ) -> anyhow::Result<Claim<E>>
     where
         E::BaseField: Serialize + DeserializeOwned,
-        E: Serialize + DeserializeOwned,
+        E: ExtensionField + Serialize + DeserializeOwned,
     {
         // 1. Verify the lookup proof
         let verifier_claims = verify_logup_proof(

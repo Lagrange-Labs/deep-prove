@@ -90,7 +90,7 @@ where
     PCS: PolynomialCommitmentScheme<E>,
 {
     Dense(DenseProof<E>),
-    Convolution(ConvProof<E>),
+    Convolution(Box<ConvProof<E>>),
     Activation(ActivationProof<E, PCS>),
     Requant(RequantProof<E, PCS>),
     Pooling(PoolingProof<E, PCS>),
