@@ -16,6 +16,12 @@ ARG GROUP_ID=1000
 RUN groupadd -g ${GROUP_ID} lagrange && \
     useradd -m -u ${USER_ID} -g lagrange lagrange
 
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get upgrade -y && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y libssl3 ca-certificates && \
+    update-ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /usr/local/cargo/bin/deep-prove-worker /usr/local/bin
 EXPOSE 8080
 ENV RUST_BACKTRACE=full
