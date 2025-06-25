@@ -86,6 +86,10 @@ struct Args {
 
     #[arg(long)]
     operator_priv_key: String,
+
+    /// Max message size passed through gRPC (in MBytes)
+    #[arg(long, default_value = "16")]
+    max_message_size: usize,
 }
 
 async fn process_message_from_gw(
@@ -149,13 +153,16 @@ async fn main() -> anyhow::Result<()> {
     let token = grpc_worker::auth::jwt::JWTAuth::new(claims, &wallet)?.encode()?;
     let token: MetadataValue<_> = format!("Bearer {token}").parse()?;
 
+    let max_message_size = args.max_message_size * 1024 * 1024;
     let mut client = lagrange::workers_service_client::WorkersServiceClient::with_interceptor(
         channel,
         move |mut req: tonic::Request<()>| {
             req.metadata_mut().insert("authorization", token.clone());
             Ok(req)
         },
-    );
+    )
+    .max_encoding_message_size(max_message_size)
+    .max_decoding_message_size(max_message_size);
 
     let outbound_rx = tokio_stream::wrappers::ReceiverStream::new(outbound_rx);
 
