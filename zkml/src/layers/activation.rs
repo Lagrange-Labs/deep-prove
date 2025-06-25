@@ -110,18 +110,22 @@ where
 {
     fn step_info(&self, id: NodeId, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         aux.tables.insert(TableType::Relu);
+
+        // `try_fold` would not allow returning of `Err` values from here and would short-circuit
+        // instead of looping over all values in the iterator
+        #[allow(clippy::manual_try_fold)]
         let num_vars = aux
             .last_output_shape
             .iter_mut()
-            .fold(None, |expected_num_vars, shape| {
+            .fold(Ok(None), |expected_num_vars, shape| {
                 let num_vars = shape.iter().map(|dim| ceil_log2(*dim)).sum::<usize>();
-                if let Some(vars) = expected_num_vars {
+                if let Some(vars) = expected_num_vars? {
                     ensure!(
                         vars == num_vars,
                         "All input shapes for activation must have the same number of variables"
                     );
                 }
-                Some(num_vars)
+                Ok(Some(num_vars))
             })?
             .expect("No input shape found for activation layer?");
         // Set the model polys to be empty

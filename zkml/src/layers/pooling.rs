@@ -132,6 +132,11 @@ where
         let info = match self {
             Pooling::Maxpool2D(info) => {
                 aux.tables.insert(TableType::Range);
+
+                // `try_fold` would not allow returning of `Err` values
+                // from here and would short-circuit
+                // instead of looping over all values in the iterator
+                #[allow(clippy::manual_try_fold)]
                 let num_vars = aux.last_output_shape.iter_mut().fold(Ok(None), |expected_num_vars, shape| {
                     // Pooling only affects the last two dimensions
                     let total_number_dims = shape.len();

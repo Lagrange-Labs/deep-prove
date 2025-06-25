@@ -147,6 +147,11 @@ where
     fn step_info(&self, id: NodeId, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         aux.tables.insert(TableType::Range);
         aux.tables.insert(TableType::Clamping(self.clamping_size()));
+
+        // `try_fold` would not allow returning of `Err` values
+        // from here and would short-circuit
+        // instead of looping over all values in the iterator
+        #[allow(clippy::manual_try_fold)]
         let num_vars = aux
             .last_output_shape
             .iter_mut()
