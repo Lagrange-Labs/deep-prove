@@ -64,7 +64,7 @@ jobs:
           docker build \
             -t $IMAGE_NAME:${{ github.sha }} \
             -f docker/${{ matrix.image }}.dockerfile \
-            ./zkml
+            .
 
       - name: List Docker images
         run: docker images
