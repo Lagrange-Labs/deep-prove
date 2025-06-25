@@ -1321,7 +1321,7 @@ mod tests {
         // Apply the layer operation on both original and padded
         let output = layer.op(vec![&input_tensor]).unwrap();
         let padded_output = padded
-            .op(vec![&input_tensor.pad_next_power_of_two_2d()])
+            .op(vec![&input_tensor.pad_next_power_of_two()])
             .unwrap();
 
         // Check that the result is correct

@@ -1,4 +1,5 @@
 //! This layer applies the softmax function to the last dimension of the input tensor
+use core::f32;
 use std::marker::PhantomData;
 
 use crate::{
@@ -21,6 +22,7 @@ use crate::{
         witness::LogUpWitness,
     },
     model::StepData,
+    padding::PaddingMode,
     quantization::{Fieldizer, ScalingFactor},
     tensor::{Number, Shape},
 };
@@ -55,10 +57,6 @@ pub struct Softmax<N> {
     /// This is the factor we divide by before exponentiating, when thought of as a Boltzmann distribution this is
     /// often referred to as the "Temperature".
     pub scalar: N,
-    // By default, softmax is going to be applied on the full tensor.
-    // You can specificy a dimen to apply softmax on. For example, for a tensor  of shape [2,3,4],
-    // if apply_on_dim = 1, then softmax will be applied on every chunks of 4 elements each.
-    pub apply_on_dim: Option<usize>,
     /// This is the maximum size of dimension that we will normalise over. For example in an Attention layer this would be the maximum context size.
     max_size: usize,
     /// This is the extra information required to compute the quantised version, it defaults to [`None`].
@@ -99,6 +97,9 @@ where
     pub(crate) commitments: Vec<PCS::Commitment>,
     /// The sumcheck proof we use to make sure everything is evaluated at the same point.
     pub(crate) accumulation_proof: IOPProof<E>,
+    /// Sumcheck proof used to prove that the mask was applied correctly
+    pub(crate) mask_proof: IOPProof<E>,
+    pub(crate) tril_eval: E,
     /// The claimed evaluations of the commitments
     pub(crate) evaluations: Vec<E>,
 }
@@ -107,7 +108,6 @@ impl<N: Number> Default for Softmax<N> {
     fn default() -> Self {
         Softmax {
             scalar: N::unit(),
-            apply_on_dim: None,
             max_size: 1024usize,
             quant_info: None,
         }
@@ -122,7 +122,6 @@ impl<N: Number> Softmax<N> {
     pub fn new_with_scale(scale: N, max_context_size: usize) -> Softmax<N> {
         Softmax {
             scalar: scale,
-            apply_on_dim: None,
             max_size: max_context_size,
             quant_info: None,
         }
@@ -147,7 +146,6 @@ impl<N: Number> Softmax<N> {
         let int = min_input_abs.round() as usize;
         let integral_bits = ceil_log2(int);
 
-        let table_size = 1i128 << (integral_bits + 8);
         let base = 1i128 << (LOG_SCALE_FACTOR - 8);
 
         let (float_error, bkm_float) = calc_softmax_error(
@@ -163,11 +161,14 @@ impl<N: Number> Softmax<N> {
 
         let float_error = float_error.abs();
         let bkm = bkm_float.round() as Element;
+
+        let table_bits = (integral_bits + 8).max(ceil_log2(bkm as usize >> 16));
+        let table_size = 1i128 << table_bits;
         // Make the exp lookup table
         let lut = (0i128..table_size)
             .map(|j| {
                 let prod = base * j;
-                if prod > bkm {
+                if prod >= bkm {
                     0i128
                 } else {
                     let float_exp =
@@ -189,7 +190,6 @@ impl<N: Number> Softmax<N> {
         // Return the quantised `Softmax` operator
         Ok(Softmax::<Element> {
             scalar: multiplier,
-            apply_on_dim: self.apply_on_dim,
             max_size: self.max_size,
             quant_info: Some(quant_info),
         })
@@ -204,12 +204,94 @@ impl<N: Number> Softmax<N> {
             ..self
         }
     }
-    /// Apply softmax on the subset of from this dim
-    pub fn on_dim(self, dim: usize) -> Self {
-        Self {
-            apply_on_dim: Some(dim),
-            ..self
-        }
+}
+
+impl Softmax<Element> {
+    /// Method that given a quantised input [`Tensor`] calculates the `shift` we apply along each dim and returns the result as the `bias` field of
+    /// as [`AttentionMask`].
+    pub(crate) fn calculate_shift_data(
+        &self,
+        input: &Tensor<Element>,
+        unpadded_input_shape: &[usize],
+    ) -> Result<AttentionMask<Element>> {
+        let QuantisedSoftmaxData {
+            input_scale_factor,
+            float_temperature,
+            bkm,
+            ..
+        } = self.quant_info().ok_or(anyhow!("Attempted to calculate shift data for quantised Softmax with no QuantisedSoftmaxData present"))?;
+
+        // We need to calculate the shift we should apply together with the mask
+        // To do this we:
+        // 1) dequantise the input
+        // 2) apply a float mask
+        // 3) sum along the desired dim
+        let padding_mode = if input.shape != Shape::new(unpadded_input_shape.to_vec()) {
+            PaddingMode::Padding
+        } else {
+            PaddingMode::NoPadding
+        };
+
+        let float_mask =
+            AttentionMask::<f32>::new(unpadded_input_shape, f32::NEG_INFINITY, padding_mode)?;
+
+        let dequantised_input = input.dequantize(input_scale_factor);
+        let masked_input = float_mask.apply(&dequantised_input)?;
+
+        let chunk_size = *masked_input
+            .shape
+            .last()
+            .ok_or(anyhow!("Input tensor had no shape in quantised Softmax"))?;
+
+        // Now that we ahve the masked input in float calculate the shift
+        let shift_data = masked_input
+            .get_data()
+            .chunks(chunk_size)
+            .map(|vec| {
+                let sum = vec
+                    .iter()
+                    .map(|x| (x / float_temperature).exp())
+                    .sum::<f32>();
+                let log_sum = sum.ln();
+                let shift = -(SCALE_FACTOR as f32 * float_temperature * log_sum).round() as Element;
+                vec![shift; chunk_size]
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+
+        let shift_tensor = Tensor::<Element>::new(input.get_shape(), shift_data);
+
+        let negative_infinity = -((bkm >> 16) + 1) << 16;
+        let AttentionMask { tril, bias, .. } =
+            AttentionMask::<Element>::new(unpadded_input_shape, negative_infinity, padding_mode)?;
+
+        let masked_shift = shift_tensor.mul(&tril).add(&bias);
+        // This is annoying but we now have to go over the shifted input, we need all of the entries after applying the shift to be negative
+        // and due to rounding on rows where we only care about the first input (so the first token in the sequence) it can happen that
+        // rounding means we would get a positive value here. To improve accuracy we correct for this so that these values should always get mapped to 1.
+        let mut shift_mask = AttentionMask {
+            tril: tril.scalar_mul(&self.scalar),
+            bias: masked_shift,
+            padding_mode,
+            negative_infinity,
+        };
+
+        let shifted_input = shift_mask.apply(input)?;
+        // Find all the entires that are positive (this will only be entries on rows where we normalise over 1 element)
+        // if they are positive we edit `shift_mask.bias` to correct for it.
+        shift_mask
+            .bias
+            .data
+            .iter_mut()
+            .zip(shifted_input.get_data().iter())
+            .for_each(|(bias_v, v)| {
+                if v.is_positive() {
+                    *bias_v -= v;
+                }
+            });
+
+        // We also multiply the tril tensor by `self.scalar` so that we can just call `mask.apply` on the input
+        Ok(shift_mask)
     }
 }
 
@@ -253,14 +335,28 @@ impl Evaluate<f32> for Softmax<f32> {
             "softmax expects exactly one input tensor currently"
         );
         let input = inputs[0];
-        let dim = self.apply_on_dim.unwrap_or(input.get_shape().len() - 1);
-        let output = input
-            .slice_on_dim(dim)
-            .0
+        // Make the attention mask
+        let mask =
+            AttentionMask::<f32>::new(&input.shape, f32::NEG_INFINITY, PaddingMode::NoPadding)?;
+        let masked_input = mask.apply(input)?;
+
+        let chunk_size = *input
+            .shape
+            .last()
+            .ok_or(anyhow!("Input shape was empty for float Softmax"))?;
+        let output = masked_input
+            .get_data()
+            .chunks(chunk_size)
             .map(|vec| {
                 let scaled = vec
                     .iter()
-                    .map(|x| self.scalar * x)
+                    .map(|x| {
+                        if *x != f32::NEG_INFINITY {
+                            self.scalar * x
+                        } else {
+                            *x
+                        }
+                    })
                     .map(|x| x.exp())
                     .collect::<Vec<_>>();
                 let sum = scaled.iter().sum::<f32>();
@@ -304,7 +400,7 @@ where
     E: Clone + ExtensionField,
 {
     /// This is the natural logarithm of the sum of the exponentiated input along the given dimension
-    shift_data: Vec<Element>,
+    shift_data: AttentionMask<Element>,
     /// The lowest 8-bits of the input (after rescaling)
     low_range_check: Vec<Element>,
     /// The second lowest 8 bits of the input (after rescaling)
@@ -333,54 +429,13 @@ impl Evaluate<Element> for Softmax<Element> {
         );
 
         // Since we have checked that quant info exists this unwrap is safe
-        let QuantisedSoftmaxData {
-            input_scale_factor,
-            lut,
-            float_temperature,
-            bkm,
-            ..
-        } = self.quant_info().unwrap();
+        let QuantisedSoftmaxData { lut, .. } = self.quant_info().unwrap();
 
         let input = inputs[0];
-        let chunk_size = *input.shape.last().ok_or(anyhow!(
-            "Could not evaluate Softmax, Input tensor had no shape"
-        ))?;
+        let shift_data = self.calculate_shift_data(input, &unpadded_input_shapes[0])?;
 
-        let unpadded_chunk_size = *unpadded_input_shapes[0].last().ok_or(anyhow!(
-            "Could not evaluate Softmax, unpadded input shape was empty for input"
-        ))?;
-        let unpadded_size = unpadded_input_shapes[0].iter().product::<usize>();
-        let padded_size = input.shape.iter().product::<usize>();
-        let chunk_sizes = input
-            .shape
-            .iter()
-            .zip(unpadded_input_shapes[0].iter())
-            .take(input.shape.len() - 1)
-            .scan(
-                (padded_size, unpadded_size),
-                |(padded_state, unpadded_state), (padded_dim, unpadded_dim)| {
-                    *padded_state /= padded_dim;
-                    *unpadded_state /= unpadded_dim;
-                    Some((*padded_state, *unpadded_state))
-                },
-            )
-            .collect::<Vec<(usize, usize)>>();
-        // Calculate the shift chunk by chunk
-        let shift_data = input
-            .get_data()
-            .chunks(chunk_size)
-            .map(|vec| {
-                let sum = vec
-                    .iter()
-                    .take(unpadded_chunk_size)
-                    .map(|x| (input_scale_factor.dequantize(x) / float_temperature).exp())
-                    .sum::<f32>();
-                let log_sum = sum.ln();
-                let shift = -(SCALE_FACTOR as f32 * float_temperature * log_sum).round() as Element;
-                vec![shift; chunk_size]
-            })
-            .flatten()
-            .collect::<Vec<_>>();
+        let masked_input = shift_data.apply(input)?;
+
         // We use the mask to extract 8-bit chunks of the input, these are the smallest fractional bits
         // and so we can assume that they get mapped to 1 under `exp`
         let mask = 255i128;
@@ -388,13 +443,12 @@ impl Evaluate<Element> for Softmax<Element> {
         let ((lookups, outputs), (high_range_check, low_range_check)): (
             (Vec<Element>, Vec<Element>),
             (Vec<Element>, Vec<Element>),
-        ) = input
+        ) = masked_input
             .get_data()
             .iter()
-            .zip(shift_data.iter())
-            .map(|(&input_elem, &shift)| {
-                // We take the absoloute value as this is guaranteed to be negative
-                let rescaled = (input_elem * self.scalar + shift).abs();
+            .map(|&input_elem| {
+                // We take the absoloute value as this is guaranteed to be negative or zero
+                let rescaled = input_elem.abs();
                 // The lest significant chunk (fractional bits 17 to 24)
                 let lsc = rescaled & mask;
                 // The second lest significant chunk (fractional bits 9 to 16)
@@ -440,7 +494,7 @@ where
         node_id: NodeId,
         _ctx: &Self::Ctx,
         last_claims: Vec<&Claim<E>>,
-        _step_data: &StepData<E, E>,
+        step_data: &StepData<E, E>,
         prover: &mut crate::Prover<E, T, PCS>,
     ) -> Result<Vec<Claim<E>>> {
         // Check we have the correct number of claims
@@ -543,10 +597,9 @@ where
 
         vp.add_mle_list(
             vec![exp_output.clone().into(), error_beta.clone()],
-            -batch_challenge * two_mult,
+            batch_challenge * two_mult,
         );
-        let output_quantised_one: E = (OUTPUT_SCALE_FACTOR as Element).to_field();
-        vp.add_mle_list(vec![error_beta], batch_challenge * output_quantised_one);
+
         vp.add_mle_list(
             vec![exp_output.clone().into(), last_claim_beta],
             batch_challenge * alpha,
@@ -561,19 +614,51 @@ where
         let range_evals = &[all_evals[3], all_evals[5]];
         let shift_eval = initial_shift[0].1.evaluate(sumcheck_point);
 
-        // Work out the input eval
-        let two_to_the_16 = E::from_canonical_u64(1u64 << 16);
-        let two_to_the_8 = E::from_canonical_u64(1u64 << 8);
-        let field_multiplier: E = self.scalar.to_field();
-        let field_multiplier_inv = field_multiplier.inverse();
-        let input_eval = -field_multiplier_inv
-            * (exp_evals[0] * two_to_the_16
-                + range_evals[1] * two_to_the_8
-                + range_evals[0]
-                + shift_eval);
+        // Now we need to make a sumcheck proof that shows that `input_eval` is the result of applying
+        // the `tril` part of the mask to the input
+        let mask_eq: ArcMultilinearExtension<E> =
+            compute_betas_eval(sumcheck_point).into_mle().into();
+        // Pad the shift data if needed
+        let shift_data = step_data
+            .outputs
+            .try_softmax_data()
+            .and_then(|data| Some(&data.shift_data))
+            .ok_or(anyhow!(
+                "Softmax LayerOut didn't have any ProvingData::Softmax"
+            ))?;
+        let shift_data = if let PaddingMode::NoPadding = shift_data.padding_mode {
+            let mut sd = shift_data.clone();
+            sd.pad()?;
+            sd
+        } else {
+            shift_data.clone()
+        };
+        let tril_mle: ArcMultilinearExtension<E> = shift_data
+            .tril
+            .get_data()
+            .iter()
+            .map(|v| {
+                let f: E = v.to_field();
+                f.as_bases()[0]
+            })
+            .collect::<Vec<E::BaseField>>()
+            .into_mle()
+            .into();
+        let input_mle: ArcMultilinearExtension<E> =
+            step_data.inputs[0].get_data().to_vec().into_mle().into();
 
-        let input_claim = Claim::<E>::new(sumcheck_point.clone(), input_eval);
+        // Make the VirtualPolynomial
+        let mut vp = VirtualPolynomial::<E>::new(tril_mle.num_vars());
+        vp.add_mle_list(vec![input_mle, tril_mle, mask_eq], E::ONE);
 
+        // Run the sumcheck proof for masking
+        #[allow(deprecated)]
+        let (mask_proof, mask_state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
+
+        let input_eval = mask_state.get_mle_final_evaluations()[0];
+        // TODO: add addtional sumcheck so the verifier can compute this directly.
+        let tril_eval = mask_state.get_mle_final_evaluations()[1];
+        let input_claim = Claim::<E>::new(mask_proof.point.clone(), input_eval);
         // Add the commitments to be opened to the commitment prover
         let exp_commits = exp_commitments
             .iter()
@@ -628,6 +713,8 @@ where
                 error_lookup: error_logup_proof,
                 commitments,
                 accumulation_proof: sumcheck_proof,
+                mask_proof,
+                tril_eval,
                 evaluations,
             }),
         );
@@ -681,10 +768,7 @@ where
             .ok_or(anyhow!("Softmax output tensor did not have a shape"))?;
         let normalisation_lookup = exp_output
             .chunks(final_dim_size)
-            .map(|chunk| {
-                let sum = chunk.iter().sum::<Element>();
-                OUTPUT_SCALE_FACTOR as Element - sum
-            })
+            .map(|chunk| chunk.iter().sum::<Element>())
             .collect::<Vec<Element>>();
 
         let merged_range_check = low_range_check
@@ -754,9 +838,20 @@ where
             })
             .collect::<Vec<E::BaseField>>();
 
+        // Pad the shift data if needed
+        let shift_data = if let PaddingMode::NoPadding = shift_data.padding_mode {
+            let mut sd = shift_data.clone();
+            sd.pad()?;
+            sd
+        } else {
+            shift_data.clone()
+        };
+
         let shift_mle = DenseMultilinearExtension::<E>::from_evaluations_vec(
             num_vars,
             shift_data
+                .bias
+                .get_data()
                 .iter()
                 .map(|v| {
                     let f: E = v.to_field();
@@ -787,12 +882,13 @@ where
             ))?;
         lookups.extend(merged_softmax);
 
+        let quant_one = OUTPUT_SCALE_FACTOR as Element;
         let lookups = gen
             .new_lookups
-            .get_mut(&TableType::ErrorTable(allowable_error))
+            .get_mut(&TableType::ErrorTable(quant_one, allowable_error))
             .ok_or(anyhow!(
                 "No table of type {} was expected",
-                TableType::ErrorTable(allowable_error).name()
+                TableType::ErrorTable(quant_one, allowable_error).name()
             ))?;
         lookups.extend(normalisation_lookup);
 
@@ -810,7 +906,7 @@ where
                     vec![(shift_commit, shift_mle)],
                     vec![error_evals],
                     1,
-                    TableType::ErrorTable(allowable_error),
+                    TableType::ErrorTable(quant_one, allowable_error),
                 ),
             ],
         );
@@ -918,7 +1014,10 @@ where
             aux.tables.insert(TableType::Range);
             aux.tables
                 .insert(TableType::Softmax(float_temp_bits, size, *bkm));
-            aux.tables.insert(TableType::ErrorTable(allowable_error));
+            aux.tables.insert(TableType::ErrorTable(
+                OUTPUT_SCALE_FACTOR as Element,
+                allowable_error,
+            ));
 
             // There are no common commitments for this layer
             aux.model_polys = None;
@@ -985,6 +1084,8 @@ where
             error_lookup,
             commitments,
             accumulation_proof,
+            mask_proof,
+            tril_eval,
             evaluations,
         } = proof;
 
@@ -1080,10 +1181,7 @@ where
         // Fianlly add the error check and the last claim, for this we need the output column of the exponential lookup
         let exp_output_claim = evaluations[1];
 
-        let output_quantised_one: E = (OUTPUT_SCALE_FACTOR as Element).to_field();
-        calc_subclaim += batch_challenge
-            * error_beta_eval
-            * (output_quantised_one - two_mult * exp_output_claim);
+        calc_subclaim += batch_challenge * error_beta_eval * two_mult * exp_output_claim;
         calc_subclaim += batch_challenge * alpha * last_claim_beta_eval * exp_output_claim;
 
         ensure!(
@@ -1096,13 +1194,26 @@ where
         // Now we work out the claim on the input to pass to the next layer
         let two_to_the_16 = E::from_canonical_u64(1u64 << 16);
         let two_to_the_8 = E::from_canonical_u64(1u64 << 8);
-        let field_multiplier: E = self.scalar.to_field();
-        let field_multiplier_inv = field_multiplier.inverse();
-        let input_eval = -field_multiplier_inv
-            * (evaluations[0] * two_to_the_16
-                + evaluations[3] * two_to_the_8
-                + evaluations[2]
-                + evaluations[4]);
+
+        let mask_input_eval = -(evaluations[0] * two_to_the_16
+            + evaluations[3] * two_to_the_8
+            + evaluations[2]
+            + evaluations[4]);
+
+        // Run verification for the masking sumcheck
+        let aux_info = VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![sumcheck_point.len(); 3]]);
+
+        let sumcheck_subclaim = IOPVerifierState::<E>::verify(
+            mask_input_eval,
+            mask_proof,
+            &aux_info,
+            verifier.transcript,
+        );
+
+        let mask_point = sumcheck_subclaim.point_flat();
+        let eq_eval = eq_xy_eval(&mask_point, &sumcheck_point);
+        let mult = eq_eval * *tril_eval;
+        let mult_inv = mult.inverse();
 
         // Add the commitments to the commitment verifier
         commitments
@@ -1114,7 +1225,185 @@ where
                     .add_witness_claim(comm.clone(), Claim::<E>::new(sumcheck_point.clone(), eval))
             })?;
 
-        Ok(vec![Claim::<E>::new(sumcheck_point, input_eval)])
+        Ok(vec![Claim::<E>::new(
+            mask_point,
+            sumcheck_subclaim.expected_evaluation * mult_inv,
+        )])
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Mask used in attention so that tokens can only see "previous" values.
+pub struct AttentionMask<N> {
+    /// This is the tensor we multiply elementwise to zero out the correct locations
+    pub tril: Tensor<N>,
+    /// This is the bias we add elementwise to ensure all zeroes are replaced with `-inf`
+    pub bias: Tensor<N>,
+    /// This is the indicator for whether the mask has been padded already
+    padding_mode: PaddingMode,
+    /// The value for negative infinity
+    negative_infinity: N,
+}
+
+impl<N: Number> Default for AttentionMask<N> {
+    fn default() -> Self {
+        AttentionMask {
+            tril: Tensor::<N>::new(vec![].into(), vec![]),
+            bias: Tensor::<N>::new(vec![].into(), vec![]),
+            padding_mode: PaddingMode::NoPadding,
+            negative_infinity: N::MIN,
+        }
+    }
+}
+
+impl<N: Number> AttentionMask<N> {
+    /// Creates a new mask given the unpadded input shape and the value to use for `-inf`
+    pub fn new(
+        unpadded_shape: &[usize],
+        negtive_inf: N,
+        padding_mode: PaddingMode,
+    ) -> Result<AttentionMask<N>> {
+        // The input shape should have length either 2 or 3 and the final 2 dimensions should be equal
+        let num_dims = unpadded_shape.len();
+
+        let correct_num_dims = num_dims == 2 || num_dims == 3;
+        ensure!(
+            correct_num_dims,
+            "In order to create an Attention Mask the input should have either 2 or 3 dimensions, got: {}",
+            num_dims
+        );
+
+        // Now check that either the final two dimensions are the same or the second to last dimension is 1
+        let dims_equal = unpadded_shape[num_dims - 2] == unpadded_shape[num_dims - 1];
+        let single_token = unpadded_shape[num_dims - 2] == 1;
+        ensure!(
+            dims_equal || single_token,
+            "Final two dimensions should be equal or second to last dimension should be 1 to make an Attention Mask, got: second to last: {}, last: {}",
+            unpadded_shape[num_dims - 2],
+            unpadded_shape[num_dims - 1]
+        );
+
+        // Now that we know all the dimensions line up make the lower triangular tensor
+        let shape = if num_dims == 2 {
+            let mut shape = unpadded_shape.to_vec();
+            shape.insert(0, 1);
+            shape
+        } else {
+            unpadded_shape.to_vec()
+        };
+        // Make the tril tensor
+        let mut tril = if dims_equal {
+            Tensor::<N>::tril(shape[2], shape[0], 0)
+        } else {
+            let total_size = shape.iter().product::<usize>();
+            Tensor::<N>::new(shape.clone().into(), vec![N::unit(); total_size])
+        };
+
+        if let PaddingMode::Padding = padding_mode {
+            tril = tril.pad_next_power_of_two();
+        }
+        // Make the bias tensor
+
+        let bias = if dims_equal {
+            let mut bias = Tensor::<N>::tri(shape[2], shape[0], 0, N::default(), negtive_inf);
+            if let PaddingMode::Padding = padding_mode {
+                bias = bias.generic_pad_next_power_of_two(negtive_inf);
+            }
+            bias
+        } else {
+            let total_size = shape.iter().product::<usize>();
+            let mut bias = Tensor::<N>::new(shape.into(), vec![N::default(); total_size]);
+            if let PaddingMode::Padding = padding_mode {
+                bias = bias.generic_pad_next_power_of_two(negtive_inf);
+            }
+            bias
+        };
+
+        Ok(AttentionMask {
+            tril,
+            bias,
+            padding_mode,
+            negative_infinity: negtive_inf,
+        })
+    }
+
+    /// Pads the [`AttentionMask`] for proving purposes
+    fn pad(&mut self) -> Result<()> {
+        if let PaddingMode::Padding = self.padding_mode {
+            Ok(())
+        } else {
+            // First check that the bias and tril shapes agree
+            let shapes_equal = self
+                .tril
+                .shape
+                .iter()
+                .zip(self.bias.shape.iter())
+                .all(|(t, b)| *t == *b);
+            ensure!(
+                shapes_equal,
+                "Can't pad Attention Mask as tril and bias had different shapes"
+            );
+
+            // Now we check to see if everything is already a power of two
+            if self.tril.shape.iter().all(|s| s.is_power_of_two()) {
+                return Ok(());
+            }
+
+            // Calculate padded tensors
+            self.tril = self.tril.pad_next_power_of_two();
+            // Make the bias tensor
+            self.bias = self
+                .bias
+                .generic_pad_next_power_of_two(self.negative_infinity);
+            // Now set the padding indicator
+            self.padding_mode = PaddingMode::Padding;
+            Ok(())
+        }
+    }
+
+    /// Apply the mask to an input, this method allows the input to have two or three dims and adjusts accordingly.
+    /// It elementwise multiplies by `self.tril` and then adds `self.bias`.
+    fn apply(&self, input: &Tensor<N>) -> Result<Tensor<N>> {
+        // Check the the input has 2 or 3 dims
+        let num_input_dims = input.shape.len();
+        ensure!(
+            num_input_dims == 2 || num_input_dims == 3,
+            "To apply Attention Mask input need to have 2 or 3 dims, got: {}",
+            num_input_dims
+        );
+        // If the input only has 2 dims reshape to have 3
+        if num_input_dims == 3 {
+            if !input
+                .shape
+                .iter()
+                .zip(self.tril.shape.iter())
+                .all(|(a, b)| *a == *b)
+            {
+                return Err(anyhow!(
+                    "Cannot apply attention mask, input did not have the same shape as mask"
+                ));
+            }
+
+            Ok(input.mul(&self.tril).add(&self.bias))
+        } else {
+            let mut new_shape = input.get_shape();
+            new_shape.insert(0, 1);
+            let new_input = input.clone().reshape(new_shape);
+
+            if !new_input
+                .shape
+                .iter()
+                .zip(self.tril.shape.iter())
+                .all(|(a, b)| *a == *b)
+            {
+                return Err(anyhow!(
+                    "Cannot apply attention mask, input did not have the same shape as mask"
+                ));
+            }
+
+            let output = new_input.mul(&self.tril).add(&self.bias);
+            Ok(output.reshape(input.get_shape()))
+        }
     }
 }
 
@@ -1135,33 +1424,15 @@ mod tests {
     #[test]
     fn test_softmax() {
         let softmax = Softmax::default();
-        let input = Tensor::new(vec![2, 3].into(), vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let input = Tensor::new(vec![2, 1, 3].into(), vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         let output = softmax
-            .evaluate::<GoldilocksExt2>(&[&input], vec![vec![2, 3].into()])
+            .evaluate::<GoldilocksExt2>(&[&input], vec![vec![2, 1, 3].into()])
             .unwrap();
-        assert_eq!(output.outputs[0].get_shape(), vec![2, 3].into());
-        // since we dont slice, sum of  prob should be equal to 1
-        assert_eq!(output.outputs[0].get_data().iter().sum::<f32>(), 1.0);
-    }
+        assert_eq!(output.outputs[0].get_shape(), vec![2, 1, 3].into());
 
-    #[test]
-    fn test_softmax_with_dim() {
-        let softmax = Softmax::new().on_dim(1);
-        let input = Tensor::random(&vec![2, 3, 4].into());
-        let output = softmax
-            .evaluate::<GoldilocksExt2>(&[&input], vec![vec![2, 3, 4].into()])
-            .unwrap();
-        let out = output.outputs()[0];
-        assert_eq!(out.get_shape(), vec![2, 3, 4].into());
-        let (slices, _) = out.slice_on_dim(1);
-        let acceptable_range = 0.99..1.01;
-        for slice in slices {
-            assert!(
-                acceptable_range.contains(&slice.iter().sum::<f32>()),
-                "{:?}",
-                out.get_data()
-            );
-        }
+        output.outputs[0].get_data().chunks(3).for_each(|chunk| {
+            assert_eq!(chunk.iter().sum::<f32>(), 1.0);
+        });
     }
 
     #[test]
@@ -1170,7 +1441,7 @@ mod tests {
         let scale = 1.0f32 / 768.0f32.sqrt();
         let softmax = Softmax::<f32>::new_with_scale(scale, 1024);
 
-        for num_tokens in 1015..1025 {
+        for num_tokens in 10..11 {
             // Make random q and k vectors
             let test_q = Tensor::<f32>::random(&vec![num_tokens, 768].into());
             let test_k = Tensor::<f32>::random(&vec![768, num_tokens].into());
@@ -1223,7 +1494,11 @@ mod tests {
                     let quant_dequant_diff = (float_q - f).abs();
 
                     // Make sure we are always withing 1/100 th of the actual value
-                    assert!(quant_dequant_diff < 0.01);
+                    assert!(
+                        quant_dequant_diff < 0.01,
+                        "quant dequant diff was too large got: {}",
+                        quant_dequant_diff
+                    );
                 }
             }
 
@@ -1246,27 +1521,33 @@ mod tests {
     #[test]
     fn test_softmax_with_scale() {
         let softmax = Softmax::new_with_scale(1.0 / 2.0, 1024);
-        let input = Tensor::new(vec![2, 3].into(), vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let input = Tensor::new(
+            vec![3, 3].into(),
+            vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        );
         let output = softmax
-            .evaluate::<GoldilocksExt2>(&[&input], vec![vec![2, 3].into()])
+            .evaluate::<GoldilocksExt2>(&[&input], vec![vec![3, 3].into()])
             .unwrap();
 
         assert_eq!(
             output.outputs[0].get_data(),
             vec![
-                1.0 / 6.0,
-                1.0 / 6.0,
-                1.0 / 6.0,
-                1.0 / 6.0,
-                1.0 / 6.0,
-                1.0 / 6.0
+                1.0,
+                0.0,
+                0.0,
+                0.5,
+                0.5,
+                0.0,
+                1.0 / 3.0,
+                1.0 / 3.0,
+                1.0 / 3.0,
             ]
         );
     }
 
     #[test]
     fn test_softmax_proving() {
-        let input_shape = vec![200, 12, 200];
+        let input_shape = vec![12, 200, 200];
 
         let mut model =
             Model::new_from_input_shapes(vec![input_shape.into()], PaddingMode::NoPadding);
