@@ -1165,7 +1165,7 @@ where
             })
             .sum()
     }
-    pub fn single_naive_conv(&self, w: Vec<Vec<T>>, x: Vec<Vec<T>>) -> Vec<Vec<T>> {
+    pub fn single_naive_conv(&self, w: &[Vec<T>], x: &[Vec<T>]) -> Vec<Vec<T>> {
         let mut out: Vec<Vec<T>> =
             vec![vec![Default::default(); x[0].len() - w[0].len() + 1]; x.len() - w.len() + 1];
         out.par_iter_mut().enumerate().for_each(|(i, out_row)| {
@@ -1222,7 +1222,7 @@ where
 
         for i in 0..k_w {
             for j in 0..k_x {
-                let temp = self.single_naive_conv(w[i][j].clone(), x[j].clone());
+                let temp = self.single_naive_conv(&w[i][j], &x[j]);
                 conv[i] = self.add_matrix(&mut conv[i], temp);
             }
         }
