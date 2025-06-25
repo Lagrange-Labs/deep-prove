@@ -79,20 +79,20 @@ fn run_model_v1(model: DeepProveRequestV1) -> Result<Vec<ProofV1>> {
 
 #[derive(Parser)]
 struct Args {
-    #[arg(long, default_value = "http://localhost:10000")]
+    #[arg(long, env, default_value = "http://localhost:10000")]
     gw_url: String,
 
-    #[arg(long, default_value = "deep-prove-1")]
+    #[arg(long, env, default_value = "deep-prove-1")]
     worker_class: String,
 
-    #[arg(long, default_value = "Lagrange Labs")]
+    #[arg(long, env, default_value = "Lagrange Labs")]
     operator_name: String,
 
-    #[arg(long)]
+    #[arg(long, env)]
     operator_priv_key: String,
 
     /// Max message size passed through gRPC (in MBytes)
-    #[arg(long, default_value = "100")]
+    #[arg(long, env, default_value = "100")]
     max_message_size: usize,
 }
 
