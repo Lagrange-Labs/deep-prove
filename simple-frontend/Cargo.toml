@@ -1,5 +1,6 @@
 [package]
 categories.workspace = true
+description = "Simple frontend"
 edition.workspace = true
 keywords.workspace = true
 license.workspace = true

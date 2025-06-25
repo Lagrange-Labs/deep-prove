@@ -1,5 +1,6 @@
 [package]
 categories.workspace = true
+description = "Zero Knowledge Machine Learning"
 edition.workspace = true
 keywords.workspace = true
 license.workspace = true
