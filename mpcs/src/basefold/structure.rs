@@ -5,7 +5,7 @@ use crate::{
 use core::fmt::Debug;
 use ff_ext::ExtensionField;
 
-use serde::{Deserialize, Serialize, Serializer, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use multilinear_extensions::mle::FieldType;
 
@@ -249,17 +249,8 @@ where
     type EncodingScheme = RSCode<RSCodeDefaultSpec>;
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Basefold<E: ExtensionField, Spec: BasefoldSpec<E>>(PhantomData<(E, Spec)>);
-
-impl<E: ExtensionField, Spec: BasefoldSpec<E>> Serialize for Basefold<E, Spec> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str("base_fold")
-    }
-}
 
 pub type BasefoldDefault<F> = Basefold<F, BasefoldRSParams>;
 
