@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Element,
@@ -18,7 +19,7 @@ use crate::{
 };
 type GarbagePad = Option<(Shape, Shape)>;
 
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Copy, Serialize, Deserialize)]
 pub enum PaddingMode {
     NoPadding,
     Padding,
