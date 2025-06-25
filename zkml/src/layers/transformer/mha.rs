@@ -2,9 +2,8 @@
 //! The module performs all the operations inside the multi-head attention layer, relying on
 //! ConcatMatMul and Softmax layers as building blocks.
 use crate::{
-    Element,
     layers::{
-        concat_matmul::ConcatMatMul,
+        concat_matmul::{ConcatMatMul, InputMatrix, Permutation},
         matrix_mul::{self as matmul, OperandMatrix},
         provable::{Evaluate, OpInfo, QuantizeOp, QuantizeOutput},
         reshape::Reshape,
@@ -12,7 +11,7 @@ use crate::{
     },
     padding::PaddingMode,
     quantization::Fieldizer,
-    tensor::{Number, Shape},
+    tensor::{Number, Shape}, Element,
 };
 use anyhow::ensure;
 use ff_ext::{ExtensionField, FieldFrom};
@@ -67,7 +66,11 @@ impl MhaFinalMul {
         Self {
             num_heads,
             head_dim,
-            mul: ConcatMatMul::new_with_permute(vec![1, 0, 2]),
+            mul: ConcatMatMul::new_with_permute(
+                InputMatrix::default(), 
+                InputMatrix::default(), 
+                Permutation::new(vec![1, 0, 2])
+            ),
         }
     }
 
