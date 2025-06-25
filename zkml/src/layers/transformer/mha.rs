@@ -116,9 +116,7 @@ impl<N: Number> Mha<N> {
             num_heads,
             head_dim,
         };
-        let softmax = Softmax::new()
-            .with_scale(N::from_f32((1.0 / (head_dim as f32)).sqrt())?)
-            .on_dim(1);
+        let softmax = Softmax::new().with_scale(N::from_f32((1.0 / (head_dim as f32)).sqrt())?);
         let final_mul = MhaFinalMul::new(num_heads, head_dim);
         // reshape the output from [q_len, num_heads, head_dim] to [q_len, num_heads*head_dim]
         let final_reshape = Reshape::new_subspace(1..=2, vec![num_heads * head_dim]);

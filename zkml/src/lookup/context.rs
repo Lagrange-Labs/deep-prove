@@ -8,7 +8,7 @@ use multilinear_extensions::{
     mle::{DenseMultilinearExtension, IntoMLE, MultilinearExtension},
     util::ceil_log2,
 };
-use p3_field::FieldAlgebra;
+use p3_field::{Field, FieldAlgebra};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::{debug, warn};
 use transcript::Transcript;
@@ -39,8 +39,8 @@ pub enum TableType {
     Clamping(usize),
     /// Table type used for computing Softmax, the first inner [`u32`] denotes the result of calling [`f32::to_bits`] on the temperature value, the second [`usize`] is the table size and the [`Element`] is the point at which we map everything to zero
     Softmax(u32, usize, Element),
-    /// Table used for checking the normalisation error in Softmax operations, the inner [`Element`] is the absoloute value of the allowable error
-    ErrorTable(Element),
+    /// Table used for checking the normalisation error in Softmax operations, the first inner [`Element`] is `1` quantised by the scale factor, the second inner [`Element`] is the absoloute value of the allowable error
+    ErrorTable(Element, Element),
 }
 
 impl TableType {
@@ -113,7 +113,7 @@ impl TableType {
                 ) = (0i128..table_size)
                     .map(|j| {
                         let prod = base * j;
-                        let out_elem = if prod > *bkm {
+                        let out_elem = if prod >= *bkm {
                             0i128
                         } else {
                             let float_exp =
@@ -130,10 +130,10 @@ impl TableType {
                     .unzip();
                 (merged_lookup, vec![in_column, out_column])
             }
-            TableType::ErrorTable(allowable_error) => {
+            TableType::ErrorTable(quant_one, allowable_error) => {
                 // Work out the minimum and maximum elements of the table
-                let table_min = -*allowable_error;
-                let table_max = *allowable_error;
+                let table_min = *quant_one - *allowable_error;
+                let table_max = *quant_one + *allowable_error;
                 // Work out the full table size
                 let table_size = 1usize << ceil_log2(2 * *allowable_error as usize);
                 let (element_out, field): (Vec<Element>, Vec<E::BaseField>) = (table_min
@@ -156,8 +156,11 @@ impl TableType {
             TableType::Range => "Range".to_string(),
             TableType::Clamping(size) => format!("Clamping: {}", size),
             TableType::Softmax(temp, ..) => format!("Softmax - temperature: {}", temp),
-            TableType::ErrorTable(allowable_error) => {
-                format!("Error Table - allowable error: {}", allowable_error)
+            TableType::ErrorTable(quant_one, allowable_error) => {
+                format!(
+                    "Error Table - quantised one: {}, allowable error: {}",
+                    quant_one, allowable_error
+                )
             }
         }
     }
@@ -275,7 +278,7 @@ impl TableType {
             TableType::Range | TableType::Relu => *quantization::BIT_LEN,
             TableType::Clamping(bits) => *bits,
             TableType::Softmax(_, bits, _) => *bits,
-            TableType::ErrorTable(allowable_error) => ceil_log2(2 * *allowable_error as usize),
+            TableType::ErrorTable(_, allowable_error) => ceil_log2(2 * *allowable_error as usize),
         }
     }
 
@@ -289,7 +292,7 @@ impl TableType {
                 let out_column = (0i128..table_size)
                     .map(|j| {
                         let prod = base * j;
-                        let out_elem = if prod > *bkm {
+                        let out_elem = if prod >= *bkm {
                             0i128
                         } else {
                             let float_exp =
@@ -305,10 +308,10 @@ impl TableType {
                     *size, out_column,
                 ))
             }
-            TableType::ErrorTable(allowable_error) => {
+            TableType::ErrorTable(quant_one, allowable_error) => {
                 // Work out the minimum and maximum elements of the table
-                let table_min = -*allowable_error;
-                let table_max = *allowable_error;
+                let table_min = quant_one - allowable_error;
+                let table_max = quant_one + allowable_error;
                 // Work out the full table size
                 let num_vars = ceil_log2(2 * *allowable_error as usize);
                 let table_size = 1usize << num_vars;
@@ -457,11 +460,26 @@ where
                     );
                 }
             }
+            // We have to account for repeated entries in the lookup table. This is usually the case if the table we want to lookup from is not a power of two size, in that case we pick a row from the table
+            // and repeat it until the table has the desired size.
+            let table_column_map =
+                table_column
+                    .iter()
+                    .fold(BTreeMap::<Element, u64>::new(), |mut map, elem| {
+                        *map.entry(*elem).or_insert(0) += 1;
+                        map
+                    });
             let multiplicities = table_column
                 .iter()
                 .map(|table_val| {
                     if let Some(lookup_count) = table_lookup_data.get(table_val) {
-                        E::BaseField::from_canonical_u64(*lookup_count)
+                        let table_count = *table_column_map.get(table_val).unwrap();
+                        let inv = if table_count != 1 {
+                            E::BaseField::from_canonical_u64(table_count).inverse()
+                        } else {
+                            E::BaseField::ONE
+                        };
+                        E::BaseField::from_canonical_u64(*lookup_count) * inv
                     } else {
                         E::BaseField::ZERO
                     }
