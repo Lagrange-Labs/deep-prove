@@ -24,7 +24,7 @@ pub fn causal_mask(num_heads: usize, q_len: usize, seq_len: usize) -> Tensor<f32
             }
         }
     }
-    Tensor::new(vec![num_heads, q_len, seq_len], mask)
+    Tensor::new(vec![num_heads, q_len, seq_len].into(), mask)
 }
 
 #[cfg(test)]
@@ -128,10 +128,7 @@ mod test {
             }
             let out = self.add.evaluate::<GoldilocksExt2>(
                 &vec![input, &down.outputs()[0]],
-                vec![
-                    input.get_shape().to_vec(),
-                    down.outputs()[0].get_shape().to_vec(),
-                ],
+                vec![input.get_shape(), down.outputs()[0].get_shape()],
             )?;
             Ok(out.outputs()[0].clone())
         }
@@ -141,16 +138,18 @@ mod test {
         pub fn random(hidden_size: usize, up_size: usize) -> Self {
             let layernorm = layernorm::LayerNorm::random(hidden_size);
             let up = {
-                let weight =
-                    OperandMatrix::new_weight_matrix(Tensor::random(&[up_size, hidden_size]));
+                let weight = OperandMatrix::new_weight_matrix(Tensor::random(
+                    &vec![up_size, hidden_size].into(),
+                ));
                 let left = OperandMatrix::Input;
                 MatMul::new(left, weight).expect("failed to create MatMul")
             };
             let activation = GELU::new();
             let down = {
                 // Dense::random(vec![up_size, hidden_size]);
-                let weight =
-                    OperandMatrix::new_weight_matrix(Tensor::random(&[hidden_size, up_size]));
+                let weight = OperandMatrix::new_weight_matrix(Tensor::random(
+                    &vec![hidden_size, up_size].into(),
+                ));
                 let left = OperandMatrix::Input;
                 MatMul::new(left, weight).expect("failed to create MatMul")
             };
@@ -310,10 +309,7 @@ mod test {
             // and then residual connection, [1, hidden_size]
             let out = self.add.evaluate::<GoldilocksExt2>(
                 &vec![input, &projected.outputs()[0]],
-                vec![
-                    input.get_shape().to_vec(),
-                    projected.outputs()[0].get_shape().to_vec(),
-                ],
+                vec![input.get_shape(), projected.outputs()[0].get_shape()],
             )?;
 
             if let Some(gpt2_output) = gpt2_output {
@@ -335,10 +331,9 @@ mod test {
             let layernorm = layernorm::LayerNorm::random(emb_size);
             // let out = Dense::random(vec![hidden_size, hidden_size]);
             let out = {
-                let weight = OperandMatrix::new_weight_matrix(Tensor::random(&vec![
-                    hidden_size,
-                    hidden_size,
-                ]));
+                let weight = OperandMatrix::new_weight_matrix(Tensor::random(
+                    &vec![hidden_size, hidden_size].into(),
+                ));
                 let left = OperandMatrix::Input;
                 MatMul::new(left, weight).expect("failed to create MatMul")
             };
@@ -368,7 +363,7 @@ mod test {
         let emb_size = 10;
         let num_heads = 2;
         let mut att = FlatAttention::random(emb_size, num_heads);
-        let input = Tensor::<f32>::random(&[1, emb_size]);
+        let input = Tensor::<f32>::random(&vec![1, emb_size].into());
         let output = att.forward(&input, None).unwrap();
         println!("output shape: {:?}", output.get_shape());
     }
@@ -381,7 +376,7 @@ mod test {
         let LLMModel::GPT2(mut model) = config.model(&loader)?;
         println!("model: {:?}", config.specific_config);
         for seq_len in [1, 10] {
-            let input = Tensor::<f32>::random(&[seq_len, config.embedding_size]);
+            let input = Tensor::<f32>::random(&vec![seq_len, config.embedding_size].into());
             let mut att = FlatAttention::new_from_parser(&config, model.blocks.remove(0));
             let flat_output = att.forward(&input, None).unwrap();
             println!("output shape: {:?}", flat_output.get_shape());
@@ -502,7 +497,7 @@ mod test {
                 .context(format!("failed to open file {}", debug_output_path.clone()))?,
         )?;
         let input = Tensor::new(
-            vec![gpt2_output.input_ids.len()],
+            vec![gpt2_output.input_ids.len()].into(),
             gpt2_output.input_ids.iter().map(|x| *x as f32).collect(),
         );
         let embedded = llm_model
@@ -533,7 +528,7 @@ mod test {
                 .context(format!("failed to open file {}", debug_output_path.clone()))?,
         )?;
         let input = Tensor::new(
-            vec![gpt2_output.input_ids.len(), config.embedding_size],
+            vec![gpt2_output.input_ids.len(), config.embedding_size].into(),
             gpt2_output.inputs_embeds.clone(),
         );
         let LLMModel::GPT2(mut model) = config.model_json(&loader)?;
@@ -581,12 +576,12 @@ mod test {
         )?;
         let expected_output = &&gpt2_output.final_output();
         let input = Tensor::new(
-            vec![gpt2_output.input_ids.len()],
+            vec![gpt2_output.input_ids.len()].into(),
             gpt2_output.input_ids.iter().map(|x| *x as f32).collect(),
         );
         // also test on a single random token
         let max_token = thread_rng().gen_range(0..llm_model.embeddings.emb.get_shape()[0]);
-        let single_input = Tensor::new(vec![1], vec![max_token as f32]);
+        let single_input = Tensor::new(vec![1].into(), vec![max_token as f32]);
         let model = llm_model
             .clone()
             .to_provable_model(&config, Shape::from(single_input.get_shape()))?;

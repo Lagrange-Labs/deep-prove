@@ -7,7 +7,7 @@ use crate::{
     Tensor,
     layers::provable::{Evaluate, LayerOut, OpInfo},
     padding::PaddingMode,
-    tensor::Number,
+    tensor::{Number, Shape},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,16 +22,12 @@ impl<N: Number> Embeddings<N> {
 }
 
 impl<N: Number> OpInfo for Embeddings<N> {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        _padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], _padding_mode: PaddingMode) -> Vec<Shape> {
         assert_eq!(input_shapes.len(), 1);
         // for each input, we output an embedding vector
         input_shapes
             .iter()
-            .map(|shape| vec![shape[0], self.emb.get_shape()[1]])
+            .map(|shape| Shape::new(vec![shape[0], self.emb.get_shape()[1]]))
             .collect()
     }
 
@@ -53,7 +49,7 @@ impl<N: Number> Evaluate<N> for Embeddings<N> {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> anyhow::Result<LayerOut<N, E>> {
         ensure!(
             inputs.iter().all(|x| x.get_shape().len() == 1),
@@ -80,7 +76,7 @@ impl<N: Number> Evaluate<N> for Embeddings<N> {
                 emb_data[emd_idx..emd_idx + emb_size].to_vec()
             })
             .collect::<Vec<_>>();
-        let out_shape = vec![seq_len, emb_size];
+        let out_shape = Shape::new(vec![seq_len, emb_size]);
         Ok(LayerOut::from_vec(vec![Tensor::new(out_shape, emb)]))
     }
 }
@@ -123,7 +119,7 @@ mod tests {
                 .collect()
         };
         let table = (0..vocab_size).flat_map(emb_vector).collect::<Vec<_>>();
-        let emb_tensor = Tensor::new(vec![vocab_size, emb_size], table);
+        let emb_tensor = Tensor::new(vec![vocab_size, emb_size].into(), table);
         let embeddings = Embeddings::new(emb_tensor);
 
         // generate random indices
@@ -131,9 +127,9 @@ mod tests {
             .into_iter()
             .map(|x| Element::from(x as Element))
             .collect::<Vec<_>>();
-        let x = Tensor::new(vec![seq_len], input_data.clone());
-        let out = embeddings.evaluate::<GoldilocksExt2>(&[&x], vec![vec![seq_len]])?;
-        assert_eq!(out.outputs()[0].get_shape(), vec![seq_len, emb_size]);
+        let x = Tensor::new(vec![seq_len].into(), input_data.clone());
+        let out = embeddings.evaluate::<GoldilocksExt2>(&[&x], vec![vec![seq_len].into()])?;
+        assert_eq!(out.outputs()[0].get_shape(), vec![seq_len, emb_size].into());
         // for each input index, check that the embedding vector is the correct one
         for (idx, table_idx) in input_data.iter().enumerate() {
             let emb = emb_vector(*table_idx as usize);

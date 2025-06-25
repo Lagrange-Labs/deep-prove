@@ -97,7 +97,7 @@ impl GPT2Model {
         user_input_shape: Shape,
     ) -> anyhow::Result<Model<f32>> {
         let mut model =
-            Model::new_from_input_shapes(vec![user_input_shape.into_vec()], PaddingMode::NoPadding);
+            Model::new_from_input_shapes(vec![user_input_shape], PaddingMode::NoPadding);
 
         let mut last_node_id =
             Some(model.add_consecutive_layer(Layer::Embeddings(self.embeddings), None)?);

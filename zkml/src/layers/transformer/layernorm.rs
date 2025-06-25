@@ -7,7 +7,7 @@ use crate::{
     layers::provable::{QuantizeOp, QuantizeOutput},
     padding::PaddingMode,
     parser::{gguf::FileTensorLoader, json, llm::LLMConfig},
-    tensor::Number,
+    tensor::{Number, Shape},
 };
 
 use crate::layers::provable::{Evaluate, LayerOut, OpInfo};
@@ -46,13 +46,13 @@ impl LayerNorm<f32> {
         let gamma = loader.get_tensor("norm.weight")?;
         let beta = loader.get_tensor("norm.bias")?;
         ensure!(
-            gamma.get_shape().as_slice() == &[c.embedding_size],
+            gamma.get_shape().as_ref() == &[c.embedding_size],
             "norm_gamma must have shape [{}] vs given {:?}",
             c.embedding_size,
             gamma.get_shape()
         );
         ensure!(
-            beta.get_shape().as_slice() == &[c.embedding_size],
+            beta.get_shape().as_ref() == &[c.embedding_size],
             "norm_beta must have shape [{}] vs given {:?}",
             c.embedding_size,
             beta.get_shape()
@@ -64,11 +64,7 @@ impl LayerNorm<f32> {
 
 impl<N: Number> OpInfo for LayerNorm<N> {
     // https://docs.rs/burn/0.17.0/burn/nn/struct.LayerNorm.html#method.forward
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        _padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], _padding_mode: PaddingMode) -> Vec<Shape> {
         input_shapes.to_vec()
     }
 
@@ -96,7 +92,7 @@ impl Evaluate<f32> for LayerNorm<f32> {
     fn evaluate<E: ff_ext::ExtensionField>(
         &self,
         inputs: &[&Tensor<f32>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> anyhow::Result<LayerOut<f32, E>> {
         assert!(inputs.len() == 1);
         let input = inputs[0];
@@ -130,7 +126,7 @@ impl Evaluate<f32> for LayerNorm<f32> {
         let Ok(data): Result<Vec<f32>, _> = output.to_data().into_vec() else {
             anyhow::bail!("failed to convert to f32");
         };
-        let output_shape = output.shape().dims.to_vec();
+        let output_shape = Shape::new(output.shape().dims);
         Ok(LayerOut::from_tensor(Tensor::<f32>::new(
             output_shape,
             data,
@@ -142,7 +138,7 @@ impl Evaluate<Element> for LayerNorm<Element> {
     fn evaluate<E: ff_ext::ExtensionField>(
         &self,
         _inputs: &[&Tensor<Element>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> anyhow::Result<LayerOut<Element, E>> {
         unimplemented!()
     }
@@ -175,8 +171,8 @@ mod tests {
 
     impl<N: Number> LayerNorm<N> {
         pub fn random(size: usize) -> Self {
-            let gamma = Tensor::<N>::random(&[size]);
-            let beta = Tensor::<N>::random(&[size]);
+            let gamma = Tensor::<N>::random(&vec![size].into());
+            let beta = Tensor::<N>::random(&vec![size].into());
             let eps = 1e-5;
             Self::new(gamma, beta, eps)
         }
@@ -186,13 +182,13 @@ mod tests {
 
     #[test]
     fn test_layernorm() {
-        let gamma = Tensor::<f32>::new(vec![1024], vec![1.0; 1024]);
-        let beta = Tensor::<f32>::new(vec![1024], vec![0.0; 1024]);
+        let gamma = Tensor::<f32>::new(vec![1024].into(), vec![1.0; 1024]);
+        let beta = Tensor::<f32>::new(vec![1024].into(), vec![0.0; 1024]);
         let eps = 1e-5;
         let layernorm = LayerNorm { gamma, beta, eps };
-        let input = Tensor::<f32>::new(vec![1, 1024], vec![0.0; 1024]);
+        let input = Tensor::<f32>::new(vec![1, 1024].into(), vec![0.0; 1024]);
         let output = layernorm.evaluate::<E>(&[&input], vec![]).unwrap();
-        assert_eq!(output.outputs[0].get_shape(), vec![1, 1024]);
+        assert_eq!(output.outputs[0].get_shape(), vec![1, 1024].into());
         assert_eq!(output.outputs[0].get_data(), vec![0.0; 1024]);
     }
 }

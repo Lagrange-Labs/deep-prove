@@ -15,7 +15,7 @@ use crate::{
         provable::{Evaluate, OpInfo, QuantizeOp, QuantizeOutput},
     },
     padding::PaddingMode,
-    tensor::Number,
+    tensor::{Number, Shape},
 };
 use anyhow::ensure;
 use ff_ext::ExtensionField;
@@ -39,11 +39,7 @@ impl MhaQK {
 }
 
 impl OpInfo for MhaQK {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         // // qk is now of shape [num_heads,q_len, seq_len]
         // // v is of shape [num_heads, seq_len, head_dim].
         let q_len = input_shapes[0][0];
@@ -55,22 +51,22 @@ impl OpInfo for MhaQK {
         match padding_mode {
             PaddingMode::NoPadding => {
                 vec![
-                    vec![self.num_heads, q_len, seq_len],
-                    vec![self.num_heads, seq_len, self.head_dim],
+                    Shape::new(vec![self.num_heads, q_len, seq_len]),
+                    Shape::new(vec![self.num_heads, seq_len, self.head_dim]),
                 ]
             }
             PaddingMode::Padding => {
                 vec![
-                    vec![
+                    Shape::new(vec![
                         self.num_heads,
                         q_len.next_power_of_two(),
                         seq_len.next_power_of_two(),
-                    ],
-                    vec![
+                    ]),
+                    Shape::new(vec![
                         self.num_heads,
                         seq_len.next_power_of_two(),
                         self.head_dim.next_power_of_two(),
-                    ],
+                    ]),
                 ]
             }
         }
@@ -93,7 +89,7 @@ impl<N: Number> Evaluate<N> for MhaQK {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> anyhow::Result<LayerOut<N, E>> {
         ensure!(inputs.len() == 3, "MHA_QK expects 3 inputs");
         let head_prod = self.num_heads * self.head_dim;
@@ -123,9 +119,9 @@ impl<N: Number> Evaluate<N> for MhaQK {
             "v should have the same sequence length as k"
         );
         // reshape into (seq_len, num_head, head_dim)
-        let q = q.reshape(vec![q_len, self.num_heads, self.head_dim]);
-        let k = k.reshape(vec![seq_len, self.num_heads, self.head_dim]);
-        let v = v.reshape(vec![seq_len, self.num_heads, self.head_dim]);
+        let q = q.reshape(vec![q_len, self.num_heads, self.head_dim].into());
+        let k = k.reshape(vec![seq_len, self.num_heads, self.head_dim].into());
+        let v = v.reshape(vec![seq_len, self.num_heads, self.head_dim].into());
         let q = q.permute3d(&vec![1, 0, 2]); // (num_head, seq_len, head_dim)
         let k = k.permute3d(&vec![1, 0, 2]); // (num_head, seq_len, head_dim)
         let v = v.permute3d(&vec![1, 0, 2]); // (num_head, seq_len, head_dim)
@@ -135,13 +131,13 @@ impl<N: Number> Evaluate<N> for MhaQK {
                 // shape is now (1, seq_len, head_dim) == [seq_len, head_dim]
                 let mini_q = q
                     .slice_3d(head, head + 1)
-                    .reshape(vec![q_len, self.head_dim]);
+                    .reshape(vec![q_len, self.head_dim].into());
                 let mini_k = k
                     .slice_3d(head, head + 1)
-                    .reshape(vec![seq_len, self.head_dim]); // [seq_len, head_dim]
+                    .reshape(vec![seq_len, self.head_dim].into()); // [seq_len, head_dim]
                 let mini_v = v
                     .slice_3d(head, head + 1)
-                    .reshape(vec![seq_len, self.head_dim]); // [seq_len, head_dim]
+                    .reshape(vec![seq_len, self.head_dim].into()); // [seq_len, head_dim]
                 // output Q @ K^T <=> [q_len, head_dim] x [seq_len, head_dim]^T is of shape [q_len,seq_len], and v is of shape [seq_len, head_dim]
                 Ok(vec![
                     matmul::MatMul::new_with_config(
@@ -160,11 +156,14 @@ impl<N: Number> Evaluate<N> for MhaQK {
         // merge back the heads together - since proving is expecting one matrix, not a list of vectors
         let mut first_tuple = qkt_heads.remove(0).into_iter();
         // here we reshape to 3d [1, ...] such that concatenation works fine with current concat implementation
-        let first_qk = first_tuple.next().unwrap().reshape(vec![1, q_len, seq_len]);
+        let first_qk = first_tuple
+            .next()
+            .unwrap()
+            .reshape(vec![1, q_len, seq_len].into());
         let first_v = first_tuple
             .next()
             .unwrap()
-            .reshape(vec![1, seq_len, self.head_dim]);
+            .reshape(vec![1, seq_len, self.head_dim].into());
         let (qk, v) =
             qkt_heads
                 .into_iter()
@@ -174,8 +173,11 @@ impl<N: Number> Evaluate<N> for MhaQK {
                     acc_v.concat(head_it.next().unwrap());
                     (acc_qk, acc_v)
                 });
-        assert_eq!(qk.get_shape(), vec![self.num_heads, q_len, seq_len]);
-        assert_eq!(v.get_shape(), vec![self.num_heads, seq_len, self.head_dim]);
+        assert_eq!(qk.get_shape(), vec![self.num_heads, q_len, seq_len].into());
+        assert_eq!(
+            v.get_shape(),
+            vec![self.num_heads, seq_len, self.head_dim].into()
+        );
         // CAUSAL MASK
         // First it sets to 0 the part that should be ignored on each Q "sequence" for each head
         // Then it adds minus infinity to the same part.
@@ -236,7 +238,7 @@ pub fn zeroifier<N: Number>(num_heads: usize, q_len: usize, seq_len: usize) -> T
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    Tensor::new(vec![num_heads, q_len, seq_len], zeroified)
+    Tensor::new(vec![num_heads, q_len, seq_len].into(), zeroified)
 }
 
 /// Sets to minus infinity the part that should be ignored on each Q "sequence" for each head
@@ -260,7 +262,7 @@ pub fn infinitizer<N: Number>(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    Tensor::new(vec![num_heads, q_len, seq_len], zeroified)
+    Tensor::new(vec![num_heads, q_len, seq_len].into(), zeroified)
 }
 
 #[cfg(test)]
@@ -301,9 +303,9 @@ mod test {
             let mha_qk = MhaQK::new(num_heads, head_dim);
             let q_len = params.q_len;
             let seq_len = params.seq_len;
-            let q = Tensor::<Element>::random(&vec![q_len, hidden_size]);
-            let k = Tensor::<Element>::random(&vec![seq_len, hidden_size]);
-            let v = Tensor::<Element>::random(&vec![seq_len, hidden_size]);
+            let q = Tensor::<Element>::random(&vec![q_len, hidden_size].into());
+            let k = Tensor::<Element>::random(&vec![seq_len, hidden_size].into());
+            let v = Tensor::<Element>::random(&vec![seq_len, hidden_size].into());
             let output = mha_qk.evaluate::<GoldilocksExt2>(&[&q, &k, &v], vec![]);
             if params.should_fail {
                 assert!(output.is_err());
@@ -313,9 +315,9 @@ mod test {
             assert_eq!(output.outputs.len(), 2);
             let (qk, v) = (output.outputs.remove(0), output.outputs.remove(0));
             // normally [1,seq_len] per head, so with all heads [num_heads, 1, seq_len]
-            assert_eq!(qk.get_shape(), vec![num_heads, q_len, seq_len]);
+            assert_eq!(qk.get_shape(), vec![num_heads, q_len, seq_len].into());
             // same, but on 3d
-            assert_eq!(v.get_shape(), vec![num_heads, seq_len, head_dim]);
+            assert_eq!(v.get_shape(), vec![num_heads, seq_len, head_dim].into());
             let output_shapes = mha_qk.output_shapes(
                 &[q.get_shape(), k.get_shape(), v.get_shape()],
                 PaddingMode::NoPadding,
@@ -329,7 +331,7 @@ mod test {
         let num_heads = 2;
         let q_len = 4;
         let seq_len = 4;
-        let input = Tensor::<Element>::random(&vec![num_heads, q_len, seq_len]);
+        let input = Tensor::<Element>::random(&vec![num_heads, q_len, seq_len].into());
         let zeros = zeroifier(num_heads, q_len, seq_len);
         let minus_infinity = infinitizer(num_heads, q_len, seq_len, Element::MIN);
         let zeroified = input.mul(&zeros);

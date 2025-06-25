@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     Element, Tensor,
     layers::provable::{Evaluate, LayerOut, OpInfo, QuantizeOp},
-    tensor::Number,
+    tensor::{Number, Shape},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,7 +41,7 @@ impl Evaluate<f32> for Softmax<f32> {
     fn evaluate<E: ff_ext::ExtensionField>(
         &self,
         inputs: &[&crate::Tensor<f32>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> anyhow::Result<LayerOut<f32, E>> {
         ensure!(
             inputs.len() == 1,
@@ -72,7 +72,7 @@ impl Evaluate<Element> for Softmax<Element> {
     fn evaluate<E: ff_ext::ExtensionField>(
         &self,
         _inputs: &[&crate::Tensor<Element>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> anyhow::Result<LayerOut<Element, E>> {
         unimplemented!()
     }
@@ -81,9 +81,9 @@ impl Evaluate<Element> for Softmax<Element> {
 impl<N: Number> OpInfo for Softmax<N> {
     fn output_shapes(
         &self,
-        input_shapes: &[Vec<usize>],
+        input_shapes: &[Shape],
         _padding_mode: crate::padding::PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    ) -> Vec<Shape> {
         input_shapes.to_vec()
     }
 
@@ -125,11 +125,11 @@ mod tests {
     #[test]
     fn test_softmax() {
         let softmax = Softmax::new();
-        let input = Tensor::new(vec![2, 3], vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let input = Tensor::new(vec![2, 3].into(), vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         let output = softmax
-            .evaluate::<GoldilocksExt2>(&[&input], vec![vec![2, 3]])
+            .evaluate::<GoldilocksExt2>(&[&input], vec![vec![2, 3].into()])
             .unwrap();
-        assert_eq!(output.outputs[0].get_shape(), vec![2, 3]);
+        assert_eq!(output.outputs[0].get_shape(), vec![2, 3].into());
         // since we dont slice, sum of  prob should be equal to 1
         assert_eq!(output.outputs[0].get_data().iter().sum::<f32>(), 1.0);
     }
@@ -137,12 +137,12 @@ mod tests {
     #[test]
     fn test_softmax_with_dim() {
         let softmax = Softmax::new().on_dim(1);
-        let input = Tensor::random(&vec![2, 3, 4]);
+        let input = Tensor::random(&vec![2, 3, 4].into());
         let output = softmax
-            .evaluate::<GoldilocksExt2>(&[&input], vec![vec![2, 3, 4]])
+            .evaluate::<GoldilocksExt2>(&[&input], vec![vec![2, 3, 4].into()])
             .unwrap();
         let out = output.outputs()[0];
-        assert_eq!(out.get_shape(), vec![2, 3, 4]);
+        assert_eq!(out.get_shape(), vec![2, 3, 4].into());
         let (slices, _) = out.slice_on_dim(1);
         let acceptable_range = 0.99..1.01;
         for slice in slices {
@@ -158,9 +158,9 @@ mod tests {
     fn test_softmax_with_scale() {
         let scale = 1.0 / 2.0;
         let softmax = Softmax::new().with_scale(scale);
-        let input = Tensor::new(vec![2, 3], vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        let input = Tensor::new(vec![2, 3].into(), vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         let output = softmax
-            .evaluate::<GoldilocksExt2>(&[&input], vec![vec![2, 3]])
+            .evaluate::<GoldilocksExt2>(&[&input], vec![vec![2, 3].into()])
             .unwrap();
 
         assert_eq!(

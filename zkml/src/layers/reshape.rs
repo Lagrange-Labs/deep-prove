@@ -3,6 +3,7 @@ use std::ops::{Range, RangeBounds};
 use crate::{
     layers::provable::{QuantizeOp, QuantizeOutput},
     padding::PaddingMode,
+    tensor::Shape,
 };
 use anyhow::ensure;
 use ff_ext::ExtensionField;
@@ -14,7 +15,7 @@ use super::provable::{Evaluate, LayerOut, OpInfo};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Reshape {
-    Full(Vec<Vec<usize>>),
+    Full(Vec<Shape>),
     // (v1,v2) where
     // - v1 are the indices in the shape of the tensor that we want to remove
     // - v2 are the indices that we add in place
@@ -26,7 +27,7 @@ pub enum Reshape {
 }
 
 impl Reshape {
-    pub fn new_fixed(new_dim: Vec<Vec<usize>>) -> Self {
+    pub fn new_fixed(new_dim: Vec<Shape>) -> Self {
         Self::Full(new_dim)
     }
     pub fn new_subspace<R: RangeBounds<usize>>(to_remove: R, to_add: Vec<usize>) -> Self {
@@ -37,27 +38,27 @@ impl Reshape {
     pub fn new_squeeze(index: usize) -> Self {
         Self::Squeeze(index)
     }
-    fn internal_output(&self, input_shapes: &[Vec<usize>]) -> anyhow::Result<Vec<Vec<usize>>> {
+    fn internal_output(&self, input_shapes: &[Shape]) -> anyhow::Result<Vec<Shape>> {
         let new_dims = match self {
             Reshape::Squeeze(index) => {
                 ensure!(*index < input_shapes[0].len(), "index out of bounds");
-                let mut new_dim = input_shapes[0].clone();
+                let mut new_dim = input_shapes[0].clone().into_vec();
                 new_dim.insert(*index, 1);
-                vec![new_dim]
+                vec![Shape::new(new_dim)]
             }
             Reshape::Full(ref new_dim) => new_dim.clone(),
             Reshape::Subspace((to_remove, to_add)) => input_shapes
                 .iter()
                 .map(|shape| {
-                    let mut new_shape = shape.clone();
+                    let mut new_shape = shape.clone().into_vec();
                     println!(
                         "moving from shape {:?} by splice({:?},{:?})",
                         shape, to_remove, to_add
                     );
                     new_shape.splice(to_remove.clone(), to_add.clone());
-                    new_shape
+                    Shape::new(new_shape)
                 })
-                .collect::<Vec<Vec<usize>>>(),
+                .collect::<Vec<Shape>>(),
         };
         ensure!(
             new_dims.len() == input_shapes.len(),
@@ -67,19 +68,14 @@ impl Reshape {
             new_dims
                 .iter()
                 .zip(input_shapes.iter())
-                .all(|(new_dim, input_shape)| new_dim.iter().product::<usize>()
-                    == input_shape.iter().product::<usize>())
+                .all(|(new_dim, input_shape)| new_dim.product() == input_shape.product())
         );
         Ok(new_dims)
     }
 }
 
 impl OpInfo for Reshape {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        _padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], _padding_mode: PaddingMode) -> Vec<Shape> {
         match self.internal_output(input_shapes) {
             Ok(out) => out,
             Err(e) => panic!("invalid reshape parameters: {:?}", e),
@@ -107,7 +103,7 @@ impl<N: Number> Evaluate<N> for Reshape {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> anyhow::Result<LayerOut<N, E>> {
         let output_shapes =
             self.internal_output(&inputs.iter().map(|x| x.get_shape()).collect::<Vec<_>>())?;
@@ -162,34 +158,34 @@ mod tests {
     #[test]
     fn test_reshape_fixed() {
         let input = Tensor::<Element>::new(
-            vec![2, 3, 3],
+            vec![2, 3, 3].into(),
             vec![
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
             ],
         );
-        let reshape = Reshape::new_fixed(vec![vec![3, 2, 3]]);
+        let reshape = Reshape::new_fixed(vec![vec![3, 2, 3].into()]);
         let output = reshape
             .evaluate::<GoldilocksExt2>(&[&input], vec![])
             .expect("reshape shouldn't fail");
-        assert_eq!(output.outputs[0].get_shape(), vec![3, 2, 3]);
+        assert_eq!(output.outputs[0].get_shape(), vec![3, 2, 3].into());
         assert_eq!(output.outputs[0].get_data(), input.get_data());
     }
 
     #[test]
     fn test_reshape_squeeze() {
-        let input = Tensor::<Element>::new(vec![2, 3], vec![0, 1, 2, 3, 4, 5]);
+        let input = Tensor::<Element>::new(vec![2, 3].into(), vec![0, 1, 2, 3, 4, 5]);
         let reshape = Reshape::new_squeeze(1);
         let output = reshape
             .evaluate::<GoldilocksExt2>(&[&input], vec![])
             .expect("reshape shouldn't fail");
-        assert_eq!(output.outputs[0].get_shape(), vec![2, 1, 3]);
+        assert_eq!(output.outputs[0].get_shape(), vec![2, 1, 3].into());
         assert_eq!(output.outputs[0].get_data(), vec![0, 1, 2, 3, 4, 5]);
     }
 
     #[test]
     fn test_reshape_subspace() {
         let input = Tensor::<Element>::new(
-            vec![2, 12],
+            vec![2, 12].into(),
             (0..24).map(|i| i as Element).collect::<Vec<_>>(),
         );
         println!(
@@ -204,7 +200,7 @@ mod tests {
         let output = reshape
             .evaluate::<GoldilocksExt2>(&[&input], vec![])
             .expect("reshape shouldn't fail");
-        assert_eq!(output.outputs[0].get_shape(), vec![2, 3, 4]);
+        assert_eq!(output.outputs[0].get_shape(), vec![2, 3, 4].into());
         assert_eq!(
             output.outputs[0].get_data(),
             (0..24).map(|i| i as Element).collect::<Vec<_>>()
@@ -214,7 +210,7 @@ mod tests {
     #[test]
     fn test_reshape_subspace_range_inclusive() {
         let input = Tensor::<Element>::new(
-            vec![2, 6, 2],
+            vec![2, 6, 2].into(),
             (0..24).map(|i| i as Element).collect::<Vec<_>>(),
         );
         println!(
@@ -229,7 +225,7 @@ mod tests {
         let output = reshape
             .evaluate::<GoldilocksExt2>(&[&input], vec![])
             .expect("reshape shouldn't fail");
-        assert_eq!(output.outputs[0].get_shape(), vec![2, 3, 4]);
+        assert_eq!(output.outputs[0].get_shape(), vec![2, 3, 4].into());
         assert_eq!(
             output.outputs[0].get_data(),
             (0..24).map(|i| i as Element).collect::<Vec<_>>()

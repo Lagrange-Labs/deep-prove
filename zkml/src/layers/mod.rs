@@ -50,7 +50,7 @@ use crate::{
     model::StepData,
     padding::{PaddingMode, ShapeInfo},
     quantization::ScalingFactor,
-    tensor::{Number, Tensor},
+    tensor::{Number, Shape, Tensor},
 };
 use activation::ActivationCtx;
 use convolution::{ConvCtx, ConvProof, SchoolBookConv, SchoolBookConvCtx};
@@ -187,11 +187,7 @@ where
             self.output_shapes(&last_step.padded_output_shape, PaddingMode::Padding);
         ShapeStep::next_step(last_step, unpadded_output, padded_output)
     }
-    pub fn shape_step(
-        &self,
-        unpadded_input: &[Vec<usize>],
-        padded_input: &[Vec<usize>],
-    ) -> ShapeStep {
+    pub fn shape_step(&self, unpadded_input: &[Shape], padded_input: &[Shape]) -> ShapeStep {
         let unpadded_output = self.output_shapes(unpadded_input, PaddingMode::NoPadding);
         let padded_output = self.output_shapes(padded_input, PaddingMode::Padding);
         ShapeStep::new(
@@ -218,7 +214,7 @@ where
     pub(crate) fn run<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
-        unpadded_input_shapes: Vec<Vec<usize>>,
+        unpadded_input_shapes: Vec<Shape>,
     ) -> Result<LayerOut<N, E>>
     where
         N: Number,
@@ -252,11 +248,7 @@ impl Node<Element> {
 }
 
 impl<N: Number> OpInfo for Layer<N> {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         match self {
             Layer::Dense(dense) => dense.output_shapes(input_shapes, padding_mode),
             Layer::Convolution(convolution) => {
@@ -359,7 +351,7 @@ impl Evaluate<f32> for Layer<f32> {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<f32>],
-        unpadded_input_shapes: Vec<Vec<usize>>,
+        unpadded_input_shapes: Vec<Shape>,
     ) -> Result<LayerOut<f32, E>> {
         match self {
             Layer::Dense(dense) => dense.evaluate(inputs, unpadded_input_shapes),
@@ -392,7 +384,7 @@ impl Evaluate<Element> for Layer<Element> {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<Element>],
-        unpadded_input_shapes: Vec<Vec<usize>>,
+        unpadded_input_shapes: Vec<Shape>,
     ) -> Result<LayerOut<Element, E>> {
         match self {
             Layer::Dense(dense) => dense.evaluate(inputs, unpadded_input_shapes),

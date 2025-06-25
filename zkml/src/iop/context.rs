@@ -5,6 +5,7 @@ use crate::{
     lookup::context::{LookupContext, TableType},
     model::{Model, ModelCtx, ToIterator},
     quantization::Fieldizer,
+    tensor::Shape,
 };
 use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
@@ -47,24 +48,24 @@ where
     /// Context holding all the different table types we use in lookups
     pub lookup: LookupContext,
     /// unpadded shape of the first initial input
-    pub unpadded_input_shapes: Vec<Vec<usize>>,
+    pub unpadded_input_shapes: Vec<Shape>,
 }
 
 /// Similar to the InferenceStep but only records the input and output shapes
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShapeStep {
-    pub unpadded_input_shape: Vec<Vec<usize>>,
-    pub unpadded_output_shape: Vec<Vec<usize>>,
-    pub padded_input_shape: Vec<Vec<usize>>,
-    pub padded_output_shape: Vec<Vec<usize>>,
+    pub unpadded_input_shape: Vec<Shape>,
+    pub unpadded_output_shape: Vec<Shape>,
+    pub padded_input_shape: Vec<Shape>,
+    pub padded_output_shape: Vec<Shape>,
 }
 
 impl ShapeStep {
     pub fn new(
-        unpadded_input: Vec<Vec<usize>>,
-        padded_input: Vec<Vec<usize>>,
-        unpadded_output: Vec<Vec<usize>>,
-        padded_output: Vec<Vec<usize>>,
+        unpadded_input: Vec<Shape>,
+        padded_input: Vec<Shape>,
+        unpadded_output: Vec<Shape>,
+        padded_output: Vec<Shape>,
     ) -> ShapeStep {
         Self {
             unpadded_input_shape: unpadded_input,
@@ -75,8 +76,8 @@ impl ShapeStep {
     }
     pub fn next_step(
         last_step: &ShapeStep,
-        unpadded_output: Vec<Vec<usize>>,
-        padded_output: Vec<Vec<usize>>,
+        unpadded_output: Vec<Shape>,
+        padded_output: Vec<Shape>,
     ) -> ShapeStep {
         ShapeStep {
             unpadded_input_shape: last_step.unpadded_output_shape.clone(),
@@ -91,7 +92,7 @@ impl ShapeStep {
 #[derive(Clone, Debug)]
 pub struct ContextAux {
     pub tables: BTreeSet<TableType>,
-    pub last_output_shape: Vec<Vec<usize>>,
+    pub last_output_shape: Vec<Shape>,
     pub model_polys: Option<HashMap<PolyId, Vec<Element>>>,
 }
 
@@ -105,7 +106,7 @@ where
     /// INFO: it _assumes_ the model is already well padded to power of twos.
     pub fn generate(
         model: &Model<Element>,
-        input_shapes: Option<Vec<Vec<usize>>>,
+        input_shapes: Option<Vec<Shape>>,
     ) -> anyhow::Result<Self> {
         let tables = BTreeSet::new();
         let input_shapes = if let Some(shape) = input_shapes {
@@ -118,12 +119,12 @@ where
             last_output_shape: input_shapes.clone(),
             model_polys: None,
         };
-        let mut max_poly_len = input_shapes.iter().fold(0usize, |acc, shapes| {
-            acc.max(shapes.iter().product::<usize>())
-        });
+        let mut max_poly_len = input_shapes
+            .iter()
+            .fold(0usize, |acc, shapes| acc.max(shapes.product()));
         let mut model_polys = Vec::<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>::new();
         let mut step_infos = HashMap::new();
-        let mut shapes: HashMap<NodeId, Vec<Vec<usize>>> = HashMap::new();
+        let mut shapes: HashMap<NodeId, Vec<Shape>> = HashMap::new();
         debug!("Context : layer info generation ...");
         for (id, node) in model.to_forward_iterator() {
             trace!(
@@ -210,9 +211,7 @@ where
             max_poly_len = new_aux
                 .last_output_shape
                 .iter()
-                .fold(max_poly_len, |acc, shapes| {
-                    acc.max(shapes.iter().product::<usize>())
-                });
+                .fold(max_poly_len, |acc, shapes| acc.max(shapes.product()));
             ctx_aux = new_aux;
             shapes.insert(id, ctx_aux.last_output_shape.clone());
         }

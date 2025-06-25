@@ -78,7 +78,7 @@ impl ScalingStrategy for InferenceObserver {
                     input_shapes
                         .iter()
                         .map(|shape| {
-                            let size = shape.iter().product();
+                            let size = shape.product();
                             (0..size)
                                 .map(|_| <f32 as Number>::random(&mut rand::thread_rng()))
                                 .collect_vec()

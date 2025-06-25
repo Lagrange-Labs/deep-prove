@@ -146,7 +146,7 @@ fn is_cnn(filepath: &str) -> Result<bool> {
     Ok(is_cnn)
 }
 
-pub fn safe_conv2d_shape(input_shape: &[usize], filter_shape: &[usize]) -> Result<Vec<usize>> {
+pub fn safe_conv2d_shape(input_shape: &[usize], filter_shape: &Shape) -> Result<Shape> {
     let result = check_filter(filter_shape);
     assert!(result.is_ok(), "conv2d: Failed {:?}", result.unwrap_err());
 
@@ -155,7 +155,7 @@ pub fn safe_conv2d_shape(input_shape: &[usize], filter_shape: &[usize]) -> Resul
     Ok(conv2d_shape(input_shape, filter_shape))
 }
 
-pub fn check_filter(filter_shape: &[usize]) -> Result<()> {
+pub fn check_filter(filter_shape: &Shape) -> Result<()> {
     ensure!(filter_shape.len() == 4, "Filter should be 4D tensor.");
     ensure!(
         filter_shape[2] == filter_shape[3],
@@ -164,13 +164,13 @@ pub fn check_filter(filter_shape: &[usize]) -> Result<()> {
     Ok(())
 }
 
-pub fn check_cnn_input(input_shape: &[usize]) -> Result<()> {
+pub fn check_cnn_input(input_shape: &Shape) -> Result<()> {
     ensure!(input_shape.len() == 3, "input should be 3d tensor");
     ensure!(input_shape[1] == input_shape[2], "input should be square");
     Ok(())
 }
 
-pub fn safe_maxpool2d_shape(input_shape: &[usize]) -> Result<Vec<usize>> {
+pub fn safe_maxpool2d_shape(input_shape: &Shape) -> Result<Shape> {
     check_cnn_input(input_shape).context("maxpool2d: invalid input shape")?;
     Ok(maxpool2d_shape(input_shape))
 }

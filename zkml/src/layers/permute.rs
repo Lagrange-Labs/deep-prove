@@ -4,7 +4,7 @@ use ff_ext::ExtensionField;
 use crate::{
     Tensor,
     layers::provable::{Evaluate, LayerOut},
-    tensor::Number,
+    tensor::{Number, Shape},
 };
 
 pub struct Permute {
@@ -21,7 +21,7 @@ impl<N: Number> Evaluate<N> for Permute {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> anyhow::Result<LayerOut<N, E>> {
         ensure!(
             inputs.iter().all(|t| t.get_shape().len() == 3),
@@ -46,11 +46,11 @@ mod test {
 
     #[test]
     fn test_permute() {
-        let input = Tensor::<Element>::random(&[2, 3, 4]);
+        let input = Tensor::<Element>::random(&vec![2, 3, 4].into());
         let permute = Permute::new(vec![1, 0, 2]);
         let output = permute
             .evaluate::<GoldilocksExt2>(&[&input], vec![])
             .unwrap();
-        assert_eq!(output.outputs()[0].get_shape(), vec![3, 2, 4]);
+        assert_eq!(output.outputs()[0].get_shape(), vec![3, 2, 4].into());
     }
 }

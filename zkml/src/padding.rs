@@ -104,8 +104,8 @@ pub(crate) fn pooling(p: Pooling, si: &mut ShapeInfo) -> Result<Pooling> {
             sd.input_shape_padded.is_power_of_two(),
             "Input shape for max pool is not padded"
         );
-        sd.input_shape_og = safe_maxpool2d_shape(sd.input_shape_og.as_ref())?.into();
-        sd.input_shape_padded = safe_maxpool2d_shape(sd.input_shape_padded.as_ref())?.into();
+        sd.input_shape_og = safe_maxpool2d_shape(&sd.input_shape_og)?.into();
+        sd.input_shape_padded = safe_maxpool2d_shape(&sd.input_shape_padded)?.into();
     }
     Ok(p)
 }
@@ -120,8 +120,7 @@ pub(crate) fn pad_conv(
         "More than 1 input shape found when padding convolution layer"
     );
     let sd = si.shapes.first_mut().unwrap();
-    sd.input_shape_og =
-        safe_conv2d_shape(sd.input_shape_og.as_ref(), &c.filter.get_shape())?.into();
+    sd.input_shape_og = safe_conv2d_shape(&sd.input_shape_og, &c.filter.get_shape())?.into();
     let weight_shape = c.filter.get_shape();
     // Perform basic sanity checks on the tensor dimensions
     check_filter(&weight_shape).context("filter shape test failed:")?;
@@ -149,9 +148,8 @@ pub(crate) fn pad_conv(
         "Filter dimensions in convolution have to be smaller than input dimensions",
     );
 
-    let new_conv = new_conv_good.into_padded_and_ffted(sd.input_shape_og.as_ref());
-    let output_shape: Shape =
-        safe_conv2d_shape(sd.input_shape_padded.as_ref(), &weight_shape)?.into();
+    let new_conv = new_conv_good.into_padded_and_ffted(&sd.input_shape_og);
+    let output_shape: Shape = safe_conv2d_shape(&sd.input_shape_padded, &weight_shape)?.into();
     sd.input_shape_padded = output_shape.next_power_of_two();
     Ok(new_conv)
 }
@@ -210,7 +208,8 @@ pub(crate) fn pad_dense(mut d: Dense<Element>, si: &mut ShapeInfo) -> Result<Den
         );
         sd.ignore_garbage_pad = None;
     } else {
-        d.matrix.reshape_to_fit_inplace_2d(vec![nrows, ncols]);
+        d.matrix
+            .reshape_to_fit_inplace_2d(vec![nrows, ncols].into());
     }
     d.bias = d.bias.pad_1d(nrows);
     sd.input_shape_padded = vec![nrows].into();
@@ -231,15 +230,10 @@ pub(crate) fn pad_matmul(mut mat: MatMul<Element>, si: &mut ShapeInfo) -> Result
             .all(|s| s.input_shape_og.rank() == 2 && s.input_shape_padded.rank() == 2),
         "Unpadded input shape for MatMul is not 2D"
     );
-    let (unpadded_input_shapes, mut padded_input_shapes): (Vec<Vec<usize>>, Vec<Vec<usize>>) = si
+    let (unpadded_input_shapes, mut padded_input_shapes): (Vec<Shape>, Vec<Shape>) = si
         .shapes
         .iter()
-        .map(|s| {
-            (
-                s.input_shape_og.clone().into_vec(),
-                s.input_shape_padded.clone().into_vec(),
-            )
-        })
+        .map(|s| (s.input_shape_og.clone(), s.input_shape_padded.clone()))
         .collect();
     let mut unpadded_output_shapes =
         mat.output_shapes(&unpadded_input_shapes, PaddingMode::NoPadding);
@@ -253,7 +247,8 @@ pub(crate) fn pad_matmul(mut mat: MatMul<Element>, si: &mut ShapeInfo) -> Result
         (OperandMatrix::Weigth(m), OperandMatrix::Input) => {
             let nrows = pad_minimum(m.tensor.nrows_2d());
             let ncols = padded_input_shapes[0][0];
-            m.tensor.reshape_to_fit_inplace_2d(vec![nrows, ncols]);
+            m.tensor
+                .reshape_to_fit_inplace_2d(vec![nrows, ncols].into());
             (
                 m.tensor.get_shape(),
                 padded_input_shapes.pop().unwrap(), /* safe to unwrap since we checked the number of inputs at the beginning */
@@ -262,7 +257,8 @@ pub(crate) fn pad_matmul(mut mat: MatMul<Element>, si: &mut ShapeInfo) -> Result
         (OperandMatrix::Input, OperandMatrix::Weigth(m)) => {
             let nrows = padded_input_shapes[0][1];
             let ncols = pad_minimum(m.tensor.ncols_2d());
-            m.tensor.reshape_to_fit_inplace_2d(vec![nrows, ncols]);
+            m.tensor
+                .reshape_to_fit_inplace_2d(vec![nrows, ncols].into());
             (padded_input_shapes.pop().unwrap(), m.tensor.get_shape())
         }
         (OperandMatrix::Input, OperandMatrix::Input) => {

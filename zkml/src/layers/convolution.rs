@@ -5,6 +5,7 @@ use crate::{
     model::StepData,
     padding::{PaddingMode, ShapeInfo, pad_conv},
     quantization::{BIT_LEN, TensorFielder},
+    tensor::Shape,
 };
 use core::f32;
 use std::collections::HashMap;
@@ -55,7 +56,7 @@ pub struct Convolution<T> {
     /// Same for bias.
     pub bias: Tensor<T>,
     /// Unpadded shape of the filter. This is set to filter's shape in case of no padding.
-    pub unpadded_shape: Vec<usize>,
+    pub unpadded_shape: Shape,
 }
 
 /// Info about the convolution layer derived during the setup phase
@@ -74,8 +75,8 @@ pub struct ConvCtx<E> {
     pub real_nw: usize,
     pub nw: usize,
     pub filter_size: usize,
-    pub unpadded_filter_shape: Vec<usize>,
-    pub padded_filter_shape: Vec<usize>,
+    pub unpadded_filter_shape: Shape,
+    pub padded_filter_shape: Shape,
 }
 
 pub fn to_bits<E: ExtensionField>(mut num: usize, bitlen: usize) -> Vec<E> {
@@ -128,19 +129,19 @@ impl<T: Number> Convolution<T> {
     }
 
     pub(crate) fn new_without_bias(filter: Tensor<T>) -> Self {
-        let bias = Tensor::zeros(vec![filter.kw()]);
+        let bias = Tensor::zeros(Shape::new(vec![filter.kw()]));
         Self::new(filter, bias)
     }
 
-    pub fn new_padded(filter: Tensor<T>, bias: Tensor<T>, unpadded_shape: &[usize]) -> Self {
+    pub fn new_padded(filter: Tensor<T>, bias: Tensor<T>, unpadded_shape: &Shape) -> Self {
         assert_eq!(filter.kw(), bias.get_shape()[0]);
         Self {
             filter,
             bias,
-            unpadded_shape: unpadded_shape.to_vec(),
+            unpadded_shape: unpadded_shape.clone(),
         }
     }
-    pub fn output_shape(&self, input_shape: &[usize], padding_mode: PaddingMode) -> Vec<usize> {
+    pub fn output_shape(&self, input_shape: &Shape, padding_mode: PaddingMode) -> Shape {
         match padding_mode {
             // unpadded shape is the shape found in onxx file for example
             PaddingMode::NoPadding => conv2d_shape(input_shape, &self.unpadded_shape),
@@ -173,7 +174,7 @@ impl<T: Number> Convolution<T> {
         self.filter.get_data()[flat_index]
     }
 
-    pub fn get_shape(&self) -> Vec<usize> {
+    pub fn get_shape(&self) -> Shape {
         self.filter.get_shape()
     }
 
@@ -207,14 +208,10 @@ impl<T: Number> Convolution<T> {
 }
 
 impl<T: Number> OpInfo for Convolution<T> {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         input_shapes
             .iter()
-            .map(|shape| self.output_shape(shape.as_slice(), padding_mode))
+            .map(|shape| self.output_shape(shape, padding_mode))
             .collect()
     }
 
@@ -241,7 +238,7 @@ impl Evaluate<f32> for Convolution<f32> {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<f32>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> Result<LayerOut<f32, E>> {
         ensure!(
             inputs.len() == 1,
@@ -288,7 +285,7 @@ impl Evaluate<Element> for Convolution<Element> {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<Element>],
-        unpadded_input_shapes: Vec<Vec<usize>>,
+        unpadded_input_shapes: Vec<Shape>,
     ) -> Result<LayerOut<Element, E>> {
         ensure!(
             inputs.len() == 1,
@@ -299,7 +296,7 @@ impl Evaluate<Element> for Convolution<Element> {
             unpadded_input_shapes.len() == 1,
             "Found more than 1 input shape when evaluating convolution layer"
         );
-        let (output, proving_data) = self.op(input, unpadded_input_shapes[0].as_slice());
+        let (output, proving_data) = self.op(input, &unpadded_input_shapes[0]);
         Ok(LayerOut {
             outputs: vec![output],
             proving_data: Some(proving_data),
@@ -309,13 +306,13 @@ impl Evaluate<Element> for Convolution<Element> {
 
 impl Convolution<Element> {
     /// Pads the filter and bias, and adapt the filter to the convolution fft operation.
-    pub fn into_padded_and_ffted(mut self, unpadded_input_shape: &[usize]) -> Self {
+    pub fn into_padded_and_ffted(mut self, unpadded_input_shape: &Shape) -> Self {
         self.filter = self.filter.pad_next_power_of_two();
         self.bias = self.bias.pad_next_power_of_two();
         let padded_input_shape = unpadded_input_shape
             .iter()
             .map(|&x| x.next_power_of_two())
-            .collect::<Vec<usize>>();
+            .collect::<Shape>();
         self.filter = self.filter.into_fft_conv(&padded_input_shape);
         self
     }
@@ -323,7 +320,7 @@ impl Convolution<Element> {
     pub fn op<E: ExtensionField>(
         &self,
         input: &Tensor<Element>,
-        unpadded_input_shape: &[usize],
+        unpadded_input_shape: &Shape,
     ) -> (Tensor<Element>, ConvData<E>) {
         let (output, mut proving_data) = self.filter.fft_conv(input);
         let conv_output = self.add_bias(&output);
@@ -641,11 +638,7 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         input_shapes
             .iter()
             .map(|shape| self.output_shape(shape, padding_mode))
@@ -710,7 +703,7 @@ impl Convolution<Element> {
         // Struct containing all necessary information
         // to generate a convolution proof
         output: &Tensor<E>,
-        unpadded_output_shape: &[usize],
+        unpadded_output_shape: &Shape,
         proving_data: &ConvData<E>,
         info: &ConvCtx<E>,
         id: NodeId,
@@ -1074,7 +1067,7 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: ExtensionField + Serialize + DeserializeOwned,
 {
-    pub fn output_shape(&self, input_shape: &[usize], padding_mode: PaddingMode) -> Vec<usize> {
+    pub fn output_shape(&self, input_shape: &Shape, padding_mode: PaddingMode) -> Shape {
         match padding_mode {
             PaddingMode::NoPadding => conv2d_shape(input_shape, &self.unpadded_filter_shape),
             PaddingMode::Padding => padded_conv2d_shape(input_shape, &self.padded_filter_shape),
@@ -1164,7 +1157,7 @@ where
             padded_conv2d_shape(&shape_step.padded_input_shape[0], &self.padded_filter_shape);
         let clearing_tensor = new_clearing_tensor(&unpadded_output_shape, &real_output_shape);
         // now we need to verify the hadamard proof for the sumcheck part.
-        let hctx = hadamard::HadamardCtx::from_len(real_output_shape.iter().product());
+        let hctx = hadamard::HadamardCtx::from_len(real_output_shape.product());
         let expected_v2_eval = clearing_tensor
             .to_mle_flat()
             .evaluate(proof.clearing_proof.random_point());
@@ -1367,11 +1360,7 @@ where
 }
 
 impl<T: Number> OpInfo for SchoolBookConv<T> {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         self.0.output_shapes(input_shapes, padding_mode)
     }
 
@@ -1392,7 +1381,7 @@ impl<T: Number> Evaluate<T> for SchoolBookConv<T> {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<T>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> anyhow::Result<LayerOut<T, E>> {
         ensure!(
             inputs.len() == 1,
@@ -1478,13 +1467,12 @@ pub fn phi_eval<E: ExtensionField>(
     eval
 }
 
-fn clear_garbage<T: Number>(
-    output_tensor: &Tensor<T>,
-    mut unpadded_output_shape: &[usize],
-) -> Tensor<T> {
-    if unpadded_output_shape.len() == 4 {
-        unpadded_output_shape = &unpadded_output_shape[1..];
-    }
+fn clear_garbage<T: Number>(output_tensor: &Tensor<T>, unpadded_output_shape: &Shape) -> Tensor<T> {
+    let unpadded_output_shape = if unpadded_output_shape.len() == 4 {
+        unpadded_output_shape.slice(1..)
+    } else {
+        unpadded_output_shape.clone()
+    };
     let padded_shape = output_tensor.get_shape();
     let mut data = output_tensor.get_data().to_vec();
     for i in 0..padded_shape[0] {
@@ -1503,13 +1491,15 @@ fn clear_garbage<T: Number>(
     Tensor::new(padded_shape, data)
 }
 
-pub fn new_clearing_tensor(mut og_shape: &[usize], padded_shape: &[usize]) -> Tensor<Element> {
-    if og_shape.len() == 4 {
-        og_shape = &og_shape[1..];
-    }
+pub fn new_clearing_tensor(og_shape: &Shape, padded_shape: &Shape) -> Tensor<Element> {
+    let og_shape = if og_shape.len() == 4 {
+        og_shape.slice(1..)
+    } else {
+        og_shape.clone()
+    };
     assert_eq!(padded_shape.len(), og_shape.len());
     assert_eq!(padded_shape.len(), 3);
-    let n = padded_shape.iter().product();
+    let n = padded_shape.product();
     let mut data: Vec<Element> = vec![0; n];
     for i in 0..padded_shape[0] {
         for j in 0..padded_shape[1] {
@@ -1521,7 +1511,7 @@ pub fn new_clearing_tensor(mut og_shape: &[usize], padded_shape: &[usize]) -> Te
             }
         }
     }
-    Tensor::new(vec![padded_shape.iter().product()], data)
+    Tensor::new(Shape::new(vec![padded_shape.product()]), data)
 }
 
 /// Properly pad a filter
@@ -1546,10 +1536,10 @@ pub fn index_wf<E: ExtensionField>(
 }
 
 pub fn conv2d_shape_mode(
-    input_shape: &[usize],
-    filter_shape: &[usize],
+    input_shape: &Shape,
+    filter_shape: &Shape,
     padding_mode: PaddingMode,
-) -> Vec<usize> {
+) -> Shape {
     match padding_mode {
         PaddingMode::NoPadding => conv2d_shape(input_shape, filter_shape),
         PaddingMode::Padding => padded_conv2d_shape(input_shape, filter_shape),
@@ -1558,7 +1548,7 @@ pub fn conv2d_shape_mode(
 
 /// Assumes stride=1, padding=0, and dilation=1
 /// https://pytorch.org/docs/stable/generated/torch.nn.Conv2d.html
-pub fn conv2d_shape(input_shape: &[usize], filter_shape: &[usize]) -> Vec<usize> {
+pub fn conv2d_shape(input_shape: &Shape, filter_shape: &Shape) -> Shape {
     let stride = 1usize;
     let padding = 0usize;
     let dilation = 1usize;
@@ -1570,27 +1560,25 @@ pub fn conv2d_shape(input_shape: &[usize], filter_shape: &[usize]) -> Vec<usize>
     };
     let kernel = filter_shape[2];
     let h_out = (h_in + 2 * padding - dilation * (kernel - 1) - 1) / stride + 1;
-    vec![filter_shape[0], h_out, h_out]
+    Shape::new(vec![filter_shape[0], h_out, h_out])
 }
 
 /// Similar to conv2d_shape but pads the output shape such that it matches what the padded inference and proving expects
-pub fn padded_conv2d_shape(input_shape: &[usize], filter_shape: &[usize]) -> Vec<usize> {
+pub fn padded_conv2d_shape(input_shape: &Shape, filter_shape: &Shape) -> Shape {
     conv2d_shape(input_shape, filter_shape)
+        .into_vec()
         .into_iter()
         .map(|x| x.next_power_of_two())
-        .collect::<Vec<usize>>()
+        .collect::<Shape>()
 }
 
 #[cfg(test)]
 mod test {
-    use crate::{
-        NextPowerOfTwo,
-        layers::{
-            activation::{Activation, Relu},
-            dense::Dense,
-            pooling::{Maxpool2D, Pooling, maxpool2d_shape},
-            provable::evaluate_layer,
-        },
+    use crate::layers::{
+        activation::{Activation, Relu},
+        dense::Dense,
+        pooling::{Maxpool2D, Pooling, maxpool2d_shape},
+        provable::evaluate_layer,
     };
 
     use super::*;
@@ -1598,7 +1586,7 @@ mod test {
 
     fn split_garbage(
         fft_output: &Tensor<Element>,
-        not_padded_shape: &[usize],
+        not_padded_shape: &Shape,
     ) -> (Vec<Element>, Vec<Element>) {
         let mut not_padded_shape = not_padded_shape.to_vec();
         not_padded_shape.remove(0);
@@ -1621,7 +1609,7 @@ mod test {
         }
         (valid, garbage)
     }
-    fn subtest_clearing_methods(padded_tensor: &Tensor<Element>, unpadded_shape: &[usize]) {
+    fn subtest_clearing_methods(padded_tensor: &Tensor<Element>, unpadded_shape: &Shape) {
         let clearing_tensor = new_clearing_tensor(&unpadded_shape, &padded_tensor.get_shape());
         let cleared_tensor = padded_tensor.flatten().mul(&clearing_tensor);
         let auto_cleared_tensor = clear_garbage(padded_tensor, unpadded_shape);
@@ -1634,9 +1622,9 @@ mod test {
         let padded_shape = shape
             .iter()
             .map(|x| x.next_power_of_two())
-            .collect::<Vec<usize>>();
+            .collect::<Shape>();
         let tensor = Tensor::random(&padded_shape);
-        subtest_clearing_methods(&tensor, &shape);
+        subtest_clearing_methods(&tensor, &shape.into());
         // let clearing_tensor = new_clearing_tensor(&shape, &padded_shape);
         // let cleared_tensor = tensor.flatten().mul(&clearing_tensor);
         // let auto_cleared_tensor = clear_garbage(&tensor, &shape);
@@ -1645,22 +1633,22 @@ mod test {
 
     #[test]
     fn test_conv2d_shape() {
-        let input_shape: Vec<usize> = vec![1, 23, 23];
-        let conv_shape_og: Vec<usize> = vec![7, 1, 3, 3];
+        let input_shape: Shape = vec![1, 23, 23].into();
+        let conv_shape_og: Shape = vec![7, 1, 3, 3].into();
         let output_shape = conv2d_shape(&input_shape, &conv_shape_og);
-        assert_eq!(output_shape, vec![7, 21, 21]);
+        assert_eq!(output_shape, vec![7, 21, 21].into());
     }
 
     /// Test that check if just taking shapes from input and conv not padded we can manipulate input
     /// and filter to run it in padded world with FFT based convolution.
     #[test]
     fn test_conv_unpadded_to_padded() {
-        let input_shape: Vec<usize> = vec![1, 23, 23];
-        let conv_shape_og: Vec<usize> = vec![7, 1, 3, 3];
-        // let input_shape: Vec<usize> = vec![1, 5, 5];
-        // let conv_shape_og: Vec<usize> = vec![1, 1, 2, 2];
+        let input_shape: Shape = vec![1, 23, 23].into();
+        let conv_shape_og: Shape = vec![7, 1, 3, 3].into();
+        // let input_shape: Shape = vec![1, 5, 5];
+        // let conv_shape_og: Shape = vec![1, 1, 2, 2];
         let weight = Tensor::random(&conv_shape_og);
-        let bias: Tensor<Element> = Tensor::zeros(vec![conv_shape_og[0]]);
+        let bias: Tensor<Element> = Tensor::zeros(vec![conv_shape_og[0]].into());
         let input = Tensor::random(&input_shape);
         let output = input.conv2d(&weight, &bias, 1);
         // now try to pad the input and conv and use the fft one
@@ -1686,12 +1674,12 @@ mod test {
             .get_shape()
             .iter()
             .map(|x| x.next_power_of_two())
-            .collect::<Vec<_>>();
+            .collect::<Shape>();
         let fft_output_shape = conv2d_shape(&padded_input.get_shape(), &weight_padded_shape);
         let fft_output_shape = fft_output_shape
-            .into_iter()
+            .iter()
             .map(|x| x.next_power_of_two())
-            .collect::<Vec<usize>>();
+            .collect::<Shape>();
         println!(
             "INSIDE TEST: fft_output.shape() : {:?}",
             fft_output.get_shape()
@@ -1717,12 +1705,12 @@ mod test {
 
     #[test]
     fn test_conv_padding_garbage() {
-        let input_shape: Vec<usize> = vec![1, 23, 23];
-        let conv_shape_og: Vec<usize> = vec![7, 1, 3, 3];
+        let input_shape: Shape = vec![1, 23, 23].into();
+        let conv_shape_og: Shape = vec![7, 1, 3, 3].into();
 
         // weight of the filter
         let w1 = Tensor::random(&conv_shape_og);
-        let bias1: Tensor<Element> = Tensor::zeros(vec![conv_shape_og[0]]);
+        let bias1: Tensor<Element> = Tensor::zeros(vec![conv_shape_og[0]].into());
         // creation of the padded and fft'd convolution
         let fft_conv =
             Convolution::new(w1.clone(), bias1.clone()).into_padded_and_ffted(&input_shape);
@@ -1756,8 +1744,11 @@ mod test {
         let nrows = 10;
         let dense_shape = vec![nrows, ncols];
         let dense = Dense::new(
-            Tensor::new(dense_shape.clone(), vec![1; dense_shape.iter().product()]),
-            Tensor::zeros(vec![dense_shape[0]]),
+            Tensor::new(
+                dense_shape.clone().into(),
+                vec![1; dense_shape.iter().product()],
+            ),
+            Tensor::zeros(vec![dense_shape[0]].into()),
         );
         // create the padded version:
         // take the "conv2d"input shape
@@ -1808,10 +1799,10 @@ mod test {
         let k_w = 1 << 0;
         let k_x = 1 << 0;
 
-        let mut input_shape_og = vec![k_x, 256, 256];
-        let mut input_shape_padded = input_shape_og.next_power_of_two();
-        let filter = Tensor::random(&vec![k_w, k_x, n_w, n_w]);
-        let bias = Tensor::random(&vec![k_w]);
+        let mut input_shape_og: Shape = vec![k_x, 256, 256].into();
+        let mut input_shape_padded: Shape = input_shape_og.next_power_of_two().into();
+        let filter = Tensor::random(&vec![k_w, k_x, n_w, n_w].into());
+        let bias = Tensor::random(&vec![k_w].into());
         let input = Tensor::random(&input_shape_og);
 
         let output = input.conv2d(&filter, &bias, 1);
@@ -1845,8 +1836,8 @@ mod test {
         input_shape_padded = maxpool2d_shape(&input_shape_padded);
 
         // again another conv
-        let filter = Tensor::random(&vec![k_w, k_x, n_w, n_w]);
-        let bias = Tensor::random(&vec![k_w]);
+        let filter = Tensor::random(&vec![k_w, k_x, n_w, n_w].into());
+        let bias = Tensor::random(&vec![k_w].into());
         println!("2AND CONV: filter.get_shape() : {:?}", filter.get_shape());
         println!("2AND CONV: bias.get_shape() : {:?}", bias.get_shape());
         println!("2AND CONV: input.get_shape() : {:?}", output.get_shape());
@@ -1882,13 +1873,13 @@ mod test {
 
         // now dense layer - first there is a "reshape" that flattens the input
         let ignore_garbage_pad = (input_shape_og.clone(), input_shape_padded.clone());
-        input_shape_og = vec![input_shape_og.iter().product()];
-        input_shape_padded = vec![input_shape_padded.iter().product()];
+        input_shape_og = vec![input_shape_og.iter().product()].into();
+        input_shape_padded = vec![input_shape_padded.iter().product()].into();
 
         let nrows = 10;
         let ncols = input_shape_og[0];
-        let weight = Tensor::random(&vec![nrows, ncols]);
-        let bias = Tensor::random(&vec![nrows]);
+        let weight = Tensor::random(&vec![nrows, ncols].into());
+        let bias = Tensor::random(&vec![nrows].into());
         let mut new_cols = ncols.next_power_of_two();
         let new_rows = nrows.next_power_of_two();
         if new_cols < input_shape_padded[0] {

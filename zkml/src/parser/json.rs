@@ -10,6 +10,7 @@ use crate::{
         transformer::{embeddings::Embeddings, layernorm::LayerNorm, positional::Positional},
     },
     parser::llm::{Attention, FeedForward, GPT2Model, LLMConfig, LLMModel, LLMVariant},
+    tensor::Shape,
 };
 
 impl LLMConfig {
@@ -128,15 +129,15 @@ impl Attention<f32> {
                 .context("Failed to unfuse QKV weights in from_json")?;
 
         let q_weight = Tensor::new(
-            vec![c.embedding_size, hidden_size],
+            vec![c.embedding_size, hidden_size].into(),
             unfused_weights_data.remove(0),
         );
         let k_weight = Tensor::new(
-            vec![c.embedding_size, hidden_size],
+            vec![c.embedding_size, hidden_size].into(),
             unfused_weights_data.remove(0),
         );
         let v_weight = Tensor::new(
-            vec![c.embedding_size, hidden_size],
+            vec![c.embedding_size, hidden_size].into(),
             unfused_weights_data.remove(0),
         );
         println!("fused qkv: {:?}", fused_qkv_weight);
@@ -151,9 +152,9 @@ impl Attention<f32> {
         let mut unfused_biases_data = unfuse_crate_tensors(fused_qkv_bias, bias_chunk_elements, 3)
             .context("Failed to unfuse QKV biases in from_json")?;
 
-        let q_bias_vec = Tensor::new(vec![hidden_size], unfused_biases_data.remove(0));
-        let k_bias_vec = Tensor::new(vec![hidden_size], unfused_biases_data.remove(0));
-        let v_bias_vec = Tensor::new(vec![hidden_size], unfused_biases_data.remove(0));
+        let q_bias_vec = Tensor::new(vec![hidden_size].into(), unfused_biases_data.remove(0));
+        let k_bias_vec = Tensor::new(vec![hidden_size].into(), unfused_biases_data.remove(0));
+        let v_bias_vec = Tensor::new(vec![hidden_size].into(), unfused_biases_data.remove(0));
 
         // These are the individual Q, K, V matrices and biases now.
         // The QKV struct or logic that consumes these will handle them.
@@ -172,14 +173,14 @@ impl Attention<f32> {
         // Python script exports it as [out_features, in_features]
         // For c_proj (attn_output), out_features = hidden_size, in_features = hidden_size
         ensure!(
-            out.get_shape().as_slice() == &[hidden_size, hidden_size],
+            out.get_shape().as_ref() == &[hidden_size, hidden_size],
             "Attention output weight tensor shape mismatch in from_json. Expected [{}, {}], got {:?}",
             hidden_size,
             hidden_size,
             out.get_shape()
         );
         ensure!(
-            out_bias.get_shape().as_slice() == &[hidden_size],
+            out_bias.get_shape().as_ref() == &[hidden_size],
             "Attention output bias tensor shape mismatch in from_json. Expected [{}], got {:?}",
             hidden_size,
             out_bias.get_shape()
@@ -282,7 +283,7 @@ impl Embeddings<f32> {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct JsonTensor {
-    pub shape: Vec<usize>,
+    pub shape: Shape,
     pub data: Vec<f32>,
 }
 

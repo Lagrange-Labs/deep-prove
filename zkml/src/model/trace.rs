@@ -9,6 +9,7 @@ use crate::{
         provable::{LayerOut, NodeId},
     },
     quantization::{Fieldizer, ModelMetadata, TensorFielder},
+    tensor::Shape,
 };
 
 pub struct Trace<'a, E: ExtensionField, N, D> {
@@ -174,5 +175,5 @@ impl<'a, E: ExtensionField, N, D> InferenceStep<'a, E, N, D> {
 pub struct StepData<D, E: ExtensionField> {
     pub(crate) inputs: Vec<Tensor<D>>,
     pub(crate) outputs: LayerOut<D, E>,
-    pub(crate) unpadded_output_shapes: Vec<Vec<usize>>,
+    pub(crate) unpadded_output_shapes: Vec<Shape>,
 }

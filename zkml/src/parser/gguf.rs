@@ -18,6 +18,7 @@ use crate::{
         transformer::{embeddings::Embeddings, layernorm::LayerNorm, positional::Positional},
     },
     parser::llm::{Attention, FeedForward, GPT2Model, LLMConfig, LLMModel, LLMVariant},
+    tensor::Shape,
 };
 
 impl LLMConfig {
@@ -170,17 +171,26 @@ impl Attention<f32> {
         let mut unfused_weights =
             unfuse_tensors(qkv_weight_candle, embedding_size * embedding_size)?;
         ensure!(unfused_weights.len() == 3, "qkv_weight must have 3 chunks");
-        let q = crate::Tensor::new(vec![embedding_size, hidden_size], unfused_weights.remove(0));
-        let k = crate::Tensor::new(vec![embedding_size, hidden_size], unfused_weights.remove(0));
-        let v = crate::Tensor::new(vec![embedding_size, hidden_size], unfused_weights.remove(0));
+        let q = crate::Tensor::new(
+            vec![embedding_size, hidden_size].into(),
+            unfused_weights.remove(0),
+        );
+        let k = crate::Tensor::new(
+            vec![embedding_size, hidden_size].into(),
+            unfused_weights.remove(0),
+        );
+        let v = crate::Tensor::new(
+            vec![embedding_size, hidden_size].into(),
+            unfused_weights.remove(0),
+        );
 
         let qkv_bias_qtensor = loader.get_qtensor("attn_qkv.bias")?;
         let qkv_bias_candle = qkv_bias_qtensor.dequantize(&Device::Cpu)?;
         let mut unfused_biases = unfuse_tensors(qkv_bias_candle, embedding_size)?;
         ensure!(unfused_biases.len() == 3, "qkv_bias must have 3 chunks");
-        let q_bias = crate::Tensor::new(vec![hidden_size], unfused_biases.remove(0));
-        let k_bias = crate::Tensor::new(vec![hidden_size], unfused_biases.remove(0));
-        let v_bias = crate::Tensor::new(vec![hidden_size], unfused_biases.remove(0));
+        let q_bias = crate::Tensor::new(vec![hidden_size].into(), unfused_biases.remove(0));
+        let k_bias = crate::Tensor::new(vec![hidden_size].into(), unfused_biases.remove(0));
+        let v_bias = crate::Tensor::new(vec![hidden_size].into(), unfused_biases.remove(0));
 
         let attn_norm_loader = loader.pp("attn_");
         // Use new LayerNorm::from_loader
@@ -189,11 +199,11 @@ impl Attention<f32> {
         let out = loader.get_tensor("attn_output.weight")?;
         let out_bias = loader.get_tensor("attn_output.bias")?;
         ensure!(
-            out.get_shape().as_slice() == &[embedding_size, embedding_size],
+            out.get_shape().as_ref() == &[embedding_size, embedding_size],
             "out must have shape [hidden_size, hidden_size]"
         );
         ensure!(
-            out_bias.get_shape().as_slice() == &[embedding_size],
+            out_bias.get_shape().as_ref() == &[embedding_size],
             "out_bias must have shape [hidden_size]"
         );
 
@@ -247,7 +257,7 @@ impl Embeddings<f32> {
 }
 
 fn dequantize(qtensor: Arc<QTensor>) -> anyhow::Result<Tensor<f32>> {
-    let shape = qtensor.shape().dims().to_vec();
+    let shape = Shape::new(qtensor.shape().dims().to_vec());
 
     let dequantized_candle_tensor = qtensor
         .dequantize(&Device::Cpu)
@@ -578,7 +588,7 @@ pub mod tests {
         // Expected shape for gpt2 token_embd.weight: [vocab_size, embedding_length] = [50257, 768]
         assert_eq!(
             embedding_tensor.get_shape(),
-            vec![50257usize, 768usize],
+            vec![50257usize, 768usize].into(),
             "Shape mismatch for token_embd.weight"
         );
 
@@ -588,7 +598,7 @@ pub mod tests {
         // Expected shape for blk.0.attn_norm.weight: [embedding_length] = [768]
         assert_eq!(
             attn_norm_weight.get_shape(),
-            vec![768usize],
+            vec![768usize].into(),
             "Shape mismatch for blk.0.attn_norm.weight"
         );
 
@@ -596,7 +606,7 @@ pub mod tests {
         // Expected shape for blk.0.attn_qkv.weight: [3 * embedding_length, embedding_length] = [2304, 768]
         assert_eq!(
             qkv_weight.get_shape(),
-            vec![2304usize, 768usize],
+            vec![2304usize, 768usize].into(),
             "Shape mismatch for blk.0.attn_qkv.weight"
         );
 
@@ -606,7 +616,7 @@ pub mod tests {
         let attn_norm_weight_v2 = blk0_attn_loader.get_tensor("norm.weight")?; // Full name: "blk.0.attn_norm.weight"
         assert_eq!(
             attn_norm_weight_v2.get_shape(),
-            vec![768usize],
+            vec![768usize].into(),
             "Shape mismatch for blk.0.attn_norm.weight via custom subscope"
         );
 
@@ -615,7 +625,7 @@ pub mod tests {
         // Expected shape for blk.0.ffn_norm.weight: [embedding_length] = [768]
         assert_eq!(
             ffn_norm_weight.get_shape(),
-            vec![768usize],
+            vec![768usize].into(),
             "Shape mismatch for blk.0.ffn_norm.weight via custom subscope"
         );
 

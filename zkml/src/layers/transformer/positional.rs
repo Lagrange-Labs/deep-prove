@@ -3,10 +3,10 @@ use ff_ext::ExtensionField;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    NextPowerOfTwo, Tensor,
+    Tensor,
     layers::provable::{Evaluate, LayerOut, OpInfo},
     padding::PaddingMode,
-    tensor::Number,
+    tensor::{Number, Shape},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,9 +17,9 @@ pub enum Positional<N> {
 }
 
 impl<N: Number> Positional<N> {
-    pub fn get_shape(&self) -> Vec<usize> {
+    pub fn get_shape(&self) -> Shape {
         match self {
-            Self::Learned(pos) => pos.get_shape().to_vec(),
+            Self::Learned(pos) => pos.get_shape(),
             Self::Rope => unimplemented!("Rope not implemented"),
         }
     }
@@ -29,7 +29,7 @@ impl<N: Number> Evaluate<N> for Positional<N> {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> anyhow::Result<LayerOut<N, E>> {
         ensure!(
             inputs.iter().all(|x| x.get_shape().len() == 2),
@@ -57,11 +57,7 @@ impl<N: Number> Evaluate<N> for Positional<N> {
 }
 
 impl<N: Number> OpInfo for Positional<N> {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         let s = input_shapes.to_vec();
         if let PaddingMode::Padding = padding_mode {
             s.into_iter().map(|s| s.next_power_of_two()).collect()

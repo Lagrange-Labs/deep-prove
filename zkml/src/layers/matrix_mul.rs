@@ -3,7 +3,6 @@ use std::collections::HashMap;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 
 use ff_ext::ExtensionField;
-use itertools::Itertools;
 use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::{
     mle::{DenseMultilinearExtension, MultilinearExtension},
@@ -21,7 +20,7 @@ use crate::{
     model::StepData,
     padding::{PaddingMode, ShapeInfo, pad_matmul},
     quantization::{self, bias_scaling_matmul},
-    tensor::{Number, Tensor},
+    tensor::{Number, Shape, Tensor},
 };
 
 use super::{
@@ -43,7 +42,7 @@ pub struct WeightMatrix<T> {
     /// The tensor storing the matrix
     pub(crate) tensor: Tensor<T>,
     /// The unpadded shape of the matrix
-    unpadded_shape: Vec<usize>,
+    unpadded_shape: Shape,
 }
 
 /// A matrix to be multiplied in the matrix multiplication layer
@@ -71,13 +70,14 @@ impl<T> OperandMatrix<T> {
         }
     }
 
-    pub(crate) fn get_shape(&self, padding_mode: PaddingMode) -> Option<Vec<usize>> {
+    pub(crate) fn get_shape(&self, padding_mode: PaddingMode) -> Option<Shape> {
         match self {
             OperandMatrix::Weigth(mat) => match padding_mode {
                 PaddingMode::NoPadding => Some(mat.unpadded_shape.clone()),
                 PaddingMode::Padding => Some(
                     mat.tensor
                         .get_shape()
+                        .into_vec()
                         .into_iter()
                         .map(|dim| dim.next_power_of_two())
                         .collect(),
@@ -87,7 +87,7 @@ impl<T> OperandMatrix<T> {
         }
     }
 
-    pub(crate) fn get_actual_shape(&self) -> Option<Vec<usize>> {
+    pub(crate) fn get_actual_shape(&self) -> Option<Shape> {
         match self {
             OperandMatrix::Weigth(mat) => Some(mat.tensor.get_shape()),
             OperandMatrix::Input => None,
@@ -139,9 +139,9 @@ pub struct MatMulCtx<E> {
     // Number of variables of the MLE polynomial for each dimension of the output matrix
     pub(crate) output_mle_num_vars: (usize, usize),
     /// Unpadded and padded shapes of the left matrix, if the left matrx is a constant matrix
-    pub(crate) left_matrix_shapes: Option<(Vec<usize>, Vec<usize>)>,
+    pub(crate) left_matrix_shapes: Option<(Shape, Shape)>,
     /// Unpadded and padded shapes of the right matrix, if the right matrx is a constant matrix
-    pub(crate) right_matrix_shapes: Option<(Vec<usize>, Vec<usize>)>,
+    pub(crate) right_matrix_shapes: Option<(Shape, Shape)>,
     pub(crate) config: Option<Config>,
 }
 
@@ -384,11 +384,11 @@ impl<T> MatMul<T> {
 /// - `left_matrix_shape`: the shape of the left matrix, if it is a constant matrix
 /// - `right_matrix_shape`: the shape of the right matrix, if it is a constant matrix
 fn compute_output_shapes(
-    input_shapes: &[Vec<usize>],
-    left_matrix_shape: Option<&Vec<usize>>,
-    right_matrix_shape: Option<&Vec<usize>>,
+    input_shapes: &[Shape],
+    left_matrix_shape: Option<&Shape>,
+    right_matrix_shape: Option<&Shape>,
     config: &Option<Config>,
-) -> Vec<Vec<usize>> {
+) -> Vec<Shape> {
     let (left_shape, right_shape) = match (left_matrix_shape, right_matrix_shape) {
         (None, None) => {
             assert_eq!(
@@ -429,16 +429,12 @@ fn compute_output_shapes(
         "Incompatible shapes for MatMul layer: left matrix has {} columns, right matrix has {} rows",
         left_shape[1], right_shape[0],
     );
-    vec![vec![left_shape[0], right_shape[1]]]
+    vec![Shape::new(vec![left_shape[0], right_shape[1]])]
 }
 const IS_PROVABLE: bool = true;
 
 impl<N: Number> OpInfo for MatMul<N> {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         let left_matrix_shape = self.left_matrix.get_shape(padding_mode);
         let right_matrix_shape = self.right_matrix.get_shape(padding_mode);
         compute_output_shapes(
@@ -460,7 +456,7 @@ impl<N: Number> OpInfo for MatMul<N> {
             self.right_matrix
                 .get_actual_shape()
                 .map(|shape| if self.is_right_transposed() {
-                    shape.iter().rev().copied().collect()
+                    shape.into_vec().into_iter().rev().collect()
                 } else {
                     shape.clone()
                 }),
@@ -476,7 +472,7 @@ impl<N: Number> Evaluate<N> for MatMul<N> {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> Result<LayerOut<N, E>> {
         let output = self.op(inputs.to_vec())?;
         Ok(LayerOut::from_vec(vec![output]))
@@ -875,7 +871,7 @@ impl MatMul<Element> {
         };
         // construct dimension of the polynomial given to the sumcheck
         let transposed_right_shape = if self.is_right_transposed() {
-            Some(right_shape.iter().rev().copied().collect_vec())
+            Some(right_shape.iter().rev().copied().collect())
         } else {
             None
         };
@@ -883,7 +879,7 @@ impl MatMul<Element> {
             left_shape[0],
             transposed_right_shape.as_ref().unwrap_or(&right_shape)[1],
         );
-        ctx_aux.last_output_shape = vec![vec![nrows, ncols]];
+        ctx_aux.last_output_shape = vec![Shape::new(vec![nrows, ncols])];
 
         // number of variables of the MLE polynomials is the number of row
         // variables in in layer matrix
@@ -942,11 +938,7 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         let left_matrix_shape = self
             .left_matrix_shapes
             .as_ref()
@@ -1124,7 +1116,7 @@ mod tests {
         },
         model::{Model, test::prove_model},
         padding::PaddingMode,
-        tensor::Tensor,
+        tensor::{Shape, Tensor},
     };
 
     fn test_matmul_padding(transpose: bool) {
@@ -1324,7 +1316,7 @@ mod tests {
         let padded = layer.clone().pad_next_power_of_two().unwrap();
 
         // Create input tensor
-        let input_tensor = Tensor::<Element>::new(input_shape, quantized_input);
+        let input_tensor = Tensor::<Element>::new(input_shape.into(), quantized_input);
 
         // Apply the layer operation on both original and padded
         let output = layer.op(vec![&input_tensor]).unwrap();
@@ -1356,8 +1348,8 @@ mod tests {
     #[test]
     fn test_matmul() {
         let matmul = MatMul::new(OperandMatrix::Input, OperandMatrix::Input).unwrap();
-        let a = Tensor::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        let b = Tensor::new(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let a = Tensor::new(vec![2, 3].into(), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = Tensor::new(vec![3, 2].into(), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let result = matmul
             .evaluate::<GoldilocksExt2>(&[&a, &b], vec![])
             .unwrap();
@@ -1373,8 +1365,8 @@ mod tests {
             Config::TransposeB,
         )
         .unwrap();
-        let a = Tensor::new(vec![2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        let b = Tensor::new(vec![3, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).transpose();
+        let a = Tensor::new(vec![2, 3].into(), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = Tensor::new(vec![3, 2].into(), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).transpose();
         let result = matmul
             .evaluate::<GoldilocksExt2>(&[&a, &b], vec![])
             .unwrap();
@@ -1385,9 +1377,9 @@ mod tests {
     fn test_proven_matmul_with_two_input_matrices() {
         let first_input_shape = vec![100, 200];
         let second_input_shape = vec![200, 300];
-        let matrix_shape = vec![300, 100];
+        let matrix_shape: Shape = vec![300, 100].into();
         let mut model = Model::new_from_input_shapes(
-            vec![first_input_shape, second_input_shape],
+            vec![first_input_shape.into(), second_input_shape.into()],
             PaddingMode::NoPadding,
         );
 
@@ -1412,9 +1404,9 @@ mod tests {
     fn test_proven_matmul_transposed() {
         let first_input_shape = vec![100, 200];
         let second_input_shape = vec![300, 200];
-        let matrix_shape = vec![100, 300];
+        let matrix_shape: Shape = vec![100, 300].into();
         let mut model = Model::new_from_input_shapes(
-            vec![first_input_shape, second_input_shape],
+            vec![first_input_shape.into(), second_input_shape.into()],
             PaddingMode::NoPadding,
         );
 

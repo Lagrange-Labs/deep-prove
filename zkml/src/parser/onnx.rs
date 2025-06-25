@@ -76,14 +76,13 @@ pub fn from_path(path: &str) -> Result<Model<f32>> {
         .to_tvec()
         .into_iter()
         .map(|x| tdim_to_usize(&x))
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Shape, _>>()?;
     // remove batch dimension if it's 1 as we dont support batching yet
     if input_shape[0] == 1 {
         input_shape.remove(0);
     }
 
-    let mut pmodel =
-        Model::new_from_input_shapes(vec![input_shape.to_vec()], PaddingMode::NoPadding);
+    let mut pmodel = Model::new_from_input_shapes(vec![input_shape], PaddingMode::NoPadding);
     let mut it = inference_order[1..].iter().peekable();
     let mut first_node = true;
     let mut last_node_id = 0;
@@ -385,7 +384,7 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
     let mut weight_shape = weight.get_shape();
     if weight_shape.len() > 2 {
         let input_flattened = weight_shape[1..].iter().product::<usize>();
-        weight_shape = vec![weight_shape[0], input_flattened];
+        weight_shape = Shape::new(vec![weight_shape[0], input_flattened]);
         weight.shape = weight_shape.clone();
     } else if weight_shape.len() == 1 {
         // A Gemm is always a matrix - so if there's only one dimension, we need to add 1 to
@@ -510,7 +509,7 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
             extract_const_tensor(bias_node)?
         }
         // we always require a bias tensor in current proving logic
-        None => crate::Tensor::zeros(vec![weight.shape[0]]),
+        None => crate::Tensor::zeros(vec![weight.shape[0]].into()),
     };
     ensure_onnx!(
         bias_tensor.shape.len() == 1 || bias_tensor.shape.len() == 2,
@@ -523,7 +522,7 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
             "Bias tensor must be 1D with batch: {:?}",
             bias_tensor.shape
         );
-        bias_tensor.shape = bias_tensor.shape[1..].to_vec();
+        bias_tensor.shape = bias_tensor.shape.slice(1..);
     }
     ensure_onnx!(
         bias_tensor.shape[0] == weight.shape[0],
@@ -586,10 +585,10 @@ fn extract_const_tensor(node: &OnnxNode) -> Result<crate::Tensor<f32>> {
     let Some(shape) = node.outputs[0].fact.shape.as_concrete() else {
         return err(format!("Filter shape {} is not concrete", node.name));
     };
-    Ok(crate::Tensor::new(shape.to_vec(), slice.to_vec()))
+    Ok(crate::Tensor::new(shape.to_vec().into(), slice.to_vec()))
 }
 
-fn get_node_output_shape(node: &OnnxNode, output_idx: usize) -> Result<Vec<usize>> {
+fn get_node_output_shape(node: &OnnxNode, output_idx: usize) -> Result<Shape> {
     ensure_onnx!(
         output_idx < node.outputs.len(),
         "Trying to get output {} of node {}, but there are only {} outputs",
@@ -600,7 +599,7 @@ fn get_node_output_shape(node: &OnnxNode, output_idx: usize) -> Result<Vec<usize
     let Some(shape) = node.outputs[output_idx].fact.shape.as_concrete() else {
         return err(format!("shape of node {} is not concrete", node.name));
     };
-    Ok(shape.to_vec())
+    Ok(shape.to_vec().into())
 }
 
 /// Get the conv2d attributes and assert if supported by DeepProve

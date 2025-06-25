@@ -20,7 +20,7 @@ use crate::{
     model::StepData,
     padding::PaddingMode,
     quantization::Fieldizer,
-    tensor::Number,
+    tensor::{Number, Shape},
 };
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
@@ -80,11 +80,7 @@ impl<N> OpInfo for Activation<N> {
         }
     }
 
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        _padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], _padding_mode: PaddingMode) -> Vec<Shape> {
         input_shapes.to_vec() // same as input shapes
     }
 
@@ -97,7 +93,7 @@ impl Evaluate<f32> for Activation<f32> {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<f32>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> Result<LayerOut<f32, E>> {
         match self {
             Activation::Relu(relu) => Ok(LayerOut::from_vec(
@@ -132,7 +128,7 @@ impl Evaluate<Element> for Activation<Element> {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<Element>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> Result<LayerOut<Element, E>> {
         let outputs = match self {
             Activation::Relu(relu) => inputs
@@ -280,11 +276,7 @@ where
 }
 
 impl OpInfo for ActivationCtx {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         self.op.output_shapes(input_shapes, padding_mode)
     }
 
@@ -482,8 +474,8 @@ impl Relu {
     pub fn poly_len() -> usize {
         1 << Self::num_vars()
     }
-    pub fn shape() -> Vec<usize> {
-        vec![2, Self::poly_len()]
+    pub fn shape() -> Shape {
+        Shape::new(vec![2, Self::poly_len()])
     }
 
     pub fn op<T: Number>(&self, input: &Tensor<T>) -> Tensor<T> {
@@ -518,7 +510,7 @@ impl Evaluate<f32> for GELU<f32> {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<f32>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> anyhow::Result<LayerOut<f32, E>> {
         let output_tensors: Vec<Tensor<f32>> = inputs
             .par_iter()
@@ -574,7 +566,7 @@ mod test {
     fn test_activation_gelu_evaluate_f32() -> anyhow::Result<()> {
         let gelu = GELU::<f32>::new();
         let input_data = vec![-2.0, -1.0, 0.0, 1.0, 2.0, 3.0];
-        let input_tensor = Tensor::new(vec![1, input_data.len()], input_data.clone());
+        let input_tensor = Tensor::new(vec![1, input_data.len()].into(), input_data.clone());
 
         // Expected values calculated using the GELU approximation
         // GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
@@ -591,7 +583,7 @@ mod test {
         assert_eq!(layer_out.outputs().len(), 1);
         let output_tensor = &layer_out.outputs()[0];
 
-        assert_eq!(output_tensor.get_shape(), vec![1, input_data.len()]);
+        assert_eq!(output_tensor.get_shape(), vec![1, input_data.len()].into());
         let actual_output_data = output_tensor.get_data();
 
         actual_output_data

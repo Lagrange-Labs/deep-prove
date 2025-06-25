@@ -17,7 +17,7 @@ use crate::{
     lookup::context::LookupWitnessGen,
     model::trace::StepData,
     padding::{PaddingMode, ShapeInfo},
-    tensor::{ConvData, Number},
+    tensor::{ConvData, Number, Shape},
 };
 
 use super::{
@@ -238,11 +238,7 @@ where
 
 pub trait OpInfo {
     /// Returns the shapes of the outputs (in the same order)
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>>;
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape>;
 
     /// Compute the number of output tensors, given the number of input tensors
     /// `num_inputs`
@@ -260,7 +256,7 @@ pub trait Evaluate<T: Number> {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<T>],
-        unpadded_input_shapes: Vec<Vec<usize>>,
+        unpadded_input_shapes: Vec<Shape>,
     ) -> Result<LayerOut<T, E>>;
 }
 
@@ -269,7 +265,7 @@ pub trait Evaluate<T: Number> {
 pub fn evaluate_layer<E: ExtensionField, T: Number, O: Evaluate<T>>(
     layer: &O,
     inputs: &[&Tensor<T>],
-    unpadded_input_shapes: Option<Vec<Vec<usize>>>,
+    unpadded_input_shapes: Option<Vec<Shape>>,
 ) -> Result<LayerOut<T, E>> {
     layer.evaluate(inputs, unpadded_input_shapes.unwrap_or_default())
 }
@@ -414,11 +410,7 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         match self {
             LayerCtx::Dense(dense_ctx) => dense_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.output_shapes(input_shapes, padding_mode),

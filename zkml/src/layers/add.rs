@@ -3,7 +3,7 @@ use ff_ext::ExtensionField;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Element, NextPowerOfTwo, ScalingFactor, ScalingStrategy, Tensor,
+    Element, ScalingFactor, ScalingStrategy, Tensor,
     layers::provable::{Evaluate, NodeId, OpInfo, QuantizeOp, QuantizeOutput},
     padding::PaddingMode,
     tensor::{Number, Shape},
@@ -34,7 +34,7 @@ impl<N: Number> Evaluate<N> for Add<N> {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> anyhow::Result<LayerOut<N, E>> {
         let result = if inputs.len() == 2 {
             ensure!(
@@ -51,8 +51,8 @@ impl<N: Number> Evaluate<N> for Add<N> {
                 "Add operand can't be None if there is only one input"
             );
             ensure!(
-                Shape::from_it(inputs[0].get_shape()).numel()
-                    == Shape::from_it(self.operand.as_ref().unwrap().0.get_shape()).numel(),
+                inputs[0].get_shape().numel()
+                    == self.operand.as_ref().unwrap().0.get_shape().numel(),
                 "Add layer expects input and operand to have the same shape: {:?} vs {:?}",
                 inputs[0].get_shape(),
                 self.operand.as_ref().unwrap().0.get_shape()
@@ -66,17 +66,13 @@ impl<N: Number> Evaluate<N> for Add<N> {
 }
 
 impl<N> OpInfo for Add<N> {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         if let Some((_, og_shape)) = &self.operand {
             assert!(
-                *og_shape == Shape::from_it(&input_shapes[0]),
+                *og_shape == input_shapes[0],
                 "Add layer operand shape mismatch: {:?} vs {:?}",
                 og_shape,
-                Shape::from_it(&input_shapes[0])
+                &input_shapes[0]
             );
         }
         match padding_mode {
@@ -125,10 +121,10 @@ mod test {
     #[test]
     fn test_add() {
         let add = Add::new();
-        let t1 = Tensor::<Element>::random(&vec![2, 2]);
-        let t2 = Tensor::<Element>::random(&vec![2, 2]);
+        let t1 = Tensor::<Element>::random(&vec![2, 2].into());
+        let t2 = Tensor::<Element>::random(&vec![2, 2].into());
         let result = add
-            .evaluate::<GoldilocksExt2>(&[&t1, &t2], vec![vec![2, 2], vec![2, 2]])
+            .evaluate::<GoldilocksExt2>(&[&t1, &t2], vec![vec![2, 2].into(), vec![2, 2].into()])
             .unwrap();
         for i in 0..2 {
             for j in 0..2 {
@@ -140,7 +136,7 @@ mod test {
         }
         let add = Add::new_with(t1.clone(), t1.get_shape().into());
         let result = add
-            .evaluate::<GoldilocksExt2>(&[&t2], vec![vec![2, 2]])
+            .evaluate::<GoldilocksExt2>(&[&t2], vec![vec![2, 2].into()])
             .unwrap();
         for i in 0..2 {
             for j in 0..2 {

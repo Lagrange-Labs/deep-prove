@@ -1,7 +1,7 @@
 use std::{cmp::Ordering, collections::HashMap};
 
 use crate::{
-    Claim, NextPowerOfTwo, Prover, ScalingStrategy,
+    Claim, Prover, ScalingStrategy,
     iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
@@ -10,7 +10,7 @@ use crate::{
     model::StepData,
     padding::{PaddingMode, ShapeInfo, pad_dense},
     quantization::{self, ScalingFactor, model_scaling_factor_from_tensor_and_bias},
-    tensor::Number,
+    tensor::{Number, Shape},
 };
 use anyhow::{Result, ensure};
 use ff_ext::ExtensionField;
@@ -39,7 +39,7 @@ pub struct Dense<T> {
     pub matrix: Tensor<T>,
     pub bias: Tensor<T>,
     // set to matrix shape if the matrix is not padded
-    pub unpadded_matrix_shape: Vec<usize>,
+    pub unpadded_matrix_shape: Shape,
 }
 
 /// Information stored in the context (setup phase) for this layer.
@@ -47,8 +47,8 @@ pub struct Dense<T> {
 pub struct DenseCtx<E> {
     pub node_id: NodeId,
     pub matrix_poly_aux: VPAuxInfo<E>,
-    pub unpadded_matrix_shape: Vec<usize>,
-    pub padded_matrix_shape: Vec<usize>,
+    pub unpadded_matrix_shape: Shape,
+    pub padded_matrix_shape: Shape,
 }
 
 /// Proof of the layer.
@@ -67,19 +67,19 @@ pub struct DenseProof<E: ExtensionField> {
     individual_claims: Vec<E>,
 }
 
-fn output_shape(input_shape: &[usize], matrix_shape: &[usize]) -> Vec<usize> {
+fn output_shape(input_shape: &Shape, matrix_shape: &Shape) -> Shape {
     assert_eq!(
-        input_shape.iter().product::<usize>(),
+        input_shape.product(),
         matrix_shape[1],
         "matrix_shape must be 2D: input_shape {input_shape:?} vs matrix {matrix_shape:?}"
     );
-    vec![matrix_shape[0]]
+    Shape::new(vec![matrix_shape[0]])
 }
 
 impl<T: Number> Dense<T> {
     pub fn new(matrix: Tensor<T>, bias: Tensor<T>) -> Self {
         assert_eq!(matrix.nrows_2d(), bias.get_shape()[0]);
-        let unpadded_matrix_shape = matrix.get_shape().to_vec();
+        let unpadded_matrix_shape = matrix.get_shape();
         Self {
             matrix,
             bias,
@@ -99,11 +99,11 @@ impl<T: Number> Dense<T> {
         Self {
             matrix,
             bias,
-            unpadded_matrix_shape: self.unpadded_matrix_shape.to_vec(),
+            unpadded_matrix_shape: self.unpadded_matrix_shape,
         }
     }
 
-    pub fn output_shape(&self, input_shape: &[usize], padding_mode: PaddingMode) -> Vec<usize> {
+    pub fn output_shape(&self, input_shape: &Shape, padding_mode: PaddingMode) -> Shape {
         let matrix_shape = match padding_mode {
             PaddingMode::NoPadding => self.unpadded_matrix_shape.clone(),
             PaddingMode::Padding => self.unpadded_matrix_shape.next_power_of_two(),
@@ -133,11 +133,7 @@ impl<T: Number> Dense<T> {
 const IS_PROVABLE: bool = true;
 
 impl<N: Number> OpInfo for Dense<N> {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         input_shapes
             .iter()
             .map(|shape| self.output_shape(shape, padding_mode))
@@ -165,7 +161,7 @@ impl<N: Number> Evaluate<N> for Dense<N> {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> Result<LayerOut<N, E>> {
         ensure!(
             inputs.len() == 1,
@@ -203,7 +199,7 @@ where
         let ncols = self.matrix.ncols_2d();
         aux.last_output_shape
             .iter_mut()
-            .for_each(|shape| *shape = vec![self.matrix.nrows_2d()]);
+            .for_each(|shape| *shape = Shape::new(vec![self.matrix.nrows_2d()]));
         // each poly is only two polynomial right now: matrix and vector
         // for matrix, each time we fix the variables related to rows so we are only left
         // with the variables related to columns
@@ -217,7 +213,7 @@ where
                 vector_num_vars,
             ]]),
             unpadded_matrix_shape: self.unpadded_matrix_shape.clone(),
-            padded_matrix_shape: self.matrix.get_shape().to_vec(),
+            padded_matrix_shape: self.matrix.get_shape(),
         });
 
         let weights_evals = self.matrix.pad_next_power_of_two().get_data().to_vec();
@@ -327,11 +323,7 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         input_shapes
             .iter()
             .map(|shape| self.output_shape(shape, padding_mode))
@@ -383,12 +375,12 @@ impl Dense<f32> {
         Dense::<Element> {
             matrix,
             bias,
-            unpadded_matrix_shape: self.unpadded_matrix_shape.to_vec(),
+            unpadded_matrix_shape: self.unpadded_matrix_shape,
         }
     }
 
     pub fn new_from_weights(weights: Tensor<f32>, bias: Tensor<f32>) -> Self {
-        let unpadded_matrix_shape = weights.get_shape().to_vec();
+        let unpadded_matrix_shape = weights.get_shape();
         Self {
             matrix: weights,
             bias,
@@ -578,7 +570,7 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    pub fn output_shape(&self, input_shape: &[usize], mode: PaddingMode) -> Vec<usize> {
+    pub fn output_shape(&self, input_shape: &Shape, mode: PaddingMode) -> Shape {
         let mat_shape = match mode {
             PaddingMode::NoPadding => &self.unpadded_matrix_shape,
             PaddingMode::Padding => &self.padded_matrix_shape,
@@ -674,12 +666,12 @@ mod test {
     use super::*;
 
     impl<T: Number> Dense<T> {
-        pub fn random(shape: Vec<usize>) -> Self {
+        pub fn random(shape: Shape) -> Self {
             assert_eq!(shape.len(), 2);
             let (nrows, ncols) = (shape[0], shape[1]);
-            let matrix = Tensor::<T>::random(&vec![nrows, ncols]);
+            let matrix = Tensor::<T>::random(&vec![nrows, ncols].into());
             // let bias = Tensor::random(vec![nrows]);
-            let bias = Tensor::<T>::random(&vec![nrows]);
+            let bias = Tensor::<T>::random(&vec![nrows].into());
             Self::new(matrix, bias)
         }
     }
@@ -694,7 +686,7 @@ mod test {
         ])
         .unwrap();
 
-        let bias = Tensor::<Element>::new(vec![3], vec![10, 11, 12]);
+        let bias = Tensor::<Element>::new(vec![3].into(), vec![10, 11, 12]);
 
         let dense = Dense::new(matrix, bias);
 
@@ -740,7 +732,7 @@ mod test {
         ])
         .unwrap();
 
-        let bias = Tensor::<Element>::new(vec![4], vec![20, 21, 22, 23]);
+        let bias = Tensor::<Element>::new(vec![4].into(), vec![20, 21, 22, 23]);
 
         let dense = Dense::new(matrix, bias);
 
@@ -776,7 +768,7 @@ mod test {
         ])
         .unwrap();
 
-        let bias = Tensor::<Element>::new(vec![3], vec![20, 21, 22]);
+        let bias = Tensor::<Element>::new(vec![3].into(), vec![20, 21, 22]);
 
         let dense = Dense::new(matrix, bias);
 
@@ -820,7 +812,7 @@ mod test {
         let matrix =
             Tensor::<Element>::matrix_from_coeffs(vec![vec![1, 2, 3], vec![4, 5, 6]]).unwrap();
 
-        let bias = Tensor::<Element>::new(vec![2], vec![10, 11]);
+        let bias = Tensor::<Element>::new(vec![2].into(), vec![10, 11]);
 
         let dense = Dense::new(matrix, bias);
 
@@ -828,7 +820,7 @@ mod test {
         let padded = dense.clone().pad_next_power_of_two();
 
         // Create input tensor
-        let input_tensor = Tensor::<Element>::new(vec![3], quantized_input);
+        let input_tensor = Tensor::<Element>::new(vec![3].into(), quantized_input);
 
         // Apply the dense operation on both original and padded
         let output = evaluate_layer::<GoldilocksExt2, _, _>(&dense, &vec![&input_tensor], None)

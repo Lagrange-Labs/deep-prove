@@ -3,11 +3,11 @@ use ff_ext::ExtensionField;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
-    NextPowerOfTwo, Tensor,
+    Tensor,
     iop::context::ContextAux,
     layers::LayerCtx,
     padding::{PaddingMode, ShapeInfo, reshape},
-    tensor::Number,
+    tensor::{Number, Shape},
 };
 
 use super::provable::{Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProveInfo};
@@ -15,14 +15,10 @@ use super::provable::{Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProveInfo};
 pub struct Flatten;
 
 impl OpInfo for Flatten {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        _padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], _padding_mode: PaddingMode) -> Vec<Shape> {
         input_shapes
             .iter()
-            .map(|s| vec![s.iter().product()])
+            .map(|s| Shape::new(vec![s.product()]))
             .collect()
     }
 
@@ -43,7 +39,7 @@ impl<N: Number> Evaluate<N> for Flatten {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> Result<LayerOut<N, E>> {
         ensure!(
             inputs.len() == 1,

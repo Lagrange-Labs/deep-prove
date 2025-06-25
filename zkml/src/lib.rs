@@ -226,7 +226,7 @@ mod test {
         assert_eq!(shapes.len(), 1);
         let shape = &shapes[0];
         assert_eq!(shape.len(), 1);
-        let input = Tensor::random(&vec![shape[0] - 1]);
+        let input = Tensor::random(&vec![shape[0] - 1].into());
         println!("input: {:?}", input.get_data());
         let input = model.prepare_inputs(vec![input])?;
 

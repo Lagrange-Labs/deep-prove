@@ -3,14 +3,14 @@ use ff_ext::ExtensionField;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Element, NextPowerOfTwo, ScalingFactor, ScalingStrategy, Tensor,
+    Element, ScalingFactor, ScalingStrategy, Tensor,
     layers::{
         provable::{Evaluate, LayerOut, NodeId, OpInfo, QuantizeOp, QuantizeOutput},
         requant::Requant,
     },
     padding::PaddingMode,
     quantization::model_scaling_factor_from_tensor_and_bias,
-    tensor::Number,
+    tensor::{Number, Shape},
 };
 
 /// A layer that evaluates the tensor X against the matrices Q, K and V.
@@ -65,16 +65,12 @@ impl<N: Number> QKV<N> {
 
 impl<N> OpInfo for QKV<N> {
     /// Returns the shapes of the outputs (in the same order)
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         let input_shape = input_shapes[0].clone();
         let output_shapes = vec![
-            vec![input_shape[0], self.q.get_shape()[1]],
-            vec![input_shape[0], self.k.get_shape()[1]],
-            vec![input_shape[0], self.v.get_shape()[1]],
+            vec![input_shape[0], self.q.get_shape()[1]].into(),
+            vec![input_shape[0], self.k.get_shape()[1]].into(),
+            vec![input_shape[0], self.v.get_shape()[1]].into(),
         ];
         match padding_mode {
             PaddingMode::NoPadding => output_shapes,
@@ -107,7 +103,7 @@ impl<N: Number> Evaluate<N> for QKV<N> {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> anyhow::Result<LayerOut<N, E>> {
         ensure!(inputs.len() == 1, "QKV expects 1 input");
         let shape = inputs[0].get_shape();
@@ -231,8 +227,8 @@ pub struct CacheQKV<N> {
 impl<N: Number> CacheQKV<N> {
     pub fn new() -> Self {
         Self {
-            cache_k: Tensor::new(vec![0], vec![]),
-            cache_v: Tensor::new(vec![0], vec![]),
+            cache_k: Tensor::new(vec![0].into(), vec![]),
+            cache_v: Tensor::new(vec![0].into(), vec![]),
             initialized: false,
         }
     }
@@ -261,10 +257,10 @@ impl<N: Number> CacheQKV<N> {
             self.initialized = true;
         }
     }
-    pub fn k_shape(&self) -> Vec<usize> {
+    pub fn k_shape(&self) -> Shape {
         self.cache_k.get_shape()
     }
-    pub fn v_shape(&self) -> Vec<usize> {
+    pub fn v_shape(&self) -> Shape {
         self.cache_v.get_shape()
     }
     pub fn k(&self) -> Tensor<N> {
@@ -283,12 +279,12 @@ mod tests {
 
     impl<N: Number> QKV<N> {
         pub fn random(emb_size: usize, hidden_size: usize) -> Self {
-            let q = Tensor::<N>::random(&[emb_size, hidden_size]);
-            let q_bias = Tensor::<N>::random(&[hidden_size]);
-            let k = Tensor::<N>::random(&[emb_size, hidden_size]);
-            let k_bias = Tensor::<N>::random(&[hidden_size]);
-            let v = Tensor::<N>::random(&[emb_size, hidden_size]);
-            let v_bias = Tensor::<N>::random(&[hidden_size]);
+            let q = Tensor::<N>::random(&vec![emb_size, hidden_size].into());
+            let q_bias = Tensor::<N>::random(&vec![hidden_size].into());
+            let k = Tensor::<N>::random(&vec![emb_size, hidden_size].into());
+            let k_bias = Tensor::<N>::random(&vec![hidden_size].into());
+            let v = Tensor::<N>::random(&vec![emb_size, hidden_size].into());
+            let v_bias = Tensor::<N>::random(&vec![hidden_size].into());
             Self::new(q, q_bias, k, k_bias, v, v_bias)
         }
     }
@@ -347,12 +343,12 @@ mod tests {
         let seq_len = 3;
         let emb_size = 2;
         let hidden_size = 3;
-        let q = Tensor::<f32>::random(&[emb_size, hidden_size]);
-        let q_bias = Tensor::<f32>::random(&[hidden_size]);
-        let k = Tensor::<f32>::random(&[emb_size, hidden_size]);
-        let k_bias = Tensor::<f32>::random(&[hidden_size]);
-        let v = Tensor::<f32>::random(&[emb_size, hidden_size]);
-        let v_bias = Tensor::<f32>::random(&[hidden_size]);
+        let q = Tensor::<f32>::random(&vec![emb_size, hidden_size].into());
+        let q_bias = Tensor::<f32>::random(&vec![hidden_size].into());
+        let k = Tensor::<f32>::random(&vec![emb_size, hidden_size].into());
+        let k_bias = Tensor::<f32>::random(&vec![hidden_size].into());
+        let v = Tensor::<f32>::random(&vec![emb_size, hidden_size].into());
+        let v_bias = Tensor::<f32>::random(&vec![hidden_size].into());
         let qkv = QKV::new(
             q.clone(),
             q_bias.clone(),
@@ -361,31 +357,31 @@ mod tests {
             v.clone(),
             v_bias.clone(),
         );
-        let mut input = Tensor::<f32>::random(&[seq_len, emb_size]);
+        let mut input = Tensor::<f32>::random(&vec![seq_len, emb_size].into());
         let output = qkv
             .evaluate::<GoldilocksExt2>(&[&input], vec![])
             .unwrap()
             .outputs;
         assert_eq!(output.len(), 3);
-        assert_eq!(output[0].get_shape(), vec![seq_len, hidden_size]);
-        assert_eq!(output[1].get_shape(), vec![seq_len, hidden_size]);
+        assert_eq!(output[0].get_shape(), vec![seq_len, hidden_size].into());
+        assert_eq!(output[1].get_shape(), vec![seq_len, hidden_size].into());
         let mut out_k = input.matmul(&k).add_dim2(&k_bias);
         assert_eq!(output[1].get_data(), out_k.get_data());
         let mut out_v = input.matmul(&v).add_dim2(&v_bias);
-        assert_eq!(output[2].get_shape(), vec![seq_len, hidden_size]);
+        assert_eq!(output[2].get_shape(), vec![seq_len, hidden_size].into());
         assert_eq!(output[2].get_data(), out_v.get_data());
         // second token
         let seq_len = seq_len + 1;
-        let new_token_emb = Tensor::<f32>::random(&[1, emb_size]);
+        let new_token_emb = Tensor::<f32>::random(&vec![1, emb_size].into());
         input.concat(new_token_emb.clone());
         let output = qkv
             .evaluate::<GoldilocksExt2>(&[&input], vec![])
             .unwrap()
             .outputs;
         assert_eq!(output.len(), 3);
-        assert_eq!(output[0].get_shape(), vec![seq_len, hidden_size]);
-        assert_eq!(output[1].get_shape(), vec![seq_len, hidden_size]);
-        assert_eq!(output[2].get_shape(), vec![seq_len, hidden_size]);
+        assert_eq!(output[0].get_shape(), vec![seq_len, hidden_size].into());
+        assert_eq!(output[1].get_shape(), vec![seq_len, hidden_size].into());
+        assert_eq!(output[2].get_shape(), vec![seq_len, hidden_size].into());
         let out_q = input.matmul(&q).add_dim2(&q_bias);
         assert_eq!(output[0].get_data(), out_q.get_data());
         out_k.concat(new_token_emb.matmul(&k).add_dim2(&k_bias));

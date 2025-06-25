@@ -19,6 +19,7 @@ use crate::{
     model::StepData,
     padding::PaddingMode,
     quantization::{self, Fieldizer},
+    tensor::Shape,
 };
 use anyhow::{Result, anyhow, ensure};
 
@@ -99,11 +100,7 @@ where
 const IS_PROVABLE: bool = true;
 
 impl OpInfo for Requant {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        _padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], _padding_mode: PaddingMode) -> Vec<Shape> {
         input_shapes.to_vec() // preserve the input shape
     }
 
@@ -128,7 +125,7 @@ impl Evaluate<Element> for Requant {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<Element>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> Result<LayerOut<Element, E>> {
         Ok(LayerOut::from_vec(
             inputs
@@ -357,11 +354,7 @@ where
 }
 
 impl OpInfo for RequantCtx {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        _padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], _padding_mode: PaddingMode) -> Vec<Shape> {
         input_shapes.to_vec()
     }
 

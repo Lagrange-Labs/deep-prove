@@ -34,7 +34,7 @@ mod test {
     #[test]
     fn test_scalar_mul() {
         let scalar_mul = ScalarMul::new(2.0);
-        let input = Tensor::new(vec![1, 2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let input = Tensor::new(vec![1, 2, 3].into(), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
         let result = scalar_mul.evaluate::<_, GoldilocksExt2>(&[&input]).unwrap();
         assert_eq!(result.outputs[0].data, vec![2.0, 4.0, 6.0, 8.0, 10.0, 12.0]);
     }

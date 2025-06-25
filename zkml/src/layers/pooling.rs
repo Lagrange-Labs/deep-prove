@@ -14,7 +14,7 @@ use crate::{
     model::StepData,
     padding::{PaddingMode, ShapeInfo, pooling},
     quantization::{Fieldizer, IntoElement},
-    tensor::{Number, Tensor},
+    tensor::{Number, Shape, Tensor},
 };
 use anyhow::{Result, anyhow, ensure};
 use ff_ext::ExtensionField;
@@ -74,11 +74,7 @@ where
 const IS_PROVABLE: bool = true;
 
 impl OpInfo for Pooling {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        _padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], _padding_mode: PaddingMode) -> Vec<Shape> {
         match self {
             Pooling::Maxpool2D(maxpool2_d) => input_shapes
                 .iter()
@@ -109,7 +105,7 @@ impl<N: Number> Evaluate<N> for Pooling {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
-        _unpadded_input_shapes: Vec<Vec<usize>>,
+        _unpadded_input_shapes: Vec<Shape>,
     ) -> Result<LayerOut<N, E>> {
         ensure!(
             inputs.len() == 1,
@@ -257,11 +253,7 @@ where
 }
 
 impl OpInfo for PoolingCtx {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        _padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], _padding_mode: PaddingMode) -> Vec<Shape> {
         input_shapes
             .iter()
             .map(|shape| self.poolinfo.output_shape(shape))
@@ -531,7 +523,7 @@ impl Pooling {
 }
 
 impl PoolingCtx {
-    pub fn output_shape(&self, input_shape: &[usize]) -> Vec<usize> {
+    pub fn output_shape(&self, input_shape: &Shape) -> Shape {
         maxpool2d_shape(input_shape)
     }
     pub(crate) fn verify_pooling<
@@ -692,7 +684,7 @@ impl Maxpool2D {
         input.maxpool2d(self.kernel_size, self.stride)
     }
 
-    pub fn output_shape(&self, input_shape: &[usize]) -> Vec<usize> {
+    pub fn output_shape(&self, input_shape: &Shape) -> Shape {
         maxpool2d_shape(input_shape)
     }
 
@@ -786,7 +778,7 @@ impl Maxpool2D {
 
 /// Assumes kernel=2, stride=2, padding=0, and dilation=1
 /// https://pytorch.org/docs/stable/generated/torch.nn.MaxPool2d.html
-pub fn maxpool2d_shape(input_shape: &[usize]) -> Vec<usize> {
+pub fn maxpool2d_shape(input_shape: &Shape) -> Shape {
     let stride = 2usize;
     let padding = 0usize;
     let kernel = 2usize;
@@ -795,7 +787,7 @@ pub fn maxpool2d_shape(input_shape: &[usize]) -> Vec<usize> {
     let d1 = input_shape[0];
     let d2 = (input_shape[1] + 2 * padding - dilation * (kernel - 1) - 1) / stride + 1;
 
-    vec![d1, d2, d2]
+    Shape::new(vec![d1, d2, d2])
 }
 #[cfg(test)]
 mod tests {
@@ -829,12 +821,12 @@ mod tests {
                         2 * rng.gen_range(2usize..5)
                     }
                 })
-                .collect::<Vec<usize>>();
-            let input_data_size = random_shape.iter().product::<usize>();
+                .collect::<Shape>();
+            let input_data_size = random_shape.product();
             let data = (0..input_data_size)
                 .map(|_| rng.gen_range(-128i128..128))
                 .collect::<Vec<Element>>();
-            let input = Tensor::<Element>::new(random_shape.clone(), data);
+            let input = Tensor::<Element>::new(random_shape, data);
 
             let info = Maxpool2D {
                 kernel_size: MAXPOOL2D_KERNEL_SIZE,
