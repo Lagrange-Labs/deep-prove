@@ -97,14 +97,19 @@ async fn main() -> anyhow::Result<()> {
             let input = Input::from_file(&inputs).context("loading input:")?;
             let (model, model_metadata) = parse_model(&onnx).context("parsing ONNX file")?;
             let task = tonic::Request::new(lagrange::SubmitTaskRequest {
-                task_bytes: rmp_serde::to_vec(&DeepProveRequest::V1(
-                    zkml::middleware::v1::DeepProveRequest {
-                        model,
-                        model_metadata,
-                        input,
-                    },
-                ))
-                .context("serializing inference request")?,
+                task_bytes: zstd::encode_all(
+                    rmp_serde::to_vec(&DeepProveRequest::V1(
+                        zkml::middleware::v1::DeepProveRequest {
+                            model,
+                            model_metadata,
+                            input,
+                        },
+                    ))
+                    .context("serializing inference request")?
+                    .as_slice(),
+                    5,
+                )
+                .context("compressing payload")?,
                 user_task_id: format!(
                     "{}-{}-{}",
                     onnx.with_extension("")

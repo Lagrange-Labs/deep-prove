@@ -100,7 +100,11 @@ async fn process_message_from_gw(
     msg: WorkerToGwResponse,
     outbound_tx: &tokio::sync::mpsc::Sender<WorkerToGwRequest>,
 ) -> anyhow::Result<()> {
-    let task: DeepProveRequest = rmp_serde::from_slice(&msg.task)?;
+    let task: DeepProveRequest = rmp_serde::from_slice(
+        zstd::decode_all(msg.task.as_slice())
+            .context("decompressing payload")?
+            .as_slice(),
+    )?;
 
     let result = match task {
         DeepProveRequest::V1(deep_prove_request_v1) => run_model_v1(deep_prove_request_v1),
