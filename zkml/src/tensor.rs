@@ -443,8 +443,7 @@ impl Tensor<Element> {
         let new_n = 2 * n_x * n_x;
 
         let (x_vec, input): (Vec<Vec<F>>, Vec<Vec<F>>) = real_input
-            .par_iter()
-            .chunks(n_x * n_x)
+            .par_chunks(n_x * n_x)
             .map(|chunk| {
                 let xx_input = chunk.into_iter().cloned().rev().collect::<Vec<_>>();
                 let mut xx_fft = xx_input
