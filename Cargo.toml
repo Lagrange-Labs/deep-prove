@@ -78,7 +78,6 @@ thiserror = "2.0.12"
 tiny-keccak = "2.0"
 tracing-flame = "0.2.0"
 tract-onnx = "0.21.13"
-unroll = "0.1"
 
 # Test must run fast, but still provides stacktraces.
 [profile.test]
