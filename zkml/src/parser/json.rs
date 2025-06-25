@@ -382,6 +382,10 @@ pub mod test {
         } else {
             PathBuf::from("assets/scripts/llms/").join(name)
         };
+        assert!(
+            path.exists(),
+            "Missing model locally, create a venv and run `python3 gpt2_internal.py --output-dir ./assets/scripts/llms/ --export-model` to retrive it",
+        );
         Ok(path.to_str().unwrap().to_string())
     }
 
