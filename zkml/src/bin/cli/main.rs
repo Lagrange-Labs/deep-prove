@@ -15,9 +15,6 @@ use zkml::{
 
 mod lagrange {
     tonic::include_proto!("lagrange");
-
-    pub const FILE_DESCRIPTOR_SET: &[u8] =
-        tonic::include_file_descriptor_set!("lagrange_descriptor");
 }
 
 #[derive(Parser)]
