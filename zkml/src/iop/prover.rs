@@ -327,7 +327,8 @@ where
         // Partition r in (r1,r2)
         let mut r1 = vec![E::ZERO; prod[0].len().ilog2() as usize];
         let mut r2 = vec![E::ZERO; prod.len().ilog2() as usize];
-        r1.copy_from_slice(&r[..r.len()]);
+        let r1_len = r1.len();
+        r1.copy_from_slice(&r[..r1_len]);
         assert_eq!(
             r1[r1.len() - 1],
             E::ZERO,

@@ -132,7 +132,7 @@ where
         let info = match self {
             Pooling::Maxpool2D(info) => {
                 aux.tables.insert(TableType::Range);
-                let num_vars = aux.last_output_shape.iter_mut().try_fold(None, |expected_num_vars, shape| {
+                let num_vars = aux.last_output_shape.iter_mut().fold(Ok(None), |expected_num_vars, shape| {
                     // Pooling only affects the last two dimensions
                     let total_number_dims = shape.len();
 
@@ -143,13 +143,11 @@ where
                     let num_vars = shape.iter()
                         .map(|dim| ceil_log2(*dim))
                         .sum::<usize>();
-                    if let Some(vars) = expected_num_vars {
+                    if let Some(vars) = expected_num_vars? {
                         ensure!(vars == num_vars,
                         "All input shapes for convolution must have the same number of variables");
-                        Ok(Some(vars))
-                    } else {
-                        Ok(None)
                     }
+                    Ok(Some(num_vars))
                 })?.expect("No input shape found for convolution layer?");
                 // Set the model polys to be empty
                 aux.model_polys = None;
