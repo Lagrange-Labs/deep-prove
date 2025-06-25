@@ -13,7 +13,7 @@ name = "bench"
 path = "src/bin/bench.rs"
 
 [[bin]]
-name = "worker"
+name = "deep-prove-worker"
 path = "src/bin/worker.rs"
 
 [[bin]]
