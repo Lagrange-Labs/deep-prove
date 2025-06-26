@@ -2,38 +2,30 @@ name: Deploy mdBook
 
 on:
   pull_request:
-  # push:
-    #branches:
-    #  - main  # or your default branch
-    #paths:
-    #  - 'docs/**'  # Only trigger when docs are updated
+    paths:
+      - 'zkml/docs/**'  # Only trigger when docs are updated
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      issues: write
+      discussions: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: "recursive"
-
-      - name: Setup mdBook
-        uses: peaceiris/actions-mdbook@v2
+      - uses: jontze/action-mdbook@v4
         with:
-          mdbook-version: 'latest'
-
-      - name: Install mdbook-katex
-        run: cargo install mdbook-katex
-
+          token: ${{secrets.GITHUB_TOKEN}}
+          use-katex: true
       - name: Build Book
         run: |
-          cd docs  # Change to your docs directory
+          cd docs
+          rm -rf book
           mdbook build
-
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
+      - uses: rossjrw/pr-preview-action@v1
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./docs/book
-
+          source-dir: docs/book
