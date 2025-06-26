@@ -1055,22 +1055,19 @@ where
         }
     }
     pub fn pad_to_shape(&mut self, target_shape: Shape) {
-        if target_shape.len() != self.shape.len() {
-            panic!("Target shape must have the same number of dimensions as the tensor.");
-        }
-
-        let current_shape = &self.shape;
-
         assert!(
-            current_shape
+            target_shape.rank() == self.shape.rank(),
+            "Target shape must have the rank as the current tensor."
+        );
+        assert!(
+            self.shape
                 .iter()
                 .zip(target_shape.iter())
-                .all(|(c, t)| c <= t)
+                .all(|(c, t)| c <= t),
+            "All dimensions of target shape must be greater-than-or-equal to the current tensor",
         );
-        // if current_shape.iter().zip(&target_shape).all(|(c, t)| c <= t) {
-        //     // No padding is needed if all dimensions are already the correct size
-        //     return;
-        // }
+
+        let current_shape = &self.shape;
 
         let mut new_data = vec![T::default(); target_shape.iter().product()];
 
