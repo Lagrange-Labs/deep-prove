@@ -25,9 +25,11 @@ version = "0.1.0"
 [workspace.dependencies]
 anyhow = { version = "1.0", default-features = false }
 ark-std = "0.5"
+axum = { version = "0.8" }
 cfg-if = "1.0"
 criterion = { version = "0.6", features = ["html_reports"] }
 crossbeam-channel = "0.5"
+hex = { version = "0.4" }
 ff = "0.13"
 goldilocks = { git = "https://github.com/scroll-tech/ceno-Goldilocks" }
 itertools = "0.13"

@@ -23,9 +23,11 @@ path = "src/bin/cli/main.rs"
 [dependencies]
 anyhow.workspace = true
 ark-std.workspace = true
+axum = { workspace = true }
 burn = { version = "0.17.0", features = ["ndarray"] }
 candle-core = "0.9.1"
 candle-transformers = "0.9.1"
+hex = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
 code-timing-macros = { workspace = true, features = ["tracing"] }
 csv = { workspace = true }
@@ -34,7 +36,6 @@ derive_more = { workspace = true, features = ["full"] }
 ff_ext = { version = "0.1.0", path = "../ff_ext" }
 gguf-rs = "0.1.4"
 gkr = { workspace = true }
-hex = "0.4.3"
 itertools.workspace = true
 mpcs = { workspace = true }
 multilinear_extensions = { version = "0.1.0", path = "../multilinear_extensions", features = ["parallel"] }

@@ -1,11 +1,13 @@
-use std::str::FromStr;
+use std::{net::SocketAddr, str::FromStr};
 
 use alloy::signers::local::LocalSigner;
 use anyhow::{Context as _, Result};
+use axum::{Json, Router, routing::get};
 use clap::Parser;
 use ff_ext::GoldilocksExt2;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use mpcs::{Basefold, BasefoldRSParams};
+use reqwest::StatusCode;
 use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
 
 use lagrange::{WorkerToGwRequest, worker_to_gw_request::Request};
@@ -82,6 +84,10 @@ struct Args {
     #[arg(long, env, default_value = "http://localhost:10000")]
     gw_url: String,
 
+    /// An address of the `/health` probe.
+    #[arg(long, env, default_value = "127.0.0.1:8080")]
+    healthcheck_addr: SocketAddr,
+
     #[arg(long, env, default_value = "deep-prove-1")]
     worker_class: String,
 
@@ -132,6 +138,19 @@ async fn process_message_from_gw(
             request: Some(reply),
         })
         .await?;
+
+    Ok(())
+}
+
+async fn health_check() -> (StatusCode, Json<()>) {
+    (StatusCode::OK, Json(()))
+}
+
+async fn serve_health_check(addr: SocketAddr) -> anyhow::Result<()> {
+    let app = Router::new().route("/health", get(health_check));
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+
+    axum::serve(listener, app).await?;
 
     Ok(())
 }
@@ -192,6 +211,9 @@ async fn main() -> anyhow::Result<()> {
 
     let mut inbound = response.into_inner();
 
+    let healthcheck_handler = tokio::spawn(serve_health_check(args.healthcheck_addr));
+    let mut healthcheck_handler = healthcheck_handler.fuse();
+
     loop {
         info!("Waiting for message...");
         tokio::select! {
@@ -205,6 +227,14 @@ async fn main() -> anyhow::Result<()> {
                     }
                 };
                 process_message_from_gw(msg, &outbound_tx).await?;
+            }
+            h = &mut healthcheck_handler => {
+                if let Err(e) = h {
+                    error!("healthcheck handler has shut down with error {e:?}, shutting down");
+                } else {
+                    info!("healthcheck handler exited, shutting down");
+                }
+                break
             }
         }
     }
