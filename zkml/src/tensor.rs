@@ -1941,6 +1941,32 @@ impl Shape {
         Self(new_shape)
     }
 
+    /// Returns the strides for this [Shape] in row major order.
+    ///
+    /// The values in the stride vector determine the offset
+    /// needed to go to the next element of a given dimension.
+    ///
+    /// ```
+    /// # use zkml::tensor::Shape;
+    /// let shape = Shape::new(vec![3, 5, 7]);
+    /// let strides = shape.strides();
+    /// // row major order, inner most dimension changes the quickest
+    /// assert_eq!(strides[0], 1);
+    /// assert_eq!(strides[1], 7);
+    /// assert_eq!(strides[2], 35);
+    /// ```
+    pub fn strides(&self) -> Vec<usize> {
+        self.0
+            .iter()
+            .rev()
+            .scan(1usize, |state, item| {
+                let el = Some(*state);
+                *state = *state * item;
+                el
+            })
+            .collect::<Vec<usize>>()
+    }
+
     pub fn permute(&self, permutation: &[usize]) -> Self {
         let mut new_shape = vec![0; self.0.len()];
         for (i, j) in permutation.iter().enumerate() {
