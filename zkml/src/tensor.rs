@@ -1921,6 +1921,20 @@ impl Shape {
         self.0[index]
     }
 
+    /// Adds an extra dimension with size `1` to [Shape].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index` is larger than this shape size.
+    ///
+    /// ```
+    /// # use zkml::tensor::Shape;
+    /// let shape = Shape::new(vec![3, 5]);
+    /// let new_shape = shape.unsqueeze(1);
+    /// assert_eq!(new_shape.dim(0), 3);
+    /// assert_eq!(new_shape.dim(1), 1);
+    /// assert_eq!(new_shape.dim(2), 5);
+    /// ```
     pub fn unsqueeze(&self, index: usize) -> Self {
         let mut new_shape = self.0.clone();
         new_shape.insert(index, 1);
