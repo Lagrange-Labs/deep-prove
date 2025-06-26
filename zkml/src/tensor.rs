@@ -1055,7 +1055,7 @@ where
         }
     }
 
-    /// Changes the shape of the cursort to `target_shape.`.
+    /// Changes the shape of the current [Tensor] to `target_shape`.
     ///
     /// This method will modify the current tensor in place, extending it
     /// to comply with the new shape.
