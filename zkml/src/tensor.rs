@@ -1070,16 +1070,8 @@ where
         let current_shape = &self.shape;
 
         let mut new_data = vec![T::default(); target_shape.iter().product()];
-
-        let mut strides: Vec<usize> = vec![1; current_shape.len()];
-        for i in (0..current_shape.len() - 1).rev() {
-            strides[i] = strides[i + 1] * current_shape[i + 1];
-        }
-
-        let mut target_strides: Vec<usize> = vec![1; target_shape.len()];
-        for i in (0..target_shape.len() - 1).rev() {
-            target_strides[i] = target_strides[i + 1] * target_shape[i + 1];
-        }
+        let strides = current_shape.strides();
+        let target_strides = target_shape.strides();
 
         for index in 0..self.data.len() {
             let mut original_indices = vec![0; current_shape.len()];
@@ -1948,12 +1940,13 @@ impl Shape {
     /// let shape = Shape::new(vec![3, 5, 7]);
     /// let strides = shape.strides();
     /// // row major order, inner most dimension changes the quickest
-    /// assert_eq!(strides[0], 1);
+    /// assert_eq!(strides[0], 35);
     /// assert_eq!(strides[1], 7);
-    /// assert_eq!(strides[2], 35);
+    /// assert_eq!(strides[2], 1);
     /// ```
     pub fn strides(&self) -> Vec<usize> {
-        self.0
+        let mut strides = self
+            .0
             .iter()
             .rev()
             .scan(1usize, |state, item| {
@@ -1961,7 +1954,10 @@ impl Shape {
                 *state = *state * item;
                 el
             })
-            .collect::<Vec<usize>>()
+            .collect::<Vec<_>>();
+
+        strides.reverse();
+        strides
     }
 
     pub fn permute(&self, permutation: &[usize]) -> Self {
