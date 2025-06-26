@@ -1883,7 +1883,13 @@ impl Shape {
         Self(iter.into_iter().map(|v| *v.borrow()).collect())
     }
 
+    /// Creates a new [Shape].
+    ///
+    /// # Panics
+    ///
+    /// If `shape` is an empty vector.
     pub fn new(shape: Vec<usize>) -> Self {
+        assert!(shape.len() != 0, "Shape can not be empty");
         Self(shape)
     }
 
