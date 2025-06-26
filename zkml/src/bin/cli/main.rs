@@ -1,5 +1,9 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
+use alloy::signers::local::LocalSigner;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use lagrange::ProofChannelResponse;
@@ -24,9 +28,9 @@ struct Args {
     #[clap(short, long, env)]
     gw_url: Url,
 
-    /// The Client identity.
+    /// The client ETH private key.
     #[clap(short, long, env)]
-    client_id: String,
+    private_key: String,
 
     /// Max message size passed through gRPC (in MBytes)
     #[arg(long, default_value = "100")]
@@ -82,7 +86,10 @@ async fn main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("connecting to the GW at {}", args.gw_url))?;
 
-    let client_id: MetadataValue<_> = args.client_id.parse().context("parsing client ID")?;
+    let wallet = LocalSigner::from_str(&args.private_key)?;
+    let client_id: MetadataValue<_> = hex::encode(wallet.public_key())
+        .parse()
+        .context("parsing client ID")?;
     let max_message_size = args.max_message_size * 1024 * 1024;
     let mut client = lagrange::clients_service_client::ClientsServiceClient::with_interceptor(
         channel,
