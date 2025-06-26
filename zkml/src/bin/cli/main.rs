@@ -87,7 +87,9 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("connecting to the GW at {}", args.gw_url))?;
 
     let wallet = LocalSigner::from_str(&args.private_key)?;
-    let client_id: MetadataValue<_> = hex::encode(wallet.public_key())
+    let client_id: MetadataValue<_> = wallet
+        .address()
+        .to_string()
         .parse()
         .context("parsing client ID")?;
     let max_message_size = args.max_message_size * 1024 * 1024;
