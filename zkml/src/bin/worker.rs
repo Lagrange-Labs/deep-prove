@@ -12,6 +12,9 @@ use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
 
 use lagrange::{WorkerToGwRequest, worker_to_gw_request::Request};
 use tracing::{debug, error, info};
+
+use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt::format::FmtSpan};
+
 use zkml::{
     Context, Prover, default_transcript,
     middleware::{
@@ -79,6 +82,41 @@ fn run_model_v1(model: DeepProveRequestV1) -> Result<Vec<ProofV1>> {
     Ok(proofs)
 }
 
+fn setup_logging(json: bool) {
+    if json {
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_level(true)
+            .with_file(true)
+            .with_line_number(true)
+            .with_target(true)
+            .with_env_filter(
+                EnvFilter::builder()
+                    .with_default_directive(LevelFilter::INFO.into())
+                    .from_env_lossy(),
+            )
+            .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+            .finish();
+        tracing::subscriber::set_global_default(subscriber).expect("Setting up logging failed");
+    } else {
+        let subscriber = tracing_subscriber::fmt()
+            .pretty()
+            .compact()
+            .with_level(true)
+            .with_file(true)
+            .with_line_number(true)
+            .with_target(true)
+            .with_env_filter(
+                EnvFilter::builder()
+                    .with_default_directive(LevelFilter::INFO.into())
+                    .from_env_lossy(),
+            )
+            .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
+            .finish();
+        tracing::subscriber::set_global_default(subscriber).expect("Setting up logging failed");
+    };
+}
+
 #[derive(Parser)]
 struct Args {
     #[arg(long, env, default_value = "http://localhost:10000")]
@@ -100,6 +138,10 @@ struct Args {
     /// Max message size passed through gRPC (in MBytes)
     #[arg(long, env, default_value = "100")]
     max_message_size: usize,
+
+    /// Should the logs be printed in json format or not
+    #[arg(long, env)]
+    json: bool,
 }
 
 async fn process_message_from_gw(
@@ -158,6 +200,9 @@ async fn serve_health_check(addr: SocketAddr) -> anyhow::Result<()> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+
+    setup_logging(args.json);
+
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Failed to install rustls crypto provider");

@@ -55,7 +55,7 @@ thiserror = { workspace = true }
 timed = { workspace = true }
 timed-core = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json"] }
 tract-onnx = { workspace = true }
 transcript = { version = "0.1.0", path = "../transcript" }
 p3-field = { workspace = true }
