@@ -225,7 +225,7 @@ fn load_reshape<'a, I: Iterator<Item = &'a usize> + Sized>(
         .collect::<Result<Vec<_>>>()?
         .into();
     ensure_onnx!(
-        current_shape.numel() == new_shape.numel(),
+        current_shape.product() == new_shape.product(),
         "Reshape {} has incompatible shapes: {:?} -> {:?}",
         node.name,
         current_shape,

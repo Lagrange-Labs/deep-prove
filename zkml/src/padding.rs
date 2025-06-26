@@ -175,8 +175,8 @@ pub(crate) fn pad_dense(mut d: Dense<Element>, si: &mut ShapeInfo) -> Result<Den
         "Input shape for dense is not padded"
     );
     if sd.input_shape_padded.rank() != 1 {
-        sd.input_shape_padded = vec![sd.input_shape_padded.numel()].into();
-        sd.input_shape_og = vec![sd.input_shape_og.numel()].into();
+        sd.input_shape_padded = vec![sd.input_shape_padded.product()].into();
+        sd.input_shape_og = vec![sd.input_shape_og.product()].into();
     }
     let mut new_cols = d.matrix.ncols_2d();
     if d.matrix.ncols_2d() != sd.input_shape_padded.dim(0) {

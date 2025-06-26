@@ -395,7 +395,7 @@ impl Tensor<Element> {
         let shape = self.shape;
         let data = self.data;
         assert!(
-            shape.iter().product::<usize>() == data.len(),
+            shape.product() == data.len(),
             "Shape does not match data length."
         );
         assert!(shape.len() == 4, "Shape does not match data length.");
@@ -638,10 +638,10 @@ impl<T> Tensor<T> {
     /// Create a new tensor with given shape and data
     pub fn new(shape: Shape, data: Vec<T>) -> Self {
         assert!(
-            shape.iter().product::<usize>() == data.len(),
+            shape.product() == data.len(),
             "Shape does not match data length: shape {:?}->{} vs data.len() {}",
             shape,
-            shape.iter().product::<usize>(),
+            shape.product(),
             data.len()
         );
         Self {
@@ -661,7 +661,7 @@ impl<T> Tensor<T> {
     where
         T: Clone + Default,
     {
-        let num_elements = shape.iter().product::<usize>();
+        let num_elements = shape.product();
         Self::new(shape, vec![T::default(); num_elements])
     }
 
@@ -838,8 +838,8 @@ where
 
     pub fn reshape(mut self, new_shape: Shape) -> Tensor<T> {
         assert!(
-            self.shape.iter().product::<usize>() == new_shape.iter().product::<usize>(),
-            "Shape mismatch for reshape"
+            self.shape.product() == new_shape.product(),
+            "Shape mismatch for reshape",
         );
         self.shape = new_shape;
         self
@@ -851,7 +851,7 @@ where
     }
     /// Create a tensor filled with zeros
     pub fn zeros(shape: Shape) -> Self {
-        let size = shape.iter().product();
+        let size = shape.product();
         Self {
             // data: vec![T::zero(); size],
             data: vec![Default::default(); size],
@@ -863,7 +863,7 @@ where
     /// Element-wise addition
     pub fn add(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(
-            self.shape.iter().product::<usize>() == other.shape.iter().product::<usize>(),
+            self.shape.product() == other.shape.product(),
             "Shape mismatch for addition {:?} != {:?}",
             self.shape,
             other.shape
@@ -921,7 +921,7 @@ where
     /// Element-wise multiplication
     pub fn mul(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(
-            self.shape.numel() == other.shape.numel(),
+            self.shape.product() == other.shape.product(),
             "Shape mismatch for multiplication: {:?} != {:?}",
             self.shape,
             other.shape
@@ -1069,7 +1069,8 @@ where
 
         let current_shape = &self.shape;
 
-        let mut new_data = vec![T::default(); target_shape.iter().product()];
+        let mut new_data = vec![T::default(); target_shape.product()];
+
         let strides = current_shape.strides();
         let target_strides = target_shape.strides();
 
@@ -1981,9 +1982,6 @@ impl Shape {
     pub fn rank(&self) -> usize {
         self.0.len()
     }
-    pub fn numel(&self) -> usize {
-        self.0.iter().product()
-    }
     pub fn is_matrix(&self) -> bool {
         self.0.len() == 2
     }
@@ -2351,9 +2349,8 @@ mod test {
 
     #[test]
     fn test_tensor_pad() {
-        let shape_a = vec![3, 1, 1];
-        let tensor_a =
-            Tensor::<Element>::new(shape_a.clone().into(), vec![1; shape_a.iter().product()]);
+        let shape_a = Shape::from_it([3, 1, 1]);
+        let tensor_a = Tensor::<Element>::new(shape_a.clone(), vec![1; shape_a.product()]);
 
         let shape_b = vec![4, 1, 1];
         let tensor_b = Tensor::<Element>::new(shape_b.into(), vec![1, 1, 1, 0]);
@@ -2364,9 +2361,8 @@ mod test {
 
     #[test]
     fn test_tensor_pad_to_shape() {
-        let shape_a = vec![3, 1, 1];
-        let mut tensor_a =
-            Tensor::<Element>::new(shape_a.clone().into(), vec![1; shape_a.iter().product()]);
+        let shape_a = Shape::from_it([3, 1, 1]);
+        let mut tensor_a = Tensor::<Element>::new(shape_a.clone(), vec![1; shape_a.product()]);
 
         let shape_b = vec![3, 4, 4];
         let tensor_b = Tensor::<Element>::new(
@@ -2426,11 +2422,11 @@ mod test {
     fn test_tensor_pad_matrix_to_ignore_garbage() {
         let old_shape: Shape = vec![2usize, 3, 3].into();
         let orows = 10usize;
-        let ocols = old_shape.iter().product::<usize>();
+        let ocols = old_shape.product();
 
         let new_shape: Shape = vec![3usize, 4, 4].into();
         let nrows = 12usize;
-        let ncols = new_shape.iter().product::<usize>();
+        let ncols = new_shape.product();
 
         let og_t = Tensor::<Element>::random(&old_shape);
         let og_flat_t = og_t.flatten(); // This is equivalent to conv2d output (flattened)

@@ -38,8 +38,8 @@ impl<N: Number> Evaluate<N> for Add<N> {
     ) -> anyhow::Result<LayerOut<N, E>> {
         let result = if inputs.len() == 2 {
             ensure!(
-                Shape::from(inputs[0].get_shape()).numel()
-                    == Shape::from(inputs[1].get_shape()).numel(),
+                Shape::from(inputs[0].get_shape()).product()
+                    == Shape::from(inputs[1].get_shape()).product(),
                 "Add layer expects inputs to have the same shape: {:?} vs {:?}",
                 inputs[0].get_shape(),
                 inputs[1].get_shape()
@@ -51,8 +51,8 @@ impl<N: Number> Evaluate<N> for Add<N> {
                 "Add operand can't be None if there is only one input"
             );
             ensure!(
-                inputs[0].get_shape().numel()
-                    == self.operand.as_ref().unwrap().0.get_shape().numel(),
+                inputs[0].get_shape().product()
+                    == self.operand.as_ref().unwrap().0.get_shape().product(),
                 "Add layer expects input and operand to have the same shape: {:?} vs {:?}",
                 inputs[0].get_shape(),
                 self.operand.as_ref().unwrap().0.get_shape()
