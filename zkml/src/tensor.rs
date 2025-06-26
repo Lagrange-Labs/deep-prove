@@ -1908,6 +1908,15 @@ impl Shape {
         Shape(self.0[start..end].to_vec())
     }
 
+    /// Returns the size of a given dimension.
+    ///
+    /// ```
+    /// # use zkml::tensor::Shape;
+    /// let shape = Shape::new(vec![3, 5, 7]);
+    /// assert_eq!(shape.dim(0), 3);
+    /// assert_eq!(shape.dim(1), 5);
+    /// assert_eq!(shape.dim(2), 7);
+    /// ```
     pub fn dim(&self, index: usize) -> usize {
         self.0[index]
     }
