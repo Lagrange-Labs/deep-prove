@@ -1057,7 +1057,7 @@ where
     pub fn pad_to_shape(&mut self, target_shape: Shape) {
         assert!(
             target_shape.rank() == self.shape.rank(),
-            "Target shape must have the rank as the current tensor."
+            "Target shape must have the same rank as the current tensor."
         );
         assert!(
             self.shape
@@ -1100,6 +1100,83 @@ where
         self.data = new_data;
         self.shape = target_shape;
     }
+
+    /// Changes the shape of the cursort to `target_shape.`.
+    ///
+    /// This method will modify the current tensor in place, extending it
+    /// to comply with the new shape.
+    ///
+    /// # Panics
+    ///
+    /// If the `target_shape` differs in rank or has a dimension smaller than
+    /// the current tensor.
+    pub fn pad_to_shape_in_place(&mut self, target_shape: Shape) {
+        assert!(
+            target_shape.rank() == self.shape.rank(),
+            "Target shape must have the same rank as the current tensor."
+        );
+
+        let distance = self
+            .shape
+            .iter()
+            .zip(target_shape.iter())
+            .map(|(original, new)| new.checked_sub(*original))
+            .collect::<Option<Vec<usize>>>();
+
+        assert!(
+            distance.is_some(),
+            "All dimensions of target shape must be greater-than-or-equal to the current tensor",
+        );
+        let distance = distance.unwrap();
+
+        // First expand the underlying storage vector to the new size
+        self.data.resize(target_shape.product(), T::default());
+
+        let original_shape = &self.shape;
+        let mut coord = original_shape.0.iter().map(|v| *v - 1).collect::<Vec<_>>();
+        let strides = target_shape.strides();
+
+        // Target contains the element's new position after re-shapping.
+        let mut target = coord
+            .iter()
+            .zip(strides.iter())
+            .map(|(pos, stride)| *pos * *stride)
+            .sum();
+
+        // Difference in size for a given dimension, i.e. how many empty spaces
+        // are in between the dimensions after re-shaping.
+        let distance = distance
+            .iter()
+            .zip(strides.iter())
+            .map(|(distance, new)| distance * new)
+            .collect::<Vec<_>>();
+
+        // Then move the data to its new position. Data is moved from back to the front to
+        // prevent overwritting.
+        let mut original = original_shape.product();
+        loop {
+            original -= 1;
+            self.data.swap(original, target);
+
+            if original == 0 {
+                break;
+            }
+
+            for (pos, el) in coord.iter_mut().enumerate().rev() {
+                if *el == 0 {
+                    *el = original_shape[pos] - 1;
+                    target -= distance[pos];
+                } else {
+                    *el -= 1;
+                    target -= 1;
+                    break;
+                }
+            }
+        }
+
+        self.shape = target_shape;
+    }
+
     /// Perform matrix-matrix multiplication
     pub fn matmul(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(
@@ -2361,20 +2438,167 @@ mod test {
 
     #[test]
     fn test_tensor_pad_to_shape() {
-        let shape_a = Shape::from_it([3, 1, 1]);
-        let mut tensor_a = Tensor::<Element>::new(shape_a.clone(), vec![1; shape_a.product()]);
+        let shape = Shape::from_it([1]);
+        let mut tensor = Tensor::<Element>::new(shape, vec![1]);
+        let target = Shape::from_it([2]);
+        let res = Tensor::<Element>::new(target.clone(), vec![1, 0]);
+        let mut tensor2 = tensor.clone();
+        tensor2.pad_to_shape(target.clone());
+        assert_eq!(tensor2, res);
+        tensor.pad_to_shape_in_place(target.clone());
+        assert_eq!(tensor, res);
 
-        let shape_b = vec![3, 4, 4];
-        let tensor_b = Tensor::<Element>::new(
-            shape_b.clone().into(),
+        let shape = Shape::from_it([2]);
+        let mut tensor = Tensor::<Element>::new(shape, vec![1, 2]);
+        let target = Shape::from_it([3]);
+        let res = Tensor::<Element>::new(target.clone(), vec![1, 2, 0]);
+        let mut tensor2 = tensor.clone();
+        tensor2.pad_to_shape(target.clone());
+        assert_eq!(tensor2, res);
+        tensor.pad_to_shape_in_place(target.clone());
+        assert_eq!(tensor, res);
+
+        let shape = Shape::from_it([1, 1]);
+        let mut tensor = Tensor::<Element>::new(shape, vec![1]);
+        let target = Shape::from_it([2, 1]);
+        let res = Tensor::<Element>::new(target.clone(), vec![1, 0]);
+        let mut tensor2 = tensor.clone();
+        tensor2.pad_to_shape(target.clone());
+        assert_eq!(tensor2, res);
+        tensor.pad_to_shape_in_place(target.clone());
+        assert_eq!(tensor, res);
+
+        let shape = Shape::from_it([1, 1]);
+        let mut tensor = Tensor::<Element>::new(shape, vec![1]);
+        let target = Shape::from_it([1, 2]);
+        let res = Tensor::<Element>::new(target.clone(), vec![1, 0]);
+        let mut tensor2 = tensor.clone();
+        tensor2.pad_to_shape(target.clone());
+        assert_eq!(tensor2, res);
+        tensor.pad_to_shape_in_place(target.clone());
+        assert_eq!(tensor, res);
+
+        let shape = Shape::from_it([2, 2]);
+        let mut tensor = Tensor::<Element>::new(shape, vec![1, 2, 3, 4]);
+        let target = Shape::from_it([3, 3]);
+        let res = Tensor::<Element>::new(target.clone(), vec![1, 2, 0, 3, 4, 0, 0, 0, 0]);
+        let mut tensor2 = tensor.clone();
+        tensor2.pad_to_shape(target.clone());
+        assert_eq!(tensor2, res);
+        tensor.pad_to_shape_in_place(target.clone());
+        assert_eq!(tensor, res);
+
+        let shape = Shape::from_it([3, 1, 1]);
+        let mut tensor = Tensor::<Element>::new(shape.clone(), vec![1, 1, 1]);
+        let target = Shape::from_it([3, 4, 4]);
+        #[rustfmt::skip]
+        let res = Tensor::<Element>::new(
+            target.clone(),
+
             vec![
-                1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             ],
         );
+        let mut tensor2 = tensor.clone();
+        tensor2.pad_to_shape(target.clone());
+        assert_eq!(tensor2, res);
+        tensor.pad_to_shape_in_place(target);
+        assert_eq!(tensor, res);
 
-        tensor_a.pad_to_shape(shape_b.into());
-        assert_eq!(tensor_b, tensor_a);
+        let shape = Shape::from_it([3, 1, 3]);
+        let mut tensor = Tensor::<Element>::new(shape.clone(), vec![1, 1, 1, 2, 2, 2, 3, 3, 3]);
+        let target = Shape::from_it([3, 4, 4]);
+        #[rustfmt::skip]
+        let res = Tensor::<Element>::new(
+            target.clone(),
+
+            vec![
+                1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                3, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ],
+        );
+        let mut tensor2 = tensor.clone();
+        tensor2.pad_to_shape(target.clone());
+        assert_eq!(tensor2, res);
+        tensor.pad_to_shape_in_place(target);
+        assert_eq!(tensor, res);
+
+        let shape = Shape::from_it([3, 3, 1]);
+        let mut tensor = Tensor::<Element>::new(shape.clone(), vec![1, 1, 1, 2, 2, 2, 3, 3, 3]);
+        let target = Shape::from_it([3, 4, 4]);
+        #[rustfmt::skip]
+        let res = Tensor::<Element>::new(
+            target.clone(),
+            vec![
+                1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+                2, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0,
+                3, 0, 0, 0, 3, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0,
+            ],
+        );
+        let mut tensor2 = tensor.clone();
+        tensor2.pad_to_shape(target.clone());
+        assert_eq!(tensor2, res);
+        tensor.pad_to_shape_in_place(target);
+        assert_eq!(tensor, res);
+
+        let shape = Shape::from_it([1, 2, 1, 3]);
+        let mut tensor = Tensor::<Element>::new(shape.clone(), vec![1, 1, 1, 2, 2, 2]);
+        let target = Shape::from_it([2, 3, 5, 7]);
+        #[rustfmt::skip]
+        let res = Tensor::<Element>::new(
+            target.clone(),
+            vec![
+                // x=0 y=0
+                1, 1, 1, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+
+                // x=0 y=1
+                2, 2, 2, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+
+                // x=0 y=2
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+
+                // x=1 y=0
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+
+                // x=1 y=1
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+
+                // x=1 y=2
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+            ],
+        );
+        let mut tensor2 = tensor.clone();
+        tensor2.pad_to_shape(target.clone());
+        assert_eq!(tensor2, res);
+        tensor.pad_to_shape_in_place(target);
+        assert_eq!(tensor, res);
     }
 
     #[test]
