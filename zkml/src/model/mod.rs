@@ -127,7 +127,7 @@ where
                     // no need to pad, simply return the input
                     input
                 } else {
-                    input.pad_to_shape_in_place(shape);
+                    input.pad_to_shape(shape);
                     input
                 }
             })

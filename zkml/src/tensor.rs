@@ -1064,7 +1064,7 @@ where
     ///
     /// If the `target_shape` differs in rank or has a dimension smaller than
     /// the current tensor.
-    pub fn pad_to_shape_in_place(&mut self, target_shape: Shape) {
+    pub fn pad_to_shape(&mut self, target_shape: Shape) {
         assert!(
             target_shape.rank() == self.shape.rank(),
             "Target shape must have the same rank as the current tensor."
@@ -2396,35 +2396,35 @@ mod test {
         let mut tensor = Tensor::<Element>::new(shape, vec![1]);
         let target = Shape::from_it([2]);
         let res = Tensor::<Element>::new(target.clone(), vec![1, 0]);
-        tensor.pad_to_shape_in_place(target.clone());
+        tensor.pad_to_shape(target.clone());
         assert_eq!(tensor, res);
 
         let shape = Shape::from_it([2]);
         let mut tensor = Tensor::<Element>::new(shape, vec![1, 2]);
         let target = Shape::from_it([3]);
         let res = Tensor::<Element>::new(target.clone(), vec![1, 2, 0]);
-        tensor.pad_to_shape_in_place(target.clone());
+        tensor.pad_to_shape(target.clone());
         assert_eq!(tensor, res);
 
         let shape = Shape::from_it([1, 1]);
         let mut tensor = Tensor::<Element>::new(shape, vec![1]);
         let target = Shape::from_it([2, 1]);
         let res = Tensor::<Element>::new(target.clone(), vec![1, 0]);
-        tensor.pad_to_shape_in_place(target.clone());
+        tensor.pad_to_shape(target.clone());
         assert_eq!(tensor, res);
 
         let shape = Shape::from_it([1, 1]);
         let mut tensor = Tensor::<Element>::new(shape, vec![1]);
         let target = Shape::from_it([1, 2]);
         let res = Tensor::<Element>::new(target.clone(), vec![1, 0]);
-        tensor.pad_to_shape_in_place(target.clone());
+        tensor.pad_to_shape(target.clone());
         assert_eq!(tensor, res);
 
         let shape = Shape::from_it([2, 2]);
         let mut tensor = Tensor::<Element>::new(shape, vec![1, 2, 3, 4]);
         let target = Shape::from_it([3, 3]);
         let res = Tensor::<Element>::new(target.clone(), vec![1, 2, 0, 3, 4, 0, 0, 0, 0]);
-        tensor.pad_to_shape_in_place(target.clone());
+        tensor.pad_to_shape(target.clone());
         assert_eq!(tensor, res);
 
         let shape = Shape::from_it([3, 1, 1]);
@@ -2440,7 +2440,7 @@ mod test {
                 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             ],
         );
-        tensor.pad_to_shape_in_place(target);
+        tensor.pad_to_shape(target);
         assert_eq!(tensor, res);
 
         let shape = Shape::from_it([3, 1, 3]);
@@ -2456,7 +2456,7 @@ mod test {
                 3, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             ],
         );
-        tensor.pad_to_shape_in_place(target);
+        tensor.pad_to_shape(target);
         assert_eq!(tensor, res);
 
         let shape = Shape::from_it([3, 3, 1]);
@@ -2471,7 +2471,7 @@ mod test {
                 3, 0, 0, 0, 3, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0,
             ],
         );
-        tensor.pad_to_shape_in_place(target);
+        tensor.pad_to_shape(target);
         assert_eq!(tensor, res);
 
         let shape = Shape::from_it([1, 2, 1, 3]);
@@ -2524,7 +2524,7 @@ mod test {
                 0, 0, 0, 0, 0, 0, 0,
             ],
         );
-        tensor.pad_to_shape_in_place(target);
+        tensor.pad_to_shape(target);
         assert_eq!(tensor, res);
     }
 
@@ -2583,7 +2583,7 @@ mod test {
         let og_flat_t = og_t.flatten(); // This is equivalent to conv2d output (flattened)
 
         let mut pad_t = og_t.clone();
-        pad_t.pad_to_shape_in_place(new_shape.clone().into());
+        pad_t.pad_to_shape(new_shape.clone().into());
         let pad_flat_t = pad_t.flatten();
 
         let og_mat = Tensor::random(&vec![orows, ocols].into()); // This is equivalent to the first dense matrix

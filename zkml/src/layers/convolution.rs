@@ -1810,7 +1810,7 @@ mod test {
         let fft_conv =
             Convolution::new(filter.clone(), bias).into_padded_and_ffted(&input_shape_padded);
         let mut fft_input = input.clone();
-        fft_input.pad_to_shape_in_place(input_shape_padded.clone());
+        fft_input.pad_to_shape(input_shape_padded.clone());
         let (fft_output, _proving_data) =
             fft_conv.op::<GoldilocksExt2>(&fft_input, &input_shape_og);
 
@@ -1846,7 +1846,7 @@ mod test {
         let fft_conv =
             Convolution::new(filter.clone(), bias).into_padded_and_ffted(&input_shape_padded);
         let mut fft_input = fft_output;
-        fft_input.pad_to_shape_in_place(input_shape_padded.clone());
+        fft_input.pad_to_shape(input_shape_padded.clone());
         let (fft_output, _proving_data) =
             fft_conv.op::<GoldilocksExt2>(&fft_input, &input_shape_og);
 
