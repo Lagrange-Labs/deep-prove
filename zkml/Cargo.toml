@@ -8,15 +8,33 @@ readme.workspace = true
 repository.workspace = true
 version.workspace = true
 
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"
+
+[[bin]]
+name = "deep-prove-worker"
+path = "src/bin/worker.rs"
+
+[[bin]]
+name = "deep-prove-cli"
+path = "src/bin/cli/main.rs"
+
 [dependencies]
 anyhow.workspace = true
 ark-std.workspace = true
-clap = { workspace = true, features = ["derive"] }
+axum = { workspace = true }
+burn = { version = "0.17.0", features = ["ndarray"] }
+candle-core = "0.9.1"
+candle-transformers = "0.9.1"
+hex = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
 code-timing-macros = { workspace = true, features = ["tracing"] }
 csv = { workspace = true }
 derive_builder = { workspace = true }
 derive_more = { workspace = true, features = ["full"] }
 ff_ext = { version = "0.1.0", path = "../ff_ext" }
+gguf-rs = "0.1.4"
 gkr = { workspace = true }
 itertools.workspace = true
 mpcs = { workspace = true }
@@ -25,9 +43,11 @@ num-traits = { workspace = true }
 once_cell = { workspace = true }
 poseidon = { version = "0.1.0", path = "../poseidon" }
 rayon.workspace = true
+reqwest = { version = "0.12.19", features = ["blocking"] }
 rmp-serde = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10.9"
 simple-frontend = { workspace = true }
 statrs = { workspace = true }
 sumcheck = { version = "0.1.0", path = "../sumcheck" }
@@ -35,10 +55,34 @@ thiserror = { workspace = true }
 timed = { workspace = true }
 timed-core = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json"] }
 tract-onnx = { workspace = true }
 transcript = { version = "0.1.0", path = "../transcript" }
 p3-field = { workspace = true }
 p3-goldilocks = { workspace = true }
 p3-poseidon2 = { workspace = true }
 p3-symmetric = { workspace = true }
+
+# worker-related dependencies
+alloy = { version = "1.0" }
+tonic = { version = "0.12.3", features = ["transport", "tls", "tls-roots", "tls-webpki-roots", "gzip"] }
+tokio = { version = "1.42", features = ["rt-multi-thread", "macros"] }
+futures = { version = "0.3.30" }
+prost = { version = "0.13.3" }
+prost-types = { version = "0.13.3" }
+prost-wkt-types = { version = "0.6.0" }
+rustls = { version = "0.23.16", features = ["ring"] }
+tokio-stream = { version = "0.1.17" }
+grpc-worker = { git = "https://github.com/Lagrange-Labs/grpc-worker-rs", branch = "main" }
+url = "2.5.4"
+uuid = "1.17.0"
+zstd = "0.13.3"
+
+[dev-dependencies]
+ndarray = "0.16.1"
+
+[build-dependencies]
+# worker-related dependencies
+miette = { version = "7.2", features = ["fancy"] }
+protox = { version = "0.7.1" }
+tonic-build = { version = "0.12.3" }

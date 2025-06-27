@@ -56,10 +56,7 @@ pub(crate) fn identity_eval<E: ExtensionField>(r1: &[E], r2: &[E]) -> E {
 mod test {
     use ff_ext::GoldilocksExt2;
 
-    use crate::{
-        commit::identity_eval,
-        testing::random_bool_vector,
-    };
+    use crate::{commit::identity_eval, testing::random_bool_vector};
     use p3_field::FieldAlgebra;
     type F = GoldilocksExt2;
 

@@ -1,5 +1,4 @@
 use crate::{
-    ModelType,
     layers::{
         Layer,
         activation::Activation,
@@ -9,6 +8,7 @@ use crate::{
     },
     model::Model,
     padding::PaddingMode,
+    tensor::Shape,
 };
 use anyhow::{Context, Result, bail, ensure};
 use std::{collections::HashMap, iter::Peekable};
@@ -24,7 +24,10 @@ use tract_onnx::{
             source::TypedSource,
         },
     },
-    tract_hir::ops::{cnn::PaddingSpec, konst::Const},
+    tract_hir::{
+        internal::AxisOp,
+        ops::{cnn::PaddingSpec, konst::Const},
+    },
 };
 
 type OnnxModel = Graph<TypedFact, Box<dyn TypedOp + 'static>>;
@@ -49,7 +52,6 @@ macro_rules! ensure_onnx {
     }
 
 pub fn from_path(path: &str) -> Result<Model<f32>> {
-    let model_type = ModelType::from_onnx(path).context("can't prove unknown model:")?;
     let model = {
         let pmodel = tract_onnx::onnx()
             .model_for_path(path)?
@@ -73,22 +75,14 @@ pub fn from_path(path: &str) -> Result<Model<f32>> {
         .shape
         .to_tvec()
         .into_iter()
-        .map(|x| match x {
-            TDim::Val(v) => Ok(v as usize),
-            _ => err(format!(
-                "Input {} has unknown input shape: {:?}",
-                input_node.name, x
-            )),
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if model_type == ModelType::CNN || model_type == ModelType::MLP {
-        if input_shape[0] == 1 {
-            input_shape.remove(0);
-        }
+        .map(|x| tdim_to_usize(&x))
+        .collect::<Result<Shape, _>>()?;
+    // remove batch dimension if it's 1 as we dont support batching yet
+    if input_shape[0] == 1 {
+        input_shape.remove(0);
     }
 
-    let mut pmodel =
-        Model::new_from_input_shapes(vec![input_shape.to_vec()], PaddingMode::NoPadding);
+    let mut pmodel = Model::new_from_input_shapes(vec![input_shape], PaddingMode::NoPadding);
     let mut it = inference_order[1..].iter().peekable();
     let mut first_node = true;
     let mut last_node_id = 0;
@@ -150,6 +144,7 @@ impl<'a, I: Iterator<Item = &'a usize> + Sized> ParserFactory<'a, I> {
         m.insert("Relu", load_relu as LoadFn<'a, I>);
         m.insert("Flatten", load_flatten as LoadFn<'a, I>);
         m.insert("Pool", load_maxpool as LoadFn<'a, I>);
+        m.insert("Reshape", load_reshape as LoadFn<'a, I>);
         ParserFactory(m)
     }
 
@@ -172,6 +167,7 @@ impl<'a, I: Iterator<Item = &'a usize> + Sized> ParserFactory<'a, I> {
             .keys()
             .find(|&&layer_name| op_name.contains(layer_name))
         {
+            debug!("current node {:?}", curr_node.op);
             let parser = self.0.get(layer_name).unwrap();
 
             Some(
@@ -195,9 +191,57 @@ impl<'a, I: Iterator<Item = &'a usize> + Sized> ParserFactory<'a, I> {
                 }),
             )
         } else {
-            Some(err(format!("Unknown node type: {op_name}")))
+            Some(err(format!(
+                "Unknown node type: {op_name}: {:?}",
+                curr_node
+            )))
         }
     }
+}
+
+fn load_reshape<'a, I: Iterator<Item = &'a usize> + Sized>(
+    _model: &OnnxModel,
+    node_id: NodeId,
+    node: &OnnxNode,
+    _iter: &mut Peekable<I>,
+) -> Result<(NodeId, CustomNode)> {
+    ensure_onnx!(
+        node.inputs.len() == 1,
+        "Reshape {} must have 1 input",
+        node.name
+    );
+    let reshape_node = downcast_to::<AxisOp>(node)?;
+    let AxisOp::Reshape(_, ref current_shape, ref new_shape) = reshape_node else {
+        return err(format!("Reshape {} is not a Reshape node", node.name));
+    };
+    let current_shape: Shape = current_shape
+        .iter()
+        .map(|x| tdim_to_usize(x))
+        .collect::<Result<Vec<_>>>()?
+        .into();
+    let new_shape: Shape = new_shape
+        .iter()
+        .map(|x| tdim_to_usize(x))
+        .collect::<Result<Vec<_>>>()?
+        .into();
+    ensure_onnx!(
+        current_shape.product() == new_shape.product(),
+        "Reshape {} has incompatible shapes: {:?} -> {:?}",
+        node.name,
+        current_shape,
+        new_shape
+    );
+    // Currently we only support reshape to flatten so we enforce that the reshape is a flattening operation
+    ensure_onnx!(
+        new_shape.rank() == 1,
+        "Reshape {} is not a flattening operation: only supported operation is flattening WIP",
+        node.name
+    );
+    let provable_node = ProvableNode::new(
+        vec![Edge::new(node.inputs[0].node, node.inputs[0].slot)],
+        Layer::Flatten(crate::layers::flatten::Flatten),
+    );
+    Ok((node_id, provable_node))
 }
 
 fn load_flatten<'a, I: Iterator<Item = &'a usize> + Sized>(
@@ -340,8 +384,12 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
     let mut weight_shape = weight.get_shape();
     if weight_shape.len() > 2 {
         let input_flattened = weight_shape[1..].iter().product::<usize>();
-        weight_shape = vec![weight_shape[0], input_flattened];
+        weight_shape = Shape::new(vec![weight_shape[0], input_flattened]);
         weight.shape = weight_shape.clone();
+    } else if weight_shape.len() == 1 {
+        // A Gemm is always a matrix - so if there's only one dimension, we need to add 1 to
+        // to the output features
+        weight.shape.insert(0, 1);
     }
     ensure_onnx!(
         weight.is_matrix(),
@@ -371,6 +419,18 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
         input_shape.len() == 1,
         "Input shape for Gemm must be a vector, found {:?}",
         input_shape
+    );
+
+    let mut weight_shape = weight.get_shape();
+    if weight_shape[1] != input_shape[0] {
+        weight = weight.transpose();
+        weight_shape = weight.get_shape();
+    }
+    ensure_onnx!(
+        weight_shape[1] == input_shape[0],
+        "Incompatible shapes found for Gemm node: input shape is {:?}, weight shape is {:?}",
+        input_shape,
+        weight_shape,
     );
     let mut weight_shape = weight.get_shape();
     // If the weights are a 1D vector we insert a 1 in the shape after checking everything lines up
@@ -449,7 +509,7 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
             extract_const_tensor(bias_node)?
         }
         // we always require a bias tensor in current proving logic
-        None => crate::Tensor::zeros(vec![weight.shape[0]]),
+        None => crate::Tensor::zeros(vec![weight.shape[0]].into()),
     };
     ensure_onnx!(
         bias_tensor.shape.len() == 1 || bias_tensor.shape.len() == 2,
@@ -462,7 +522,7 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
             "Bias tensor must be 1D with batch: {:?}",
             bias_tensor.shape
         );
-        bias_tensor.shape = bias_tensor.shape[1..].to_vec();
+        bias_tensor.shape = bias_tensor.shape.slice(1..);
     }
     ensure_onnx!(
         bias_tensor.shape[0] == weight.shape[0],
@@ -520,15 +580,15 @@ fn is_const(node: &OnnxNode) -> bool {
 
 fn extract_const_tensor(node: &OnnxNode) -> Result<crate::Tensor<f32>> {
     let tensor = downcast_to::<Const>(node)?;
-    let slice = tensor.val().as_slice::<f32>()?;
+    let slice = tensor.0.as_slice::<f32>()?;
     ensure_onnx!(node.outputs.len() == 1, "constant output shape len == 1");
     let Some(shape) = node.outputs[0].fact.shape.as_concrete() else {
         return err(format!("Filter shape {} is not concrete", node.name));
     };
-    Ok(crate::Tensor::new(shape.to_vec(), slice.to_vec()))
+    Ok(crate::Tensor::new(shape.to_vec().into(), slice.to_vec()))
 }
 
-fn get_node_output_shape(node: &OnnxNode, output_idx: usize) -> Result<Vec<usize>> {
+fn get_node_output_shape(node: &OnnxNode, output_idx: usize) -> Result<Shape> {
     ensure_onnx!(
         output_idx < node.outputs.len(),
         "Trying to get output {} of node {}, but there are only {} outputs",
@@ -539,7 +599,7 @@ fn get_node_output_shape(node: &OnnxNode, output_idx: usize) -> Result<Vec<usize
     let Some(shape) = node.outputs[output_idx].fact.shape.as_concrete() else {
         return err(format!("shape of node {} is not concrete", node.name));
     };
-    Ok(shape.to_vec())
+    Ok(shape.to_vec().into())
 }
 
 /// Get the conv2d attributes and assert if supported by DeepProve
@@ -610,9 +670,17 @@ fn downcast_to<T: Op>(node: &OnnxNode) -> Result<&T> {
     }
 }
 
+fn tdim_to_usize(tdim: &TDim) -> anyhow::Result<usize> {
+    match tdim {
+        TDim::Val(v) => Ok(*v as usize),
+        _ => bail!("Unsupported dimension: {:?}", tdim),
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
+    use anyhow::Ok;
     use ff_ext::GoldilocksExt2;
 
     use super::*;
@@ -625,5 +693,33 @@ mod tests {
         let input_tensor = crate::tensor::Tensor::random(&input_shape);
         let trace = model.run::<GoldilocksExt2>(&[input_tensor]).unwrap();
         assert!(trace.steps.len() >= 1);
+    }
+
+    #[test]
+    #[ignore = "this test shows no gpt2 onnx out there are working with tract_onnx"]
+    fn test_parser_onnx_gpt2() -> anyhow::Result<()> {
+        // let path = "assets/scripts/llms/gpt2_simple.onnx";
+        // let path = "gpt2_export/gpt2_simple.onnx";
+        // let path = "assets/scripts/llms/gpt2_download1.onnx";
+        // let path = "assets/scripts/llms/gpt2_onnxcommunity.onnx";
+        let path = "assets/scripts/llms/gpt2_decoder.onnx";
+        let model = {
+            let pmodel = tract_onnx::onnx().model_for_path(path)?.into_typed()?;
+            //.into_decluttered()?;
+            pmodel
+            // so far we dont support batching
+            // let mut values = SymbolValues::default();
+            // let symbol = pmodel.sym("batch_size");
+            // values.set(&symbol, 1);
+            // pmodel.concretize_dims(&values)?
+        };
+
+        // let plan = SimplePlan::new(model)?;
+        // let onnx_model = plan.model();
+        // let inference_order = plan.order_without_consts();
+        for node_id in model.eval_order()? {
+            println!("node {}: {:?}", node_id, model.node(node_id));
+        }
+        Ok(())
     }
 }

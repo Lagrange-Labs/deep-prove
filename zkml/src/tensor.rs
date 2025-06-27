@@ -1,12 +1,12 @@
 use crate::{
-    ScalingFactor,
+    NextPowerOfTwo, ScalingFactor,
     quantization::{self, MAX_FLOAT, MIN_FLOAT},
 };
 use anyhow::{bail, ensure};
 use ark_std::rand::{self, Rng, SeedableRng, rngs::StdRng};
 use ff_ext::{ExtensionField, GoldilocksExt2};
 use itertools::Itertools;
-use multilinear_extensions::mle::DenseMultilinearExtension;
+use multilinear_extensions::{mle::DenseMultilinearExtension, util::ceil_log2};
 use p3_field::{FieldAlgebra, TwoAdicField};
 use p3_goldilocks::Goldilocks;
 use rayon::{
@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     cmp::{Ordering, PartialEq},
     fmt::{self, Debug},
+    ops::{Bound, RangeBounds},
 };
 
 use crate::{
@@ -45,6 +46,7 @@ pub trait Number:
 {
     const MIN: Self;
     const MAX: Self;
+    fn unit() -> Self;
     fn random<R: Rng>(rng: &mut R) -> Self;
     /// reason abs is necessary is because f32 doesn't implement Ord trait, so to have uniform code for f32 and Element,
     /// we implement abs here.
@@ -66,11 +68,17 @@ pub trait Number:
     fn compare(&self, other: &Self) -> Ordering;
     fn is_negative(&self) -> bool;
     fn to_f32(&self) -> anyhow::Result<f32>;
+    fn from_f32(f: f32) -> anyhow::Result<Self>;
+    fn to_usize(&self) -> usize;
+    fn from_usize(u: usize) -> Self;
 }
 
 impl Number for Element {
     const MIN: Element = Element::MIN;
     const MAX: Element = Element::MAX;
+    fn unit() -> Self {
+        1
+    }
     fn random<R: Rng>(rng: &mut R) -> Self {
         rng.gen_range(*quantization::MIN..=*quantization::MAX)
     }
@@ -94,10 +102,22 @@ impl Number for Element {
         );
         Ok(*self as f32)
     }
+    fn from_f32(f: f32) -> anyhow::Result<Self> {
+        Ok(f as Element)
+    }
+    fn to_usize(&self) -> usize {
+        *self as usize
+    }
+    fn from_usize(u: usize) -> Self {
+        u as Element
+    }
 }
 impl Number for f32 {
     const MIN: f32 = f32::MIN;
     const MAX: f32 = f32::MAX;
+    fn unit() -> Self {
+        1.0
+    }
     fn random<R: Rng>(rng: &mut R) -> Self {
         rng.gen_range(MIN_FLOAT..=MAX_FLOAT)
     }
@@ -120,11 +140,22 @@ impl Number for f32 {
     fn to_f32(&self) -> anyhow::Result<f32> {
         Ok(*self)
     }
+    fn from_f32(f: f32) -> anyhow::Result<Self> {
+        Ok(f)
+    }
+    fn to_usize(&self) -> usize {
+        *self as usize
+    }
+    fn from_usize(u: usize) -> Self {
+        u as f32
+    }
 }
 impl Number for GoldilocksExt2 {
     const MIN: GoldilocksExt2 = GoldilocksExt2::ZERO;
     const MAX: GoldilocksExt2 = GoldilocksExt2::ZERO;
-
+    fn unit() -> Self {
+        GoldilocksExt2::ONE
+    }
     fn random<R: Rng>(rng: &mut R) -> Self {
         Element::random(rng).to_field()
     }
@@ -141,6 +172,15 @@ impl Number for GoldilocksExt2 {
 
     fn to_f32(&self) -> anyhow::Result<f32> {
         unreachable!("Called to_f32 for Goldilocks")
+    }
+    fn from_f32(_: f32) -> anyhow::Result<Self> {
+        unreachable!("Called from_f32 for Goldilocks")
+    }
+    fn to_usize(&self) -> usize {
+        unreachable!("Called to_usize for Goldilocks")
+    }
+    fn from_usize(_: usize) -> Self {
+        unreachable!("Called from_usize for Goldilocks")
     }
 }
 
@@ -174,8 +214,10 @@ pub fn check_tensor_consistency(real_tensor: Tensor<Element>, padded_tensor: Ten
 ///
 /// The initial ROOT_OF_UNITY constant is verified to be a 32nd root of unity in the field implementation.
 pub fn get_root_of_unity<E: ExtensionField>(n: usize) -> E {
-    let mut rou = E::from_bases(&[E::BaseField::two_adic_generator(Goldilocks::TWO_ADICITY), E::BaseField::ZERO]);
-    dbg!(rou);
+    let mut rou = E::from_bases(&[
+        E::BaseField::two_adic_generator(Goldilocks::TWO_ADICITY),
+        E::BaseField::ZERO,
+    ]);
 
     for _ in 0..(32 - n) {
         rou = rou * rou;
@@ -327,11 +369,18 @@ where
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tensor<T> {
     pub data: Vec<T>,
-    pub shape: Vec<usize>,
-    og_shape: Vec<usize>,
+    pub shape: Shape,
+    og_shape: Shape,
 }
 
 impl Tensor<Element> {
+    /// Returns the maximum size in bits possible if this tensor is treated as a matrix inside
+    /// a matrix vector/matrix multiplication.
+    pub fn matmul_output_bitsize(&self) -> usize {
+        assert!(self.is_matrix(), "Tensor is not a matrix");
+        self.shape.matmul_output_bitsize()
+    }
+
     pub fn dequantize(&self, s: &ScalingFactor) -> Tensor<f32> {
         let data = self
             .data
@@ -341,11 +390,11 @@ impl Tensor<Element> {
         Tensor::new(self.shape.clone(), data)
     }
 
-    pub fn into_fft_conv(self, input_shape: &[usize]) -> Self {
+    pub fn into_fft_conv(self, input_shape: &Shape) -> Self {
         let shape = self.shape;
         let data = self.data;
         assert!(
-            shape.iter().product::<usize>() == data.len(),
+            shape.product() == data.len(),
             "Shape does not match data length."
         );
         assert!(shape.len() == 4, "Shape does not match data length.");
@@ -356,15 +405,15 @@ impl Tensor<Element> {
         let real_shape = shape.clone();
         let n_w = (input_shape[1] - shape[2] + 1).next_power_of_two();
         Self {
-            data,                                      /* Note that field elements are back into Element */
-            shape: vec![shape[0], shape[1], n_w, n_w], // nw is the padded version of the input
+            data, // Note that field elements are back into Element
+            shape: vec![shape[0], shape[1], n_w, n_w].into(), /* nw is the padded version of the input */
             og_shape: real_shape,
         }
     }
     // Create specifically a new convolution. The input shape is needed to compute the
     // output and properly arrange the weights
     #[deprecated]
-    pub fn new_conv(shape: Vec<usize>, input_shape: Vec<usize>, data: Vec<Element>) -> Self {
+    pub fn new_conv(shape: Shape, input_shape: Shape, data: Vec<Element>) -> Self {
         Tensor::new(shape, data).into_fft_conv(&input_shape)
     }
     /// Recall that weights are not plain text to the "snark". Rather it is FFT(weights).
@@ -400,8 +449,7 @@ impl Tensor<Element> {
         let new_n = 2 * n_x * n_x;
 
         let (x_vec, input): (Vec<Vec<F>>, Vec<Vec<F>>) = real_input
-            .par_iter()
-            .chunks(n_x * n_x)
+            .par_chunks(n_x * n_x)
             .map(|chunk| {
                 let xx_input = chunk.into_iter().cloned().rev().collect::<Vec<_>>();
                 let mut xx_fft = xx_input
@@ -448,7 +496,7 @@ impl Tensor<Element> {
         let conv_data = ConvData::new(real_input, input, x_vec, prod, output, n_x);
         (
             Tensor::new(
-                vec![self.shape[0], n_x, n_x],
+                vec![self.shape[0], n_x, n_x].into(),
                 conv_data.output_as_element.clone(),
             ),
             conv_data,
@@ -509,39 +557,25 @@ impl Tensor<Element> {
         let conv_data = ConvData::new(real_input, input, x_vec, prod, output, n_x);
         (
             Tensor::new(
-                vec![self.shape[0], n_x, n_x],
+                vec![self.shape[0], n_x, n_x].into(),
                 conv_data.output_as_element.clone(),
             ),
             conv_data,
         )
     }
+
     /// Returns the evaluation point, in order for (row,col) addressing
     pub fn evals_2d<F: ExtensionField>(&self) -> Vec<F> {
         assert!(self.is_matrix(), "Tensor is not a matrix");
         self.evals_flat()
     }
+
     pub fn evals_flat<F: ExtensionField>(&self) -> Vec<F> {
         self.data.par_iter().map(|e| e.to_field()).collect()
     }
-    pub fn get_conv_weights<F: ExtensionField>(&self) -> Vec<F> {
-        self.evals_flat()
-    }
-    /// Returns a MLE of the matrix that can be evaluated.
-    pub fn to_mle_2d<F: ExtensionField>(&self) -> DenseMultilinearExtension<F> {
-        assert!(self.is_matrix(), "Tensor is not a matrix");
-        assert!(
-            self.nrows_2d().is_power_of_two(),
-            "number of rows {} is not a power of two",
-            self.nrows_2d()
-        );
-        assert!(
-            self.ncols_2d().is_power_of_two(),
-            "number of columns {} is not a power of two",
-            self.ncols_2d()
-        );
-        // N variable to address 2^N rows and M variables to address 2^M columns
-        let num_vars = self.nrows_2d().ilog2() + self.ncols_2d().ilog2();
-        DenseMultilinearExtension::from_evaluations_ext_vec(num_vars as usize, self.evals_2d())
+
+    pub fn to_2d_mle<F: ExtensionField>(&self) -> DenseMultilinearExtension<F> {
+        Tensor::<F>::from(self).to_mle_2d()
     }
 
     pub fn to_mle_flat<F: ExtensionField>(&self) -> DenseMultilinearExtension<F> {
@@ -550,6 +584,42 @@ impl Tensor<Element> {
             self.evals_flat(),
         )
     }
+}
+
+impl<F: ExtensionField> From<&Tensor<Element>> for Tensor<F> {
+    fn from(value: &Tensor<Element>) -> Self {
+        Self {
+            data: value.evals_flat(),
+            shape: value.shape.clone(),
+            og_shape: value.og_shape.clone(),
+        }
+    }
+}
+
+impl<F: ExtensionField> Tensor<F> {
+    pub fn to_mle_2d(&self) -> DenseMultilinearExtension<F> {
+        tensor_to_mle_2d(self, self.data.clone())
+    }
+}
+
+fn tensor_to_mle_2d<T, F: ExtensionField>(
+    tensor: &Tensor<T>,
+    evals: Vec<F>,
+) -> DenseMultilinearExtension<F> {
+    assert!(tensor.is_matrix(), "Tensor is not a matrix");
+    assert!(
+        tensor.nrows_2d().is_power_of_two(),
+        "number of rows {} is not a power of two",
+        tensor.nrows_2d()
+    );
+    assert!(
+        tensor.ncols_2d().is_power_of_two(),
+        "number of columns {} is not a power of two",
+        tensor.ncols_2d()
+    );
+    // N variable to address 2^N rows and M variables to address 2^M columns
+    let num_vars = tensor.nrows_2d().ilog2() + tensor.ncols_2d().ilog2();
+    DenseMultilinearExtension::from_evaluations_ext_vec(num_vars as usize, evals)
 }
 
 impl Tensor<f32> {
@@ -565,18 +635,18 @@ impl Tensor<f32> {
 
 impl<T> Tensor<T> {
     /// Create a new tensor with given shape and data
-    pub fn new(shape: Vec<usize>, data: Vec<T>) -> Self {
+    pub fn new(shape: Shape, data: Vec<T>) -> Self {
         assert!(
-            shape.iter().product::<usize>() == data.len(),
+            shape.product() == data.len(),
             "Shape does not match data length: shape {:?}->{} vs data.len() {}",
             shape,
-            shape.iter().product::<usize>(),
+            shape.product(),
             data.len()
         );
         Self {
             data,
             shape,
-            og_shape: vec![0],
+            og_shape: vec![0].into(),
         }
     }
 
@@ -585,9 +655,18 @@ impl<T> Tensor<T> {
         self.shape.len() == 0
     }
 
+    /// Create a new tensor with default values
+    pub fn new_from_shape(shape: Shape) -> Self
+    where
+        T: Clone + Default,
+    {
+        let num_elements = shape.product();
+        Self::new(shape, vec![T::default(); num_elements])
+    }
+
     /// Is vector
     pub fn is_vector(&self) -> bool {
-        self.get_shape().len() == 1
+        self.get_shape().len() == 1 || (self.get_shape().len() == 2 && self.get_shape()[0] == 1)
     }
     /// Is matrix
     pub fn is_matrix(&self) -> bool {
@@ -637,14 +716,14 @@ impl<T> Tensor<T> {
     }
 
     /// Get the dimensions of the tensor
-    pub fn get_shape(&self) -> Vec<usize> {
+    pub fn get_shape(&self) -> Shape {
         assert!(!self.is_empty(), "Empty tensor");
         self.shape.clone()
     }
 
     /// Get the input shape of the tensor
     /// TODO: Remove it
-    pub fn get_input_shape(&self) -> Vec<usize> {
+    pub fn get_input_shape(&self) -> Shape {
         assert!(!self.is_empty(), "Empty tensor");
         self.og_shape.clone()
     }
@@ -667,12 +746,23 @@ impl<T> Tensor<T> {
     pub fn real_nw(&self) -> usize {
         self.og_shape[2]
     }
-    pub fn real_shape(&self) -> Vec<usize> {
+    pub fn real_shape(&self) -> Shape {
         self.og_shape.clone()
     }
     // Returns the size of an individual filter
     pub fn filter_size(&self) -> usize {
         self.shape[2] * self.shape[2]
+    }
+
+    pub fn get_conv_weights<F: ExtensionField>(&self) -> Vec<F>
+    where
+        T: Fieldizer<F>,
+    {
+        let mut data = vec![F::ZERO; self.data.len()];
+        for i in 0..data.len() {
+            data[i] = self.data[i].to_field();
+        }
+        data
     }
 }
 
@@ -685,8 +775,8 @@ where
         let new_shape = vec![new_data.len()];
         Self {
             data: new_data,
-            shape: new_shape,
-            og_shape: vec![0],
+            shape: new_shape.into(),
+            og_shape: vec![0].into(),
         }
     }
     pub fn matrix_from_coeffs(data: Vec<Vec<T>>) -> anyhow::Result<Self> {
@@ -698,11 +788,11 @@ where
                 "Number of rows and columns do not match with the total number of values in the Vec<Vec<>>"
             );
         };
-        let shape = vec![n_rows, n_cols];
+        let shape = vec![n_rows, n_cols].into();
         Ok(Self {
             data,
             shape,
-            og_shape: vec![0],
+            og_shape: vec![0].into(),
         })
     }
     /// Returns the boolean iterator indicating the given row in the right endianness to be
@@ -734,10 +824,21 @@ impl<T> Tensor<T>
 where
     T: Number,
 {
-    pub fn reshape(mut self, new_shape: Vec<usize>) -> Tensor<T> {
+    pub fn argmax(&self) -> usize {
+        self.data
+            .iter()
+            .enumerate()
+            .fold((0, T::MIN), |acc, x| match acc.1.compare(&x.1) {
+                Ordering::Less => (x.0, *x.1),
+                _ => acc,
+            })
+            .0
+    }
+
+    pub fn reshape(mut self, new_shape: Shape) -> Tensor<T> {
         assert!(
-            self.shape.iter().product::<usize>() == new_shape.iter().product::<usize>(),
-            "Shape mismatch for reshape"
+            self.shape.product() == new_shape.product(),
+            "Shape mismatch for reshape",
         );
         self.shape = new_shape;
         self
@@ -748,19 +849,24 @@ where
             .fold(T::default(), |max, x| max.cmp_max(&x.absolute_value()))
     }
     /// Create a tensor filled with zeros
-    pub fn zeros(shape: Vec<usize>) -> Self {
-        let size = shape.iter().product();
+    pub fn zeros(shape: Shape) -> Self {
+        let size = shape.product();
         Self {
             // data: vec![T::zero(); size],
             data: vec![Default::default(); size],
             shape,
-            og_shape: vec![0],
+            og_shape: vec![0].into(),
         }
     }
 
     /// Element-wise addition
     pub fn add(&self, other: &Tensor<T>) -> Tensor<T> {
-        assert!(self.shape == other.shape, "Shape mismatch for addition.");
+        assert!(
+            self.shape.product() == other.shape.product(),
+            "Shape mismatch for addition {:?} != {:?}",
+            self.shape,
+            other.shape
+        );
         let mut data = vec![Default::default(); self.data.len()];
         data.par_iter_mut().enumerate().for_each(|(i, val)| {
             *val = self.data[i] + other.data[i];
@@ -768,7 +874,32 @@ where
 
         Tensor {
             shape: self.shape.clone(),
-            og_shape: vec![0],
+            og_shape: vec![0].into(),
+            data,
+        }
+    }
+    /// Add a vector to each sub-tensor of the second dimension of the tensor
+    /// If self is 2d, then add a vector to each row of self.
+    pub fn add_dim2(&self, other: &Tensor<T>) -> Tensor<T> {
+        assert!(self.shape.len() == 2, "Tensor is not a matrix");
+        assert!(other.shape.len() == 1, "Tensor is not a vector");
+        assert!(
+            self.shape[1] == other.shape[0],
+            "Shape mismatch for addition."
+        );
+        let data = self
+            .data
+            .par_chunks(self.shape[1])
+            .flat_map_iter(|chunk| {
+                chunk
+                    .into_iter()
+                    .zip(other.data.iter())
+                    .map(|(a, b)| *a + *b)
+            })
+            .collect::<Vec<_>>();
+        Tensor {
+            shape: self.shape.clone(),
+            og_shape: self.og_shape.clone(),
             data,
         }
     }
@@ -782,14 +913,14 @@ where
 
         Tensor {
             shape: self.shape.clone(),
-            og_shape: vec![0],
+            og_shape: vec![0].into(),
             data,
         }
     }
     /// Element-wise multiplication
     pub fn mul(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(
-            self.shape == other.shape,
+            self.shape.product() == other.shape.product(),
             "Shape mismatch for multiplication: {:?} != {:?}",
             self.shape,
             other.shape
@@ -803,7 +934,7 @@ where
 
         Tensor {
             shape: self.shape.clone(),
-            og_shape: vec![0],
+            og_shape: vec![0].into(),
             data,
         }
     }
@@ -811,8 +942,21 @@ where
     pub fn scalar_mul(&self, scalar: &T) -> Tensor<T> {
         Tensor {
             shape: self.shape.clone(),
-            og_shape: vec![0],
+            og_shape: vec![0].into(),
             data: self.data.par_iter().map(|x| *x * *scalar).collect(),
+        }
+    }
+    pub fn scalar_mul_f32<N2: Number>(&self, scalar: N2) -> Tensor<T> {
+        let scaled = self
+            .data
+            .par_iter()
+            .map(|x| T::from_f32(x.to_f32()? * scalar.to_f32()?))
+            .collect::<anyhow::Result<Vec<_>>>()
+            .expect("Failed to scale tensor");
+        Tensor {
+            shape: self.shape.clone(),
+            og_shape: vec![0].into(),
+            data: scaled,
         }
     }
     pub fn pad_1d(mut self, new_len: usize) -> Self {
@@ -824,7 +968,7 @@ where
         self.shape[0] = new_len;
         self
     }
-    fn pad_next_power_of_two_2d(mut self) -> Self {
+    pub(crate) fn pad_next_power_of_two_2d(mut self) -> Self {
         assert!(self.is_matrix(), "Tensor is not a matrix");
         // assume the matrix is already well formed and there is always n_rows and n_cols
         // this is because we control the creation of the matrix in the first place
@@ -844,14 +988,7 @@ where
             cols.next_power_of_two()
         };
 
-        let mut padded = Tensor::zeros(vec![new_rows, new_cols]);
-
-        // Copy original values into the padded matrix
-        for i in 0..rows {
-            for j in 0..cols {
-                padded.data[i * new_cols + j] = self.data[i * cols + j];
-            }
-        }
+        let mut padded = Tensor::zeros(vec![new_rows, new_cols].into());
 
         // Parallelize row-wise copying
         padded
@@ -879,9 +1016,9 @@ where
         let padded_data = Self::recursive_pad(self.get_data(), &shape);
 
         let padded_shape = shape
-            .into_iter()
+            .iter()
             .map(|dim| dim.next_power_of_two())
-            .collect::<Vec<usize>>();
+            .collect::<Shape>();
 
         Tensor::<T>::new(padded_shape, padded_data)
     }
@@ -896,7 +1033,7 @@ where
                 .collect::<Vec<T>>(),
             // If the remaining dims show that we are a matrix call the matrix method
             2 => {
-                let tmp_tensor = Tensor::<T>::new(remaining_dims.to_vec(), data.to_vec())
+                let tmp_tensor = Tensor::<T>::new(remaining_dims.to_vec().into(), data.to_vec())
                     .pad_next_power_of_two_2d();
                 tmp_tensor.data.clone()
             }
@@ -916,57 +1053,83 @@ where
             }
         }
     }
-    pub fn pad_to_shape(&mut self, target_shape: Vec<usize>) {
-        if target_shape.len() != self.shape.len() {
-            panic!("Target shape must have the same number of dimensions as the tensor.");
-        }
 
-        let current_shape = &self.shape;
+    /// Changes the shape of the current [Tensor] to `target_shape`.
+    ///
+    /// This method will modify the current tensor in place, extending it
+    /// to comply with the new shape.
+    ///
+    /// # Panics
+    ///
+    /// If the `target_shape` differs in rank or has a dimension smaller than
+    /// the current tensor.
+    pub fn pad_to_shape(&mut self, target_shape: Shape) {
+        assert!(
+            target_shape.rank() == self.shape.rank(),
+            "Target shape must have the same rank as the current tensor."
+        );
 
-        assert!(current_shape.iter().zip(&target_shape).all(|(c, t)| c <= t));
-        // if current_shape.iter().zip(&target_shape).all(|(c, t)| c <= t) {
-        //     // No padding is needed if all dimensions are already the correct size
-        //     return;
-        // }
+        let distance = self
+            .shape
+            .iter()
+            .zip(target_shape.iter())
+            .map(|(original, new)| new.checked_sub(*original))
+            .collect::<Option<Vec<usize>>>();
 
-        let mut new_data = vec![T::default(); target_shape.iter().product()];
+        assert!(
+            distance.is_some(),
+            "All dimensions of target shape must be greater-than-or-equal to the current tensor",
+        );
+        let distance = distance.unwrap();
 
-        let mut strides: Vec<usize> = vec![1; current_shape.len()];
-        for i in (0..current_shape.len() - 1).rev() {
-            strides[i] = strides[i + 1] * current_shape[i + 1];
-        }
+        // First expand the underlying storage vector to the new size
+        self.data.resize(target_shape.product(), T::default());
 
-        let mut target_strides: Vec<usize> = vec![1; target_shape.len()];
-        for i in (0..target_shape.len() - 1).rev() {
-            target_strides[i] = target_strides[i + 1] * target_shape[i + 1];
-        }
+        let original_shape = &self.shape;
+        let mut coord = original_shape.0.iter().map(|v| *v - 1).collect::<Vec<_>>();
+        let strides = target_shape.strides();
 
-        for index in 0..self.data.len() {
-            let mut original_indices = vec![0; current_shape.len()];
-            let mut remaining = index;
+        // Target contains the element's new position after re-shapping.
+        let mut target = coord
+            .iter()
+            .zip(strides.iter())
+            .map(|(pos, stride)| *pos * *stride)
+            .sum();
 
-            for (j, stride) in strides.iter().enumerate() {
-                original_indices[j] = remaining / stride;
-                remaining %= stride;
+        // Difference in size for a given dimension, i.e. how many empty spaces
+        // are in between the dimensions after re-shaping.
+        let distance = distance
+            .iter()
+            .zip(strides.iter())
+            .map(|(distance, new)| distance * new)
+            .collect::<Vec<_>>();
+
+        // Then move the data to its new position. Data is moved from back to the front to
+        // prevent overwritting.
+        let mut original = original_shape.product();
+        loop {
+            original -= 1;
+            self.data.swap(original, target);
+
+            if original == 0 {
+                break;
             }
 
-            if original_indices
-                .iter()
-                .zip(&target_shape)
-                .all(|(idx, max)| idx < max)
-            {
-                let new_index: usize = original_indices
-                    .iter()
-                    .zip(&target_strides)
-                    .map(|(idx, stride)| idx * stride)
-                    .sum();
-                new_data[new_index] = self.data[index];
+            for (pos, el) in coord.iter_mut().enumerate().rev() {
+                if *el == 0 {
+                    *el = original_shape[pos] - 1;
+                    target -= distance[pos];
+                } else {
+                    *el -= 1;
+                    target -= 1;
+                    break;
+                }
             }
         }
 
-        self.data = new_data;
         self.shape = target_shape;
     }
+
     /// Perform matrix-matrix multiplication
     pub fn matmul(&self, other: &Tensor<T>) -> Tensor<T> {
         assert!(
@@ -982,7 +1145,7 @@ where
             other.shape
         );
 
-        let mut result = Tensor::zeros(vec![m, p]);
+        let mut result = Tensor::zeros(vec![m, p].into());
 
         result
             .data
@@ -1011,7 +1174,7 @@ where
 
         assert_eq!(n, vec_len, "Matrix columns must match vector size.");
 
-        let mut result = Tensor::zeros(vec![m]);
+        let mut result = Tensor::zeros(vec![m].into());
 
         result.data.par_iter_mut().enumerate().for_each(|(i, res)| {
             *res = (0..n)
@@ -1034,7 +1197,7 @@ where
             })
             .sum()
     }
-    pub fn single_naive_conv(&self, w: Vec<Vec<T>>, x: Vec<Vec<T>>) -> Vec<Vec<T>> {
+    pub fn single_naive_conv(&self, w: &[Vec<T>], x: &[Vec<T>]) -> Vec<Vec<T>> {
         let mut out: Vec<Vec<T>> =
             vec![vec![Default::default(); x[0].len() - w[0].len() + 1]; x.len() - w.len() + 1];
         out.par_iter_mut().enumerate().for_each(|(i, out_row)| {
@@ -1091,13 +1254,13 @@ where
 
         for i in 0..k_w {
             for j in 0..k_x {
-                let temp = self.single_naive_conv(w[i][j].clone(), x[j].clone());
+                let temp = self.single_naive_conv(&w[i][j], &x[j]);
                 conv[i] = self.add_matrix(&mut conv[i], temp);
             }
         }
 
         Tensor::new(
-            vec![k_w, xt.shape[1] - n_w + 1, xt.shape[1] - n_w + 1],
+            vec![k_w, xt.shape[1] - n_w + 1, xt.shape[1] - n_w + 1].into(),
             conv.into_iter()
                 .flat_map(|inner_vec| inner_vec.into_iter())
                 .flat_map(|inner_inner_vec| inner_inner_vec.into_iter())
@@ -1109,7 +1272,7 @@ where
         assert!(self.is_matrix(), "Tensor is not a matrix.");
         let (m, n) = (self.shape[0], self.shape[1]);
 
-        let mut result = Tensor::zeros(vec![n, m]);
+        let mut result = Tensor::zeros(vec![n, m].into());
         result
             .data
             .par_iter_mut()
@@ -1136,7 +1299,7 @@ where
         );
 
         let new_cols = cols + 1;
-        let mut result = Tensor::zeros(vec![rows, new_cols]);
+        let mut result = Tensor::zeros(vec![rows, new_cols].into());
 
         result
             .data
@@ -1150,7 +1313,7 @@ where
         result
     }
     /// Reshapes the matrix to have at least the specified dimensions while preserving all data.
-    pub fn reshape_to_fit_inplace_2d(&mut self, new_shape: Vec<usize>) {
+    pub fn reshape_to_fit_inplace_2d(&mut self, new_shape: Shape) {
         let old_rows = self.nrows_2d();
         let old_cols = self.ncols_2d();
 
@@ -1229,7 +1392,7 @@ where
         Tensor {
             data: output,
             shape: new_shape,
-            og_shape: vec![0],
+            og_shape: vec![0].into(),
         }
     }
 
@@ -1276,7 +1439,7 @@ where
         let padded_maxpool_tensor = Tensor {
             data: padded_maxpool_data,
             shape: self.get_shape(),
-            og_shape: vec![0],
+            og_shape: vec![0].into(),
         };
 
         (maxpool_result, padded_maxpool_tensor)
@@ -1300,8 +1463,8 @@ where
             "Input {c_size} and kernel {k_c} channels must match!"
         );
         assert_eq!(
-            bias.shape,
-            vec![k_n],
+            bias.shape.as_ref(),
+            &[k_n],
             "Bias shape must match number of kernels!"
         );
 
@@ -1329,7 +1492,8 @@ where
                         for kw in 0..k_w {
                             let h = oh * stride + kh;
                             let w = ow * stride + kw;
-                            sum += self.get(n, c, h, w) * kernels.get(o, c, kh, kw);
+                            sum =
+                                sum + self.get_at_4d(n, c, h, w) * kernels.get_at_4d(o, c, kh, kw);
                         }
                     }
                 }
@@ -1341,8 +1505,8 @@ where
 
         Tensor {
             data: output,
-            shape: out_shape,
-            og_shape: vec![0],
+            shape: out_shape.into(),
+            og_shape: vec![0].into(),
         }
     }
 
@@ -1381,13 +1545,42 @@ where
     }
 
     /// Retrieves an element using (N, C, H, W) indexing
-    pub fn get(&self, n: usize, c: usize, h: usize, w: usize) -> T {
+    pub fn get_at_4d(&self, n: usize, c: usize, h: usize, w: usize) -> T {
         assert!(self.shape.len() <= 4);
 
         let (n_size, c_size, h_size, w_size) = self.get4d();
 
         assert!(n < n_size);
         let flat_index = n * (c_size * h_size * w_size) + c * (h_size * w_size) + h * w_size + w;
+        self.data[flat_index]
+    }
+
+    fn get_idx(&self, accessors: Vec<usize>) -> usize {
+        assert!(self.shape.len() == accessors.len());
+        let mut flat_index = *accessors.last().unwrap();
+        let mut multiplier = *self.shape.last().unwrap();
+        for (a, s) in accessors
+            .iter()
+            .rev()
+            .skip(1)
+            .zip(self.shape.iter().rev().skip(1))
+        {
+            assert!(
+                *a < *s,
+                "Index out of bounds: {} >= {} - 0-based indexing forbids",
+                a,
+                s
+            );
+            flat_index += *a * multiplier;
+            multiplier *= *s;
+        }
+        flat_index
+    }
+
+    // 0-based indexing for compatibility with other libraries
+    // ex: accessors = [3,2,1] => will retrieve element at index 1 + 2 * shape[0] + 3 * shape[0] * shape[1]
+    pub fn get(&self, accessors: Vec<usize>) -> T {
+        let flat_index = self.get_idx(accessors);
         self.data[flat_index]
     }
 }
@@ -1453,7 +1646,7 @@ where
             })
             .collect();
 
-        Tensor::new(mat_shp_pad.to_vec(), new_data)
+        Tensor::new(mat_shp_pad.to_vec().into(), new_data)
     }
 }
 
@@ -1465,9 +1658,9 @@ where
         let mut shape = self.shape.clone();
 
         while shape.len() < 4 {
-            shape = shape.into_iter().rev().collect_vec();
+            shape.reverse();
             shape.push(1);
-            shape = shape.into_iter().rev().collect_vec();
+            shape.reverse();
         }
 
         if shape.len() == 4 {
@@ -1515,23 +1708,339 @@ impl<T: Number> Tensor<T> {
     pub fn min_value(&self) -> T {
         self.data.iter().fold(T::MAX, |min, x| min.cmp_min(x))
     }
-    pub fn random(shape: &[usize]) -> Self {
+    pub fn random(shape: &Shape) -> Self {
         Self::random_seed(shape, Some(rand::random::<u64>()))
     }
 
     /// Creates a random matrix with a given number of rows and cols.
     /// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
     /// sync which is not true for basic rng core.
-    pub fn random_seed(shape: &[usize], seed: Option<u64>) -> Self {
+    pub fn random_seed(shape: &Shape, seed: Option<u64>) -> Self {
         let seed = seed.unwrap_or(rand::random::<u64>()); // Use provided seed or default
         let mut rng = StdRng::seed_from_u64(seed);
-        let size = shape.iter().product();
+        let size = shape.product();
         let data = (0..size).map(|_| T::random(&mut rng)).collect();
         Self {
             data,
-            shape: shape.to_vec(),
-            og_shape: vec![0],
+            shape: shape.clone(),
+            og_shape: vec![0].into(),
         }
+    }
+
+    // slice on the third dimension.
+    // start inclusive, end exclusive
+    pub fn slice_3d(&self, start: usize, end: usize) -> Self {
+        assert!(self.shape.len() == 3);
+        assert!(start < self.shape[0]);
+        assert!(end <= self.shape[0]);
+        let blocks = self.shape[1] * self.shape[2];
+        let sliced = self.data[blocks * start..blocks * end].to_vec();
+        Self {
+            data: sliced,
+            shape: vec![end - start, self.shape[1], self.shape[2]].into(),
+            og_shape: vec![0].into(),
+        }
+    }
+
+    // slice the tensor on the second dimension
+    // dim2_start inclusive
+    // dim2_end exclusive
+    // TODO: refactor to take generic shape dimensions where to slice ... or just use burn API tensor
+    pub fn slice_2d(&self, dim2_start: usize, dim2_end: usize) -> Self {
+        assert!(self.shape.len() == 2);
+        let range = dim2_start * self.shape[1]..dim2_end * self.shape[1];
+        let data = self.data[range].to_vec();
+        let new_shape = vec![dim2_end - dim2_start, self.shape[1]];
+        Self {
+            data: data,
+            shape: new_shape.into(),
+            og_shape: vec![0].into(),
+        }
+    }
+
+    pub fn permute3d(&self, order: &[usize]) -> Self {
+        assert!(self.shape.len() == 3 && order.len() == 3);
+        assert!(order.iter().all(|x| *x < 3));
+        let (a, b, c) = (self.shape[0], self.shape[1], self.shape[2]);
+        let new_a = self.shape[order[0]];
+        let new_b = self.shape[order[1]];
+        let new_c = self.shape[order[2]];
+        let new_shape = vec![new_a, new_b, new_c];
+        let mut data = vec![T::default(); a * b * c];
+        for i in 0..a {
+            for j in 0..b {
+                for k in 0..c {
+                    let old_loc = i * b * c + j * c + k;
+                    let mut new_pos = [0; 3];
+                    new_pos[order[0]] = i;
+                    new_pos[order[1]] = j;
+                    new_pos[order[2]] = k;
+                    let new_i = new_pos[0];
+                    let new_j = new_pos[1];
+                    let new_k = new_pos[2];
+                    let new_loc = new_i * new_b * new_c + new_j * new_c + new_k;
+                    data[new_loc] = self.data[old_loc];
+                }
+            }
+        }
+        Self {
+            data,
+            shape: new_shape.into(),
+            og_shape: self.shape.clone(),
+        }
+    }
+}
+
+impl<T> Tensor<T> {
+    /// Returns an iterator that yields slices of the last dimension.
+    /// For a tensor of shape [2,3,3], it will yield 6 slices (2*3) of 3 elements each.
+    pub fn slice_last_dim(&self) -> impl Iterator<Item = &[T]> {
+        let (it, _) = self.slice_on_dim(self.shape.len() - 2);
+        it
+    }
+
+    /// Returns an iterator of slices whose length corresponds to the subspace
+    /// the dimension represents. Note dim is the dimension _index_ (0-based indexing).
+    /// Example: if dimension is [2,3,4], and we call `slice_on_dim(1)`,
+    /// it will yield 2x3 slices of 4 elements each. If we call `slice_on_dim(0)`,
+    /// it will yield 2 slices of 3x4=12 element each.
+    /// If dim is the last dimension, it will simply yield a slice of the whole tensor.
+    /// The shape returned is the shape of each slice. The shape is the same as the shape of the tensor
+    /// if the dim is the last dimension or more
+    pub fn slice_on_dim(&self, dim: usize) -> (impl Iterator<Item = &[T]>, Shape) {
+        assert!(
+            dim < self.shape.len(),
+            "can't slice on dim {:?} if shape is {:?}",
+            dim,
+            self.shape
+        );
+        let (stride, shape) = if dim < self.shape.len() - 1 {
+            let slice = self.shape.slice(dim + 1..);
+            (slice.product(), slice)
+        } else {
+            (self.shape.product(), self.shape.clone())
+        };
+        (self.data.chunks(stride), shape)
+    }
+
+    // Concatenate the other tensor to the first one.
+    // RESTRICTIOn: self shape is [a1,a2...,an] we
+    // expect other shape to be [a2...,an] OR [1, a2...,an]
+    // The new shape of self will be [a1+1,...an]
+    // In other words, we only concatenate another vector if it's exactly size of the highest dimension
+    // If it's 2d, then we expect other to be a vector
+    pub fn concat(&mut self, other: Self) {
+        // make sure that the all dimension but the highest one are the same
+        let common_shape = self.shape.len().min(other.shape.len());
+        let added_higher = if common_shape < self.shape.len() {
+            assert!(
+                self.shape
+                    .iter()
+                    .rev()
+                    .zip(other.shape.iter().rev())
+                    .take(common_shape)
+                    .all(|(a, b)| a == b)
+            );
+            assert_eq!(common_shape + 1, self.shape.len());
+            1
+        } else {
+            assert_eq!(common_shape, self.shape.len());
+            *other.shape.first().unwrap()
+        };
+        // then the new shape has this higher dimension + 1 simply
+        // common_shape since 0-based indexing
+        *self.shape.get_mut(0).unwrap() += added_higher;
+        self.data.extend(other.data);
+    }
+    /// Stack all the tensors in the iterator into a single tensor using `concat()`
+    /// Note this naively increase the highest dimension. If you wish to stack along a new higher dimension,
+    /// call `unsqueeze(0)` on the first or all tensors first.
+    /// e.g. [2,3] and [2,3] will be stacked into [4,3] naively. Calling `unsqueeze(0)` on both
+    /// will stack into [2,2,3].
+    pub fn stack_all<I: IntoIterator<Item = Self>>(tensors: I) -> anyhow::Result<Self> {
+        let mut it = tensors.into_iter();
+        let mut first = it
+            .next()
+            .ok_or(anyhow::anyhow!("Can't concat an empty list of tensors"))?;
+        for tensor in it {
+            first.concat(tensor);
+        }
+        Ok(first)
+    }
+
+    pub fn unsqueeze(self, index: usize) -> Self {
+        let mut new_shape = self.shape.clone();
+        new_shape.insert(index, 1);
+        Self {
+            data: self.data,
+            shape: new_shape,
+            og_shape: self.og_shape.clone(),
+        }
+    }
+}
+
+/// Structure that holds a shape of a tensor.
+/// NOTE: it is currently being phased in incrementally the codebase currently. There will be places where we still use Vec<usize>
+#[derive(
+    Debug,
+    Clone,
+    derive_more::From,
+    derive_more::Into,
+    derive_more::AsRef,
+    derive_more::Index,
+    derive_more::IndexMut,
+    derive_more::Deref,
+    derive_more::DerefMut,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Eq,
+)]
+pub struct Shape(Vec<usize>);
+
+impl Shape {
+    pub fn from_it<V: std::borrow::Borrow<usize>, I: IntoIterator<Item = V>>(iter: I) -> Self {
+        Self(iter.into_iter().map(|v| *v.borrow()).collect())
+    }
+
+    /// Creates a new [Shape].
+    ///
+    /// # Panics
+    ///
+    /// If `shape` is an empty vector.
+    pub fn new(shape: Vec<usize>) -> Self {
+        assert!(shape.len() != 0, "Shape can not be empty");
+        Self(shape)
+    }
+
+    pub fn slice<R: RangeBounds<usize>>(&self, range: R) -> Shape {
+        let len = self.0.len();
+        let start = match range.start_bound() {
+            Bound::Included(&s) => s,
+            Bound::Excluded(&s) => s + 1,
+            Bound::Unbounded => 0,
+        };
+        let end = match range.end_bound() {
+            Bound::Included(&e) => e + 1,
+            Bound::Excluded(&e) => e,
+            Bound::Unbounded => len,
+        };
+        Shape(self.0[start..end].to_vec())
+    }
+
+    /// Returns the size of a given dimension.
+    ///
+    /// ```
+    /// # use zkml::tensor::Shape;
+    /// let shape = Shape::new(vec![3, 5, 7]);
+    /// assert_eq!(shape.dim(0), 3);
+    /// assert_eq!(shape.dim(1), 5);
+    /// assert_eq!(shape.dim(2), 7);
+    /// ```
+    pub fn dim(&self, index: usize) -> usize {
+        self.0[index]
+    }
+
+    /// Adds an extra dimension with size `1` to [Shape].
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index` is larger than this shape size.
+    ///
+    /// ```
+    /// # use zkml::tensor::Shape;
+    /// let shape = Shape::new(vec![3, 5]);
+    /// let new_shape = shape.unsqueeze(1);
+    /// assert_eq!(new_shape.dim(0), 3);
+    /// assert_eq!(new_shape.dim(1), 1);
+    /// assert_eq!(new_shape.dim(2), 5);
+    /// ```
+    pub fn unsqueeze(&self, index: usize) -> Self {
+        let mut new_shape = self.0.clone();
+        new_shape.insert(index, 1);
+        Self(new_shape)
+    }
+
+    /// Returns the strides for this [Shape] in row major order.
+    ///
+    /// The values in the stride vector determine the offset
+    /// needed to go to the next element of a given dimension.
+    ///
+    /// ```
+    /// # use zkml::tensor::Shape;
+    /// let shape = Shape::new(vec![3, 5, 7]);
+    /// let strides = shape.strides();
+    /// // row major order, inner most dimension changes the quickest
+    /// assert_eq!(strides[0], 35);
+    /// assert_eq!(strides[1], 7);
+    /// assert_eq!(strides[2], 1);
+    /// ```
+    pub fn strides(&self) -> Vec<usize> {
+        let mut strides = self
+            .0
+            .iter()
+            .rev()
+            .scan(1usize, |state, item| {
+                let el = Some(*state);
+                *state = *state * item;
+                el
+            })
+            .collect::<Vec<_>>();
+
+        strides.reverse();
+        strides
+    }
+
+    pub fn permute(&self, permutation: &[usize]) -> Self {
+        let mut new_shape = vec![0; self.0.len()];
+        for (i, j) in permutation.iter().enumerate() {
+            new_shape[i] = self.0[*j];
+        }
+        Self(new_shape)
+    }
+    pub fn next_power_of_two(&self) -> Self {
+        Self(self.0.next_power_of_two())
+    }
+    pub fn concat(&self, other: &Self) -> Self {
+        let mut new_shape = self.0.clone();
+        new_shape.extend(other.0.clone());
+        Self(new_shape)
+    }
+    pub fn into_vec(self) -> Vec<usize> {
+        self.0
+    }
+    pub fn rank(&self) -> usize {
+        self.0.len()
+    }
+    pub fn is_matrix(&self) -> bool {
+        self.0.len() == 2
+    }
+    pub fn ncols(&self) -> usize {
+        assert!(self.is_matrix(), "Tensor is not a matrix");
+        self.0[1]
+    }
+    pub fn nrows(&self) -> usize {
+        assert!(self.is_matrix(), "Tensor is not a matrix");
+        self.0[0]
+    }
+    pub fn matmul_output_bitsize(&self) -> usize {
+        assert!(self.is_matrix(), "Tensor is not a matrix");
+        // formula is 2^{2 * BIT_LEN + log(c) + 1} where c is the number of columns and +1 because of the bias
+        let ncols = self.ncols();
+        // - 1 because numbers are signed so only half of the range is used when doing multiplication
+        2 * (*quantization::BIT_LEN - 1) + ceil_log2(ncols) + 1
+    }
+    pub fn is_power_of_two(&self) -> bool {
+        self.0.iter().all(|x| x.is_power_of_two())
+    }
+    pub fn product(&self) -> usize {
+        self.0.iter().product()
+    }
+}
+
+impl FromIterator<usize> for Shape {
+    fn from_iter<T: IntoIterator<Item = usize>>(iter: T) -> Self {
+        Self::new(iter.into_iter().collect::<Vec<usize>>())
     }
 }
 
@@ -1540,78 +2049,113 @@ mod test {
 
     use ark_std::rand::{Rng, thread_rng};
     use ff_ext::GoldilocksExt2;
+    use ndarray::{Array, Ix2, Order};
 
     use super::*;
     use multilinear_extensions::mle::MultilinearExtension;
     #[test]
     fn test_tensor_basic_ops() {
-        let tensor1 = Tensor::new(vec![2, 2], vec![1, 2, 3, 4]);
-        let tensor2 = Tensor::new(vec![2, 2], vec![5, 6, 7, 8]);
+        let tensor1 = Tensor::new(vec![2, 2].into(), vec![1, 2, 3, 4]);
+        let tensor2 = Tensor::new(vec![2, 2].into(), vec![5, 6, 7, 8]);
 
         let result_add = tensor1.add(&tensor2);
         assert_eq!(
             result_add,
-            Tensor::new(vec![2, 2], vec![6, 8, 10, 12]),
+            Tensor::new(vec![2, 2].into(), vec![6, 8, 10, 12]),
             "Element-wise addition failed."
         );
 
         let result_sub = tensor2.sub(&tensor2);
         assert_eq!(
             result_sub,
-            Tensor::zeros(vec![2, 2]),
+            Tensor::zeros(vec![2, 2].into()),
             "Element-wise subtraction failed."
         );
 
         let result_mul = tensor1.mul(&tensor2);
         assert_eq!(
             result_mul,
-            Tensor::new(vec![2, 2], vec![5, 12, 21, 32]),
+            Tensor::new(vec![2, 2].into(), vec![5, 12, 21, 32]),
             "Element-wise multiplication failed."
         );
 
         let result_scalar = tensor1.scalar_mul(&2);
         assert_eq!(
             result_scalar,
-            Tensor::new(vec![2, 2], vec![2, 4, 6, 8]),
+            Tensor::new(vec![2, 2].into(), vec![2, 4, 6, 8]),
             "Element-wise scalar multiplication failed."
         );
     }
 
     #[test]
     fn test_tensor_matvec() {
-        let matrix = Tensor::new(vec![3, 3], vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
-        let vector = Tensor::new(vec![3], vec![10, 20, 30]);
+        let shape_m = vec![3, 3];
+        let tensor_m = Tensor::new(shape_m.clone().into(), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        let matrix = Array::from_vec(tensor_m.get_data().to_vec())
+            .into_shape_with_order((shape_m, Order::RowMajor))
+            .unwrap()
+            .into_dimensionality::<Ix2>()
+            .unwrap();
+        let tensor_v = Tensor::new(vec![3].into(), vec![10, 20, 30]);
+        let vector = Array::from_vec(tensor_v.get_data().to_vec());
 
-        let result = matrix.matvec(&vector);
+        let result = tensor_m.matvec(&tensor_v);
+        let expected_result = matrix.dot(&vector);
 
         assert_eq!(
-            result,
-            Tensor::new(vec![3], vec![140, 320, 500]),
+            Array::from_vec(result.get_data().to_vec()),
+            expected_result,
             "Matrix-vector multiplication failed."
         );
     }
 
     #[test]
     fn test_tensor_matmul() {
-        let matrix_a = Tensor::new(vec![3, 3], vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
-        let matrix_b = Tensor::new(vec![3, 3], vec![10, 20, 30, 40, 50, 60, 70, 80, 90]);
+        let shape_a = vec![4, 3];
+        let tensor_a = Tensor::new(
+            shape_a.clone().into(),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        );
+        let matrix_a = Array::from_vec(tensor_a.get_data().to_vec())
+            .into_shape_with_order((shape_a, Order::RowMajor))
+            .unwrap();
+        let shape_b = vec![3, 3];
+        let tensor_b = Tensor::new(
+            shape_b.clone().into(),
+            vec![10, 20, 30, 40, 50, 60, 70, 80, 90],
+        );
+        let matrix_b = Array::from_vec(tensor_b.get_data().to_vec())
+            .into_shape_with_order((shape_b, Order::RowMajor))
+            .unwrap();
 
-        let result = matrix_a.matmul(&matrix_b);
+        let result = tensor_a.matmul(&tensor_b);
+
+        let expected_result = matrix_a
+            .into_dimensionality::<Ix2>()
+            .unwrap()
+            .dot(&matrix_b.into_dimensionality::<Ix2>().unwrap());
 
         assert_eq!(
-            result,
-            Tensor::new(
-                vec![3, 3],
-                vec![300, 360, 420, 660, 810, 960, 1020, 1260, 1500]
-            ),
+            Array::from_vec(result.get_data().to_vec())
+                .into_shape_with_order((expected_result.shape(), Order::RowMajor))
+                .unwrap()
+                .into_dimensionality::<Ix2>()
+                .unwrap(),
+            expected_result,
             "Matrix-matrix multiplication failed."
         );
     }
 
     #[test]
     fn test_tensor_transpose() {
-        let matrix_a = Tensor::new(vec![3, 4], vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
-        let matrix_b = Tensor::new(vec![4, 3], vec![1, 5, 9, 2, 6, 10, 3, 7, 11, 4, 8, 12]);
+        let matrix_a = Tensor::new(
+            vec![3, 4].into(),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        );
+        let matrix_b = Tensor::new(
+            vec![4, 3].into(),
+            vec![1, 5, 9, 2, 6, 10, 3, 7, 11, 4, 8, 12],
+        );
 
         let result = matrix_a.transpose();
 
@@ -1620,14 +2164,14 @@ mod test {
 
     #[test]
     fn test_tensor_next_pow_of_two() {
-        let shape = vec![3usize, 3];
+        let shape = vec![3usize, 3].into();
         let mat = Tensor::<Element>::random_seed(&shape, Some(213));
         // println!("{}", mat);
         let new_shape = vec![shape[0].next_power_of_two(), shape[1].next_power_of_two()];
         let new_mat = mat.pad_next_power_of_two();
         assert_eq!(
             new_mat.get_shape(),
-            new_shape,
+            new_shape.into(),
             "Matrix padding to next power of two failed."
         );
     }
@@ -1648,11 +2192,11 @@ mod test {
 
     #[test]
     fn test_tensor_mle() {
-        let mat = Tensor::random(&vec![3, 5]);
+        let mat = Tensor::random(&vec![3, 5].into());
         let shape = mat.get_shape();
         let mat = mat.pad_next_power_of_two();
         println!("matrix {}", mat);
-        let mut mle = mat.clone().to_mle_2d::<E>();
+        let mut mle = mat.to_2d_mle::<E>();
         let (chosen_row, chosen_col) = (
             thread_rng().gen_range(0..shape[0]),
             thread_rng().gen_range(0..shape[1]),
@@ -1675,14 +2219,17 @@ mod test {
 
     #[test]
     fn test_tensor_matvec_concatenate() {
-        let matrix = Tensor::new(vec![3, 3], vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
-        let vector = Tensor::new(vec![3], vec![10, 20, 30]);
+        let matrix = Tensor::new(vec![3, 3].into(), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        let vector = Tensor::new(vec![3].into(), vec![10, 20, 30]);
 
         let result = matrix.concat_matvec_col(&vector);
 
         assert_eq!(
             result,
-            Tensor::new(vec![3, 4], vec![1, 2, 3, 10, 4, 5, 6, 20, 7, 8, 9, 30]),
+            Tensor::new(
+                vec![3, 4].into(),
+                vec![1, 2, 3, 10, 4, 5, 6, 20, 7, 8, 9, 30]
+            ),
             "Concatenate matrix vector as columns failed."
         );
     }
@@ -1699,10 +2246,11 @@ mod test {
                         let k_w = 1 << l;
                         let n_x = 1 << j;
                         let k_x = 1 << i;
-                        let filter1 = Tensor::random(&vec![k_w, k_x, n_w, n_w]);
+                        let filter1 = Tensor::random(&vec![k_w, k_x, n_w, n_w].into());
                         let filter2 = filter1.clone();
-                        let filter1 = filter1.into_fft_conv(&vec![k_x, n_x, n_x]);
-                        let big_x = Tensor::new(vec![k_x, n_x, n_x], vec![3; n_x * n_x * k_x]); //random_vector(n_x*n_x*k_x));
+                        let filter1 = filter1.into_fft_conv(&vec![k_x, n_x, n_x].into());
+                        let big_x =
+                            Tensor::new(vec![k_x, n_x, n_x].into(), vec![3; n_x * n_x * k_x]); //random_vector(n_x*n_x*k_x));
                         let (out_2, _) = filter1.fft_conv::<GoldilocksExt2>(&big_x);
                         let out_1 = filter2.cnn_naive_convolution(&big_x);
                         check_tensor_consistency(out_1, out_2);
@@ -1725,9 +2273,9 @@ mod test {
         let matrix_c_data: Vec<E> = matrix_c_data.iter().map(|x| x.to_field()).collect_vec();
         let vector_a_data: Vec<E> = vector_a_data.iter().map(|x| x.to_field()).collect_vec();
         let vector_b_data: Vec<E> = vector_b_data.iter().map(|x| x.to_field()).collect_vec();
-        let matrix = Tensor::new(vec![3usize, 3], matrix_a_data.clone());
-        let vector = Tensor::new(vec![3usize], vector_a_data);
-        let vector_expected = Tensor::new(vec![3usize], vector_b_data);
+        let matrix = Tensor::new(vec![3usize, 3].into(), matrix_a_data.clone());
+        let vector = Tensor::new(vec![3usize].into(), vector_a_data);
+        let vector_expected = Tensor::new(vec![3usize].into(), vector_b_data);
 
         let result = matrix.matvec(&vector);
 
@@ -1736,9 +2284,9 @@ mod test {
             "Matrix-vector multiplication failed."
         );
 
-        let matrix_a = Tensor::new(vec![3, 3], matrix_a_data);
-        let matrix_b = Tensor::new(vec![3, 3], matrix_b_data);
-        let matrix_c = Tensor::new(vec![3, 3], matrix_c_data);
+        let matrix_a = Tensor::new(vec![3, 3].into(), matrix_a_data);
+        let matrix_b = Tensor::new(vec![3, 3].into(), matrix_b_data);
+        let matrix_c = Tensor::new(vec![3, 3].into(), matrix_c_data);
 
         let result = matrix_a.matmul(&matrix_b);
 
@@ -1748,14 +2296,15 @@ mod test {
     #[test]
     fn test_tensor_maxpool2d() {
         let input = Tensor::<Element>::new(
-            vec![1, 3, 3, 4],
+            vec![1, 3, 3, 4].into(),
             vec![
                 99, -35, 18, 104, -26, -48, -80, 106, 10, 8, 79, -7, -128, -45, 24, -91, -7, 88,
                 -119, -37, -38, -113, -84, 86, 116, 72, -83, 100, 83, 81, 87, 58, -109, -13, -123,
                 102,
             ],
         );
-        let expected = Tensor::<Element>::new(vec![1, 3, 1, 2], vec![99, 106, 88, 24, 116, 100]);
+        let expected =
+            Tensor::<Element>::new(vec![1, 3, 1, 2].into(), vec![99, 106, 88, 24, 116, 100]);
 
         let result = input.maxpool2d(2, 2);
         assert_eq!(result, expected, "Maxpool (Element) failed.");
@@ -1764,7 +2313,7 @@ mod test {
     #[test]
     fn test_tensor_pad_maxpool2d() {
         let input = Tensor::<Element>::new(
-            vec![1, 3, 4, 4],
+            vec![1, 3, 4, 4].into(),
             vec![
                 93, 56, -3, -1, 104, -68, -71, -96, 5, -16, 3, -8, 74, -34, -16, -31, -42, -59,
                 -64, 70, -77, 19, -17, -114, 79, 55, 4, -26, -7, -17, -94, 21, 59, -116, -113, 47,
@@ -1772,12 +2321,12 @@ mod test {
             ],
         );
         let expected = Tensor::<Element>::new(
-            vec![1, 3, 2, 2],
+            vec![1, 3, 2, 2].into(),
             vec![104, -1, 74, 3, 19, 70, 79, 21, 112, 65, 69, 105],
         );
 
         let padded_expected = Tensor::<Element>::new(
-            vec![1, 3, 4, 4],
+            vec![1, 3, 4, 4].into(),
             vec![
                 104, 104, -1, -1, 104, 104, -1, -1, 74, 74, 3, 3, 74, 74, 3, 3, 19, 19, 70, 70, 19,
                 19, 70, 70, 79, 79, 21, 21, 79, 79, 21, 21, 112, 112, 65, 65, 112, 112, 65, 65, 69,
@@ -1796,7 +2345,7 @@ mod test {
     #[test]
     fn test_pad_tensor_for_mle() {
         let input = Tensor::<Element>::new(
-            vec![1, 3, 4, 4],
+            vec![1, 3, 4, 4].into(),
             vec![
                 93, 56, -3, -1, 104, -68, -71, -96, 5, -16, 3, -8, 74, -34, -16, -31, -42, -59,
                 -64, 70, -77, 19, -17, -114, 79, 55, 4, -26, -7, -17, -94, 21, 59, -116, -113, 47,
@@ -1830,11 +2379,11 @@ mod test {
 
     #[test]
     fn test_tensor_pad() {
-        let shape_a = vec![3, 1, 1];
-        let tensor_a = Tensor::<Element>::new(shape_a.clone(), vec![1; shape_a.iter().product()]);
+        let shape_a = Shape::from_it([3, 1, 1]);
+        let tensor_a = Tensor::<Element>::new(shape_a.clone(), vec![1; shape_a.product()]);
 
         let shape_b = vec![4, 1, 1];
-        let tensor_b = Tensor::<Element>::new(shape_b, vec![1, 1, 1, 0]);
+        let tensor_b = Tensor::<Element>::new(shape_b.into(), vec![1, 1, 1, 0]);
 
         let tensor_c = tensor_a.pad_next_power_of_two();
         assert_eq!(tensor_b, tensor_c);
@@ -1842,43 +2391,164 @@ mod test {
 
     #[test]
     fn test_tensor_pad_to_shape() {
-        let shape_a = vec![3, 1, 1];
-        let mut tensor_a =
-            Tensor::<Element>::new(shape_a.clone(), vec![1; shape_a.iter().product()]);
+        let shape = Shape::from_it([1]);
+        let mut tensor = Tensor::<Element>::new(shape, vec![1]);
+        let target = Shape::from_it([2]);
+        let res = Tensor::<Element>::new(target.clone(), vec![1, 0]);
+        tensor.pad_to_shape(target.clone());
+        assert_eq!(tensor, res);
 
-        let shape_b = vec![3, 4, 4];
-        let tensor_b = Tensor::<Element>::new(
-            shape_b.clone(),
+        let shape = Shape::from_it([2]);
+        let mut tensor = Tensor::<Element>::new(shape, vec![1, 2]);
+        let target = Shape::from_it([3]);
+        let res = Tensor::<Element>::new(target.clone(), vec![1, 2, 0]);
+        tensor.pad_to_shape(target.clone());
+        assert_eq!(tensor, res);
+
+        let shape = Shape::from_it([1, 1]);
+        let mut tensor = Tensor::<Element>::new(shape, vec![1]);
+        let target = Shape::from_it([2, 1]);
+        let res = Tensor::<Element>::new(target.clone(), vec![1, 0]);
+        tensor.pad_to_shape(target.clone());
+        assert_eq!(tensor, res);
+
+        let shape = Shape::from_it([1, 1]);
+        let mut tensor = Tensor::<Element>::new(shape, vec![1]);
+        let target = Shape::from_it([1, 2]);
+        let res = Tensor::<Element>::new(target.clone(), vec![1, 0]);
+        tensor.pad_to_shape(target.clone());
+        assert_eq!(tensor, res);
+
+        let shape = Shape::from_it([2, 2]);
+        let mut tensor = Tensor::<Element>::new(shape, vec![1, 2, 3, 4]);
+        let target = Shape::from_it([3, 3]);
+        let res = Tensor::<Element>::new(target.clone(), vec![1, 2, 0, 3, 4, 0, 0, 0, 0]);
+        tensor.pad_to_shape(target.clone());
+        assert_eq!(tensor, res);
+
+        let shape = Shape::from_it([3, 1, 1]);
+        let mut tensor = Tensor::<Element>::new(shape.clone(), vec![1, 1, 1]);
+        let target = Shape::from_it([3, 4, 4]);
+        #[rustfmt::skip]
+        let res = Tensor::<Element>::new(
+            target.clone(),
+
             vec![
-                1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             ],
         );
+        tensor.pad_to_shape(target);
+        assert_eq!(tensor, res);
 
-        tensor_a.pad_to_shape(shape_b);
-        assert_eq!(tensor_b, tensor_a);
+        let shape = Shape::from_it([3, 1, 3]);
+        let mut tensor = Tensor::<Element>::new(shape.clone(), vec![1, 1, 1, 2, 2, 2, 3, 3, 3]);
+        let target = Shape::from_it([3, 4, 4]);
+        #[rustfmt::skip]
+        let res = Tensor::<Element>::new(
+            target.clone(),
+
+            vec![
+                1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                2, 2, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                3, 3, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ],
+        );
+        tensor.pad_to_shape(target);
+        assert_eq!(tensor, res);
+
+        let shape = Shape::from_it([3, 3, 1]);
+        let mut tensor = Tensor::<Element>::new(shape.clone(), vec![1, 1, 1, 2, 2, 2, 3, 3, 3]);
+        let target = Shape::from_it([3, 4, 4]);
+        #[rustfmt::skip]
+        let res = Tensor::<Element>::new(
+            target.clone(),
+            vec![
+                1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
+                2, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0,
+                3, 0, 0, 0, 3, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0,
+            ],
+        );
+        tensor.pad_to_shape(target);
+        assert_eq!(tensor, res);
+
+        let shape = Shape::from_it([1, 2, 1, 3]);
+        let mut tensor = Tensor::<Element>::new(shape.clone(), vec![1, 1, 1, 2, 2, 2]);
+        let target = Shape::from_it([2, 3, 5, 7]);
+        #[rustfmt::skip]
+        let res = Tensor::<Element>::new(
+            target.clone(),
+            vec![
+                // x=0 y=0
+                1, 1, 1, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+
+                // x=0 y=1
+                2, 2, 2, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+
+                // x=0 y=2
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+
+                // x=1 y=0
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+
+                // x=1 y=1
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+
+                // x=1 y=2
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0,
+            ],
+        );
+        tensor.pad_to_shape(target);
+        assert_eq!(tensor, res);
     }
 
     #[test]
     fn test_tensor_conv2d() {
         let input = Tensor::<Element>::new(
-            vec![1, 3, 3, 3],
+            vec![1, 3, 3, 3].into(),
             vec![
                 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 8, 7, 6, 5, 4, 3, 2, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3,
             ],
         );
 
         let weights = Tensor::<Element>::new(
-            vec![2, 3, 2, 2],
+            vec![2, 3, 2, 2].into(),
             vec![
                 1, 0, -1, 2, 0, 1, -1, 1, 1, -1, 0, 2, -1, 1, 2, 0, 1, 0, 2, -1, 0, -1, 1, 1,
             ],
         );
 
-        let bias = Tensor::<Element>::new(vec![2], vec![3, -3]);
+        let bias = Tensor::<Element>::new(vec![2].into(), vec![3, -3]);
 
-        let expected =
-            Tensor::<Element>::new(vec![1, 2, 2, 2], vec![21, 22, 26, 27, 25, 25, 26, 26]);
+        let expected = Tensor::<Element>::new(
+            vec![1, 2, 2, 2].into(),
+            vec![21, 22, 26, 27, 25, 25, 26, 26],
+        );
 
         let result = input.conv2d(&weights, &bias, 1);
         assert_eq!(result, expected, "Conv2D (Element) failed.");
@@ -1887,35 +2557,35 @@ mod test {
     #[test]
     fn test_tensor_minimal_conv2d() {
         // k_n,k_c,k_h,k_w
-        let conv_shape = vec![2, 3, 3, 3];
+        let conv_shape = vec![2, 3, 3, 3].into();
         let conv = Tensor::<Element>::random(&conv_shape);
         // minimal input shape is 1,k_c,k_h,k_w
-        let input_shape = vec![1, 3, 3, 3];
+        let input_shape = vec![1, 3, 3, 3].into();
         let input = Tensor::<Element>::random(&input_shape);
         // minimal bias shape is k_n
-        let bias = Tensor::<Element>::random(&vec![2]);
+        let bias = Tensor::<Element>::random(&vec![2].into());
         let output = input.conv2d(&conv, &bias, 1);
-        assert_eq!(output.get_shape(), vec![1, 2, 1, 1]);
+        assert_eq!(output.get_shape(), vec![1, 2, 1, 1].into());
     }
 
     #[test]
     fn test_tensor_pad_matrix_to_ignore_garbage() {
-        let old_shape = vec![2usize, 3, 3];
+        let old_shape: Shape = vec![2usize, 3, 3].into();
         let orows = 10usize;
-        let ocols = old_shape.iter().product::<usize>();
+        let ocols = old_shape.product();
 
-        let new_shape = vec![3usize, 4, 4];
+        let new_shape: Shape = vec![3usize, 4, 4].into();
         let nrows = 12usize;
-        let ncols = new_shape.iter().product::<usize>();
+        let ncols = new_shape.product();
 
         let og_t = Tensor::<Element>::random(&old_shape);
         let og_flat_t = og_t.flatten(); // This is equivalent to conv2d output (flattened)
 
         let mut pad_t = og_t.clone();
-        pad_t.pad_to_shape(new_shape.clone());
+        pad_t.pad_to_shape(new_shape.clone().into());
         let pad_flat_t = pad_t.flatten();
 
-        let og_mat = Tensor::random(&vec![orows, ocols]); // This is equivalent to the first dense matrix
+        let og_mat = Tensor::random(&vec![orows, ocols].into()); // This is equivalent to the first dense matrix
         let og_result = og_mat.matvec(&og_flat_t);
 
         let pad_mat =
@@ -1926,6 +2596,191 @@ mod test {
             og_result.get_data()[..orows],
             pad_result.get_data()[..orows],
             "Unable to get rid of garbage values from conv fft."
+        );
+    }
+
+    #[test]
+    fn test_tensor_slice_2d() {
+        let tensor = Tensor::<Element>::new(vec![3, 3].into(), vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        let sliced = tensor.slice_2d(0, 2);
+        assert_eq!(sliced.get_shape(), vec![2, 3].into());
+        assert_eq!(sliced.get_data(), vec![1, 2, 3, 4, 5, 6]);
+        let sliced = tensor.slice_2d(2, 3);
+        assert_eq!(sliced.get_shape(), vec![1, 3].into());
+        assert_eq!(sliced.get_data(), vec![7, 8, 9]);
+    }
+
+    #[test]
+    fn test_tensor_add_dim2() {
+        let tensor = Tensor::<Element>::new(vec![2, 3].into(), vec![1, 2, 3, 4, 5, 6]);
+        let vector = Tensor::<Element>::new(vec![3].into(), vec![10, 20, 30]);
+        let result = tensor.add_dim2(&vector);
+        assert_eq!(result.get_shape(), vec![2, 3].into());
+        assert_eq!(result.get_data(), vec![11, 22, 33, 14, 25, 36]);
+    }
+
+    #[test]
+    fn test_tensor_concat() {
+        let mut tensor = Tensor::<Element>::new(vec![2, 3].into(), vec![1, 2, 3, 4, 5, 6]);
+        let vector = Tensor::<Element>::new(vec![3].into(), vec![10, 20, 30]);
+        tensor.concat(vector);
+
+        assert_eq!(tensor.get_shape(), vec![3, 3].into());
+        assert_eq!(tensor.get_data(), vec![1, 2, 3, 4, 5, 6, 10, 20, 30]);
+
+        let vector = Tensor::<Element>::new(vec![1, 3].into(), vec![66, 77, 88]);
+        tensor.concat(vector);
+        assert_eq!(tensor.get_shape(), vec![4, 3].into());
+        assert_eq!(
+            tensor.get_data(),
+            vec![1, 2, 3, 4, 5, 6, 10, 20, 30, 66, 77, 88]
+        );
+    }
+
+    #[test]
+    fn test_tensor_get() {
+        let tensor = Tensor::<Element>::new(
+            vec![2, 3, 3].into(),
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+            ],
+        );
+        // 2 + 2 * 3 + 1 * 3 * 3 = 17
+        assert_eq!(tensor.get(vec![1, 2, 2]), tensor.data[17]);
+    }
+
+    #[test]
+    fn test_tensor_permute3d() {
+        let tensor = Tensor::<Element>::new(
+            vec![2, 3, 3].into(),
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+            ],
+        );
+        // i,j,k --> j,i,k -> new shape = 3,2,3
+        let permuted = tensor.permute3d(&[1, 0, 2]);
+        assert_eq!(permuted.get_shape(), vec![3, 2, 3].into());
+        for i in 0..2 {
+            for j in 0..3 {
+                for k in 0..3 {
+                    let [new_i, new_j, new_k] = [j, i, k];
+                    let expected = tensor.get(vec![i, j, k]);
+                    let given = permuted.get(vec![new_i, new_j, new_k]);
+                    assert_eq!(expected, given);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_tensor_slice_3d() {
+        let tensor = Tensor::<Element>::new(
+            vec![3, 2, 2].into(),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        );
+        let sliced = tensor.slice_3d(1, 3);
+        assert_eq!(sliced.get_data(), vec![5, 6, 7, 8, 9, 10, 11, 12]);
+        assert_eq!(sliced.get_shape(), vec![2, 2, 2].into());
+    }
+
+    #[test]
+    fn test_tensor_slices_last_dim() {
+        let tensor = Tensor::<Element>::new(
+            vec![2, 3, 3].into(),
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+            ],
+        );
+
+        let mut slices = tensor.slice_last_dim();
+
+        // First slice
+        assert_eq!(slices.next().unwrap(), &[1, 2, 3]);
+        // Second slice
+        assert_eq!(slices.next().unwrap(), &[4, 5, 6]);
+        // Third slice
+        assert_eq!(slices.next().unwrap(), &[7, 8, 9]);
+        // Fourth slice
+        assert_eq!(slices.next().unwrap(), &[10, 11, 12]);
+        // Fifth slice
+        assert_eq!(slices.next().unwrap(), &[13, 14, 15]);
+        // Sixth slice
+        assert_eq!(slices.next().unwrap(), &[16, 17, 18]);
+        // No more slices
+        assert_eq!(slices.next(), None);
+    }
+
+    #[test]
+    fn test_tensor_slice_on_dim() {
+        let tensor = Tensor::<Element>::new(
+            vec![2, 3, 3].into(),
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+            ],
+        );
+        let (mut slices, shape) = tensor.slice_on_dim(1);
+        assert_eq!(shape, Shape(vec![3]));
+        assert_eq!(slices.next().unwrap(), &[1, 2, 3]);
+        assert_eq!(slices.next().unwrap(), &[4, 5, 6]);
+        assert_eq!(slices.next().unwrap(), &[7, 8, 9]);
+        assert_eq!(slices.next().unwrap(), &[10, 11, 12]);
+        assert_eq!(slices.next().unwrap(), &[13, 14, 15]);
+        assert_eq!(slices.next().unwrap(), &[16, 17, 18]);
+        assert_eq!(slices.next(), None);
+
+        let (mut slices, shape) = tensor.slice_on_dim(0);
+        assert_eq!(shape, Shape(vec![3, 3]));
+        assert_eq!(slices.next().unwrap(), &[1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(
+            slices.next().unwrap(),
+            &[10, 11, 12, 13, 14, 15, 16, 17, 18]
+        );
+        assert_eq!(slices.next(), None);
+
+        let (slices, shape) = tensor.slice_on_dim(2);
+        assert_eq!(shape, tensor.get_shape());
+        let data = slices.flatten().cloned().collect::<Vec<_>>();
+        assert_eq!(
+            data,
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18
+            ]
+        );
+    }
+
+    #[test]
+    fn test_shape() {
+        let shape = Shape(vec![2, 3, 4]);
+        let permuted = shape.permute(&[1, 0, 2]);
+        assert_eq!(permuted.0, vec![3, 2, 4]);
+    }
+
+    #[test]
+    fn test_tensor_argmax() {
+        let tensor = Tensor::<Element>::new(vec![3].into(), vec![1, 2, 3]);
+        let argmax = tensor.argmax();
+        assert_eq!(argmax, 2);
+    }
+
+    #[test]
+    fn test_tensor_stack_all() {
+        let tensors = vec![
+            Tensor::<Element>::new(vec![2, 3].into(), vec![1, 2, 3, 4, 5, 6]),
+            Tensor::<Element>::new(vec![2, 3].into(), vec![7, 8, 9, 10, 11, 12]),
+        ];
+        let stacked = Tensor::<Element>::stack_all(tensors.clone()).unwrap();
+        assert_eq!(stacked.get_shape(), vec![4, 3].into());
+        assert_eq!(
+            stacked.get_data(),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        );
+
+        let stacked =
+            Tensor::<Element>::stack_all(tensors.into_iter().map(|t| t.unsqueeze(0))).unwrap();
+        assert_eq!(stacked.get_shape(), vec![2, 2, 3].into());
+        assert_eq!(
+            stacked.get_data(),
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
     }
 }

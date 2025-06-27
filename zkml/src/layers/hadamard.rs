@@ -94,8 +94,18 @@ pub fn prove<F: ExtensionField, T: Transcript<F>>(
         output_claim.point.len(),
         v2.get_data().len().ilog2() as usize
     );
-    assert!(v1.get_shape().iter().all(|x| x.is_power_of_two()));
-    assert!(v2.get_shape().iter().all(|x| x.is_power_of_two()));
+    assert!(
+        v1.get_shape()
+            .into_vec()
+            .iter()
+            .all(|x| x.is_power_of_two())
+    );
+    assert!(
+        v2.get_shape()
+            .into_vec()
+            .iter()
+            .all(|x| x.is_power_of_two())
+    );
     let beta_poly = compute_betas_eval(&output_claim.point).into_mle();
     let v1_mle = v1.to_mle_flat::<F>();
     let v2_mle = v2.to_mle_flat::<F>();
@@ -157,8 +167,8 @@ mod test {
     fn test_hadamard_proving() {
         let mut transcript = default_transcript();
         let n: usize = 10;
-        let v1 = Tensor::random(&vec![n]).pad_next_power_of_two();
-        let v2 = Tensor::random(&vec![n]).pad_next_power_of_two();
+        let v1 = Tensor::random(&vec![n].into()).pad_next_power_of_two();
+        let v2 = Tensor::random(&vec![n].into()).pad_next_power_of_two();
         let r = random_field_vector(n.next_power_of_two().ilog2() as usize);
         let expected_output = v1.mul(&v2);
         let output_mle = expected_output.to_mle_flat::<GoldilocksExt2>();

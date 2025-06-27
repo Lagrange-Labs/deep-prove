@@ -4,7 +4,7 @@ use anyhow::{Result, anyhow, ensure};
 use ff_ext::{ExtensionField, GoldilocksExt2};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use trace::Trace;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::{
     Tensor,
@@ -15,22 +15,22 @@ use crate::{
     },
     padding::PaddingMode,
     quantization::InferenceTracker,
-    tensor::Number,
+    tensor::{Number, Shape},
     try_unzip,
 };
 
 pub(crate) mod iterator;
 pub(crate) mod trace;
-
+// pub mod driver;
 pub use iterator::ToIterator;
 pub use trace::{InferenceStep, InferenceTrace, StepData};
 
 /// Represents a model
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Model<N> {
     pub(crate) nodes: HashMap<NodeId, Node<N>>,
-    pub(crate) input_shapes: Vec<Vec<usize>>,
-    pub(crate) unpadded_input_shapes: Vec<Vec<usize>>,
+    pub(crate) input_shapes: Vec<Shape>,
+    pub(crate) unpadded_input_shapes: Vec<Shape>,
 }
 
 impl<N> Model<N>
@@ -45,7 +45,7 @@ where
     }
 
     /// Utility method to pad the inputs shapes to the next power of two
-    fn compute_padded_input_shapes(unpadded_input_shapes: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    fn compute_padded_input_shapes(unpadded_input_shapes: &[Shape]) -> Vec<Shape> {
         unpadded_input_shapes
             .iter()
             .map(|shape| shape.iter().map(|dim| dim.next_power_of_two()).collect())
@@ -54,10 +54,7 @@ where
 
     /// Instantiate a model with the given input shape: the `padding` input specifies whether
     /// the provided inputs shapes should be padded or not
-    pub fn new_from_input_shapes(
-        unpadded_input_shapes: Vec<Vec<usize>>,
-        padding: PaddingMode,
-    ) -> Self {
+    pub fn new_from_input_shapes(unpadded_input_shapes: Vec<Shape>, padding: PaddingMode) -> Self {
         let input_shapes = match padding {
             PaddingMode::NoPadding => unpadded_input_shapes.clone(),
             PaddingMode::Padding => Self::compute_padded_input_shapes(&unpadded_input_shapes),
@@ -70,7 +67,7 @@ where
     }
 
     pub(crate) fn new(
-        unpadded_input_shapes: Vec<Vec<usize>>,
+        unpadded_input_shapes: Vec<Shape>,
         padding: PaddingMode,
         nodes: HashMap<NodeId, Node<N>>,
     ) -> Self {
@@ -86,8 +83,8 @@ where
     /// as `unpadded_input_shapes` if the input tensors of the model are
     /// not expected to be padded
     pub fn new_from_shapes(
-        unpadded_input_shapes: Vec<Vec<usize>>,
-        actual_input_shapes: Vec<Vec<usize>>,
+        unpadded_input_shapes: Vec<Shape>,
+        actual_input_shapes: Vec<Shape>,
         nodes: HashMap<NodeId, Node<N>>,
     ) -> Self {
         Self {
@@ -98,13 +95,13 @@ where
     }
 
     /// Get the shapes of the input tensors, not padded
-    pub(crate) fn unpadded_input_shapes(&self) -> Vec<Vec<usize>> {
+    pub(crate) fn unpadded_input_shapes(&self) -> Vec<Shape> {
         self.unpadded_input_shapes.clone()
     }
 
     /// Get the actual input shapes, which could be padded or unpadded
     /// depending on how the model was instantiated
-    pub fn input_shapes(&self) -> Vec<Vec<usize>> {
+    pub fn input_shapes(&self) -> Vec<Shape> {
         self.input_shapes.clone()
     }
 
@@ -149,7 +146,7 @@ where
     }
 
     /// Compute the input shapes padded to the next power of two
-    pub(crate) fn padded_input_shapes(&self) -> Vec<Vec<usize>> {
+    pub(crate) fn padded_input_shapes(&self) -> Vec<Shape> {
         Self::compute_padded_input_shapes(&self.unpadded_input_shapes)
     }
 
@@ -168,61 +165,103 @@ where
         }
     }
 
-    /// Add a re-quantization node to the model after the node with id `input_node_id`
-    pub(crate) fn add_requant_node(
+    /// Add re-quantization nodes to the model after the node with id `input_node_id`
+    /// It creates as many requant layers as there are output wires of the input node
+    pub(crate) fn add_requant_nodes(
         &mut self,
-        requant: Requant,
+        requants: Vec<Requant>,
         input_node_id: NodeId,
-    ) -> anyhow::Result<NodeId> {
+    ) -> anyhow::Result<Vec<NodeId>> {
         let input_node = self
             .nodes
-            .get_mut(&input_node_id)
+            .get(&input_node_id)
             .ok_or(anyhow!("Node {input_node_id} not found in the model"))?;
         let num_outputs = input_node.outputs.len();
-        let requant_node = Node::new_with_outputs(
-            (0..num_outputs)
-                .map(|i| Edge {
-                    node: Some(input_node_id),
-                    index: i,
-                })
-                .collect(),
-            Layer::Requant(requant),
-            input_node.outputs.clone(), // copy output wires of `input_node` to requant node
+        // we want to create new requant nodes for each output of the input node. That means we need to
+        // create one output edge from input_node to new requant_node and need to copy the associated output wire
+        let requant_nodes = input_node
+            .outputs
+            .iter()
+            .enumerate()
+            .zip(requants.into_iter())
+            .map(|((i, wire), requant)| {
+                // INPUT EDGES: for each output wire, we simply copy the index i, and set the node to be input_node_id
+                let input_edges = wire
+                    .edges
+                    .iter()
+                    .map(|_| Edge::new(input_node_id, i))
+                    .collect();
+                // OUTPUT EDGES: We simply copy the output wires of input_node since they are the same.
+                // NOTE here we enforce that one requant  == one output wire. Later we might want to revisit that assumption if needed.
+                let output_wires = wire.clone();
+                Ok(Node::new_with_outputs(
+                    input_edges,
+                    Layer::Requant(requant),
+                    vec![output_wires],
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        debug!(
+            "Requant insertion: from input node {}: inputs: {:?}, outputs: {:?}",
+            input_node_id,
+            self.nodes.get(&input_node_id).unwrap().inputs,
+            self.nodes.get(&input_node_id).unwrap().outputs
         );
-        // remove edges from outputs of `input_node`
-        input_node.outputs = vec![Default::default(); num_outputs];
-        let requant_id = self.add_node(requant_node)?;
+        // remove edges from outputs of `input_node` - BEFORE adding the requant nodes to the model, since
+        // that action will append to the input_node.outputs.
+        // safe unwrap because already did it before - redo it here for borrowing safety reasons
+        self.nodes.get_mut(&input_node_id).unwrap().outputs = vec![Default::default(); num_outputs];
+        let requant_ids = requant_nodes
+            .into_iter()
+            .map(|node| self.add_node(node))
+            .collect::<Result<Vec<_>>>()?;
+        debug!(
+            "Requant insertion: requant nodes: {:?}",
+            requant_ids
+                .iter()
+                .map(|id| {
+                    let requant_node = self.nodes.get(&id).unwrap();
+                    format!(
+                        "id: {:?}, inputs: {:?}, outputs: {:?}",
+                        id, requant_node.inputs, requant_node.outputs
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         // route inputs of the nodes using outputs of `input_node_id` to the newly inserted
         // requant node
-        let requant_node = self.nodes.get(&requant_id).ok_or(anyhow!(
-            "Requant node {requant_id} just inserted not found in the model"
-        ))?;
-        for (i, wire) in requant_node.outputs.clone().iter().enumerate() {
-            // change inputs of each node using this output wire
-            wire.edges.iter().filter(|edge| edge.node.is_some()).try_for_each(|edge|{
-                let node_id = edge.node.unwrap();
-                let node = self.nodes.get_mut(&node_id).ok_or(
-                    anyhow!("Node {node_id}, which should use an output of requant node {requant_id}, not found in model")
-                )?;
-                ensure!(edge.index < node.inputs.len(),
-                    "Node {node_id} has {} inputs, so cannot access input {}",
-                    node.inputs.len(),
-                    edge.index,
-                );
-                // check that this input was indeed referring to an output of input_node_id
-                let input_edge = &mut node.inputs[edge.index];
-                ensure!(input_edge.node.ok_or(
-                    anyhow!("{} input of node {node_id} should not be an input of the model", edge.index)
-                )? == input_node_id,
-                    "{} input of node {node_id} should be {input_node_id}", edge.index
-                );
-                // replace `input_node_id` with `requant_id`
-                input_edge.node = Some(requant_id);
-                input_edge.index = i;
-                Ok(())
-            })?;
+        for requant_id in requant_ids.iter() {
+            let requant_node = self.nodes.get(&requant_id).ok_or(anyhow!(
+                "Requant node {requant_id} just inserted not found in the model"
+            ))?;
+            for (i, wire) in requant_node.outputs.clone().iter().enumerate() {
+                // change inputs of each node using this output wire
+                wire.edges.iter().filter(|edge| edge.node.is_some()).try_for_each(|edge|{
+                    let node_id = edge.node.unwrap();
+                    let node = self.nodes.get_mut(&node_id).ok_or(
+                        anyhow!("Node {node_id}, which should use an output of requant node {requant_id}, not found in model")
+                    )?;
+                    ensure!(edge.index < node.inputs.len(),
+                        "Node {node_id} has {} inputs, so cannot access input {}",
+                        node.inputs.len(),
+                        edge.index,
+                    );
+                    // check that this input was indeed referring to an output of input_node_id
+                    let input_edge = &mut node.inputs[edge.index];
+                    ensure!(input_edge.node.ok_or(
+                        anyhow!("{} input of node {node_id} should not be an input of the model", edge.index)
+                    )? == input_node_id,
+                        "{} input of node {node_id} should be {input_node_id}", edge.index
+                    );
+                    // replace `input_node_id` with `requant_id`
+                    input_edge.node = Some(*requant_id);
+                    input_edge.index = i;
+                    Ok(())
+                })?;
+            }
         }
-        Ok(requant_id)
+        Ok(requant_ids)
     }
 
     /// Corner-case method to add a node whose inputs correspond to the outputs of a node already inserted in the model
@@ -271,21 +310,21 @@ where
     pub fn add_node_with_id(&mut self, node_id: NodeId, node: Node<N>) -> anyhow::Result<()> {
         // iterate over the inputs of the node and add the edges to the outputs of
         // corresponding nodes already in the model
-        for (i, input) in node.inputs.iter().enumerate() {
-            if let Some(input_node_id) = &input.node {
+        for (i, input_edge) in node.inputs.iter().enumerate() {
+            if let Some(input_node_id) = &input_edge.node {
                 let input_node = self.nodes.get_mut(input_node_id).ok_or(anyhow!(
                     "Node {} for input {} of new node not found in model",
                     input_node_id,
                     i,
                 ))?;
                 ensure!(
-                    input.index < input_node.outputs.len(),
+                    input_edge.index < input_node.outputs.len(),
                     "Specified output number {} for node {}, which has only {} outputs",
-                    input.index,
+                    input_edge.index,
                     input_node_id,
                     input_node.outputs.len(),
                 );
-                input_node.outputs[input.index].edges.push(Edge {
+                input_node.outputs[input_edge.index].edges.push(Edge {
                     node: Some(node_id),
                     index: i,
                 });
@@ -398,7 +437,8 @@ impl<N: Number> Model<N> {
                     let outputs = step.step_data.outputs.outputs();
                     ensure!(
                         edge.index < outputs.len(),
-                        "Requested output {} for node {}, which has only {} outputs",
+                        "Node {} requested output {} for node {}, which has only {} outputs",
+                        node_id,
                         edge.index,
                         n,
                         outputs.len()
@@ -445,9 +485,12 @@ impl<N: Number> Model<N> {
                 .get_step(&id)
                 .ok_or(anyhow!("Output node {} not found in trace", id))?
                 .outputs();
-            ensure!(node_outputs.len() == out_node.outputs.len(),
-                "Number of outputs found in trace for node {id} is different from the number of expected outputs
-                for the node");
+            ensure!(
+                node_outputs.len() == out_node.outputs.len(),
+                "Number of outputs found in trace ({}) for node {id} is different from number of expected outputs ({})",
+                node_outputs.len(),
+                out_node.outputs.len()
+            );
             for (i, wire) in out_node.outputs.iter().enumerate() {
                 if let Some(out_index) = wire.edges.iter().find_map(|edge| {
                     if edge.node.is_none() {
@@ -506,19 +549,20 @@ where
 #[cfg(test)]
 pub(crate) mod test {
     use crate::{
-        ScalingFactor, ScalingStrategy, init_test_logging,
+        ScalingFactor, ScalingStrategy, init_test_logging, init_test_logging_default,
         layers::{
             Layer,
             activation::{Activation, Relu},
             convolution::{Convolution, SchoolBookConv},
             dense::Dense,
+            matrix_mul::{MatMul, OperandMatrix},
             pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
             provable::{Edge, Node, OpInfo, evaluate_layer},
             requant::Requant,
         },
         padding::{PaddingMode, pad_model},
         quantization::{self, InferenceObserver},
-        tensor::Number,
+        tensor::{Number, Shape},
         testing::{Pcs, random_bool_vector, random_vector},
     };
     use anyhow::Result;
@@ -552,7 +596,7 @@ pub(crate) mod test {
         ) -> Result<(Self, Vec<Tensor<Element>>)> {
             let mut last_row: usize = rng.gen_range(3..15);
             let mut model = Self::new_from_input_shapes(
-                vec![vec![last_row.next_power_of_two()]],
+                vec![vec![last_row.next_power_of_two()].into()],
                 PaddingMode::NoPadding,
             );
             let mut last_node_id = None;
@@ -562,8 +606,9 @@ pub(crate) mod test {
                     // last row becomes new column
                     let (nrows, ncols): (usize, usize) = (rng.gen_range(3..15), last_row);
                     last_row = nrows;
-                    let dense =
-                        Dense::random(vec![nrows.next_power_of_two(), ncols.next_power_of_two()]);
+                    let dense = Dense::random(
+                        vec![nrows.next_power_of_two(), ncols.next_power_of_two()].into(),
+                    );
                     // Figure out the requant information such that output is still within range
                     let (min_output_range, max_output_range) =
                         dense.output_range(*quantization::MIN, *quantization::MAX);
@@ -641,7 +686,7 @@ pub(crate) mod test {
                         (minimum_initial_size + rng.gen_range(1..4usize)).next_power_of_two()
                     }
                 })
-                .collect::<Vec<usize>>();
+                .collect::<Shape>();
 
             let mut model =
                 Model::new_from_input_shapes(vec![input_shape.clone()], PaddingMode::NoPadding);
@@ -669,10 +714,9 @@ pub(crate) mod test {
                 (rng.gen_range(3..15), input_shape.iter().product::<usize>());
 
             model.add_consecutive_layer(
-                Layer::Dense(Dense::random(vec![
-                    nrows.next_power_of_two(),
-                    ncols.next_power_of_two(),
-                ])),
+                Layer::Dense(Dense::random(
+                    vec![nrows.next_power_of_two(), ncols.next_power_of_two()].into(),
+                )),
                 last_node_id,
             )?;
 
@@ -737,24 +781,24 @@ pub(crate) mod test {
         let shape1 = vec![1 << 4, 1 << 0, 1 << 2, 1 << 2]; // [16, 1, 4, 4]
         let shape2 = vec![1 << 2, 1 << 4, 1 << 2, 1 << 2]; // [4, 16, 4, 4]
         let shape3 = vec![1 << 1, 1 << 2, 1 << 2, 1 << 2]; // [2, 4, 4, 4]
-        let bias1: Tensor<Element> = Tensor::zeros(vec![shape1[0]]);
-        let bias2: Tensor<Element> = Tensor::zeros(vec![shape2[0]]);
-        let bias3: Tensor<Element> = Tensor::zeros(vec![shape3[0]]);
+        let bias1: Tensor<Element> = Tensor::zeros(vec![shape1[0]].into());
+        let bias2: Tensor<Element> = Tensor::zeros(vec![shape2[0]].into());
+        let bias3: Tensor<Element> = Tensor::zeros(vec![shape3[0]].into());
 
-        let trad_conv1: Tensor<Element> = Tensor::new(shape1.clone(), w1.clone());
-        let trad_conv2: Tensor<i128> = Tensor::new(shape2.clone(), w2.clone());
-        let trad_conv3: Tensor<i128> = Tensor::new(shape3.clone(), w3.clone());
+        let trad_conv1: Tensor<Element> = Tensor::new(shape1.clone().into(), w1.clone());
+        let trad_conv2: Tensor<i128> = Tensor::new(shape2.clone().into(), w2.clone());
+        let trad_conv3: Tensor<i128> = Tensor::new(shape3.clone().into(), w3.clone());
 
         let input_shape = vec![1, 32, 32];
 
         let mut model =
-            Model::new_from_input_shapes(vec![input_shape.clone()], PaddingMode::Padding);
+            Model::new_from_input_shapes(vec![input_shape.clone().into()], PaddingMode::Padding);
         let input = Tensor::random(&model.input_shapes()[0]);
         let first_id = model
             .add_consecutive_layer(
                 Layer::Convolution(
                     Convolution::new(trad_conv1.clone(), bias1.clone())
-                        .into_padded_and_ffted(&in_dimensions[0]),
+                        .into_padded_and_ffted(&in_dimensions[0].clone().into()),
                 ),
                 None,
             )
@@ -763,7 +807,7 @@ pub(crate) mod test {
             .add_consecutive_layer(
                 Layer::Convolution(
                     Convolution::new(trad_conv2.clone(), bias2.clone())
-                        .into_padded_and_ffted(&in_dimensions[1]),
+                        .into_padded_and_ffted(&in_dimensions[1].clone().into()),
                 ),
                 Some(first_id),
             )
@@ -772,7 +816,7 @@ pub(crate) mod test {
             .add_consecutive_layer(
                 Layer::Convolution(
                     Convolution::new(trad_conv3.clone(), bias3.clone())
-                        .into_padded_and_ffted(&in_dimensions[2]),
+                        .into_padded_and_ffted(&in_dimensions[2].clone().into()),
                 ),
                 Some(second_id),
             )
@@ -782,7 +826,8 @@ pub(crate) mod test {
         // END TEST
         let trace = model.run::<F>(&vec![input.clone()]).unwrap();
 
-        let mut model2 = Model::new_from_input_shapes(vec![input_shape], PaddingMode::NoPadding);
+        let mut model2 =
+            Model::new_from_input_shapes(vec![input_shape.into()], PaddingMode::NoPadding);
         let first_id = model2
             .add_consecutive_layer(
                 Layer::SchoolBookConvolution(SchoolBookConv(Convolution::new(trad_conv1, bias1))),
@@ -812,10 +857,10 @@ pub(crate) mod test {
 
     #[test]
     fn test_conv_maxpool() {
-        let input_shape = vec![3usize, 32, 32];
-        let shape1 = vec![6, 3, 5, 5];
+        let input_shape: Shape = vec![3usize, 32, 32].into();
+        let shape1: Shape = vec![6, 3, 5, 5].into();
         let filter = Tensor::random(&shape1);
-        let bias1 = Tensor::random(&vec![shape1[0]]);
+        let bias1 = Tensor::random(&vec![shape1[0]].into());
 
         let mut model =
             Model::new_from_input_shapes(vec![input_shape.clone()], PaddingMode::Padding);
@@ -846,15 +891,17 @@ pub(crate) mod test {
 
     #[test]
     fn test_model_manual_run() {
-        let dense1 = Dense::<Element>::random(vec![
-            10usize.next_power_of_two(),
-            11usize.next_power_of_two(),
-        ]);
-        let dense2 = Dense::<Element>::random(vec![
-            7usize.next_power_of_two(),
-            dense1.ncols().next_power_of_two(),
-        ]);
-        let input_shape = vec![dense1.ncols()];
+        let dense1 = Dense::<Element>::random(
+            vec![10usize.next_power_of_two(), 11usize.next_power_of_two()].into(),
+        );
+        let dense2 = Dense::<Element>::random(
+            vec![
+                7usize.next_power_of_two(),
+                dense1.ncols().next_power_of_two(),
+            ]
+            .into(),
+        );
+        let input_shape = vec![dense1.ncols()].into();
         let input = Tensor::<Element>::random(&input_shape);
         let output1 = evaluate_layer::<GoldilocksExt2, _, _>(&dense1, &vec![&input], None)
             .unwrap()
@@ -904,7 +951,7 @@ pub(crate) mod test {
             .collect_vec();
         let matrices_mle = dense_layers
             .iter()
-            .map(|(id, d)| (*id, d.matrix.to_mle_2d::<F>()))
+            .map(|(id, d)| (*id, d.matrix.to_2d_mle::<F>()))
             .collect_vec();
         assert_eq!(dense_layers.len(), 1);
         let point1 = random_bool_vector(dense_layers[0].1.matrix.nrows_2d().ilog2() as usize);
@@ -960,10 +1007,10 @@ pub(crate) mod test {
     #[ignore = "This test should be deleted since there is no requant and it is not testing much"]
     fn test_single_matvec_prover() {
         let w1 = random_vector_quant(1024 * 1024);
-        let conv1 = Tensor::new(vec![1024, 1024], w1.clone());
+        let conv1 = Tensor::new(vec![1024, 1024].into(), w1.clone());
         let w2 = random_vector_quant(1024);
-        let conv2 = Tensor::new(vec![1024], w2.clone());
-        let input_shape = vec![1024];
+        let conv2 = Tensor::new(vec![1024].into(), w2.clone());
+        let input_shape = vec![1024].into();
 
         let mut model = Model::new_from_input_shapes(vec![input_shape], PaddingMode::Padding);
         let input = Tensor::random(&model.input_shapes()[0]);
@@ -986,6 +1033,42 @@ pub(crate) mod test {
     }
 
     #[test]
+    fn test_single_matmul_prover() {
+        // layer matrix shape
+        let m_shape: Shape = vec![1000, 2000].into();
+        let m = random_vector_quant(m_shape[0] * m_shape[1]);
+        let tensor_m = Tensor::new(m_shape, m);
+        let input_shape: Shape = vec![768, tensor_m.nrows_2d()].into();
+        let mut model =
+            Model::new_from_input_shapes(vec![input_shape.clone()], PaddingMode::Padding);
+        let matmul_layer = MatMul::new(
+            OperandMatrix::Input,
+            OperandMatrix::new_weight_matrix(tensor_m),
+        )
+        .unwrap();
+        let padded_layer = matmul_layer.pad_next_power_of_two().unwrap();
+        model
+            .add_consecutive_layer(Layer::MatMul(padded_layer), None)
+            .unwrap();
+        model.route_output(None).unwrap();
+        model.describe();
+
+        let input = random_vector_quant(input_shape[0] * input_shape[1]);
+        let input_tensor = model
+            .prepare_inputs(vec![Tensor::new(input_shape, input)])
+            .unwrap();
+
+        let trace = model.run::<F>(&input_tensor).unwrap();
+        let mut tr = BasicTranscript::<F>::new(b"matmul");
+        let ctx = Context::<F, Pcs<F>>::generate(&model, None).expect("Unable to generate context");
+        let io = trace.to_verifier_io();
+        let prover = Prover::new(&ctx, &mut tr);
+        let proof = prover.prove(trace).expect("unable to generate proof");
+        let mut verifier_transcript = BasicTranscript::<F>::new(b"matmul");
+        verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
+    }
+
+    #[test]
     fn test_single_cnn_prover() {
         let n_w = 1 << 2;
         let k_w = 1 << 4;
@@ -995,16 +1078,16 @@ pub(crate) mod test {
         let in_dimensions: Vec<Vec<usize>> =
             vec![vec![k_x, n_x, n_x], vec![16, 29, 29], vec![4, 26, 26]];
 
-        let conv1 = Tensor::random(&vec![k_w, k_x, n_w, n_w]);
-        let input_shape = vec![k_x, n_x, n_x];
+        let conv1 = Tensor::random(&vec![k_w, k_x, n_w, n_w].into());
+        let input_shape = vec![k_x, n_x, n_x].into();
 
         let mut model = Model::new_from_input_shapes(vec![input_shape], PaddingMode::Padding);
         let input = Tensor::random(&model.input_shapes()[0]);
         let _conv_layer = model
             .add_consecutive_layer(
                 Layer::Convolution(
-                    Convolution::new(conv1.clone(), Tensor::random(&vec![conv1.kw()]))
-                        .into_padded_and_ffted(&in_dimensions[0]),
+                    Convolution::new(conv1.clone(), Tensor::random(&vec![conv1.kw()].into()))
+                        .into_padded_and_ffted(&in_dimensions[0].clone().into()),
                 ),
                 None,
             )
@@ -1039,8 +1122,8 @@ pub(crate) mod test {
 
                         let in_dimensions: Vec<Vec<usize>> =
                             vec![vec![k_x, n_x, n_x], vec![16, 29, 29], vec![4, 26, 26]];
-                        let input_shape = vec![k_x, n_x, n_x];
-                        let conv1 = Tensor::random(&vec![k_w, k_x, n_w, n_w]);
+                        let input_shape = vec![k_x, n_x, n_x].into();
+                        let conv1 = Tensor::random(&vec![k_w, k_x, n_w, n_w].into());
                         let mut model = Model::<Element>::new_from_input_shapes(
                             vec![input_shape],
                             PaddingMode::Padding,
@@ -1051,9 +1134,9 @@ pub(crate) mod test {
                                 Layer::Convolution(
                                     Convolution::new(
                                         conv1.clone(),
-                                        Tensor::random(&vec![conv1.kw()]),
+                                        Tensor::random(&vec![conv1.kw()].into()),
                                     )
-                                    .into_padded_and_ffted(&in_dimensions[0]),
+                                    .into_padded_and_ffted(&in_dimensions[0].clone().into()),
                                 ),
                                 None,
                             )
@@ -1084,14 +1167,14 @@ pub(crate) mod test {
     type N = Element;
 
     fn build_test_model<N: Number, const INPUT_SIZE: usize>() -> Model<N> {
-        let input_shape = vec![INPUT_SIZE];
+        let input_shape: Shape = vec![INPUT_SIZE].into();
         let mut model =
             Model::<N>::new_from_input_shapes(vec![input_shape.clone()], PaddingMode::NoPadding);
         // add input dense layer
         // generate random dense matrix
         let ncols = input_shape[0];
         let nrows = 42;
-        let dense = Dense::random(vec![nrows, ncols]);
+        let dense = Dense::random(vec![nrows, ncols].into());
         let dense_out_shape =
             &dense.output_shapes(&model.unpadded_input_shapes(), PaddingMode::NoPadding)[0];
         let input_node = model
@@ -1108,7 +1191,7 @@ pub(crate) mod test {
         // add another dense layer as output
         let nrows = 37;
         let ncols = dense_out_shape[0]; // it's a vector, so it has only one dimension
-        let dense = Dense::random(vec![nrows, ncols]);
+        let dense = Dense::random(vec![nrows, ncols].into());
         let output_node = model
             .add_consecutive_layer(Layer::Dense(dense), Some(relu_node))
             .unwrap();
@@ -1142,7 +1225,7 @@ pub(crate) mod test {
         assert_eq!(trace.steps.len(), 3);
     }
 
-    fn prove_model(model: Model<f32>) -> anyhow::Result<()> {
+    pub(crate) fn prove_model(model: Model<f32>) -> anyhow::Result<()> {
         let float_inputs = model
             .input_shapes()
             .into_iter()
@@ -1174,24 +1257,100 @@ pub(crate) mod test {
 
     #[test]
     fn test_model_proving() {
-        init_test_logging();
+        init_test_logging_default();
         const INPUT_SIZE: usize = 57;
         let model = build_test_model::<f32, INPUT_SIZE>();
         prove_model(model).unwrap();
     }
 
+    /// 2 relus connected. First relu receives two inputs and pass that to the second relu
+    /// This test checks that when inserting a requant layer in between, the inputs and output edges
+    /// are still correct.
+    /// Relu is easy since in inference, it can support many inputs.
+    /// Graph wise:
+    ///      A
+    ///     / \\  <-- double inputs for C
+    ///    B   C
+    /// should become:
+    ///       A
+    ///     /  \\
+    ///    R1  R2  <-- distinct requant layers !
+    ///    /    \\   
+    ///   B      C
     #[test]
-    fn test_model_multiple_outputs() {
-        init_test_logging();
+    fn test_model_insert_requant() {
+        init_test_logging_default();
         const FIRST_INPUT_SIZE: usize = 27;
         const SECOND_INPUT_SIZE: usize = 49;
-        let input_shapes = vec![vec![FIRST_INPUT_SIZE], vec![SECOND_INPUT_SIZE]];
+        let input_shapes = vec![
+            vec![FIRST_INPUT_SIZE].into(),
+            vec![SECOND_INPUT_SIZE].into(),
+        ];
+        let mut model =
+            Model::<Element>::new_from_input_shapes(input_shapes.clone(), PaddingMode::NoPadding);
+        let relu1 = model
+            .add_node(Node::new(
+                vec![Edge::new_at_edge(0), Edge::new_at_edge(1)],
+                Layer::Activation(Activation::Relu(Relu)),
+            ))
+            .unwrap();
+        // here we take the first two outputs of relu1
+        let relu2 = model
+            .add_node(Node::new(
+                vec![Edge::new(relu1, 0), Edge::new(relu1, 1)],
+                Layer::Activation(Activation::Relu(Relu)),
+            ))
+            .unwrap();
+        // here we only want to take the first output of relu1
+        let relu3 = model
+            .add_node(Node::new(
+                vec![Edge::new(relu1, 0)],
+                Layer::Activation(Activation::Relu(Relu)),
+            ))
+            .unwrap();
+        let input_tensor = vec![
+            Tensor::random(&input_shapes[0]),
+            Tensor::random(&input_shapes[1]),
+        ];
+        let test_sf = ScalingFactor::from_scale(1.0, None);
+        // 2 requants, one for each outgoing output wire (one for relu2 and one for relu3)
+        let requants = vec![Requant::from_scaling_factors(test_sf, test_sf, test_sf, 10); 2];
+        let requants_ids = model.add_requant_nodes(requants, relu1).unwrap();
+        assert_eq!(requants_ids.len(), 2);
+        model
+            .route_output(Some(vec![
+                Edge {
+                    node: Some(relu2),
+                    index: 0,
+                },
+                Edge {
+                    node: Some(relu2),
+                    index: 1,
+                },
+                Edge {
+                    node: Some(relu3),
+                    index: 0,
+                },
+            ]))
+            .unwrap();
+        model.run::<GoldilocksExt2>(&input_tensor).unwrap();
+    }
+
+    #[test]
+    fn test_model_multiple_outputs() {
+        init_test_logging("debug");
+        const FIRST_INPUT_SIZE: usize = 27;
+        const SECOND_INPUT_SIZE: usize = 49;
+        let input_shapes = vec![
+            vec![FIRST_INPUT_SIZE].into(),
+            vec![SECOND_INPUT_SIZE].into(),
+        ];
         let mut model = Model::<f32>::new_from_input_shapes(input_shapes, PaddingMode::NoPadding);
         // add first dense layer
         // generate random dense matrix
         let ncols = FIRST_INPUT_SIZE;
         let nrows = 42;
-        let dense = Dense::random(vec![nrows, ncols]);
+        let dense = Dense::random(vec![nrows, ncols].into());
         let first_dense_out_shape = &dense.output_shapes(
             &vec![model.unpadded_input_shapes()[0].clone()],
             PaddingMode::NoPadding,
@@ -1208,7 +1367,7 @@ pub(crate) mod test {
         // add second input dense layer
         let ncols = SECOND_INPUT_SIZE;
         let nrows = 47;
-        let dense = Dense::random(vec![nrows, ncols]);
+        let dense = Dense::random(vec![nrows, ncols].into());
         let second_dense_out_shape = &dense.output_shapes(
             &vec![model.unpadded_input_shapes()[1].clone()],
             PaddingMode::NoPadding,
@@ -1233,13 +1392,13 @@ pub(crate) mod test {
         // add other dense nodes
         let nrows = 52;
         let ncols = second_dense_out_shape[0]; // it's a vector, so it has only one dimension
-        let dense = Dense::random(vec![nrows, ncols]);
+        let dense = Dense::random(vec![nrows, ncols].into());
         let first_output_node = model
             .add_consecutive_layer(Layer::Dense(dense), Some(second_relu_node))
             .unwrap();
         let nrows = 17;
         let ncols = first_dense_out_shape[0];
-        let dense = Dense::random(vec![nrows, ncols]);
+        let dense = Dense::random(vec![nrows, ncols].into());
         let second_output_node = model
             .add_consecutive_layer(Layer::Dense(dense), Some(first_relu_node))
             .unwrap();

@@ -17,7 +17,7 @@ use crate::{
     lookup::context::LookupWitnessGen,
     model::trace::StepData,
     padding::{PaddingMode, ShapeInfo},
-    tensor::{ConvData, Number},
+    tensor::{ConvData, Number, Shape},
 };
 
 use super::{
@@ -60,9 +60,11 @@ pub struct OutputWire {
 }
 
 /// Represents a node in a model
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Node<N> {
     pub(crate) inputs: Vec<Edge>,
+    /// Vector of outgoing wires. The index in this vector means that the corresponding OutputWire
+    /// is linking the i-th output of this node to the designated output node.
     pub(crate) outputs: Vec<OutputWire>,
     pub(crate) operation: Layer<N>,
 }
@@ -130,6 +132,10 @@ impl<T, E: ExtensionField> LayerOut<T, E> {
             outputs: out,
             proving_data: None,
         }
+    }
+
+    pub(crate) fn from_tensor(out: Tensor<T>) -> Self {
+        Self::from_vec(vec![out])
     }
 
     pub fn outputs(&self) -> Vec<&Tensor<T>> {
@@ -232,11 +238,7 @@ where
 
 pub trait OpInfo {
     /// Returns the shapes of the outputs (in the same order)
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>>;
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape>;
 
     /// Compute the number of output tensors, given the number of input tensors
     /// `num_inputs`
@@ -254,7 +256,7 @@ pub trait Evaluate<T: Number> {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<T>],
-        unpadded_input_shapes: Vec<Vec<usize>>,
+        unpadded_input_shapes: Vec<Shape>,
     ) -> Result<LayerOut<T, E>>;
 }
 
@@ -263,7 +265,7 @@ pub trait Evaluate<T: Number> {
 pub fn evaluate_layer<E: ExtensionField, T: Number, O: Evaluate<T>>(
     layer: &O,
     inputs: &[&Tensor<T>],
-    unpadded_input_shapes: Option<Vec<Vec<usize>>>,
+    unpadded_input_shapes: Option<Vec<Shape>>,
 ) -> Result<LayerOut<T, E>> {
     layer.evaluate(inputs, unpadded_input_shapes.unwrap_or_default())
 }
@@ -280,11 +282,46 @@ where
 /// Output of `QuantizeOp` method over a layer
 pub struct QuantizeOutput<Op> {
     /// The actual layer after quantization
-    pub(crate) quanzited_op: Op,
+    pub(crate) quantized_op: Op,
     /// The scaling factor of the output wires of the operation
     pub(crate) output_scalings: Vec<ScalingFactor>,
     /// The requant layer to be added to the model, if any
-    pub(crate) requant_layer: Option<Requant>,
+    pub(crate) requant_layer: Option<Vec<Requant>>,
+}
+
+impl<Op> QuantizeOutput<Op> {
+    pub fn new(quantized_op: Op, output_scalings: Vec<ScalingFactor>) -> Self {
+        Self {
+            quantized_op,
+            output_scalings,
+            requant_layer: None,
+        }
+    }
+    pub fn with_requant(self, requant: Requant) -> Self {
+        assert!(
+            self.output_scalings.len() == 1,
+            "Number of output scalings must be 1"
+        );
+        Self::with_requants(self, vec![requant])
+    }
+    pub fn with_requants(self, requants: Vec<Requant>) -> Self {
+        assert!(self.requant_layer.is_none(), "Requant layer already exists");
+        assert!(
+            self.output_scalings.len() == requants.len(),
+            "Number of output scalings and requants must be the same"
+        );
+        Self {
+            quantized_op: self.quantized_op,
+            output_scalings: self.output_scalings,
+            requant_layer: Some(requants),
+        }
+    }
+    pub fn maybe_requants(self, requant: Option<Vec<Requant>>) -> Self {
+        match requant {
+            Some(requant) => self.with_requants(requant),
+            None => self,
+        }
+    }
 }
 
 pub trait QuantizeOp {
@@ -373,14 +410,21 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Vec<usize>],
-        padding_mode: PaddingMode,
-    ) -> Vec<Vec<usize>> {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         match self {
             LayerCtx::Dense(dense_ctx) => dense_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.output_shapes(input_shapes, padding_mode),
+            LayerCtx::MatMul(mat_ctx) => mat_ctx.output_shapes(input_shapes, padding_mode),
+            LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
+            LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
+            LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
+            LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
+            LayerCtx::Softmax => unimplemented!("Softmax layer not implemented"),
+            LayerCtx::Add => unimplemented!("Add layer not implemented"),
+            LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
+            LayerCtx::Embeddings => unimplemented!("Embeddings layer not implemented"),
+            LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
+            LayerCtx::Reshape => unimplemented!("Reshape layer not implemented"),
             LayerCtx::Activation(activation_ctx) => {
                 activation_ctx.output_shapes(input_shapes, padding_mode)
             }
@@ -389,7 +433,7 @@ where
             LayerCtx::Flatten => {
                 <Flatten as OpInfo>::output_shapes(&Flatten, input_shapes, padding_mode)
             }
-            _ => unreachable!(),
+            LayerCtx::SchoolBookConvolution(_) | LayerCtx::Table(_) => unreachable!(),
         }
     }
 
@@ -397,11 +441,22 @@ where
         match self {
             LayerCtx::Dense(dense_ctx) => dense_ctx.num_outputs(num_inputs),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.num_outputs(num_inputs),
+            LayerCtx::MatMul(mat_ctx) => mat_ctx.num_outputs(num_inputs),
+            LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
+            LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
+            LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
+            LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
+            LayerCtx::Softmax => unimplemented!("Softmax layer not implemented"),
+            LayerCtx::Add => unimplemented!("Add layer not implemented"),
+            LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
+            LayerCtx::Embeddings => unimplemented!("Embeddings layer not implemented"),
+            LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
+            LayerCtx::Reshape => unimplemented!("Reshape layer not implemented"),
             LayerCtx::Activation(activation_ctx) => activation_ctx.num_outputs(num_inputs),
             LayerCtx::Requant(requant_ctx) => requant_ctx.num_outputs(num_inputs),
             LayerCtx::Pooling(pooling_ctx) => pooling_ctx.num_outputs(num_inputs),
             LayerCtx::Flatten => <Flatten as OpInfo>::num_outputs(&Flatten, num_inputs),
-            _ => unreachable!(),
+            LayerCtx::SchoolBookConvolution(_) | LayerCtx::Table(_) => unreachable!(),
         }
     }
 
@@ -409,11 +464,22 @@ where
         match self {
             LayerCtx::Dense(dense_ctx) => dense_ctx.describe(),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.describe(),
+            LayerCtx::MatMul(mat_ctx) => mat_ctx.describe(),
+            LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
+            LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
+            LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
+            LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
+            LayerCtx::Softmax => unimplemented!("Softmax layer not implemented"),
+            LayerCtx::Add => unimplemented!("Add layer not implemented"),
+            LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
+            LayerCtx::Embeddings => unimplemented!("Embeddings layer not implemented"),
+            LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
+            LayerCtx::Reshape => unimplemented!("Reshape layer not implemented"),
             LayerCtx::Activation(activation_ctx) => activation_ctx.describe(),
             LayerCtx::Requant(requant_ctx) => requant_ctx.describe(),
             LayerCtx::Pooling(pooling_ctx) => pooling_ctx.describe(),
             LayerCtx::Flatten => Flatten.describe(),
-            _ => unreachable!(),
+            LayerCtx::SchoolBookConvolution(_) | LayerCtx::Table(_) => unreachable!(),
         }
     }
 
@@ -421,11 +487,22 @@ where
         match self {
             LayerCtx::Dense(dense_ctx) => dense_ctx.is_provable(),
             LayerCtx::Convolution(conv_ctx) => conv_ctx.is_provable(),
+            LayerCtx::MatMul(mat_ctx) => mat_ctx.is_provable(),
+            LayerCtx::QKV => unimplemented!("QKV layer not implemented"),
+            LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
+            LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
             LayerCtx::Activation(activation_ctx) => activation_ctx.is_provable(),
+            LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
+            LayerCtx::Softmax => unimplemented!("Softmax layer not implemented"),
+            LayerCtx::Add => unimplemented!("Add layer not implemented"),
+            LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
+            LayerCtx::Embeddings => unimplemented!("Embeddings layer not implemented"),
+            LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
+            LayerCtx::Reshape => unimplemented!("Reshape layer not implemented"),
             LayerCtx::Requant(requant_ctx) => requant_ctx.is_provable(),
             LayerCtx::Pooling(pooling_ctx) => pooling_ctx.is_provable(),
             LayerCtx::Flatten => Flatten.is_provable(),
-            _ => unreachable!(),
+            LayerCtx::SchoolBookConvolution(_) | LayerCtx::Table(_) => unreachable!(),
         }
     }
 }
@@ -444,55 +521,68 @@ where
         verifier: &mut Verifier<E, T, PCS>,
         shape_step: &ShapeStep,
     ) -> Result<Vec<Claim<E>>> {
-        match self {
-            LayerCtx::Dense(dense_ctx) => {
-                if let LayerProof::Dense(proof) = proof {
-                    <DenseCtx<E> as VerifiableCtx<E, PCS>>::verify(
-                        dense_ctx,
-                        proof,
-                        last_claims,
-                        verifier,
-                        shape_step,
-                    )
-                } else {
-                    bail!("dense proof not found when verifying dense layer")
-                }
+        match (self, proof) {
+            (LayerCtx::Dense(dense_ctx), LayerProof::Dense(proof)) => {
+                <DenseCtx<E> as VerifiableCtx<E, PCS>>::verify(
+                    dense_ctx,
+                    proof,
+                    last_claims,
+                    verifier,
+                    shape_step,
+                )
             }
-            LayerCtx::Convolution(conv_ctx) => {
-                if let LayerProof::Convolution(proof) = proof {
-                    <ConvCtx<E> as VerifiableCtx<E, PCS>>::verify(
-                        conv_ctx,
-                        proof,
-                        last_claims,
-                        verifier,
-                        shape_step,
-                    )
-                } else {
-                    bail!("conv proof not found when verifying convolution layer")
-                }
+            (LayerCtx::Convolution(conv_ctx), LayerProof::Convolution(proof)) => {
+                <ConvCtx<E> as VerifiableCtx<E, PCS>>::verify(
+                    conv_ctx,
+                    proof,
+                    last_claims,
+                    verifier,
+                    shape_step,
+                )
             }
-            LayerCtx::Activation(activation_ctx) => {
-                if let LayerProof::Activation(proof) = proof {
-                    activation_ctx.verify(proof, last_claims, verifier, shape_step)
-                } else {
-                    bail!("activation proof not found when verifying activation layer")
-                }
+            (LayerCtx::MatMul(matmul_ctx), LayerProof::MatMul(proof)) => {
+                matmul_ctx.verify(proof, last_claims, verifier, shape_step)
             }
-            LayerCtx::Requant(requant_ctx) => {
-                if let LayerProof::Requant(proof) = proof {
-                    requant_ctx.verify(proof, last_claims, verifier, shape_step)
-                } else {
-                    bail!("requant proof not found when verifying requantization layer")
-                }
+            (LayerCtx::QKV, LayerProof::QKV) => {
+                unimplemented!("QKV layer not implemented")
             }
-            LayerCtx::Pooling(pooling_ctx) => {
-                if let LayerProof::Pooling(proof) = proof {
-                    pooling_ctx.verify(proof, last_claims, verifier, shape_step)
-                } else {
-                    bail!("pooling proof not found when verifying pooling layer")
-                }
+            (LayerCtx::MhaQK, LayerProof::MhaQK) => {
+                unimplemented!("MHA_QK layer not implemented")
             }
-            _ => unreachable!("Trying to verify a non-provable layer"),
+            (LayerCtx::Embeddings, LayerProof::Embeddings) => {
+                unimplemented!("Embeddings layer not implemented")
+            }
+            (LayerCtx::Positional, LayerProof::Positional) => {
+                unimplemented!("Positional layer not implemented")
+            }
+            (LayerCtx::Add, LayerProof::Add) => {
+                unimplemented!("Add layer not implemented")
+            }
+            (LayerCtx::Logits, LayerProof::Logits) => {
+                unimplemented!("Logits layer not implemented")
+            }
+            (LayerCtx::Activation(activation_ctx), LayerProof::Activation(proof)) => {
+                activation_ctx.verify(proof, last_claims, verifier, shape_step)
+            }
+            (LayerCtx::LayerNorm, LayerProof::LayerNorm) => {
+                unimplemented!("LayerNorm layer not implemented")
+            }
+            (LayerCtx::Requant(requant_ctx), LayerProof::Requant(proof)) => {
+                requant_ctx.verify(proof, last_claims, verifier, shape_step)
+            }
+            (LayerCtx::Pooling(pooling_ctx), LayerProof::Pooling(proof)) => {
+                pooling_ctx.verify(proof, last_claims, verifier, shape_step)
+            }
+            (LayerCtx::SchoolBookConvolution(_), _)
+            | (LayerCtx::Table(_), _)
+            | (LayerCtx::Flatten, _) => {
+                unreachable!("Trying to verify a non-provable layer")
+            }
+            _ => bail!(
+                "Incompatible layer {} and proof {} found",
+                self.describe(),
+                proof.variant_name()
+            ),
         }
     }
 }

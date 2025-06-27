@@ -219,11 +219,12 @@ def run_zkml_benchmark(config_name,
 
     # Build the command with optional skip-proving flag
     cmd = [
-        "cargo", "run", "--release", "--", "-i",
-        str(output_dir / INPUT), "-o",
-        str(output_dir / MODEL), "--bench",
-        str(zkml_csv), "--num-samples",
-        str(num_samples)
+        "cargo", "run", "--release", "--bin", "bench",
+        "--",
+        "-i", str(output_dir / INPUT),
+        "-o", str(output_dir / MODEL),
+        "--bench", str(zkml_csv),
+        "--num-samples", str(num_samples)
     ]
 
     if skip_proving:

@@ -3,12 +3,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use ff_ext::ExtensionField;
-use p3_field::FieldAlgebra;
 use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::{
     mle::{DenseMultilinearExtension, IntoMLE, MultilinearExtension},
     util::ceil_log2,
 };
+use p3_field::FieldAlgebra;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::{debug, warn};
 use transcript::Transcript;
@@ -121,10 +121,9 @@ impl TableType {
                 }
 
                 Ok(vec![
-                    point
-                        .iter()
-                        .enumerate()
-                        .fold(E::ZERO, |acc, (index, p)| acc + *p * E::from_canonical_u64(1u64 << index)),
+                    point.iter().enumerate().fold(E::ZERO, |acc, (index, p)| {
+                        acc + *p * E::from_canonical_u64(1u64 << index)
+                    }),
                 ])
             }
             TableType::Relu => {
@@ -136,19 +135,16 @@ impl TableType {
                     )));
                 }
 
-                let first_column = point
-                    .iter()
-                    .enumerate()
-                    .fold(E::ZERO, |acc, (index, p)| acc + *p * E::from_canonical_u64(1u64 << index))
-                    - E::from_canonical_u64(1u64 << (*quantization::BIT_LEN - 1));
+                let first_column = point.iter().enumerate().fold(E::ZERO, |acc, (index, p)| {
+                    acc + *p * E::from_canonical_u64(1u64 << index)
+                }) - E::from_canonical_u64(1u64 << (*quantization::BIT_LEN - 1));
 
-                let second_column = point
-                    .iter()
-                    .enumerate()
-                    .take(point.len() - 1)
-                    .fold(E::ZERO, |acc, (index, p)| {
+                let second_column = point.iter().enumerate().take(point.len() - 1).fold(
+                    E::ZERO,
+                    |acc, (index, p)| {
                         acc + *p * E::from_canonical_u64(1u64 << index) * point[point.len() - 1]
-                    });
+                    },
+                );
                 Ok(vec![first_column, second_column])
             }
             TableType::Clamping(size) => {
@@ -160,11 +156,9 @@ impl TableType {
                     )));
                 }
 
-                let first_column = point
-                    .iter()
-                    .enumerate()
-                    .fold(E::ZERO, |acc, (index, p)| acc + *p * E::from_canonical_u64(1u64 << index))
-                    - E::from_canonical_u64(1u64 << (size - 1));
+                let first_column = point.iter().enumerate().fold(E::ZERO, |acc, (index, p)| {
+                    acc + *p * E::from_canonical_u64(1u64 << index)
+                }) - E::from_canonical_u64(1u64 << (size - 1));
 
                 let max = 1i128 << (size - 1);
                 let min = -max;

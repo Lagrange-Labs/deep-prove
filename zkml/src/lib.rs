@@ -1,3 +1,7 @@
+//! Deepprove library
+#![feature(iter_next_chunk)]
+#![feature(exact_size_is_empty)]
+
 use ff_ext::ExtensionField;
 use gkr::structs::PointAndEval;
 use itertools::Itertools;
@@ -14,6 +18,7 @@ pub use iop::{
 pub use quantization::{ScalingFactor, ScalingStrategy};
 pub mod layers;
 pub mod lookup;
+pub mod middleware;
 pub mod model;
 pub mod padding;
 mod parser;
@@ -149,6 +154,21 @@ pub fn argmax<T: PartialOrd>(v: &[T]) -> Option<usize> {
     Some(max_index)
 }
 
+pub fn argmax_slice<N: Number>(v: &[N]) -> Option<usize> {
+    if v.is_empty() {
+        return None;
+    }
+    Some(
+        v.iter()
+            .enumerate()
+            .fold((0, N::MIN), |acc, x| match acc.1.compare(&x.1) {
+                Ordering::Less => (x.0, *x.1),
+                _ => acc,
+            })
+            .0,
+    )
+}
+
 pub trait NextPowerOfTwo {
     /// Returns a new vector where each element is the next power of two.
     fn next_power_of_two(&self) -> Self;
@@ -206,7 +226,8 @@ mod test {
         assert_eq!(shapes.len(), 1);
         let shape = &shapes[0];
         assert_eq!(shape.len(), 1);
-        let input = Tensor::random(&vec![shape[0] - 1]);
+        let input = Tensor::random(&vec![shape[0] - 1].into());
+        println!("input: {:?}", input.get_data());
         let input = model.prepare_inputs(vec![input])?;
 
         let trace = model.run(&input).unwrap();
@@ -243,18 +264,32 @@ mod test {
     }
 }
 
+use std::cmp::Ordering;
 #[cfg(test)]
 use std::sync::Once;
+
+use crate::tensor::Number;
 
 #[cfg(test)]
 static INIT: Once = Once::new();
 
 #[cfg(test)]
-pub fn init_test_logging() {
+pub fn init_test_logging_default() {
     use tracing_subscriber::EnvFilter;
 
     INIT.call_once(|| {
         let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    });
+}
+
+#[cfg(test)]
+pub fn init_test_logging(default_level: &str) {
+    use tracing_subscriber::EnvFilter;
+
+    INIT.call_once(|| {
+        let filter =
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
         tracing_subscriber::fmt().with_env_filter(filter).init();
     });
 }

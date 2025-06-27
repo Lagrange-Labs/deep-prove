@@ -78,7 +78,7 @@ impl MatVec<Element> {
             ncols,
             input.get_data().len()
         );
-        let mut mat_mle = self.matrix.to_mle_2d();
+        let mut mat_mle = self.matrix.to_2d_mle();
         mat_mle.fix_high_variables_in_place(&last_claim.point);
         let input_mle = input.get_data().to_vec().into_mle();
         assert_eq!(mat_mle.num_vars(), input_mle.num_vars());
@@ -113,7 +113,7 @@ impl MatVec<Element> {
     }
 
     pub fn evaluate_matrix_at<E: ExtensionField>(&self, point: &[E]) -> E {
-        self.matrix.to_mle_2d().evaluate(point)
+        self.matrix.to_2d_mle().evaluate(point)
     }
 }
 
@@ -158,8 +158,9 @@ mod test {
     type F = GoldilocksExt2;
     #[test]
     fn test_matvec_prove_verify() {
-        let matrix = Tensor::<Element>::random_seed(&vec![2, 3], None).pad_next_power_of_two();
-        let input = Tensor::<Element>::random_seed(&vec![3], None).pad_next_power_of_two();
+        let matrix =
+            Tensor::<Element>::random_seed(&vec![2, 3].into(), None).pad_next_power_of_two();
+        let input = Tensor::<Element>::random_seed(&vec![3].into(), None).pad_next_power_of_two();
         let matvec = MatVec::new(matrix);
         let output = matvec.op(&input);
         let mut transcript = default_transcript::<F>();
