@@ -218,7 +218,6 @@ pub fn get_root_of_unity<E: ExtensionField>(n: usize) -> E {
         E::BaseField::two_adic_generator(Goldilocks::TWO_ADICITY),
         E::BaseField::ZERO,
     ]);
-    dbg!(rou);
 
     for _ in 0..(32 - n) {
         rou = rou * rou;
