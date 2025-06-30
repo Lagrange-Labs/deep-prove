@@ -102,7 +102,6 @@ where
     where
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
-        Layer<N>: Evaluate<N>,
     {
         let eos_token: N = self.config.specific_config.eos_token().to_number();
         let mut seq_len = input.len();
