@@ -1,4 +1,4 @@
-use crate::{model::llm::LLMTokenizer};
+use crate::model::llm::LLMTokenizer;
 use anyhow::bail;
 
 use crate::{

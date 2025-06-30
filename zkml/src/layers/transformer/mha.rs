@@ -269,7 +269,7 @@ pub fn infinitizer<N: Number>(
 mod test {
     use ff_ext::GoldilocksExt2;
 
-    use crate::{Element};
+    use crate::Element;
 
     use super::*;
 

@@ -13,12 +13,16 @@ use anyhow::{Context, bail, ensure};
 use candle_core::{CpuStorage, Device, Storage, quantized::gguf_file::Content};
 
 use crate::{
+    Tensor,
     layers::{
         matrix_mul::MatMul,
         transformer::{embeddings::Embeddings, layernorm::LayerNorm, positional::Positional},
-    }, parser::llm::{
-        Attention, FeedForward, GPT2Model, LLMConfig, LLMModel, LLMVariant, TokenizerData, INTERNAL_BOS, INTERNAL_EOS
-    }, tensor::Shape, Tensor
+    },
+    parser::llm::{
+        Attention, FeedForward, GPT2Model, INTERNAL_BOS, INTERNAL_EOS, LLMConfig, LLMModel,
+        LLMVariant, TokenizerData,
+    },
+    tensor::Shape,
 };
 
 impl LLMConfig {
@@ -171,12 +175,21 @@ impl Attention<f32> {
         let mut unfused_weights =
             unfuse_tensors(qkv_weight_candle, embedding_size * embedding_size)?;
         ensure!(unfused_weights.len() == 3, "qkv_weight must have 3 chunks");
-        let q = crate::Tensor::new(vec![embedding_size, hidden_size].into(), unfused_weights.remove(0))
-            .transpose();
-        let k = crate::Tensor::new(vec![embedding_size, hidden_size].into(), unfused_weights.remove(0))
-            .transpose();
-        let v = crate::Tensor::new(vec![embedding_size, hidden_size].into(), unfused_weights.remove(0))
-            .transpose();
+        let q = crate::Tensor::new(
+            vec![embedding_size, hidden_size].into(),
+            unfused_weights.remove(0),
+        )
+        .transpose();
+        let k = crate::Tensor::new(
+            vec![embedding_size, hidden_size].into(),
+            unfused_weights.remove(0),
+        )
+        .transpose();
+        let v = crate::Tensor::new(
+            vec![embedding_size, hidden_size].into(),
+            unfused_weights.remove(0),
+        )
+        .transpose();
 
         let qkv_bias_qtensor = loader.get_qtensor("attn_qkv.bias")?;
         let qkv_bias_candle = qkv_bias_qtensor.dequantize(&Device::Cpu)?;
