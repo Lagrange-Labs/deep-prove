@@ -444,7 +444,7 @@ where
             LayerCtx::MatMul(mat_ctx) => mat_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::QKV(qkv_ctx) => qkv_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
-            LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
+            LayerCtx::ConcatMatMul(ctx) => ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Softmax(softmax_ctx) => softmax_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Add => unimplemented!("Add layer not implemented"),
@@ -471,7 +471,7 @@ where
             LayerCtx::MatMul(mat_ctx) => mat_ctx.num_outputs(num_inputs),
             LayerCtx::QKV(qkv_ctx) => qkv_ctx.num_outputs(num_inputs),
             LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
-            LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
+            LayerCtx::ConcatMatMul(ctx) => ctx.num_outputs(num_inputs),
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Softmax(softmax_ctx) => softmax_ctx.num_outputs(num_inputs),
             LayerCtx::Add => unimplemented!("Add layer not implemented"),
@@ -494,7 +494,7 @@ where
             LayerCtx::MatMul(mat_ctx) => mat_ctx.describe(),
             LayerCtx::QKV(qkv_ctx) => qkv_ctx.describe(),
             LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
-            LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
+            LayerCtx::ConcatMatMul(ctx) => ctx.describe(),
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Softmax(softmax_ctx) => softmax_ctx.describe(),
             LayerCtx::Add => unimplemented!("Add layer not implemented"),
@@ -517,7 +517,7 @@ where
             LayerCtx::MatMul(mat_ctx) => mat_ctx.is_provable(),
             LayerCtx::QKV(qkv_ctx) => qkv_ctx.is_provable(),
             LayerCtx::MhaQK => unimplemented!("MHA_QK layer not implemented"),
-            LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
+            LayerCtx::ConcatMatMul(ctx) => ctx.is_provable(),
             LayerCtx::Activation(activation_ctx) => activation_ctx.is_provable(),
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Softmax(softmax_ctx) => softmax_ctx.is_provable(),
@@ -572,6 +572,9 @@ where
             }
             (LayerCtx::QKV(qkv_ctx), LayerProof::QKV(proof)) => {
                 qkv_ctx.verify(proof, last_claims, verifier, shape_step)
+            }
+            (LayerCtx::ConcatMatMul(matmul_ctx), LayerProof::ConcatMatMul(proof)) => {
+                matmul_ctx.verify(proof, last_claims, verifier, shape_step)
             }
             (LayerCtx::MhaQK, LayerProof::MhaQK) => {
                 unimplemented!("MHA_QK layer not implemented")

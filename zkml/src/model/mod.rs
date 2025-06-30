@@ -566,7 +566,7 @@ pub(crate) mod test {
         tensor::{Number, Shape},
         testing::{Pcs, random_bool_vector, random_vector},
     };
-    use anyhow::Result;
+    use anyhow::{Ok, Result};
     use ark_std::rand::{Rng, RngCore};
     use ff_ext::{ExtensionField, GoldilocksExt2};
     use itertools::Itertools;
@@ -1226,7 +1226,7 @@ pub(crate) mod test {
         assert_eq!(trace.steps.len(), 3);
     }
 
-    pub(crate) fn prove_model(model: Model<f32>) -> anyhow::Result<()> {
+    pub(crate) fn prove_model(model: Model<f32>) -> anyhow::Result<Vec<Tensor<Element>>> {
         let float_inputs = model
             .input_shapes()
             .into_iter()
@@ -1247,6 +1247,7 @@ pub(crate) mod test {
         let input_tensors = model.prepare_inputs(input_tensors).unwrap();
 
         let trace = model.run(&input_tensors)?;
+        let outputs = trace.outputs()?.into_iter().cloned().collect();
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"model");
         let ctx = Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None)
             .expect("Unable to generate context");
@@ -1255,7 +1256,8 @@ pub(crate) mod test {
         let proof = prover.prove(trace).expect("unable to generate proof");
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"model");
-        verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript)
+        verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript)?;
+        Ok(outputs)
     }
 
     #[test]

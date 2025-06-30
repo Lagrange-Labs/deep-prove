@@ -1703,6 +1703,43 @@ impl PartialEq for Tensor<GoldilocksExt2> {
     }
 }
 
+impl<T: Default + Clone + Copy> Tensor<T> {
+    /// Permute a tensor, chaning its shape according to the `order` specified as input.
+    /// The `i`-th entry in the `order` vector specifies which dimension of the original 
+    /// tensor should become the `i`-th dimension of the output tensor.
+    /// For instance, given an input tensor with shape `[7, 14, 23]` and `order = [2, 0, 1]`,
+    /// then the shape of the output tensor will be `[23, 7, 14]`
+    pub fn permute3d(&self, order: &[usize]) -> Self {
+        assert!(self.shape.len() == 3 && order.len() == 3);
+        assert!(order.iter().all(|x| *x < 3));
+        let (a, b, c) = (self.shape[0], self.shape[1], self.shape[2]);
+        let new_a = self.shape[order[0]];
+        let new_b = self.shape[order[1]];
+        let new_c = self.shape[order[2]];
+        let new_shape = vec![new_a, new_b, new_c].into();
+        let mut data = vec![T::default(); a * b * c];
+        for i in 0..a {
+            for j in 0..b {
+                for k in 0..c {
+                    let old_loc = i * b * c + j * c + k;
+                    let pos = vec![i, j, k];
+                    let new_i = pos[order[0]];
+                    let new_j = pos[order[1]];
+                    let new_k = pos[order[2]];
+                    let new_loc = new_i * new_b * new_c + new_j * new_c + new_k;
+                    assert!(new_loc < new_a * new_b * new_c, "Failed for {i}, {j}, {k} and {new_i}, {new_j}, {new_k}");
+                    data[new_loc] = self.data[old_loc];
+                }
+            }
+        }
+        Self {
+            data,
+            shape: new_shape,
+            og_shape: self.shape.clone(),
+        }
+    }
+}
+
 impl<T: Number> Tensor<T> {
     pub fn max_value(&self) -> T {
         self.data.iter().fold(T::MIN, |max, x| max.cmp_max(x))
@@ -1759,37 +1796,6 @@ impl<T: Number> Tensor<T> {
             data,
             shape: new_shape.into(),
             og_shape: vec![0].into(),
-        }
-    }
-    pub fn permute3d(&self, order: &[usize]) -> Self {
-        assert!(self.shape.len() == 3 && order.len() == 3);
-        assert!(order.iter().all(|x| *x < 3));
-        let (a, b, c) = (self.shape[0], self.shape[1], self.shape[2]);
-        let new_a = self.shape[order[0]];
-        let new_b = self.shape[order[1]];
-        let new_c = self.shape[order[2]];
-        let new_shape = vec![new_a, new_b, new_c];
-        let mut data = vec![T::default(); a * b * c];
-        for i in 0..a {
-            for j in 0..b {
-                for k in 0..c {
-                    let old_loc = i * b * c + j * c + k;
-                    let mut new_pos = [0; 3];
-                    new_pos[order[0]] = i;
-                    new_pos[order[1]] = j;
-                    new_pos[order[2]] = k;
-                    let new_i = new_pos[0];
-                    let new_j = new_pos[1];
-                    let new_k = new_pos[2];
-                    let new_loc = new_i * new_b * new_c + new_j * new_c + new_k;
-                    data[new_loc] = self.data[old_loc];
-                }
-            }
-        }
-        Self {
-            data,
-            shape: new_shape.into(),
-            og_shape: self.shape.clone(),
         }
     }
 }
@@ -1995,11 +2001,9 @@ impl Shape {
     }
 
     pub fn permute(&self, permutation: &[usize]) -> Self {
-        let mut new_shape = vec![0; self.0.len()];
-        for (i, j) in permutation.iter().enumerate() {
-            new_shape[i] = self.0[*j];
-        }
-        Self(new_shape)
+        Self(permutation.iter().map(|i| 
+            self.0[*i]
+        ).collect())
     }
     pub fn next_power_of_two(&self) -> Self {
         Self(self.0.next_power_of_two())
@@ -2681,6 +2685,12 @@ mod test {
                 }
             }
         }
+
+        let tensor = Tensor::<Element>::random(
+            &vec![18, 5, 27].into(),
+        );
+        let permuted = tensor.permute3d(&vec![1, 2, 0]);
+        assert_eq!(permuted.get_shape(), vec![5, 27, 18].into())
     }
 
     #[test]

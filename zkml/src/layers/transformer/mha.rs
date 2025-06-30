@@ -3,7 +3,7 @@
 //! ConcatMatMul and Softmax layers as building blocks.
 use crate::{
     layers::{
-        concat_matmul::{ConcatMatMul, InputMatrix, Permutation},
+        concat_matmul::{ConcatMatMul, InputMatrixDimensions, Permutation},
         matrix_mul::{self as matmul, OperandMatrix},
         provable::{Evaluate, OpInfo, QuantizeOp, QuantizeOutput},
         reshape::Reshape,
@@ -67,8 +67,8 @@ impl MhaFinalMul {
             num_heads,
             head_dim,
             mul: ConcatMatMul::new_with_permute(
-                InputMatrix::default(), 
-                InputMatrix::default(), 
+                InputMatrixDimensions::new(0, 2, 1), 
+                InputMatrixDimensions::new(0, 1, 2), 
                 Permutation::new(vec![1, 0, 2])
             ),
         }

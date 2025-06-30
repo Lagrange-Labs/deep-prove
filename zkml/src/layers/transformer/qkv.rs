@@ -970,16 +970,16 @@ mod tests {
 
         let unpadded_output_shapes =
             layer.output_shapes(&vec![unpadded_input_shape.clone()], PaddingMode::NoPadding);
-        assert_eq!(unpadded_output_shapes, si.unpadded_output_shapes(),);
+        assert_eq!(unpadded_output_shapes, si.unpadded_input_shapes(),);
         // check unpadded output shapes for padded layer
         let unpadded_output_shapes =
             padded_layer.output_shapes(&vec![unpadded_input_shape.clone()], PaddingMode::NoPadding);
-        assert_eq!(unpadded_output_shapes, si.unpadded_output_shapes(),);
+        assert_eq!(unpadded_output_shapes, si.unpadded_input_shapes(),);
         // check padded output shapes
         let padded_input_shape = unpadded_input_shape.next_power_of_two();
         let padded_output_shapes =
             padded_layer.output_shapes(&vec![padded_input_shape], PaddingMode::Padding);
-        assert_eq!(padded_output_shapes, si.padded_output_shapes(),);
+        assert_eq!(padded_output_shapes, si.padded_input_shapes(),);
 
         assert_eq!(padded_layer.q.get_shape(), padded_weight_shape);
         assert_eq!(padded_layer.k.get_shape(), padded_weight_shape);
@@ -1020,15 +1020,15 @@ mod tests {
 
         let unpadded_output_shapes =
             layer.output_shapes(&vec![unpadded_input_shape.clone()], PaddingMode::NoPadding);
-        assert_eq!(unpadded_output_shapes, si.unpadded_output_shapes(),);
+        assert_eq!(unpadded_output_shapes, si.unpadded_input_shapes(),);
         // check unpadded output shapes for padded layer
         let unpadded_output_shapes =
             padded_layer.output_shapes(&vec![unpadded_input_shape.clone()], PaddingMode::NoPadding);
-        assert_eq!(unpadded_output_shapes, si.unpadded_output_shapes(),);
+        assert_eq!(unpadded_output_shapes, si.unpadded_input_shapes(),);
         // check padded output shapes
         let padded_output_shapes =
             padded_layer.output_shapes(&vec![unpadded_input_shape], PaddingMode::Padding);
-        assert_eq!(padded_output_shapes, si.padded_output_shapes(),);
+        assert_eq!(padded_output_shapes, si.padded_input_shapes(),);
 
         assert_eq!(padded_layer.q.get_shape(), weight_shape);
         assert_eq!(padded_layer.k.get_shape(), weight_shape);
