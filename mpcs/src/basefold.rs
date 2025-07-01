@@ -1232,11 +1232,6 @@ mod test {
     #[cfg(not(feature = "blake"))]
     use crate::util::hash::PoseidonHasher as Hasher;
 
-    #[cfg(feature = "blake")]
-    use crate::util::hash::BlakeHasher as Hasher;
-    #[cfg(not(feature = "blake"))]
-    use crate::util::hash::PoseidonHasher as Hasher;
-
     use super::{BasefoldRSParams, structure::BasefoldBasecodeParams};
 
     type PcsGoldilocksRSCode = Basefold<GoldilocksExt2, BasefoldRSParams<Hasher>>;

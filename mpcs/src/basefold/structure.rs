@@ -285,7 +285,6 @@ where
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-<<<<<<< HEAD
 #[serde(bound(
     serialize = "E::BaseField: Serialize",
     deserialize = "E::BaseField: DeserializeOwned"
@@ -294,12 +293,6 @@ pub enum ProofQueriesResultWithMerklePath<E: ExtensionField, Digest>
 where
     E::BaseField: Serialize + DeserializeOwned,
     Digest: Clone + Serialize + DeserializeOwned,
-=======
-pub enum ProofQueriesResultWithMerklePath<E: ExtensionField, Digest>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-    Digest: Clone,
->>>>>>> 602f9dc45da655b4131ae936fe07c04183a5e2f7
 {
     Single(QueriesResultWithMerklePath<E, Digest>),
     Batched(BatchedQueriesResultWithMerklePath<E, Digest>),
@@ -309,11 +302,7 @@ where
 impl<E: ExtensionField, Digest> ProofQueriesResultWithMerklePath<E, Digest>
 where
     E::BaseField: Serialize + DeserializeOwned,
-<<<<<<< HEAD
     Digest: Clone + Serialize + DeserializeOwned,
-=======
-    Digest: Clone,
->>>>>>> 602f9dc45da655b4131ae936fe07c04183a5e2f7
 {
     pub fn as_single(&self) -> &QueriesResultWithMerklePath<E, Digest> {
         match self {
