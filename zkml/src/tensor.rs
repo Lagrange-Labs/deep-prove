@@ -2046,10 +2046,11 @@ impl FromIterator<usize> for Shape {
 
 #[cfg(test)]
 mod test {
-
     use ark_std::rand::{Rng, thread_rng};
-    use ff_ext::GoldilocksExt2;
+    use ff_ext::{FieldFrom, GoldilocksExt2};
     use ndarray::{Array, Ix2, Order};
+
+    use crate::testing::random_field_vector;
 
     use super::*;
     use multilinear_extensions::mle::MultilinearExtension;
@@ -2782,5 +2783,94 @@ mod test {
             stacked.get_data(),
             vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
+    }
+
+    fn eval_lteq_poly(
+        x_i: &[Element],
+        y_i: &[Element],
+    ) -> Element {
+        assert_eq!(x_i.len(), y_i.len());
+        x_i.into_iter().rev().zip(y_i.into_iter().rev())
+            .fold(Element::from(1), |acc, (x, y)| {
+                acc*(1 - x - y + 2*x*y) + (1-x)*y
+            })
+    }
+
+    fn eval_mle<F: ExtensionField + FieldFrom<u64>>(
+        point: &[F],
+    ) -> F {
+        let x_i = &point[..point.len()/2];
+        let y_i = &point[point.len()/2..];
+        x_i.into_iter().zip(y_i.into_iter())
+            .fold(F::from_v(1), |acc, (&x, &y)| {
+                acc*(F::from_v(1) - x - y + F::from_v(2)*x*y) + (F::from_v(1)-x)*y
+            })
+    }
+
+    fn to_be_bits<const NUM_BITS: usize>(x: Element) -> [Element; NUM_BITS] {
+        (0..NUM_BITS).rev().map(|i| {
+            let mask = 1 << i;
+            let bit = (x & Element::from(mask)) >> i;
+            bit
+        }).collect::<Vec<_>>().try_into().unwrap()
+    }  
+
+    #[test]
+    fn test_zeroifier_evaluation() {
+        // create zeroifier matrix
+        const NUM_BITS: usize = 4;
+        let num_columns = 1 << NUM_BITS;
+        let zeroifier_data = (0..num_columns * num_columns).map(|i| {
+            let r = i / num_columns;
+            let c = i % num_columns;
+            if r >= c {
+                Element::from(1)
+            } else {
+                Element::from(0)
+            }
+        }).collect_vec();
+        println!("Data: {zeroifier_data:?}");
+        let zeroifier = Tensor::new(vec![num_columns, num_columns].into(), zeroifier_data);
+        assert_eq!(zeroifier.get_2d(0, 0), Element::from(1));
+        assert_eq!(zeroifier.get_2d(num_columns-1, num_columns-1), Element::from(1));
+        assert_eq!(zeroifier.get_2d(0, 1), Element::from(0));
+        assert_eq!(zeroifier.get_2d(1, 1), Element::from(1));
+        assert_eq!(zeroifier.get_2d(1, 2), Element::from(0));
+
+
+        let mle = zeroifier.to_2d_mle::<GoldilocksExt2>();
+
+        for i in 0..num_columns {
+            for j in 0..num_columns {
+                let x_i = to_be_bits::<NUM_BITS>(Element::from(i as u64));
+                let y_i = to_be_bits::<NUM_BITS>(Element::from(j as u64));
+                let cmp = eval_lteq_poly(&y_i, &x_i);
+                assert_eq!(
+                    zeroifier.get_2d(i, j),
+                    cmp,
+                    "Zeroifier evaluation failed for ({}, {})",
+                    i, j
+                );
+                // build point for MLE: first column bits in little-endiian order, then rows bits in little-endian order
+                let point = y_i.into_iter().rev().chain(x_i.into_iter().rev())
+                    .map(|bit|
+                        GoldilocksExt2::from_v(bit as u64)
+                    ).collect_vec();
+                let eval = mle.evaluate(&point);
+                assert_eq!(eval, GoldilocksExt2::from_v(cmp as u64));
+                let quick_eval = eval_mle(&point);
+                assert_eq!(eval, quick_eval);
+            }
+        }
+
+
+        // test over random points
+        for _ in 0..10 {
+            let point = random_field_vector::<GoldilocksExt2>(NUM_BITS*2);
+            assert_eq!(
+                mle.evaluate(&point),
+                eval_mle(&point),
+            );
+        }
     }
 }
