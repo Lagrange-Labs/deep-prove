@@ -1233,14 +1233,8 @@ mod test {
 
     use super::{BasefoldRSParams, structure::BasefoldBasecodeParams};
 
-    #[cfg(not(feature = "blake"))]
-    type PcsGoldilocksRSCode = Basefold<GoldilocksExt2, BasefoldRSParams<PoseidonHasher>>;
-    #[cfg(not(feature = "blake"))]
-    type PcsGoldilocksBaseCode = Basefold<GoldilocksExt2, BasefoldBasecodeParams<PoseidonHasher>>;
-    #[cfg(feature = "blake")]
-    type PcsGoldilocksRSCode = Basefold<GoldilocksExt2, BasefoldRSParams<BlakeHasher>>;
-    #[cfg(feature = "blake")]
-    type PcsGoldilocksBaseCode = Basefold<GoldilocksExt2, BasefoldBasecodeParams<BlakeHasher>>;
+    type PcsGoldilocksRSCode = Basefold<GoldilocksExt2, BasefoldRSParams<Hasher>>;
+    type PcsGoldilocksBaseCode = Basefold<GoldilocksExt2, BasefoldBasecodeParams<Hasher>>;
 
     #[test]
     fn commit_open_verify_goldilocks() {

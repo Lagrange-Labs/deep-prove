@@ -1,6 +1,6 @@
 use crate::{Challenge, Transcript};
 use blake3;
-use ff::{Field, PrimeField};
+use ff::PrimeField;
 use ff_ext::ExtensionField;
 
 pub struct Digest(pub [u8; 32]);
