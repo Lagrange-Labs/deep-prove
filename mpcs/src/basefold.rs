@@ -1227,9 +1227,9 @@ mod test {
     use goldilocks::GoldilocksExt2;
 
     #[cfg(feature = "blake")]
-    use crate::util::hash::BlakeHasher;
+    use crate::util::hash::BlakeHasher as Hasher;
     #[cfg(not(feature = "blake"))]
-    use crate::util::hash::PoseidonHasher;
+    use crate::util::hash::PoseidonHasher as Hasher;
 
     use super::{BasefoldRSParams, structure::BasefoldBasecodeParams};
 
