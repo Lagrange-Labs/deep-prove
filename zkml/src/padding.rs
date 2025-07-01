@@ -352,10 +352,8 @@ pub(crate) fn pad_qkv(mut qkv: QKV<Element>, si: &mut ShapeInfo) -> Result<QKV<E
         "Padded input shape for QKV is not 2D"
     );
 
-    let unpadded_output_shapes = qkv.output_shapes(
-        &vec![sd.input_shape_og.clone()],
-        PaddingMode::NoPadding,
-    );
+    let unpadded_output_shapes =
+        qkv.output_shapes(&vec![sd.input_shape_og.clone()], PaddingMode::NoPadding);
     let expected_num_outputs = qkv.num_outputs(1);
     ensure!(
         unpadded_output_shapes.len() == expected_num_outputs,
@@ -393,10 +391,8 @@ pub(crate) fn pad_qkv(mut qkv: QKV<Element>, si: &mut ShapeInfo) -> Result<QKV<E
             bias_vec.pad_to_shape(vec![pad_minimum(new_len)].into())
         });
 
-    let padded_output_shapes = qkv.output_shapes(
-        &vec![sd.input_shape_padded.clone()],
-        PaddingMode::Padding,
-    );
+    let padded_output_shapes =
+        qkv.output_shapes(&vec![sd.input_shape_padded.clone()], PaddingMode::Padding);
     ensure!(
         unpadded_output_shapes.len() == padded_output_shapes.len(),
         "Number of unpadded output shapes different from number of padded output shapes for QKV layer"

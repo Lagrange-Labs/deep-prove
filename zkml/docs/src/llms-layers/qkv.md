@@ -179,5 +179,3 @@ From the diagram, we see that when proving concatenation for the i-th iteration,
 The 2 claims for each of the matrices $K$ and $V$ are aggregated in a single one, using the [same poly technique](https://github.com/Lagrange-Labs/deep-prove/blob/c2752df53be1b4b6832e452b6cbca17e3543556b/docs/src/commitments.md#accumulation-for-same-polynomial). The claims $y_K$ and $y_V$ produced by the same-poly aggregation are then used as the claims for the output matrices $K$ and $V$ in the proving protocol outlined above. More specifically, these claims are employed as claims $y_K$, $y_V$ in Equations (3) and (4) during the concatenation proving protocol for the current iteration.
 
 This allows to bind the claims computed over MLEs chosen by the prover at iteration $i+1$ to the actual output matrices produced by the same QKV layer at iteration $i$.
-
-[^note]: Used sum-check here to be safe, I was unsure if it was secure to just randomly evaluate at a given point as for matrix addition
