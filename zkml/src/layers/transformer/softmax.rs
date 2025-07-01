@@ -1528,7 +1528,8 @@ mod tests {
         let output = softmax
             .evaluate::<GoldilocksExt2>(&[&input], vec![vec![3, 3].into()])
             .unwrap();
-
+        // Since this is a masked evaluation, each row should sum to 1 and the first row should have 1 non-zero value, the second two non-zero
+        // and so on.
         assert_eq!(
             output.outputs[0].get_data(),
             vec![
