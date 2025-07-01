@@ -1,14 +1,6 @@
-//! Multihead attention:
-//! The module performs the reshape and permutation on its input and
-//! finally the Q @ K.T per head.
-//! The output is a vector of length num_heads where each element is a tuple (CAUSAL(q@k^t),v) of tensors.
-//! CAUSAL(..) simply applies the causal mask such that tokens don't look at _future_ tokens.
-//! q @ k^t is of shape (1, seq_len)
-//! v is of shape (seq_len, head_dim)
-//! where seq_len is the length of the sequence, and num_heads is the number of heads.
-//! The vector is actually flattened since LayerOut only supports a vector of Tensors, not tuple, so the length is num_heads * 2
-//! NOTE: it does NOT Perform the softmax per head neither the subsequent projection with the V matrix.
-//! THis is done in subsequent layers due to proving logic proving these operation separately.
+//! Multihead attention layer:
+//! The module performs all the operations inside the multi-head attention layer, relying on
+//! ConcatMatMul and Softmax layers as building blocks.
 use crate::{
     Element,
     layers::{
@@ -151,6 +143,8 @@ impl<N: Number> Mha<N> {
         } else {
             unpadded_input_shapes
         };
+
+        ensure!(inputs.len() == 3, "MHA layer expects 3 inputs, found {}", inputs.len());
 
         let linear_out = self
             .linear
