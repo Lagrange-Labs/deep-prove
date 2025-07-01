@@ -96,12 +96,12 @@ impl<E: ExtensionField> Transcript<E> for BlakeTranscript {
 #[cfg(test)]
 mod tests {
     use ff_ext::GoldilocksExt2;
-    use p3_goldilocks::Goldilocks;
     use p3_field::FieldAlgebra;
+    use p3_goldilocks::Goldilocks;
 
     use super::*;
 
-    fn test_challenge<E: ExtensionField,T: Transcript<E>>(transcript: &mut T) {
+    fn test_challenge<E: ExtensionField, T: Transcript<E>>(transcript: &mut T) {
         let c1 = transcript.read_challenge();
         let c2 = transcript.read_challenge();
         assert_ne!(c1, c2);
@@ -120,7 +120,7 @@ mod tests {
         let element2 = GoldilocksExt2::new(Goldilocks::ONE, Goldilocks::ONE);
         transcript.append_field_element_ext(&element1);
         transcript.append_field_element_ext(&element2);
-        test_challenge::<GoldilocksExt2,_>(&mut transcript);
+        test_challenge::<GoldilocksExt2, _>(&mut transcript);
 
         // Test generating challenges
         let mut challenge_bytes = [0u8; 32];
