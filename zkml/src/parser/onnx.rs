@@ -316,7 +316,8 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
     node: &OnnxNode,
     iter: &mut Peekable<I>,
 ) -> Result<(NodeId, CustomNode)> {
-    let _matrix = downcast_to::<EinSum>(node).context(format!("Gemm {} is not a EinSum node", node.name))?;
+    let _matrix =
+        downcast_to::<EinSum>(node).context(format!("Gemm {} is not a EinSum node", node.name))?;
     // TODO: we only support matvec for now for onnx models
     // Fetch the input which is constant (e.g. the weights)
     ensure_onnx!(

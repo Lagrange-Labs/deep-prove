@@ -87,10 +87,12 @@ impl<E: ExtensionField> Transcript<E> for BlakeTranscript {
 
     fn read_challenge(&mut self) -> Challenge<E> {
         let mut repr = <<E as ExtensionField>::BaseField as PrimeField>::Repr::default();
-        self.challenge_bytes(b"challenge", repr.as_mut());
-        let base = E::BaseField::from_repr(repr).unwrap();
+        self.challenge_bytes(b"challenge1", repr.as_mut());
+        let base2 = E::BaseField::from_repr(repr).unwrap();
+        self.challenge_bytes(b"challenge2", repr.as_mut());
+        let base1 = E::BaseField::from_repr(repr).unwrap();
         Challenge {
-            elements: E::from_bases(&[base, E::BaseField::ZERO]),
+            elements: E::from_bases(&[base1, base2]),
         }
     }
 
@@ -138,6 +140,11 @@ mod tests {
         let challenge_element =
             transcript.challenge_field_element::<GoldilocksExt2>(b"challenge_element");
         assert_ne!(challenge_element, GoldilocksExt2::ZERO);
+
+        let challenge_element2 =
+            transcript.challenge_field_element::<GoldilocksExt2>(b"challenge_element");
+        assert_ne!(challenge_element2, GoldilocksExt2::ZERO);
+        assert_ne!(challenge_element, challenge_element2);
 
         let challenge_elements =
             transcript.challenge_field_elements::<GoldilocksExt2>(b"challenge_elements", 3);
