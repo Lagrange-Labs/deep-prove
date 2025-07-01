@@ -381,13 +381,23 @@ impl Dense<f32> {
     /// Quantize the parameters of the dense layer. It uses a custom scaling factor `bias_s` for
     /// the bias, if provided, otherwise the same scaling factor of the weights (i.e., `s`) is used
     pub fn quantize(self, s: &ScalingFactor, bias_s: &ScalingFactor) -> Dense<Element> {
+        #[cfg(feature = "capture-layers-quant")]
+        let input_hash = self.sha256_hex();
+
         let matrix = self.matrix.quantize(s);
         let bias = self.bias.quantize(bias_s);
-        Dense::<Element> {
+        let output = Dense::<Element> {
             matrix,
             bias,
             unpadded_matrix_shape: self.unpadded_matrix_shape.to_vec(),
-        }
+        };
+
+        #[cfg(feature = "capture-layers-quant")]
+        let output_hash = output.sha256_hex();
+        #[cfg(feature = "capture-layers-quant")]
+        super::capture_quant::store("dense", &input_hash, &output_hash, &output);
+
+        output
     }
 
     pub fn new_from_weights(weights: Tensor<f32>, bias: Tensor<f32>) -> Self {
@@ -411,6 +421,13 @@ impl Dense<f32> {
             );
         }
         self.matrix.max_abs_output().max(self.bias.max_abs_output())
+    }
+
+    #[cfg(feature = "capture-layers-quant")]
+    fn sha256_hex(&self) -> String {
+        let bytes = serde_json::to_vec(self).unwrap();
+        let hash = <sha2::Sha256 as sha2::Digest>::digest(bytes);
+        format!("{hash:X}")
     }
 }
 
@@ -573,6 +590,13 @@ impl Dense<Element> {
             }),
         );
         Ok(claim)
+    }
+
+    #[cfg(feature = "capture-layers-quant")]
+    fn sha256_hex(&self) -> String {
+        let bytes = serde_json::to_vec(self).unwrap();
+        let hash = <sha2::Sha256 as sha2::Digest>::digest(bytes);
+        format!("{hash:X}")
     }
 }
 

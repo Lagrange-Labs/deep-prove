@@ -1,4 +1,6 @@
 pub mod activation;
+#[cfg(feature = "capture-layers-quant")]
+pub mod capture_quant;
 pub mod convolution;
 pub mod dense;
 pub mod flatten;

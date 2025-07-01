@@ -8,6 +8,11 @@ readme.workspace = true
 repository.workspace = true
 version.workspace = true
 
+[features]
+default = []
+# Capture layers' quatization outputs for regression tests
+capture-layers-quant = ["dep:sha2"]
+
 [dependencies]
 anyhow.workspace = true
 ark-std.workspace = true
@@ -29,6 +34,7 @@ rmp-serde = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 simple-frontend = { workspace = true }
+sha2 = { version = "0.10", optional = true }
 statrs = { workspace = true }
 sumcheck = { version = "0.1.0", path = "../sumcheck" }
 thiserror = { workspace = true }
