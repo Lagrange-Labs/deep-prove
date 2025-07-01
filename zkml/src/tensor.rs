@@ -1504,23 +1504,7 @@ where
     /// - `num_matrices` specifies how many matrices to make
     /// - `diag` specifies the "offset" for the diagonal, an offset of `1` means we keep two `1`s on the first row instead of 1, and offset of `-1` means all `zeroes`
     pub fn tril(matrix_dim: usize, num_matrices: usize, diag: i32) -> Tensor<T> {
-        // We make one matrix and then just clone it
-        let data = (0i32..matrix_dim as i32)
-            .flat_map(|i| {
-                if (i + diag).is_negative() {
-                    vec![T::default(); matrix_dim]
-                } else {
-                    std::iter::repeat_n(T::unit(), (i + diag + 1) as usize)
-                        .chain(std::iter::repeat(T::default()))
-                        .take(matrix_dim)
-                        .collect::<Vec<T>>()
-                }
-            })
-            .cycle()
-            .take(num_matrices * matrix_dim * matrix_dim)
-            .collect::<Vec<T>>();
-
-        Tensor::<T>::new(vec![num_matrices, matrix_dim, matrix_dim].into(), data)
+        Self::tri(matrix_dim, num_matrices, diag, T::unit(), T::default())
     }
 
     /// Makes a [`Tensor`] that is a batch of lower triangular matrices.
@@ -1540,7 +1524,7 @@ where
         let data = (0i32..matrix_dim as i32)
             .flat_map(|i| {
                 if (i + diag).is_negative() {
-                    vec![T::default(); matrix_dim]
+                    vec![upper_val; matrix_dim]
                 } else {
                     std::iter::repeat_n(lower_val, (i + diag + 1) as usize)
                         .chain(std::iter::repeat(upper_val))

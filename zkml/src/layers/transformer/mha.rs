@@ -287,7 +287,7 @@ impl<N: Number> Evaluate<N> for MhaQk {
             acc_qk.concat(qk);
             acc_qk
         });
-        assert_eq!(qk.get_shape(), vec![self.num_heads, q_len, seq_len]);
+        assert_eq!(qk.get_shape(), vec![self.num_heads, q_len, seq_len].into());
 
         Ok(LayerOut::from_vec(vec![qk]))
     }
