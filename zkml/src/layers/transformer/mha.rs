@@ -11,10 +11,11 @@ use crate::{
         transformer::softmax::Softmax,
     },
     padding::PaddingMode,
+    quantization::Fieldizer,
     tensor::{Number, Shape},
 };
 use anyhow::ensure;
-use ff_ext::ExtensionField;
+use ff_ext::{ExtensionField, FieldFrom};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 
@@ -440,11 +441,46 @@ pub fn infinitizer<N: Number>(
     Tensor::new(vec![num_heads, q_len, seq_len].into(), zeroified)
 }
 
+/// Method to efficienctly evaluate the MLE of the zeroifier matrix over a random
+/// point. The point is provided already split between coordinates referring to the
+/// columns and coordinates referring to the rows of the matrix.
+/// Currently, it works only for a square zeroifier matrix
+pub fn eval_zeroifier_mle<F: ExtensionField + FieldFrom<u64>>(
+    column_point: &[F],
+    row_point: &[F],
+) -> F {
+    column_point
+        .into_iter()
+        .zip(row_point.into_iter())
+        .fold(F::from_v(1), |acc, (&c, &r)| {
+            acc * (F::from_v(1) - c - r + F::from_v(2) * c * r) + (F::from_v(1) - c) * r
+        })
+}
+
+/// Method to efficienctly evaluate the MLE of the infinitizer matrix over a random
+/// point. The point is provided already split between coordinates referring to the
+/// columns and coordinates referring to the rows of the matrix.
+/// Currently, it works only for a square infinitizer matrix
+pub fn eval_infinitizer_mle<F: ExtensionField + FieldFrom<u64>>(
+    column_point: &[F],
+    row_point: &[F],
+    minus_infinity: Element,
+) -> F {
+    <Element as Fieldizer<F>>::to_field(&minus_infinity)
+        * (F::ONE - eval_zeroifier_mle(column_point, row_point))
+}
+
 #[cfg(test)]
 mod test {
     use ff_ext::GoldilocksExt2;
+    use itertools::Itertools;
+    use multilinear_extensions::mle::MultilinearExtension;
 
-    use crate::Element;
+    use crate::{
+        Element,
+        quantization::{self, Fieldizer},
+        testing::random_field_vector,
+    };
 
     use super::*;
 
@@ -562,5 +598,213 @@ mod test {
                 })
             })
         });
+    }
+
+    // Testing method which, given as input the big-endian bit representations of 2 integers `x`, `y`,
+    // returns 1 if x <= y, 0 otherwise. The output is computed through a multi-linear polynomial, which
+    // should correspond to the MLE of the zeroifier matrix
+    fn eval_lteq_poly(x_i: &[Element], y_i: &[Element]) -> Element {
+        assert_eq!(x_i.len(), y_i.len());
+        x_i.into_iter()
+            .rev()
+            .zip(y_i.into_iter().rev())
+            .fold(Element::from(1), |acc, (x, y)| {
+                acc * (1 - x - y + 2 * x * y) + (1 - x) * y
+            })
+    }
+
+    fn to_be_bits<const NUM_BITS: usize>(x: Element) -> [Element; NUM_BITS] {
+        (0..NUM_BITS)
+            .rev()
+            .map(|i| {
+                let mask = 1 << i;
+                let bit = (x & Element::from(mask)) >> i;
+                bit
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap()
+    }
+
+    fn test_zeroifier_evaluation_for_num_heads<const NUM_HEADS_BITS: usize>() {
+        // create zeroifier matrix
+        const NUM_BITS: usize = 4;
+        let num_columns = 1 << NUM_BITS;
+        let num_heads = 1 << NUM_HEADS_BITS;
+
+        let zeroifier = zeroifier::<Element>(num_heads, num_columns, num_columns);
+
+        let zeroifier_heads = {
+            let (it, shape) = zeroifier.slice_on_dim(0);
+            it.map(|data| Tensor::new(shape.clone(), data.to_vec()))
+                .collect_vec()
+        };
+
+        assert_eq!(zeroifier_heads[0].get_2d(0, 0), Element::from(1));
+        assert_eq!(
+            zeroifier_heads[0].get_2d(num_columns - 1, num_columns - 1),
+            Element::from(1)
+        );
+        assert_eq!(zeroifier_heads[0].get_2d(0, 1), Element::from(0));
+        assert_eq!(zeroifier_heads[0].get_2d(1, 1), Element::from(1));
+        assert_eq!(zeroifier_heads[0].get_2d(1, 2), Element::from(0));
+
+        let mle = zeroifier.to_mle_flat::<GoldilocksExt2>();
+
+        for i in 0..num_columns {
+            for j in 0..num_columns {
+                for h in 0..num_heads {
+                    let x_i = to_be_bits::<NUM_BITS>(Element::from(i as u64));
+                    let y_i = to_be_bits::<NUM_BITS>(Element::from(j as u64));
+                    let h_i = to_be_bits::<NUM_HEADS_BITS>(Element::from(h as u64));
+                    // check that the zeroifier matrix is equivalent to the lteq function
+                    let cmp = eval_lteq_poly(&y_i, &x_i);
+                    assert_eq!(
+                        zeroifier_heads[h].get_2d(i, j),
+                        cmp,
+                        "Zeroifier evaluation failed for ({}, {})",
+                        i,
+                        j
+                    );
+                    // build point for MLE: first column bits in little-endian order, then rows bits in little-endian order,
+                    // then head bits in little-endian order
+                    let point = y_i
+                        .into_iter()
+                        .rev()
+                        .chain(x_i.into_iter().rev())
+                        .chain(h_i.into_iter().rev())
+                        .map(|bit| GoldilocksExt2::from_v(bit as u64))
+                        .collect_vec();
+                    let eval = mle.evaluate(&point);
+                    assert_eq!(eval, cmp.to_field());
+                    // check that the MLE evaluation with the formula is the same as `eval`.
+                    // Note that the evaluation is independent from `num_heads` dimension, as the
+                    // zeroifier matrix is repeated across all the heads
+                    let quick_eval =
+                        eval_zeroifier_mle(&point[..NUM_BITS], &point[NUM_BITS..NUM_BITS * 2]);
+                    assert_eq!(eval, quick_eval);
+                }
+            }
+        }
+
+        // test over random points
+        for _ in 0..10 {
+            let point = random_field_vector::<GoldilocksExt2>(NUM_BITS * 2 + NUM_HEADS_BITS);
+            assert_eq!(
+                mle.evaluate(&point),
+                eval_zeroifier_mle(&point[..NUM_BITS], &point[NUM_BITS..NUM_BITS * 2],),
+            );
+        }
+    }
+
+    #[test]
+    fn test_zeroifier_evaluation() {
+        // test with a single head
+        test_zeroifier_evaluation_for_num_heads::<0>();
+        // test with multiple heads
+        test_zeroifier_evaluation_for_num_heads::<2>();
+    }
+
+    // Testing method which, given as input the big-endian bit representations of 2 integers `x`, `y`,
+    // returns `minus_infinity` if x > y, 0 otherwise. The output is computed through a multi-linear polynomial, which
+    // should correspond to the MLE of the infinitizer matrix
+    fn eval_gt_poly(x_i: &[Element], y_i: &[Element], minus_infinity: Element) -> Element {
+        minus_infinity * (Element::unit() - eval_lteq_poly(x_i, y_i))
+    }
+
+    fn test_infinitizer_evaluation_for_num_heads<const NUM_HEADS_BITS: usize>() {
+        // create infinitizer matrix
+        const NUM_BITS: usize = 4;
+        let num_columns = 1 << NUM_BITS;
+        let num_heads = 1 << NUM_HEADS_BITS;
+
+        let minus_infinity = *quantization::MIN;
+
+        let infinitizer =
+            infinitizer::<Element>(num_heads, num_columns, num_columns, minus_infinity);
+
+        let infinitizer_heads = {
+            let (it, shape) = infinitizer.slice_on_dim(0);
+            it.map(|data| Tensor::new(shape.clone(), data.to_vec()))
+                .collect_vec()
+        };
+
+        assert_eq!(infinitizer_heads[0].get_2d(0, 0), Element::from(0));
+        assert_eq!(
+            infinitizer_heads[0].get_2d(num_columns - 1, num_columns - 1),
+            Element::from(0)
+        );
+        assert_eq!(
+            infinitizer_heads[0].get_2d(0, 1),
+            Element::from(minus_infinity)
+        );
+        assert_eq!(infinitizer_heads[0].get_2d(1, 1), Element::from(0));
+        assert_eq!(
+            infinitizer_heads[0].get_2d(1, 2),
+            Element::from(minus_infinity)
+        );
+
+        let mle = infinitizer.to_mle_flat::<GoldilocksExt2>();
+
+        for i in 0..num_columns {
+            for j in 0..num_columns {
+                for h in 0..num_heads {
+                    let x_i = to_be_bits::<NUM_BITS>(Element::from(i as u64));
+                    let y_i = to_be_bits::<NUM_BITS>(Element::from(j as u64));
+                    let h_i = to_be_bits::<NUM_HEADS_BITS>(Element::from(h as u64));
+                    // check that the zeroifier matrix is equivalent to the gt function with output being minus_infinity
+                    let cmp = eval_gt_poly(&y_i, &x_i, minus_infinity);
+                    assert_eq!(
+                        infinitizer_heads[h].get_2d(i, j),
+                        cmp,
+                        "Zeroifier evaluation failed for ({}, {})",
+                        i,
+                        j
+                    );
+                    // build point for MLE: first column bits in little-endian order, then rows bits in little-endian order,
+                    // then head bits in little-endian order
+                    let point = y_i
+                        .into_iter()
+                        .rev()
+                        .chain(x_i.into_iter().rev())
+                        .chain(h_i.into_iter().rev())
+                        .map(|bit| GoldilocksExt2::from_v(bit as u64))
+                        .collect_vec();
+                    let eval = mle.evaluate(&point);
+                    println!("{cmp} {} {}", cmp as u64, u64::MAX - 2);
+                    assert_eq!(eval, cmp.to_field());
+                    // check that the MLE evaluation with the formula is the same as `eval`.
+                    // Note that the evaluation is independent from `num_heads` dimension, as the
+                    // zeroifier matrix is repeated across all the heads
+                    let quick_eval = eval_infinitizer_mle(
+                        &point[..NUM_BITS],
+                        &point[NUM_BITS..NUM_BITS * 2],
+                        minus_infinity,
+                    );
+                    assert_eq!(eval, quick_eval);
+                }
+            }
+        }
+
+        // test over random points
+        for _ in 0..10 {
+            let point = random_field_vector::<GoldilocksExt2>(NUM_BITS * 2 + NUM_HEADS_BITS);
+            assert_eq!(
+                mle.evaluate(&point),
+                eval_infinitizer_mle(
+                    &point[..NUM_BITS],
+                    &point[NUM_BITS..NUM_BITS * 2],
+                    minus_infinity,
+                ),
+            );
+        }
+    }
+
+    #[test]
+    fn test_infinitizer_evaluation() {
+        // test infinitizer with a single head
+        test_infinitizer_evaluation_for_num_heads::<0>();
+        // test infinitizer with multiple heads
+        test_infinitizer_evaluation_for_num_heads::<3>();
     }
 }
