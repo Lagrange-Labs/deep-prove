@@ -968,11 +968,7 @@ impl SoftmaxCtx {
 }
 
 impl OpInfo for SoftmaxCtx {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Shape],
-        _padding_mode: crate::padding::PaddingMode,
-    ) -> Vec<Shape> {
+    fn output_shapes(&self, input_shapes: &[Shape], _padding_mode: PaddingMode) -> Vec<Shape> {
         input_shapes.to_vec()
     }
 
