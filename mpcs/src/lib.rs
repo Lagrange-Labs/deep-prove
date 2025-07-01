@@ -342,9 +342,9 @@ pub use basefold::{
 use multilinear_extensions::virtual_poly::ArcMultilinearExtension;
 
 #[cfg(feature = "blake")]
-use crate::util::hash::BlakeHasher;
+pub use crate::util::hash::BlakeHasher as Hasher;
 #[cfg(not(feature = "blake"))]
-use crate::util::hash::PoseidonHasher;
+pub use crate::util::hash::PoseidonHasher as Hasher;
 
 fn validate_input<E: ExtensionField>(
     function: &str,
