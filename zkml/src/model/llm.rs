@@ -66,7 +66,7 @@ impl Driver<f32> {
 
         // even though the llm runtime doesn't care about the model input shape, which is designed for "static" input shapes, we still
         // need to provide one.
-        let init_user_shape = Shape::from(vec![1, config.embedding_size]);
+        let init_user_shape = Shape::from(vec![1]);
         let model = llm_model.to_provable_model(&config, init_user_shape)?;
         Ok(Self {
             model,
@@ -95,7 +95,7 @@ where
     /// Runs take the _already_ tokenized input and run the model until the maximum sequence length is reached OR until a eos token is generated.
     /// The returned trace contains the _whole_ sequence.
     pub fn run<E>(
-        &self,
+        &mut self,
         input: Vec<Token>,
         observer: impl Observer<N>,
     ) -> anyhow::Result<InferenceTrace<'_, E, N>>
@@ -134,16 +134,7 @@ where
             // input = input.concat(last_token);
             // We simply need to take the _last_ inference trace that would contain _everything_
             seq_len += 1;
-            // again, since we don't do caching, every further iteration includes the previous inference as well.
-            let new_token = trace
-                .output
-                .last()
-                .unwrap()
-                .slice_last_dim()
-                .last()
-                .unwrap();
-            debug_assert!(new_token.len() == 1, "New token must be a single token");
-            tensor.concat(Tensor::new(vec![1, 1].into(), vec![new_token[0]]));
+            tensor.concat(Tensor::new(vec![1, 1].into(), vec![last_token]));
             debug_assert_eq!(tensor.get_shape()[0], seq_len);
             observer.observe(seq_len - user_len, &trace);
         }
@@ -198,7 +189,7 @@ mod test {
     #[test]
     fn test_llm_driver() -> anyhow::Result<()> {
         let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
-        let driver = Driver::load_model(&model_path)?.with_max_context(10);
+        let mut driver = Driver::load_model(&model_path)?.with_max_context(10);
         let sentence = "The sky is";
 
         // Best to load the tokenizer from the gguf file if it's available.

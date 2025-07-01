@@ -509,33 +509,6 @@ impl<R: Read + Seek + Send + 'static> TensorLoader<R> {
         dequantize(qtensor)
     }
 
-    pub fn get_string_array(&self, key: &str) -> anyhow::Result<Vec<String>> {
-        let value = self
-            .content
-            .metadata
-            .get(key)
-            .with_context(|| format!("Metadata key '{}' not found in GGUF file", key))?;
-
-        let array = match value {
-            Value::Array(array) => Ok(array),
-            _ => Err(anyhow::anyhow!(
-                "Metadata value for key '{}' is not an array",
-                key
-            )),
-        }?;
-
-        array
-            .iter()
-            .map(|v| match v {
-                Value::String(s) => Ok(s.clone()),
-                _ => Err(anyhow::anyhow!(
-                    "Value in array for key '{}' is not a string",
-                    key
-                )),
-            })
-            .collect()
-    }
-
     pub fn metadata<T>(&self, key: &str) -> T
     where
         Value: FromValue<T>,
