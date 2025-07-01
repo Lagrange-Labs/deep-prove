@@ -48,11 +48,14 @@ impl MhaQk {
                 vec![vec![self.num_heads, q_len, seq_len].into()]
             }
             PaddingMode::Padding => {
-                vec![vec![
-                    self.num_heads.next_power_of_two(),
-                    q_len.next_power_of_two(),
-                    seq_len.next_power_of_two(),
-                ].into()]
+                vec![
+                    vec![
+                        self.num_heads.next_power_of_two(),
+                        q_len.next_power_of_two(),
+                        seq_len.next_power_of_two(),
+                    ]
+                    .into(),
+                ]
             }
         }
     }
@@ -67,11 +70,7 @@ impl MhaFinalMul {
         }
     }
 
-    fn output_shapes(
-        &self,
-        input_shapes: &[Shape],
-        padding_mode: PaddingMode,
-    ) -> Vec<Shape> {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         let seq_len = input_shapes[1][0];
         let v_shape = match padding_mode {
             PaddingMode::NoPadding => {
@@ -84,7 +83,8 @@ impl MhaFinalMul {
                     self.head_dim.next_power_of_two(),
                 ]
             }
-        }.into();
+        }
+        .into();
         assert_eq!(
             input_shapes[0][2], seq_len,
             "qk should have the same sequence length as v"
@@ -144,7 +144,11 @@ impl<N: Number> Mha<N> {
             unpadded_input_shapes
         };
 
-        ensure!(inputs.len() == 3, "MHA layer expects 3 inputs, found {}", inputs.len());
+        ensure!(
+            inputs.len() == 3,
+            "MHA layer expects 3 inputs, found {}",
+            inputs.len()
+        );
 
         let linear_out = self
             .linear
@@ -187,11 +191,7 @@ impl<N: Number> Mha<N> {
 }
 
 impl<N: Number> OpInfo for Mha<N> {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Shape],
-        padding_mode: PaddingMode,
-    ) -> Vec<Shape> {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         let linear_out_shapes = self.linear.output_shapes(&input_shapes[..2], padding_mode);
 
         let soft_out_shapes = self.softmax.output_shapes(&linear_out_shapes, padding_mode);
@@ -334,7 +334,10 @@ impl<N: Number> Evaluate<N> for MhaFinalMul {
         );
         let v = v.reshape(vec![seq_len, self.num_heads, self.head_dim].into());
         let v = v.permute3d(&vec![1, 0, 2]); // (num_head, seq_len, head_dim)
-        assert_eq!(v.get_shape(), vec![self.num_heads, seq_len, self.head_dim].into());
+        assert_eq!(
+            v.get_shape(),
+            vec![self.num_heads, seq_len, self.head_dim].into()
+        );
 
         let unpadded_seq_len = unpadded_input_shapes[1][0];
 
