@@ -9,11 +9,6 @@ use transcript::{BasicTranscript, Transcript};
 pub mod sum_check;
 pub mod util;
 
-#[cfg(not(feature = "blake"))]
-pub type Hasher = PoseidonHasher;
-#[cfg(feature = "blake")]
-pub type Hasher = BlakeHasher;
-
 pub type Commitment<E, Pcs> = <Pcs as PolynomialCommitmentScheme<E>>::Commitment;
 pub type CommitmentChunk<E, Pcs> = <Pcs as PolynomialCommitmentScheme<E>>::CommitmentChunk;
 pub type CommitmentWithWitness<E, Pcs> =
