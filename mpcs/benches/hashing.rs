@@ -1,9 +1,14 @@
 use ark_std::test_rng;
 use criterion::{Criterion, criterion_group, criterion_main};
 use ff::Field;
+<<<<<<< HEAD
 use ff_ext::FromUniformBytes;
 use mpcs::util::hash::{BlakeDigest, BlakeHasher, Digest, MerkleHasher, PoseidonHasher};
 use poseidon::poseidon_hash::PoseidonHash;
+=======
+use goldilocks::{Goldilocks, GoldilocksExt2};
+use mpcs::util::hash::{BlakeDigest, BlakeHasher, Digest, MerkleHasher, PoseidonHasher};
+>>>>>>> 602f9dc45da655b4131ae936fe07c04183a5e2f7
 
 fn random_ceno_goldy() -> Goldilocks {
     Goldilocks::random(&mut test_rng())
