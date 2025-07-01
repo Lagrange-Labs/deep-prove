@@ -353,7 +353,7 @@ pub(crate) fn pad_qkv(mut qkv: QKV<Element>, si: &mut ShapeInfo) -> Result<QKV<E
     );
 
     let unpadded_output_shapes = qkv.output_shapes(
-        &vec![sd.input_shape_og.as_ref().clone()],
+        &vec![sd.input_shape_og.clone()],
         PaddingMode::NoPadding,
     );
     let expected_num_outputs = qkv.num_outputs(1);
@@ -380,7 +380,7 @@ pub(crate) fn pad_qkv(mut qkv: QKV<Element>, si: &mut ShapeInfo) -> Result<QKV<E
         let nrows = pad_minimum(sd.input_shape_padded.dim(1));
         let ncols = pad_minimum(weight_mat.ncols_2d());
         weight_mat.pad_to_shape(
-            vec![nrows, ncols]
+            vec![nrows, ncols].into()
         );
         Ok(())
     })?;
@@ -390,11 +390,11 @@ pub(crate) fn pad_qkv(mut qkv: QKV<Element>, si: &mut ShapeInfo) -> Result<QKV<E
         .into_iter()
         .for_each(|bias_vec| {
             let new_len = bias_vec.get_shape()[0];
-            bias_vec.pad_to_shape(vec![pad_minimum(new_len)])
+            bias_vec.pad_to_shape(vec![pad_minimum(new_len)].into())
         });
 
     let padded_output_shapes = qkv.output_shapes(
-        &vec![sd.input_shape_padded.as_ref().clone()],
+        &vec![sd.input_shape_padded.clone()],
         PaddingMode::Padding,
     );
     ensure!(
@@ -411,9 +411,9 @@ pub(crate) fn pad_qkv(mut qkv: QKV<Element>, si: &mut ShapeInfo) -> Result<QKV<E
         .into_iter()
         .zip(padded_output_shapes)
         .map(|(unpadded_shape, padded_shape)| ShapeData {
-            input_shape_padded: Shape::new(padded_shape),
+            input_shape_padded: padded_shape,
             ignore_garbage_pad: None,
-            input_shape_og: Shape::new(unpadded_shape),
+            input_shape_og: unpadded_shape,
         })
         .collect();
 
