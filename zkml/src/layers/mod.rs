@@ -1,4 +1,6 @@
 pub mod activation;
+#[cfg(feature = "capture-layers-quant")]
+pub mod capture_quant;
 pub mod convolution;
 pub mod dense;
 pub mod flatten;
@@ -43,7 +45,7 @@ use convolution::{ConvCtx, ConvProof, SchoolBookConv, SchoolBookConvCtx};
 use dense::{DenseCtx, DenseProof};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Layer<T> {
     Dense(Dense<T>),
     // TODO: replace this with a Tensor based implementation
@@ -95,6 +97,21 @@ where
     Requant(RequantProof<E, PCS>),
     Pooling(PoolingProof<E, PCS>),
     Dummy, // To be used for non-provable layers
+}
+
+impl<T> Layer<T> {
+    /// Convert a layer to a string only containing its kind
+    pub fn as_simple_str(&self) -> &'static str {
+        match self {
+            Layer::Dense(_) => "dense",
+            Layer::Convolution(_) => "convolution",
+            Layer::SchoolBookConvolution(_) => "school-book-convolution",
+            Layer::Activation(_) => "activation",
+            Layer::Requant(_) => "requant",
+            Layer::Pooling(_) => "pooling",
+            Layer::Flatten(_) => "flatten",
+        }
+    }
 }
 
 impl<E> LayerCtx<E>
@@ -307,7 +324,10 @@ impl Evaluate<Element> for Layer<Element> {
         inputs: &[&Tensor<Element>],
         unpadded_input_shapes: Vec<Vec<usize>>,
     ) -> Result<LayerOut<Element, E>> {
-        match self {
+        #[cfg(feature = "capture-layers-quant")]
+        let input_hash = sha256_hex(&(self, inputs));
+
+        let output = match self {
             Layer::Dense(dense) => dense.evaluate(inputs, unpadded_input_shapes),
             Layer::Convolution(convolution) => convolution.evaluate(inputs, unpadded_input_shapes),
             Layer::SchoolBookConvolution(school_book_conv) => {
@@ -317,8 +337,29 @@ impl Evaluate<Element> for Layer<Element> {
             Layer::Requant(requant) => requant.evaluate(inputs, unpadded_input_shapes),
             Layer::Pooling(pooling) => pooling.evaluate(inputs, unpadded_input_shapes),
             Layer::Flatten(reshape) => reshape.evaluate(inputs, unpadded_input_shapes),
+        };
+
+        #[cfg(feature = "capture-layers-quant")]
+        {
+            if let Ok(output) = output.as_ref() {
+                let layer_kind = self.as_simple_str();
+                let output_hash = sha256_hex(&output.outputs);
+                capture_quant::store(layer_kind, &input_hash, &output_hash, &output.outputs);
+            }
         }
+
+        output
     }
+}
+
+#[cfg(feature = "capture-layers-quant")]
+fn sha256_hex<T>(data: &T) -> String
+where
+    T: Serialize,
+{
+    let bytes = serde_json::to_vec(data).unwrap();
+    let hash = <sha2::Sha256 as sha2::Digest>::digest(bytes);
+    format!("{hash:X}")
 }
 
 impl<E: ExtensionField> ProveInfo<E> for Layer<Element>
