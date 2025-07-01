@@ -149,6 +149,32 @@ where
     Dummy, // To be used for non-provable layers
 }
 
+impl<T> Layer<T> {
+    /// Convert a layer to a string only containing its kind
+    pub fn as_kind_str(&self) -> &'static str {
+        match self {
+            Layer::Dense(_) => "dense",
+            Layer::Convolution(_) => "convolution",
+            Layer::SchoolBookConvolution(_) => "school-book-convolution",
+            Layer::Activation(_) => "activation",
+            Layer::Requant(_) => "requant",
+            Layer::Pooling(_) => "pooling",
+            Layer::Flatten(_) => "flatten",
+            Layer::QKV(_) => "qkv",
+            Layer::MhaQK(_) => "mha-qk",
+            Layer::MatMul(_) => "mat-mul",
+            Layer::ConcatMatMul(_) => "concat-mat-mul",
+            Layer::LayerNorm(_) => "layer-norm",
+            Layer::Softmax(_) => "softmax",
+            Layer::Add(_) => "add",
+            Layer::Reshape(_) => "reshape",
+            Layer::Embeddings(_) => "embeddings",
+            Layer::Positional(_) => "positional",
+            Layer::Logits(_) => "logits",
+        }
+    }
+}
+
 impl<E> LayerCtx<E>
 where
     E: ExtensionField + DeserializeOwned,
@@ -391,7 +417,7 @@ impl Evaluate<Element> for Layer<Element> {
         inputs: &[&Tensor<Element>],
         unpadded_input_shapes: Vec<Shape>,
     ) -> Result<LayerOut<Element, E>> {
-        match self {
+        let output = match self {
             Layer::Dense(dense) => dense.evaluate(inputs, unpadded_input_shapes),
             Layer::Convolution(convolution) => convolution.evaluate(inputs, unpadded_input_shapes),
             Layer::MatMul(mat) => mat.evaluate(inputs, unpadded_input_shapes),
@@ -414,7 +440,18 @@ impl Evaluate<Element> for Layer<Element> {
             Layer::Requant(requant) => requant.evaluate(inputs, unpadded_input_shapes),
             Layer::Pooling(pooling) => pooling.evaluate(inputs, unpadded_input_shapes),
             Layer::Flatten(reshape) => reshape.evaluate(inputs, unpadded_input_shapes),
+        };
+
+        #[cfg(feature = "capture-layers-quant")]
+        {
+            if let Ok(output) = output.as_ref() {
+                let layer_kind = self.as_kind_str();
+                let out_dir = std::path::PathBuf::from("layers-quant").join(layer_kind);
+                crate::capture::store(&out_dir, &(self, inputs), &output.outputs);
+            }
         }
+
+        output
     }
 }
 

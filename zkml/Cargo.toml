@@ -24,6 +24,8 @@ path = "src/bin/cli/main.rs"
 [features]
 default = []
 blake = ["mpcs/blake"]
+# Capture layers' quatization outputs for regression tests
+capture-layers-quant = []
 
 [dependencies]
 anyhow.workspace = true
