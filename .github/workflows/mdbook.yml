@@ -3,7 +3,8 @@ name: Deploy mdBook
 on:
   pull_request:
     paths:
-      - 'zkml/docs/**'  # Only trigger when docs are updated
+      - 'docs/src/**'  # Only trigger when docs are updated
+      - 'docs/book.toml'
 
 jobs:
   deploy:
