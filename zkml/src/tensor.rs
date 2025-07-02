@@ -5,7 +5,7 @@ use crate::{
     quantization::{self, MAX_FLOAT, MIN_FLOAT},
 };
 use anyhow::{bail, ensure};
-use ark_std::rand::{self, Rng, SeedableRng, rngs::StdRng};
+use ark_std::rand::Rng;
 use ff_ext::{ExtensionField, GoldilocksExt2};
 use itertools::Itertools;
 use multilinear_extensions::{mle::DenseMultilinearExtension, util::ceil_log2};
@@ -1714,16 +1714,18 @@ impl<T: Number> Tensor<T> {
     pub fn min_value(&self) -> T {
         self.data.iter().fold(T::MAX, |min, x| min.cmp_min(x))
     }
+    #[cfg(test)]
     pub fn random(shape: &Shape) -> Self {
-        Self::random_seed(shape, Some(rand::random::<u64>()))
+        Self::random_seed(shape, Some(crate::seed_from_env_or_rng()))
     }
 
     /// Creates a random matrix with a given number of rows and cols.
     /// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
     /// sync which is not true for basic rng core.
+    #[cfg(test)]
     pub fn random_seed(shape: &Shape, seed: Option<u64>) -> Self {
-        let seed = seed.unwrap_or(rand::random::<u64>()); // Use provided seed or default
-        let mut rng = StdRng::seed_from_u64(seed);
+        let seed = seed.unwrap_or_else(|| crate::seed_from_env_or_rng()); // Use provided seed or default
+        let mut rng = <crate::StdRng as ark_std::rand::SeedableRng>::seed_from_u64(seed);
         let size = shape.product();
         let data = (0..size).map(|_| T::random(&mut rng)).collect();
         Self {
@@ -2055,9 +2057,11 @@ impl FromIterator<usize> for Shape {
 #[cfg(test)]
 mod test {
 
-    use ark_std::rand::{Rng, thread_rng};
+    use ark_std::rand::Rng;
     use ff_ext::GoldilocksExt2;
     use ndarray::{Array, Ix2, Order};
+
+    use crate::rng_from_env_or_random;
 
     use super::*;
     use multilinear_extensions::mle::MultilinearExtension;
@@ -2191,7 +2195,7 @@ mod test {
         }
 
         pub fn random_eval_point(&self) -> Vec<E> {
-            let mut rng = thread_rng();
+            let mut rng = rng_from_env_or_random();
             let r = rng.gen_range(0..self.nrows_2d());
             let c = rng.gen_range(0..self.ncols_2d());
             self.position_to_boolean_2d(r, c)
@@ -2205,10 +2209,8 @@ mod test {
         let mat = mat.pad_next_power_of_two();
         println!("matrix {}", mat);
         let mut mle = mat.to_2d_mle::<E>();
-        let (chosen_row, chosen_col) = (
-            thread_rng().gen_range(0..shape[0]),
-            thread_rng().gen_range(0..shape[1]),
-        );
+        let mut rng = rng_from_env_or_random();
+        let (chosen_row, chosen_col) = (rng.gen_range(0..shape[0]), rng.gen_range(0..shape[1]));
         let elem = mat.get_2d(chosen_row, chosen_col);
         let elem_field: E = elem.to_field();
         println!("(x,y) = ({},{}) ==> {:?}", chosen_row, chosen_col, elem);

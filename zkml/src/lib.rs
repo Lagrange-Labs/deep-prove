@@ -2,11 +2,13 @@
 #![feature(iter_next_chunk)]
 #![feature(exact_size_is_empty)]
 
+use ark_std::rand::{self, SeedableRng, rngs::StdRng};
 use ff_ext::ExtensionField;
 use gkr::structs::PointAndEval;
 use itertools::Itertools;
 use rayon::iter::ParallelIterator;
 use serde::{Deserialize, Serialize};
+use std::{env, str::FromStr};
 use transcript::{BasicTranscript, Transcript};
 mod commit;
 pub mod iop;
@@ -197,7 +199,7 @@ impl NextPowerOfTwo for Vec<usize> {
 
 #[cfg(test)]
 mod test {
-    use ark_std::rand::{Rng, thread_rng};
+    use ark_std::rand::Rng;
     use ff_ext::{FromUniformBytes, GoldilocksExt2};
     use itertools::Itertools;
     use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
@@ -207,6 +209,7 @@ mod test {
         FloatOnnxLoader, default_transcript,
         iop::{Context, prover::Prover, verifier::verify},
         parser::ModelType,
+        rng_from_env_or_random,
         tensor::Tensor,
         testing::Pcs,
         to_bit_sequence_le,
@@ -267,10 +270,10 @@ mod test {
     fn test_vector_mle() {
         let n = (10 as usize).next_power_of_two();
         let v = (0..n)
-            .map(|_| <E as FromUniformBytes>::random(&mut thread_rng()))
+            .map(|_| <E as FromUniformBytes>::random(&mut rng_from_env_or_random()))
             .collect_vec();
         let mle = v.clone().into_mle();
-        let random_index = thread_rng().gen_range(0..v.len());
+        let random_index = rng_from_env_or_random().gen_range(0..v.len());
         let eval = to_bit_sequence_le(random_index, v.len().next_power_of_two().ilog2() as usize)
             .map(|b| E::from_canonical_u64(b as u64))
             .collect_vec();
@@ -279,14 +282,11 @@ mod test {
     }
 }
 
-use std::cmp::Ordering;
-#[cfg(test)]
-use std::sync::Once;
-
 use crate::tensor::Number;
+use std::cmp::Ordering;
 
 #[cfg(test)]
-static INIT: Once = Once::new();
+static INIT: std::sync::Once = std::sync::Once::new();
 
 #[cfg(test)]
 pub fn init_test_logging_default() {
@@ -307,4 +307,17 @@ pub fn init_test_logging(default_level: &str) {
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
         tracing_subscriber::fmt().with_env_filter(filter).init();
     });
+}
+
+/// Get a rng generator from a seed from env var or generate a random one
+pub fn rng_from_env_or_random() -> StdRng {
+    let seed = seed_from_env_or_rng();
+    StdRng::seed_from_u64(seed)
+}
+
+/// Get a seed from env var or generate a random one
+pub fn seed_from_env_or_rng() -> u64 {
+    env::var("RNG_SEED")
+        .map(|val| u64::from_str(&val).expect("RNG_SEED must be a u64"))
+        .unwrap_or_else(|_| rand::random::<u64>())
 }
