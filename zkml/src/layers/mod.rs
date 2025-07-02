@@ -30,7 +30,9 @@ use requant::RequantCtx;
 use transcript::Transcript;
 
 use crate::{
-    iop::context::{ContextAux, ShapeStep, TableCtx}, layers::{
+    Context, Element, ScalingStrategy,
+    iop::context::{ContextAux, ShapeStep, TableCtx},
+    layers::{
         activation::{Activation, ActivationProof},
         add::Add,
         concat_matmul::{ConcatMatMul, ConcatMatMulCtx, ConcatMatMulProof},
@@ -45,10 +47,15 @@ use crate::{
             logits::Logits,
             mha::Mha,
             positional::Positional,
-            qkv::{QKVCtx, QKVProof, QKV},
+            qkv::{QKV, QKVCtx, QKVProof},
             softmax::{Softmax, SoftmaxCtx, SoftmaxProof},
         },
-    }, lookup::context::LookupWitnessGen, model::StepData, padding::{PaddingMode, ShapeInfo}, quantization::ScalingFactor, tensor::{Number, Shape, Tensor}, Context, Element, ScalingStrategy
+    },
+    lookup::context::LookupWitnessGen,
+    model::StepData,
+    padding::{PaddingMode, ShapeInfo},
+    quantization::ScalingFactor,
+    tensor::{Number, Shape, Tensor},
 };
 use activation::ActivationCtx;
 use convolution::{ConvCtx, ConvProof, SchoolBookConv, SchoolBookConvCtx};
@@ -458,9 +465,7 @@ where
             Layer::Dense(dense) => dense.step_info(id, aux),
             Layer::QKV(qkv) => qkv.step_info(id, aux),
             Layer::MhaQK(_mha) => unimplemented!("MHA_QK proving layer not implemented"),
-            Layer::ConcatMatMul(concat_matmul) => {
-                concat_matmul.step_info(id, aux)
-            }
+            Layer::ConcatMatMul(concat_matmul) => concat_matmul.step_info(id, aux),
             Layer::LayerNorm(_layernorm) => {
                 unimplemented!("LayerNorm proving layer not implemented")
             }
@@ -604,7 +609,9 @@ where
             Layer::MatMul(m) => m.gen_lookup_witness(id, gen, ctx, step_data),
             Layer::QKV(qkv) => qkv.gen_lookup_witness(id, gen, ctx, step_data),
             Layer::MhaQK(_mha) => unimplemented!("MHA_QK layer not implemented"),
-            Layer::ConcatMatMul(concat_matmul) => concat_matmul.gen_lookup_witness(id, gen, ctx, step_data),
+            Layer::ConcatMatMul(concat_matmul) => {
+                concat_matmul.gen_lookup_witness(id, gen, ctx, step_data)
+            }
             Layer::LayerNorm(_layernorm) => unimplemented!("LayerNorm layer not implemented"),
             Layer::Softmax(softmax) => softmax.gen_lookup_witness(id, gen, ctx, step_data),
             Layer::Add(_add) => unimplemented!("Add layer not implemented"),

@@ -1705,7 +1705,7 @@ impl PartialEq for Tensor<GoldilocksExt2> {
 
 impl<T: Default + Clone + Copy> Tensor<T> {
     /// Permute a tensor, chaning its shape according to the `order` specified as input.
-    /// The `i`-th entry in the `order` vector specifies which dimension of the original 
+    /// The `i`-th entry in the `order` vector specifies which dimension of the original
     /// tensor should become the `i`-th dimension of the output tensor.
     /// For instance, given an input tensor with shape `[7, 14, 23]` and `order = [2, 0, 1]`,
     /// then the shape of the output tensor will be `[23, 7, 14]`
@@ -1727,7 +1727,10 @@ impl<T: Default + Clone + Copy> Tensor<T> {
                     let new_j = pos[order[1]];
                     let new_k = pos[order[2]];
                     let new_loc = new_i * new_b * new_c + new_j * new_c + new_k;
-                    assert!(new_loc < new_a * new_b * new_c, "Failed for {i}, {j}, {k} and {new_i}, {new_j}, {new_k}");
+                    assert!(
+                        new_loc < new_a * new_b * new_c,
+                        "Failed for {i}, {j}, {k} and {new_i}, {new_j}, {new_k}"
+                    );
                     data[new_loc] = self.data[old_loc];
                 }
             }
@@ -2001,9 +2004,7 @@ impl Shape {
     }
 
     pub fn permute(&self, permutation: &[usize]) -> Self {
-        Self(permutation.iter().map(|i| 
-            self.0[*i]
-        ).collect())
+        Self(permutation.iter().map(|i| self.0[*i]).collect())
     }
     pub fn next_power_of_two(&self) -> Self {
         Self(self.0.next_power_of_two())
@@ -2686,9 +2687,7 @@ mod test {
             }
         }
 
-        let tensor = Tensor::<Element>::random(
-            &vec![18, 5, 27].into(),
-        );
+        let tensor = Tensor::<Element>::random(&vec![18, 5, 27].into());
         let permuted = tensor.permute3d(&vec![1, 2, 0]);
         assert_eq!(permuted.get_shape(), vec![5, 27, 18].into())
     }

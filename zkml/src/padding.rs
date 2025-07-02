@@ -5,9 +5,20 @@ use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    Element,
     layers::{
-        concat_matmul::ConcatMatMul, convolution::Convolution, dense::Dense, flatten::Flatten, matrix_mul::{MatMul, OperandMatrix}, pooling::Pooling, provable::{Node, NodeId, OpInfo}, transformer::qkv::QKV
-    }, model::{Model, ToIterator}, parser::{check_filter, safe_conv2d_shape, safe_maxpool2d_shape}, tensor::Shape, Element
+        concat_matmul::ConcatMatMul,
+        convolution::Convolution,
+        dense::Dense,
+        flatten::Flatten,
+        matrix_mul::{MatMul, OperandMatrix},
+        pooling::Pooling,
+        provable::{Node, NodeId, OpInfo},
+        transformer::qkv::QKV,
+    },
+    model::{Model, ToIterator},
+    parser::{check_filter, safe_conv2d_shape, safe_maxpool2d_shape},
+    tensor::Shape,
 };
 type GarbagePad = Option<(Shape, Shape)>;
 
@@ -415,21 +426,21 @@ pub(crate) fn pad_qkv(mut qkv: QKV<Element>, si: &mut ShapeInfo) -> Result<QKV<E
 pub(crate) fn pad_concat_mat_mul(mat: ConcatMatMul, si: &mut ShapeInfo) -> Result<ConcatMatMul> {
     // no padding is needed since we don't have constant matrices in this layer
     // So, we check inpout shapes are padded, and we update shape info
-    ensure!(si.shapes.len() == 2, "Expected 2 input shapes when padding ConcatMatMul layer, found {}", 
+    ensure!(
+        si.shapes.len() == 2,
+        "Expected 2 input shapes when padding ConcatMatMul layer, found {}",
         si.shapes.len(),
     );
     let unpadded_input_shapes = si.unpadded_input_shapes();
 
     mat.ensure_shape_consistency(&unpadded_input_shapes)?;
 
-    let unpadded_output_shapes = mat.output_shapes(
-        &unpadded_input_shapes, 
-        PaddingMode::NoPadding,
-    );
+    let unpadded_output_shapes = mat.output_shapes(&unpadded_input_shapes, PaddingMode::NoPadding);
     let expected_num_outputs = mat.num_outputs(2);
-    ensure!(unpadded_output_shapes.len() == expected_num_outputs, 
+    ensure!(
+        unpadded_output_shapes.len() == expected_num_outputs,
         "Expected {expected_num_outputs} unpadded output shapes when padding ConcatMatMul, found {}",
-        unpadded_output_shapes.len(), 
+        unpadded_output_shapes.len(),
     );
 
     let padded_input_shapes = si.padded_input_shapes();
@@ -437,18 +448,19 @@ pub(crate) fn pad_concat_mat_mul(mat: ConcatMatMul, si: &mut ShapeInfo) -> Resul
     mat.ensure_shape_consistency(&padded_input_shapes)?;
 
     padded_input_shapes.iter().try_for_each(|s| {
-        ensure!(s.is_power_of_two(), "Padded input shape for ConcatMatMul is not properly padded");
+        ensure!(
+            s.is_power_of_two(),
+            "Padded input shape for ConcatMatMul is not properly padded"
+        );
         Ok(())
     })?;
 
-    let padded_output_shapes = mat.output_shapes(
-        &padded_input_shapes, 
-        PaddingMode::Padding,
-    );
+    let padded_output_shapes = mat.output_shapes(&padded_input_shapes, PaddingMode::Padding);
 
-    ensure!(padded_output_shapes.len() == expected_num_outputs, 
+    ensure!(
+        padded_output_shapes.len() == expected_num_outputs,
         "Expected {expected_num_outputs} padded output shapes when padding ConcatMatMul, found {}",
-        unpadded_output_shapes.len(), 
+        unpadded_output_shapes.len(),
     );
 
     ensure!(
@@ -456,13 +468,15 @@ pub(crate) fn pad_concat_mat_mul(mat: ConcatMatMul, si: &mut ShapeInfo) -> Resul
         "ConcatMatMul layer has garbage padding to be removed",
     );
 
-    si.shapes = unpadded_output_shapes.into_iter().zip(padded_output_shapes).map(|(unpadded, padded)|
-        ShapeData {
+    si.shapes = unpadded_output_shapes
+        .into_iter()
+        .zip(padded_output_shapes)
+        .map(|(unpadded, padded)| ShapeData {
             input_shape_padded: padded,
             ignore_garbage_pad: None,
             input_shape_og: unpadded,
-        }
-    ).collect_vec();
+        })
+        .collect_vec();
 
     Ok(mat)
 }
