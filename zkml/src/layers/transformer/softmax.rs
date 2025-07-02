@@ -15,6 +15,7 @@ use crate::{
             Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, ProvingData,
             QuantizeOp, QuantizeOutput, VerifiableCtx,
         },
+        transformer::mha::eval_zeroifier_mle,
     },
     lookup::{
         context::{COLUMN_SEPARATOR, LookupWitnessGen, TableType},
@@ -105,8 +106,6 @@ where
     pub(crate) accumulation_proof: IOPProof<E>,
     /// Sumcheck proof used to prove that the mask was applied correctly
     pub(crate) mask_proof: IOPProof<E>,
-    pub(crate) tril_eval: E,
-    pub(crate) bias_eval: E,
     /// The claimed evaluations of the commitments
     pub(crate) evaluations: Vec<E>,
 }
@@ -714,9 +713,6 @@ where
         let (mask_proof, mask_state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
 
         let shifted_input_eval = mask_state.get_mle_final_evaluations()[0];
-        // TODO: add addtional sumcheck so the verifier can compute this directly.
-        let tril_eval = mask_state.get_mle_final_evaluations()[1];
-        let bias_eval = mask_state.get_mle_final_evaluations()[2];
 
         // Work out the difference in length between the mask proof point and the number of variables for the shift commitment.
         let mask_point_len = mask_proof.point.len();
@@ -787,8 +783,6 @@ where
                 commitments,
                 accumulation_proof: sumcheck_proof,
                 mask_proof,
-                tril_eval,
-                bias_eval,
                 evaluations,
             }),
         );
@@ -1113,7 +1107,7 @@ where
         proof: &Self::Proof,
         last_claims: &[&Claim<E>],
         verifier: &mut Verifier<E, T, PCS>,
-        _shape_step: &ShapeStep,
+        shape_step: &ShapeStep,
     ) -> Result<Vec<Claim<E>>> {
         // First we check that we only have one claim in `last_claims`
         ensure!(
@@ -1142,8 +1136,6 @@ where
             commitments,
             accumulation_proof,
             mask_proof,
-            tril_eval,
-            bias_eval,
             evaluations,
         } = proof;
 
@@ -1268,8 +1260,23 @@ where
 
         let mask_point = sumcheck_subclaim.point_flat();
         let eq_eval = eq_xy_eval(&mask_point, &sumcheck_point);
-        let mult_tril = eq_eval * *tril_eval;
-        let mult_bias = eq_eval * *bias_eval;
+        // Compute the tril and bias evaluation, to do this we need the number of columns and rows
+        let padded_shape = &shape_step.padded_output_shape[0];
+        let num_dims = padded_shape.len();
+        let rows = ceil_log2(padded_shape[num_dims - 2]);
+        let columns = ceil_log2(padded_shape[num_dims - 1]);
+        let column_point = mask_point.iter().take(columns).copied().collect::<Vec<E>>();
+        let row_point = mask_point
+            .iter()
+            .skip(columns)
+            .take(rows)
+            .copied()
+            .collect::<Vec<E>>();
+        let tril_eval = eval_zeroifier_mle(&column_point, &row_point);
+        let negative_infinity: E = (-((self.bkm >> 16) + 1) << 16).to_field();
+        let bias_eval = negative_infinity * (E::ONE - tril_eval);
+        let mult_tril = eq_eval * tril_eval;
+        let mult_bias = eq_eval * bias_eval;
         let mult_inv = mult_tril.inverse();
 
         // Now the shifted input eval is `(sumcheck_subclaim - mult_bias) * mult_inv`
