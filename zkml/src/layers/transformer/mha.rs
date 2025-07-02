@@ -430,15 +430,12 @@ pub fn infinitizer<N: Number>(
 /// point. The point is provided already split between coordinates referring to the
 /// columns and coordinates referring to the rows of the matrix.
 /// Currently, it works only for a square zeroifier matrix
-pub fn eval_zeroifier_mle<F: ExtensionField + FieldFrom<u64>>(
-    column_point: &[F],
-    row_point: &[F],
-) -> F {
+pub fn eval_zeroifier_mle<F: ExtensionField>(column_point: &[F], row_point: &[F]) -> F {
     column_point
         .into_iter()
         .zip(row_point.into_iter())
-        .fold(F::from_v(1), |acc, (&c, &r)| {
-            acc * (F::from_v(1) - c - r + F::from_v(2) * c * r) + (F::from_v(1) - c) * r
+        .fold(F::ONE, |acc, (&c, &r)| {
+            acc * (F::ONE - c - r + F::from_canonical_u64(2) * c * r) + (F::ONE - c) * r
         })
 }
 
