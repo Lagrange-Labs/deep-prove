@@ -453,14 +453,18 @@ where
             let (table_column, column_evals) =
                 table_type.get_merged_table_column::<E>(COLUMN_SEPARATOR);
 
-            for key in table_lookup_data.keys() {
-                let check = table_column.contains(key);
-                if !check {
-                    println!(
-                        "Tried to lookup key: {}, for table: {}",
-                        key,
-                        table_type.name()
-                    );
+            // Check to see that all the lookup values are present in the table
+            #[cfg(test)]
+            {
+                for key in table_lookup_data.keys() {
+                    let check = table_column.contains(key);
+                    if !check {
+                        println!(
+                            "Tried to lookup key: {}, for table: {}",
+                            key,
+                            table_type.name()
+                        );
+                    }
                 }
             }
             // We have to account for repeated entries in the lookup table. This is usually the case if the table we want to lookup from is not a power of two size, in that case we pick a row from the table
