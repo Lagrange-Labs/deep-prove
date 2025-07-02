@@ -536,7 +536,6 @@ mod test {
         model.run_float(&[single_input.clone()])?;
 
         let model = llm_model.to_provable_model(&config, Shape::from(input.get_shape()))?;
-        model.describe();
         let output = model.run_float(&[input.clone()])?[0].clone();
         // since the expected output is only for one token, but our model generates logits for all tokens,
         // we take the last element of the model output

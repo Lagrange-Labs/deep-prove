@@ -220,11 +220,13 @@ where
             let multiplicity_vars = table_type.multiplicity_poly_vars();
             max_poly_len = max_poly_len.max(1 << multiplicity_vars)
         });
-        debug!("Context : commitment generating ...");
-        let commitment_ctx = CommitmentContext::<E, PCS>::new(max_poly_len, model_polys)?;
-
         debug!("Context : lookup generation ...");
         let lookup_ctx = LookupContext::new(&ctx_aux.tables);
+
+        debug!("Context : commitment generating ...");
+        let commitment_ctx =
+            CommitmentContext::<E, PCS>::new(max_poly_len, model_polys, &lookup_ctx)?;
+
         Ok(Self {
             steps_info: ModelCtx { nodes: step_infos },
             commitment_ctx,

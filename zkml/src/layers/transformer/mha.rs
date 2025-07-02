@@ -116,9 +116,7 @@ impl<N: Number> Mha<N> {
             num_heads,
             head_dim,
         };
-        let softmax = Softmax::new()
-            .with_scale(N::from_f32((1.0 / (head_dim as f32)).sqrt())?)
-            .on_dim(1);
+        let softmax = Softmax::new().with_scale(N::from_f32((1.0 / (head_dim as f32)).sqrt())?);
         let final_mul = MhaFinalMul::new(num_heads, head_dim);
         // reshape the output from [q_len, num_heads, head_dim] to [q_len, num_heads*head_dim]
         let final_reshape = Reshape::new_subspace(1..=2, vec![num_heads * head_dim]);
@@ -290,23 +288,8 @@ impl<N: Number> Evaluate<N> for MhaQk {
             acc_qk
         });
         assert_eq!(qk.get_shape(), vec![self.num_heads, q_len, seq_len].into());
-        // CAUSAL MASK
-        // First it sets to 0 the part that should be ignored on each Q "sequence" for each head
-        // Then it adds minus infinity to the same part.
-        // We do it in two steps like this because during proving, given we're in integer world, the -minus-infinity
-        // would be dynamically depending on the size of Q and K^T. Also because we need to exactly fix -minus-infinity
-        // to the lowest minimum value that _softmax_ can handle, so it needs to be a constant. Just "adding the causal mask"
-        // would not give us these guarantees.
-        let zeros = zeroifier(self.num_heads, q_len, seq_len);
-        let minus_infinity = infinitizer(self.num_heads, q_len, seq_len, N::MIN);
-        let qk_zeroified = qk.mul(&zeros);
-        let qk_infinitized = qk_zeroified.add(&minus_infinity);
 
-        // The next operation in transformer is softmax row by row, and then qk @ v, "row by row" - but
-        // it's actually "head by head" which is the highest dimension.
-        // So for the shapes, it's [q_len,seq_len] @ [seq_len, head_dim] = [q_len, head_dim]
-        // This is done in separate layer in the framework since we first need to prove softmax which happens separatedly
-        Ok(LayerOut::from_vec(vec![qk_infinitized]))
+        Ok(LayerOut::from_vec(vec![qk]))
     }
 }
 
@@ -447,15 +430,12 @@ pub fn infinitizer<N: Number>(
 /// point. The point is provided already split between coordinates referring to the
 /// columns and coordinates referring to the rows of the matrix.
 /// Currently, it works only for a square zeroifier matrix
-pub fn eval_zeroifier_mle<F: ExtensionField + FieldFrom<u64>>(
-    column_point: &[F],
-    row_point: &[F],
-) -> F {
+pub fn eval_zeroifier_mle<F: ExtensionField>(column_point: &[F], row_point: &[F]) -> F {
     column_point
         .into_iter()
         .zip(row_point.into_iter())
-        .fold(F::from_v(1), |acc, (&c, &r)| {
-            acc * (F::from_v(1) - c - r + F::from_v(2) * c * r) + (F::from_v(1) - c) * r
+        .fold(F::ONE, |acc, (&c, &r)| {
+            acc * (F::ONE - c - r + F::from_canonical_u64(2) * c * r) + (F::ONE - c) * r
         })
 }
 
