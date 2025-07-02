@@ -14,19 +14,35 @@ use std::collections::BTreeMap;
 
 use std::borrow::Borrow;
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use mpcs::PolynomialCommitmentScheme;
-use multilinear_extensions::{mle::{DenseMultilinearExtension, IntoMLE, MultilinearExtension}, virtual_poly::{VPAuxInfo, VirtualPolynomial}};
-use serde::{de::DeserializeOwned, Serialize, Deserialize};
+use multilinear_extensions::{
+    mle::{DenseMultilinearExtension, IntoMLE, MultilinearExtension},
+    virtual_poly::{VPAuxInfo, VirtualPolynomial},
+};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
 use transcript::Transcript;
 
 use crate::{
-    commit::{compute_betas_eval, identity_eval}, iop::{context::{ContextAux, ShapeStep}, verifier::Verifier}, layers::{
-        provable::{Evaluate, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, QuantizeOp, VerifiableCtx}, requant::Requant, LayerCtx, LayerProof
-    }, model::StepData, padding::{pad_concat_mat_mul, PaddingMode, ShapeInfo}, tensor::{Number, Shape}, Claim, Prover, Tensor
+    Claim, Prover, Tensor,
+    commit::{compute_betas_eval, identity_eval},
+    iop::{
+        context::{ContextAux, ShapeStep},
+        verifier::Verifier,
+    },
+    layers::{
+        LayerCtx, LayerProof,
+        provable::{
+            Evaluate, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, QuantizeOp, VerifiableCtx,
+        },
+        requant::Requant,
+    },
+    model::StepData,
+    padding::{PaddingMode, ShapeInfo, pad_concat_mat_mul},
+    tensor::{Number, Shape},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,7 +70,7 @@ pub struct InputMatrixDimensions {
     /// Index in the input shape that refers to the dimension over which the matrix multiplication
     /// of each chunk is performed
     mat_mul_dimension: usize,
-    /// Index in the input shape that refers to the dimension which will be part of the shape of 
+    /// Index in the input shape that refers to the dimension which will be part of the shape of
     /// the chunks of the output matrix
     output_dimension: usize,
 }
@@ -64,7 +80,7 @@ impl InputMatrixDimensions {
     /// - `concat_dimension`: dimension of the input tensor which defines how many chunks are concatenated in the input tensor
     /// - `mat_mul_dimension`: dimension of the input tensor which corresponds to the dimension over which matrix multiplication
     ///   is performed over each chunk
-    /// - `output_dimension`: dimension of the input tensors which corresponds to the dimension of each chunk that is 
+    /// - `output_dimension`: dimension of the input tensors which corresponds to the dimension of each chunk that is
     ///   propagated to the corresponding chunk of the output matrix
     pub fn new(concat_dimension: usize, mat_mul_dimension: usize, output_dimension: usize) -> Self {
         Self {
@@ -77,7 +93,7 @@ impl InputMatrixDimensions {
     fn compute_permutation(&self, expected_dimensions: &Self) -> Option<Permutation> {
         if self != expected_dimensions {
             // we need to permute to get to `expected_dimensions`
-            let mut permute = vec![0 ; 3];  
+            let mut permute = vec![0; 3];
             permute[expected_dimensions.concat_dimension] = self.concat_dimension;
             permute[expected_dimensions.output_dimension] = self.output_dimension;
             permute[expected_dimensions.mat_mul_dimension] = self.mat_mul_dimension;
@@ -89,8 +105,8 @@ impl InputMatrixDimensions {
 
     /// Build the point for the given input tensors over which the claim produced by sum-check is evaluated.
     fn build_point_for_input<E: ExtensionField>(
-        &self, 
-        point_for_concat_dim: &[E], 
+        &self,
+        point_for_concat_dim: &[E],
         point_for_mat_mul_dim: &[E],
         point_for_output_dim: &[E],
     ) -> Vec<E> {
@@ -98,13 +114,13 @@ impl InputMatrixDimensions {
             (self.concat_dimension, point_for_concat_dim),
             (self.mat_mul_dimension, point_for_mat_mul_dim),
             (self.output_dimension, point_for_output_dim),
-        ].into_iter()
+        ]
+        .into_iter()
         .collect::<BTreeMap<_, _>>() // collect in BTreeMap to sort by dimension
         .into_iter()
         .rev() // reverse since we start by higher dimensions when building points
-        .flat_map(|(_, point)| 
-            point.to_vec()
-        ).collect()
+        .flat_map(|(_, point)| point.to_vec())
+        .collect()
     }
 
     /// Compute the MLE for the input tensor, checking if the tensor needs to be permuted for the sum-check
@@ -114,7 +130,7 @@ impl InputMatrixDimensions {
     /// - `not_mat_mul_dimension`: the dimension that is not involved in the matrix multiplication
     fn input_mle_for_proving<E: ExtensionField>(
         &self,
-        input: &Tensor<E>, 
+        input: &Tensor<E>,
         partial_point: &[E],
     ) -> (DenseMultilinearExtension<E>, Option<Permutation>) {
         // determine if we need to permute the matrix for sum-check
@@ -142,7 +158,7 @@ impl InputMatrixDimensions {
     }
 }
 
-/// Contain information about the permutations to be applied to input 
+/// Contain information about the permutations to be applied to input
 /// and output matrices
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct MatrixPermutations {
@@ -166,12 +182,14 @@ impl MatrixPermutations {
             "ConcatMatMul expects inputs of rank 3"
         );
         ensure!(
-            shapes[0].borrow().dim(self.left.concat_dimension) == shapes[1].borrow().dim(self.right.concat_dimension),
+            shapes[0].borrow().dim(self.left.concat_dimension)
+                == shapes[1].borrow().dim(self.right.concat_dimension),
             "ConcatMatMul expects inputs with same concatenation dimension"
         );
         // check consistency of matrix mul dimensions
         ensure!(
-            shapes[0].borrow().dim(self.left.mat_mul_dimension) == shapes[1].borrow().dim(self.right.mat_mul_dimension),
+            shapes[0].borrow().dim(self.left.mat_mul_dimension)
+                == shapes[1].borrow().dim(self.right.mat_mul_dimension),
             "ConcatMatMul expects submatrices dimensions to match"
         );
         Ok(())
@@ -184,8 +202,7 @@ impl MatrixPermutations {
     ) -> Vec<Shape> {
         let a_shape = &input_shapes[0];
         let b_shape = &input_shapes[1];
-        self.ensure_shape_consistency(&[a_shape, b_shape])
-            .unwrap();
+        self.ensure_shape_consistency(&[a_shape, b_shape]).unwrap();
         // inner matrix shapes
         let a_shape = if let Some(permute) = self.compute_permutation_for_left_input() {
             permute.apply(a_shape)
@@ -197,8 +214,9 @@ impl MatrixPermutations {
         } else {
             b_shape.clone()
         };
-        
-        let mut mat_result_shape: Shape = vec![a_shape.dim(0), a_shape.dim(1), b_shape.dim(2)].into();
+
+        let mut mat_result_shape: Shape =
+            vec![a_shape.dim(0), a_shape.dim(1), b_shape.dim(2)].into();
         if let PaddingMode::Padding = padding_mode {
             mat_result_shape = mat_result_shape.next_power_of_two()
         }
@@ -222,8 +240,7 @@ impl MatrixPermutations {
     fn compute_permutation_for_right_input(&self) -> Option<Permutation> {
         let expected_dimensions = ConcatMatMul::expected_dimension_for_right_input();
         self.right.compute_permutation(&expected_dimensions)
-    } 
-
+    }
 
     /// Split the point over which sum-check claims are evaluated in two components:
     /// - the first component refers to the concatenation dimension in the input tensors
@@ -240,17 +257,15 @@ impl MatrixPermutations {
             num_entries_mat_mul_dimension,
             input_shapes[1].dim(self.right.mat_mul_dimension),
         );
-        ensure!(num_entries_mat_mul_dimension.is_power_of_two(), 
+        ensure!(
+            num_entries_mat_mul_dimension.is_power_of_two(),
             "Number of columns in the mat mul dimension must be a power of two, found {}",
             num_entries_mat_mul_dimension
         );
         let num_vars = num_entries_mat_mul_dimension.ilog2() as usize;
 
         // first set of coordinates of `point` refers to mat mul dimension
-        Ok((
-            &point[num_vars..],
-            &point[..num_vars],
-        ))
+        Ok((&point[num_vars..], &point[..num_vars]))
     }
 
     /// Split the point over which the output claim is evaluated in three components:
@@ -258,48 +273,62 @@ impl MatrixPermutations {
     /// - the second component refers to the number of rows of each chunk of the output matrix
     /// - the third component refers to the number of columns of each chunk of the output matrix
     fn split_output_claim_point<'a, E: ExtensionField>(
-        &self, 
+        &self,
         output_shape: Shape,
-        point: &'a [E]
+        point: &'a [E],
     ) -> Result<(&'a [E], &'a [E], &'a [E])> {
         // split the point according to the 3 dimensions of the output matrix
-        ensure!(output_shape.rank() == 3, "Output shape must be of rank 3, found {}", output_shape.rank());
+        ensure!(
+            output_shape.rank() == 3,
+            "Output shape must be of rank 3, found {}",
+            output_shape.rank()
+        );
 
-        let num_vars = (0..3).map(|i| {
-            ensure!(output_shape.dim(i).is_power_of_two(),
-                "Output shape dimension {} must be a power of two, found {}",
-                i, output_shape.dim(i)
-            );
-            Ok(output_shape.dim(i).next_power_of_two().ilog2() as usize)
-        } 
-        ).collect::<Result<Vec<_>>>()?;
+        let num_vars = (0..3)
+            .map(|i| {
+                ensure!(
+                    output_shape.dim(i).is_power_of_two(),
+                    "Output shape dimension {} must be a power of two, found {}",
+                    i,
+                    output_shape.dim(i)
+                );
+                Ok(output_shape.dim(i).next_power_of_two().ilog2() as usize)
+            })
+            .collect::<Result<Vec<_>>>()?;
 
-        ensure!(point.len() == num_vars.iter().sum::<usize>(), 
+        ensure!(
+            point.len() == num_vars.iter().sum::<usize>(),
             "Point length {} does not match the expected number of variables {}",
-            point.len(), num_vars.iter().sum::<usize>()
+            point.len(),
+            num_vars.iter().sum::<usize>()
         );
 
         let mut coordinates_to_split = point.len();
-        let points = (0..3).map(|i|
-            {
+        let points = (0..3)
+            .map(|i| {
                 let start_range = coordinates_to_split - num_vars[i];
                 let end_range = coordinates_to_split;
                 coordinates_to_split = start_range;
                 &point[start_range..end_range]
-            }
-        ).collect::<Vec<_>>();
-        assert_eq!(coordinates_to_split, 0, "Not all point coordinates were split among sub-points");
-        
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            coordinates_to_split, 0,
+            "Not all point coordinates were split among sub-points"
+        );
+
         // looks at whether the output matrix needs to be permuted or not
-        let (concat_dimension, row_dimension, col_dimension) = self.permute.as_ref()
+        let (concat_dimension, row_dimension, col_dimension) = self
+            .permute
+            .as_ref()
             .map(|p| {
                 let mut new_dimensions = vec![0; 3];
-                p.0.iter().enumerate().for_each(|(i, &source_dim) | 
-                    new_dimensions[source_dim] = i
-                ); 
+                p.0.iter()
+                    .enumerate()
+                    .for_each(|(i, &source_dim)| new_dimensions[source_dim] = i);
                 (new_dimensions[0], new_dimensions[1], new_dimensions[2])
-            }
-        ).unwrap_or((0, 1, 2));
+            })
+            .unwrap_or((0, 1, 2));
 
         Ok((
             points[concat_dimension],
@@ -351,7 +380,7 @@ const DEFAULT_INTERMEDIATE_BIT_SIZE: usize = 25;
 impl ConcatMatMul {
     pub fn new(left: InputMatrixDimensions, right: InputMatrixDimensions) -> Self {
         Self {
-            permutations: MatrixPermutations { 
+            permutations: MatrixPermutations {
                 left,
                 right,
                 permute: None,
@@ -359,9 +388,13 @@ impl ConcatMatMul {
             intermediate_bit_size: DEFAULT_INTERMEDIATE_BIT_SIZE,
         }
     }
-    pub fn new_with_permute(left: InputMatrixDimensions, right: InputMatrixDimensions, permutation: Permutation) -> Self {
+    pub fn new_with_permute(
+        left: InputMatrixDimensions,
+        right: InputMatrixDimensions,
+        permutation: Permutation,
+    ) -> Self {
         Self {
-            permutations: MatrixPermutations { 
+            permutations: MatrixPermutations {
                 left,
                 right,
                 permute: Some(permutation),
@@ -398,8 +431,6 @@ impl ConcatMatMul {
         }
     }
 
-
-
     /// Return the expected dimension for right input tesnor when performing `ConcatMatMul`;
     /// if the actual dimensions are different, the input tensor will be permuted
     fn expected_dimension_for_right_input() -> InputMatrixDimensions {
@@ -410,7 +441,7 @@ impl ConcatMatMul {
             mat_mul_dimension: 1,
             output_dimension: 2,
         }
-    }   
+    }
 }
 
 impl<N: Number> Evaluate<N> for ConcatMatMul {
@@ -425,9 +456,15 @@ impl<N: Number> Evaluate<N> for ConcatMatMul {
         let a_shape = a.get_shape();
         let b_shape = b.get_shape();
         self.ensure_shape_consistency(&[&a_shape, &b_shape])?;
-        let permuted_a = self.permutations.compute_permutation_for_left_input().map(|p| a.permute3d(&p.0)); 
-        let permuted_b = self.permutations.compute_permutation_for_right_input().map(|p| b.permute3d(&p.0)); 
-        let a  = permuted_a.as_ref().unwrap_or(a);
+        let permuted_a = self
+            .permutations
+            .compute_permutation_for_left_input()
+            .map(|p| a.permute3d(&p.0));
+        let permuted_b = self
+            .permutations
+            .compute_permutation_for_right_input()
+            .map(|p| b.permute3d(&p.0));
+        let a = permuted_a.as_ref().unwrap_or(a);
         let b = permuted_b.as_ref().unwrap_or(b);
         let a_shape = a.get_shape();
         let b_shape = b.get_shape();
@@ -446,10 +483,10 @@ impl<N: Number> Evaluate<N> for ConcatMatMul {
             .collect::<Vec<_>>();
         let mut it = results.into_iter();
         // reshape because concat expects a 3d tensor so he can accumulate in the highest dimension.
-        let concat = it
-            .next()
-            .unwrap()
-            .reshape(Shape::new(vec![1, a_shape.dim(1), b_shape.dim(2)]));
+        let concat =
+            it.next()
+                .unwrap()
+                .reshape(Shape::new(vec![1, a_shape.dim(1), b_shape.dim(2)]));
         let mut concat = it.fold(concat, |mut acc, x| {
             acc.concat(x);
             acc
@@ -477,9 +514,7 @@ impl OpInfo for ConcatMatMul {
     }
 
     fn describe(&self) -> String {
-        format!("ConcatMatMul: {:?})", 
-            self.permutations
-        )
+        format!("ConcatMatMul: {:?})", self.permutations)
     }
 
     fn is_provable(&self) -> bool {
@@ -513,16 +548,17 @@ impl QuantizeOp for ConcatMatMul {
     }
 }
 
-impl<E: ExtensionField + DeserializeOwned> ProveInfo<E> for ConcatMatMul 
-where E::BaseField: Serialize + DeserializeOwned,
+impl<E: ExtensionField + DeserializeOwned> ProveInfo<E> for ConcatMatMul
+where
+    E::BaseField: Serialize + DeserializeOwned,
 {
     fn step_info(&self, id: NodeId, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
-        
         let num_columns_left = aux.last_output_shape[0][self.permutations.left.mat_mul_dimension];
 
         let num_rows_right = aux.last_output_shape[1][self.permutations.right.mat_mul_dimension];
 
-        ensure!(num_columns_left == num_rows_right, 
+        ensure!(
+            num_columns_left == num_rows_right,
             "ConcatMatMul: number of columns in left matrix chunk different from number of rows in right matrix chunk: {} vs {}",
             num_columns_left,
             num_rows_right,
@@ -536,13 +572,11 @@ where E::BaseField: Serialize + DeserializeOwned,
             aux.last_output_shape[1][self.permutations.right.concat_dimension]
         );
 
-        let num_vars = (num_columns_left*num_chunks).ilog2() as usize;
+        let num_vars = (num_columns_left * num_chunks).ilog2() as usize;
 
         let vp_aux = VPAuxInfo::from_mle_list_dimensions(&vec![vec![num_vars, num_vars, num_vars]]);
 
-        aux.last_output_shape = self.output_shapes(
-            &aux.last_output_shape, PaddingMode::Padding
-        );
+        aux.last_output_shape = self.output_shapes(&aux.last_output_shape, PaddingMode::Padding);
 
         let ctx = ConcatMatMulCtx {
             node_id: id,
@@ -550,11 +584,7 @@ where E::BaseField: Serialize + DeserializeOwned,
             permutations: self.permutations.clone(),
         };
 
-        Ok((
-            LayerCtx::ConcatMatMul(ctx),
-            aux
-        ))
-        
+        Ok((LayerCtx::ConcatMatMul(ctx), aux))
     }
 }
 
@@ -567,54 +597,59 @@ impl PadOp for ConcatMatMul {
     }
 }
 
-impl<E: ExtensionField + DeserializeOwned, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS> for ConcatMatMul 
-where E::BaseField: DeserializeOwned + Serialize
+impl<E: ExtensionField + DeserializeOwned, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS>
+    for ConcatMatMul
+where
+    E::BaseField: DeserializeOwned + Serialize,
 {
     type Ctx = ConcatMatMulCtx<E>;
 
     fn prove<T: Transcript<E>>(
-            &self,
-            node_id: NodeId,
-            _ctx: &Self::Ctx,
-            last_claims: Vec<&Claim<E>>,
-            step_data: &StepData<E, E>,
-            prover: &mut Prover<E, T, PCS>,
-        ) -> Result<Vec<crate::Claim<E>>> {
+        &self,
+        node_id: NodeId,
+        _ctx: &Self::Ctx,
+        last_claims: Vec<&Claim<E>>,
+        step_data: &StepData<E, E>,
+        prover: &mut Prover<E, T, PCS>,
+    ) -> Result<Vec<crate::Claim<E>>> {
         ensure!(
             step_data.inputs.len() == 2,
             "ConcatMatMul expects 2 inputs, got {}",
             step_data.inputs.len()
         );
-        let input_shapes = step_data.inputs.iter().map(|input| 
-            input.get_shape()
-        ).collect_vec();
+        let input_shapes = step_data
+            .inputs
+            .iter()
+            .map(|input| input.get_shape())
+            .collect_vec();
         self.ensure_shape_consistency(&input_shapes)?;
 
-        ensure!(step_data.outputs.outputs().len() == 1, 
+        ensure!(
+            step_data.outputs.outputs().len() == 1,
             "ConcatMatMul expects 1 output, got {}",
             step_data.outputs.outputs().len()
         );
 
         let output = &step_data.outputs.outputs()[0];
 
-        let (point_for_concat, point_for_row, point_for_col) = self.permutations.split_output_claim_point(
-            output.get_shape(), 
-            &last_claims[0].point
-        )?;
+        let (point_for_concat, point_for_row, point_for_col) = self
+            .permutations
+            .split_output_claim_point(output.get_shape(), &last_claims[0].point)?;
 
         // determine if we need to permute the left matrix for sum-check
-        let (left, left_permutation) = self.permutations.left.input_mle_for_proving(
-            &step_data.inputs[0], 
-            point_for_row,
-        );
+        let (left, left_permutation) = self
+            .permutations
+            .left
+            .input_mle_for_proving(&step_data.inputs[0], point_for_row);
 
         // determine if we need to permute the right matrix for sum-check
-        let (right, right_permutation) = self.permutations.right.input_mle_for_proving(
-            &step_data.inputs[1], 
-            point_for_col
-        );
+        let (right, right_permutation) = self
+            .permutations
+            .right
+            .input_mle_for_proving(&step_data.inputs[1], point_for_col);
 
-        ensure!(left.num_vars() == right.num_vars(), 
+        ensure!(
+            left.num_vars() == right.num_vars(),
             "ConcatMatMul: left and right input MLEs must have the same number of variables: {} vs {}",
             left.num_vars(),
             right.num_vars()
@@ -622,34 +657,37 @@ where E::BaseField: DeserializeOwned + Serialize
 
         let sum_check_num_vars = left.num_vars();
 
-        let num_columns_left = step_data.inputs[0].get_shape()[self.permutations.left.mat_mul_dimension];
-        let num_rows_right = step_data.inputs[1].get_shape()[self.permutations.right.mat_mul_dimension];
-        ensure!(num_columns_left == num_rows_right, 
+        let num_columns_left =
+            step_data.inputs[0].get_shape()[self.permutations.left.mat_mul_dimension];
+        let num_rows_right =
+            step_data.inputs[1].get_shape()[self.permutations.right.mat_mul_dimension];
+        ensure!(
+            num_columns_left == num_rows_right,
             "ConcatMatMul: found different mat mul dimensions in left and right input matrix {} vs {}",
             num_columns_left,
             num_rows_right
         );
 
         // create the beta vector necessary for the batched matrix multiplication
-        let beta_evals = compute_betas_eval(point_for_concat).into_iter()
+        let beta_evals = compute_betas_eval(point_for_concat)
+            .into_iter()
             .flat_map(|eval|
                 // replicate it for the number of entries in the mat mul dimension
-                vec![eval; num_columns_left]
-        ).collect_vec();
+                vec![eval; num_columns_left])
+            .collect_vec();
 
         let beta_mle = beta_evals.into_mle();
 
-        ensure!(sum_check_num_vars == beta_mle.num_vars(), 
+        ensure!(
+            sum_check_num_vars == beta_mle.num_vars(),
             "ConcatMatMul: Beta vector MLE has an invalid number of variables: expected {}, found {}",
-            sum_check_num_vars, beta_mle.num_vars(),
+            sum_check_num_vars,
+            beta_mle.num_vars(),
         );
 
         let mut vp = VirtualPolynomial::new(sum_check_num_vars);
 
-        vp.add_mle_list(
-            vec![beta_mle.into(), left.into(), right.into()],
-            E::ONE,
-        );
+        vp.add_mle_list(vec![beta_mle.into(), left.into(), right.into()], E::ONE);
 
         #[allow(deprecated)]
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
@@ -660,32 +698,25 @@ where E::BaseField: DeserializeOwned + Serialize
         let right_eval = evals[2];
 
         let proof_point = &proof.point;
-        let (point_for_concat_dim, point_for_mat_mul_dim) = self.permutations.split_sumcheck_point(
-            &proof_point,
-            &input_shapes,
-        )?;
+        let (point_for_concat_dim, point_for_mat_mul_dim) = self
+            .permutations
+            .split_sumcheck_point(&proof_point, &input_shapes)?;
 
         let left_point = self.permutations.left.build_point_for_input(
             point_for_concat_dim,
             point_for_mat_mul_dim,
             point_for_row,
         );
-        
+
         let right_point = self.permutations.right.build_point_for_input(
             point_for_concat_dim,
             point_for_mat_mul_dim,
             point_for_col,
         );
 
-        let left_claim = Claim::new(
-            left_point,
-            left_eval,
-        );
+        let left_claim = Claim::new(left_point, left_eval);
 
-        let right_claim = Claim::new(
-            right_point,
-            right_eval,
-        );
+        let right_claim = Claim::new(right_point, right_eval);
 
         let proof = ConcatMatMulProof {
             sumcheck_proof: proof,
@@ -699,11 +730,7 @@ where E::BaseField: DeserializeOwned + Serialize
 }
 
 impl<E: ExtensionField> OpInfo for ConcatMatMulCtx<E> {
-    fn output_shapes(
-        &self,
-        input_shapes: &[Shape],
-        padding_mode: PaddingMode,
-    ) -> Vec<Shape> {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         self.permutations.output_shapes(input_shapes, padding_mode)
     }
 
@@ -712,7 +739,10 @@ impl<E: ExtensionField> OpInfo for ConcatMatMulCtx<E> {
     }
 
     fn describe(&self) -> String {
-        format!("ConcatMatMulCtx: {} -> {:?}", self.node_id, self.permutations)
+        format!(
+            "ConcatMatMulCtx: {} -> {:?}",
+            self.node_id, self.permutations
+        )
     }
 
     fn is_provable(&self) -> bool {
@@ -720,8 +750,10 @@ impl<E: ExtensionField> OpInfo for ConcatMatMulCtx<E> {
     }
 }
 
-impl<E: ExtensionField + DeserializeOwned, PCS: PolynomialCommitmentScheme<E>> VerifiableCtx<E, PCS> for ConcatMatMulCtx<E> 
-where E::BaseField: DeserializeOwned
+impl<E: ExtensionField + DeserializeOwned, PCS: PolynomialCommitmentScheme<E>> VerifiableCtx<E, PCS>
+    for ConcatMatMulCtx<E>
+where
+    E::BaseField: DeserializeOwned,
 {
     type Proof = ConcatMatMulProof<E>;
 
@@ -732,12 +764,17 @@ where E::BaseField: DeserializeOwned
         verifier: &mut Verifier<E, T, PCS>,
         shape_step: &ShapeStep,
     ) -> Result<Vec<Claim<E>>> {
-        ensure!(last_claims.len() == 1, "Expected only one output claim for ConcatMatMul verifier, found {}", last_claims.len());
+        ensure!(
+            last_claims.len() == 1,
+            "Expected only one output claim for ConcatMatMul verifier, found {}",
+            last_claims.len()
+        );
 
         let last_claim = last_claims[0];
 
         let padded_input_shapes = &shape_step.padded_input_shape;
-        self.permutations.ensure_shape_consistency(padded_input_shapes)?;
+        self.permutations
+            .ensure_shape_consistency(padded_input_shapes)?;
 
         let subclaim = IOPVerifierState::<E>::verify(
             last_claim.eval,
@@ -746,27 +783,28 @@ where E::BaseField: DeserializeOwned
             verifier.transcript,
         );
 
-        ensure!(shape_step.padded_output_shape.len() == 1, 
-            "Expected only one output shape for ConcatMatMul verifier, found {}", 
+        ensure!(
+            shape_step.padded_output_shape.len() == 1,
+            "Expected only one output shape for ConcatMatMul verifier, found {}",
             shape_step.padded_output_shape.len(),
         );
 
-        let (point_for_concat, point_for_row, point_for_col) = self.permutations.split_output_claim_point(
-            shape_step.padded_output_shape[0].clone(), 
-            &last_claims[0].point
-        )?;
+        let (point_for_concat, point_for_row, point_for_col) =
+            self.permutations.split_output_claim_point(
+                shape_step.padded_output_shape[0].clone(),
+                &last_claims[0].point,
+            )?;
 
         let sumcheck_point = subclaim.point_flat();
 
-        let (point_for_concat_dim, point_for_mat_mul_dim) = self.permutations.split_sumcheck_point(
-            &sumcheck_point,
-            &padded_input_shapes,
-        )?;
+        let (point_for_concat_dim, point_for_mat_mul_dim) = self
+            .permutations
+            .split_sumcheck_point(&sumcheck_point, &padded_input_shapes)?;
 
-        // first, verify the claim about the `beta_MLE` used in the sumcheck in `prove`. 
+        // first, verify the claim about the `beta_MLE` used in the sumcheck in `prove`.
         // The MLE of  claim should be equal to \beta(x_c, point_for_concat), where x_c are the coordinates of the
-        // sumcheck variables corresponding to the concatenation dimension. 
-        // Therefore, the claim produced by the sumcheck should be equivalent to 
+        // sumcheck variables corresponding to the concatenation dimension.
+        // Therefore, the claim produced by the sumcheck should be equivalent to
         // \beta(point_for_concat_dim, point_for_concat)
         let expected_beta_eval = identity_eval(point_for_concat_dim, point_for_concat);
         ensure!(
@@ -774,7 +812,7 @@ where E::BaseField: DeserializeOwned
             "Wrong evaluation of beta_MLE found in ConcatMatMul proof: expected {}, found {}",
             expected_beta_eval,
             proof.individual_claims[0],
-        ); 
+        );
 
         let left_point = self.permutations.left.build_point_for_input(
             point_for_concat_dim,
@@ -813,20 +851,26 @@ where E::BaseField: DeserializeOwned
     }
 }
 
-
 #[cfg(test)]
 mod test {
     use ff_ext::GoldilocksExt2;
 
-    use crate::{layers::{provable::{Edge, Node}, Layer}, model::{test::prove_model, Model}, Tensor};
+    use crate::{
+        Tensor,
+        layers::{
+            Layer,
+            provable::{Edge, Node},
+        },
+        model::{Model, test::prove_model},
+    };
 
     use super::*;
 
     #[test]
     fn test_concat_matmul() {
         let concat_matmul = ConcatMatMul::new(
-            ConcatMatMul::expected_dimension_for_left_input(), 
-            ConcatMatMul::expected_dimension_for_right_input()
+            ConcatMatMul::expected_dimension_for_left_input(),
+            ConcatMatMul::expected_dimension_for_right_input(),
         );
         let a = Tensor::new(
             vec![2, 2, 2].into(),
@@ -848,9 +892,9 @@ mod test {
     #[test]
     fn test_concat_matmul_with_output_transpose() {
         let concat_matmul = ConcatMatMul::new_with_permute(
-            ConcatMatMul::expected_dimension_for_left_input(), 
+            ConcatMatMul::expected_dimension_for_left_input(),
             ConcatMatMul::expected_dimension_for_right_input(),
-            Permutation::new(vec![1, 0, 2])
+            Permutation::new(vec![1, 0, 2]),
         );
         let a = Tensor::new(
             vec![2, 2, 2].into(),
@@ -876,10 +920,20 @@ mod test {
 
     #[test]
     fn test_concat_matmul_with_input_transpose() {
-        let a = Tensor::new(vec![3, 2, 2].into(), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
-        let b = Tensor::new(vec![2, 3, 2].into(), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+        let a = Tensor::new(
+            vec![3, 2, 2].into(),
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+            ],
+        );
+        let b = Tensor::new(
+            vec![2, 3, 2].into(),
+            vec![
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+            ],
+        );
         let concat_matmul = ConcatMatMul::new(
-            InputMatrixDimensions::new(1, 2, 0), 
+            InputMatrixDimensions::new(1, 2, 0),
             InputMatrixDimensions::new(0, 2, 1),
         );
 
@@ -889,15 +943,13 @@ mod test {
         let expected = Tensor::new(
             vec![2, 3, 3].into(),
             vec![
-                5.0, 11.0, 17.0, 17.0, 39.0, 61.0, 29.0, 67.0, 105.0,
-                53.0, 67.0, 81.0, 113.0, 143.0, 173.0, 173.0, 219.0, 265.0
-            ]
+                5.0, 11.0, 17.0, 17.0, 39.0, 61.0, 29.0, 67.0, 105.0, 53.0, 67.0, 81.0, 113.0,
+                143.0, 173.0, 173.0, 219.0, 265.0,
+            ],
         );
         assert_eq!(result.outputs[0].data, expected.data);
-        let expected_shape = concat_matmul.output_shapes(
-            &[a.get_shape(), b.get_shape()], 
-            PaddingMode::NoPadding
-        );
+        let expected_shape =
+            concat_matmul.output_shapes(&[a.get_shape(), b.get_shape()], PaddingMode::NoPadding);
         assert_eq!(result.outputs[0].get_shape(), expected_shape[0]);
     }
 
@@ -908,20 +960,25 @@ mod test {
         let input_shape_right = vec![5, 27, 18].into();
 
         let mut model = Model::new_from_input_shapes(
-            vec![input_shape_left, input_shape_right], 
+            vec![input_shape_left, input_shape_right],
             PaddingMode::NoPadding,
         );
         let mat_mul = ConcatMatMul::new(
             ConcatMatMul::expected_dimension_for_left_input(),
             ConcatMatMul::expected_dimension_for_right_input(),
         );
-        let _id = model.add_consecutive_layer(Layer::ConcatMatMul(mat_mul), None).unwrap();
+        let _id = model
+            .add_consecutive_layer(Layer::ConcatMatMul(mat_mul), None)
+            .unwrap();
         model.route_output(None).unwrap();
         model.describe();
         let outputs = prove_model(model).unwrap();
 
         // check output shape
-        assert_eq!(outputs[0].get_shape(), Shape::new(vec![5, 14, 18]).next_power_of_two());
+        assert_eq!(
+            outputs[0].get_shape(),
+            Shape::new(vec![5, 14, 18]).next_power_of_two()
+        );
     }
 
     #[test]
@@ -936,15 +993,20 @@ mod test {
         );
 
         let mut model = Model::new_from_input_shapes(
-            vec![input_shape_left, input_shape_right], 
+            vec![input_shape_left, input_shape_right],
             PaddingMode::NoPadding,
         );
-        
-        let _id = model.add_consecutive_layer(Layer::ConcatMatMul(mat_mul), None).unwrap();
+
+        let _id = model
+            .add_consecutive_layer(Layer::ConcatMatMul(mat_mul), None)
+            .unwrap();
         model.route_output(None).unwrap();
         model.describe();
         let outputs = prove_model(model).unwrap();
-        assert_eq!(outputs[0].get_shape(), Shape::new(vec![5, 14, 18]).next_power_of_two());
+        assert_eq!(
+            outputs[0].get_shape(),
+            Shape::new(vec![5, 14, 18]).next_power_of_two()
+        );
     }
 
     #[test]
@@ -955,10 +1017,10 @@ mod test {
         // we have also another input, which is going to be multiplied with the output of the first
         // concat matmul operation
         let additional_input_shape = vec![21, 7, 45].into(); // concat dimension is 7, mul dimension is 45, 
-            // since the output shape of the previous concat matmul will be `[7, 17, 45]`
+        // since the output shape of the previous concat matmul will be `[7, 17, 45]`
 
         let mut model = Model::new_from_input_shapes(
-            vec![input_shape_left, input_shape_right, additional_input_shape], 
+            vec![input_shape_left, input_shape_right, additional_input_shape],
             PaddingMode::NoPadding,
         );
 
@@ -967,35 +1029,35 @@ mod test {
             ConcatMatMul::expected_dimension_for_right_input(),
         );
 
-        let first_node_id = model.add_node(Node::new(
-            vec![
-                Edge::new_at_edge(0),
-                Edge::new_at_edge(1),
-            ], 
-            Layer::ConcatMatMul(first_matmul),
-        )).unwrap();
-    
+        let first_node_id = model
+            .add_node(Node::new(
+                vec![Edge::new_at_edge(0), Edge::new_at_edge(1)],
+                Layer::ConcatMatMul(first_matmul),
+            ))
+            .unwrap();
+
         // add another concat matmul layer, multiplying the output of `first_node_id` with the additional
         // input tensor of the model
         let second_matmul = ConcatMatMul::new_with_permute(
-            ConcatMatMul::expected_dimension_for_left_input(), 
+            ConcatMatMul::expected_dimension_for_left_input(),
             InputMatrixDimensions::new(1, 2, 0),
-            Permutation::new(vec![2, 0, 1]) // we also permute the output tensor to have the concat dimension as
-                // the middel dimension
+            Permutation::new(vec![2, 0, 1]), /* we also permute the output tensor to have the concat dimension as
+                                              * the middel dimension */
         );
 
-        let _second_node_id = model.add_node(Node::new(
-            vec![
-                Edge::new(first_node_id, 0),
-                Edge::new_at_edge(2),
-            ], 
-            Layer::ConcatMatMul(second_matmul),
-        )).unwrap();
+        let _second_node_id = model
+            .add_node(Node::new(
+                vec![Edge::new(first_node_id, 0), Edge::new_at_edge(2)],
+                Layer::ConcatMatMul(second_matmul),
+            ))
+            .unwrap();
 
         model.route_output(None).unwrap();
-        
 
         let outputs = prove_model(model).unwrap();
-        assert_eq!(outputs[0].get_shape(), Shape::new(vec![21, 7, 17]).next_power_of_two());
+        assert_eq!(
+            outputs[0].get_shape(),
+            Shape::new(vec![21, 7, 17]).next_power_of_two()
+        );
     }
 }
