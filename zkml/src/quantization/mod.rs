@@ -145,6 +145,13 @@ impl Default for ScalingFactor {
     }
 }
 
+// s = m / 2^shift, it returns the shift and the multiplier
+pub fn split_scale_into_multiplier(s: f32) -> (usize, f32) {
+    let shift = (-s.log2()).ceil() as usize;
+    let m = s * 2f32.powf(shift as f32);
+    (shift, m)
+}
+
 /// Returns the scaling factors for the main tensor and for the bias tensor. These are the "model" scaling factors, or
 /// S2 in the formula S1 * S2 / S3.
 pub fn model_scaling_factor_from_tensor_and_bias(
