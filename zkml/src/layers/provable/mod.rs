@@ -420,7 +420,7 @@ where
             LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Softmax => unimplemented!("Softmax layer not implemented"),
-            LayerCtx::Add => unimplemented!("Add layer not implemented"),
+            LayerCtx::Add(ctx) => ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
             LayerCtx::Embeddings => unimplemented!("Embeddings layer not implemented"),
             LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
@@ -447,7 +447,7 @@ where
             LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Softmax => unimplemented!("Softmax layer not implemented"),
-            LayerCtx::Add => unimplemented!("Add layer not implemented"),
+            LayerCtx::Add(ctx) => ctx.num_outputs(num_inputs),
             LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
             LayerCtx::Embeddings => unimplemented!("Embeddings layer not implemented"),
             LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
@@ -470,7 +470,7 @@ where
             LayerCtx::ConcatMatMul => unimplemented!("ConcatMatMul layer not implemented"),
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Softmax => unimplemented!("Softmax layer not implemented"),
-            LayerCtx::Add => unimplemented!("Add layer not implemented"),
+            LayerCtx::Add(ctx) => ctx.describe(),
             LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
             LayerCtx::Embeddings => unimplemented!("Embeddings layer not implemented"),
             LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
@@ -494,7 +494,7 @@ where
             LayerCtx::Activation(activation_ctx) => activation_ctx.is_provable(),
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Softmax => unimplemented!("Softmax layer not implemented"),
-            LayerCtx::Add => unimplemented!("Add layer not implemented"),
+            LayerCtx::Add(ctx) => ctx.is_provable(),
             LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
             LayerCtx::Embeddings => unimplemented!("Embeddings layer not implemented"),
             LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
@@ -555,7 +555,7 @@ where
             (LayerCtx::Positional, LayerProof::Positional) => {
                 unimplemented!("Positional layer not implemented")
             }
-            (LayerCtx::Add, LayerProof::Add) => {
+            (LayerCtx::Add(ctx), LayerProof::Add(_)) => {
                 unimplemented!("Add layer not implemented")
             }
             (LayerCtx::Logits, LayerProof::Logits) => {
