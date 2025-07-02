@@ -1,0 +1,43 @@
+name: "Layer quantization regression tests"
+on:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ['hostname:hetzner-dedicated-6']
+    steps:
+      - name: Clean previous outputs
+        run: |
+          rm -r ~/layers-quant 2> /dev/null || true
+          rm -r ~/layers-quant-base 2> /dev/null || true
+      - name: Set RNG seed
+        run: |
+          seed=$(date +%s)
+          echo "RNG seed: $seed"
+          echo "RNG_SEED=$seed" >> $GITHUB_ENV
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly-2025-05-22
+      - name: Checkout base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref || 'main' }}
+      - name: Capture layers outputs on base
+        run: |
+          cd zkml
+          cargo test --features capture-layers-quant
+          mv layers-quant ~/layers-quant-base
+      - name: Checkout HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Capture layers outputs on HEAD
+        run: |
+          cd zkml
+          cargo test --features capture-layers-quant
+          mv layers-quant ~/layers-quant
+          cp ../scripts/ci/cmp-layers-quant.sh ~/cmp-layers-quant.sh
+      - name: Compare HEAD outputs against base
+        run: |
+          cd ~
+          ./cmp-layers-quant.sh
