@@ -588,7 +588,8 @@ where
         let two = E::from_canonical_u64(2u64);
         let two_inv = two.inverse();
         let two_mult = E::from_canonical_u64(1u64 << extra_vars);
-
+        // We chain 2^-1 in all the vairables that correspond to the row, that way in the sumcheck if we multiply by 2^extra_vars we end up with
+        // a polynomial that has evaluations equal to the sum of the rows of exp_output (which should all be within the allowable error of quantised one).
         let full_error_point = std::iter::repeat_n(two_inv, extra_vars)
             .chain(error_point.iter().copied())
             .collect::<Vec<E>>();
@@ -607,7 +608,10 @@ where
         let last_claim_beta: ArcMultilinearExtension<E> =
             compute_betas_eval(&last_claim.point).into_mle().into();
 
-        // Start to build the virtual polynomial, begin with exponential polys
+        // Start to build the virtual polynomial, begin with exponential polys. This Virtual Polynomial is used because currently
+        // the different polynomials that make up the input are all being evaluated at different points, in order to recombine them we need them to
+        // be evaluated at the same point. To do this we use a random linear combination of the polynomials and multily each by eq(eval_point,x) so that
+        // the initial sum is the same random linear combination of the evaluations we currently have (and the verifier has access to).
         let (vp, batch_challenge) = exp_commitments.iter().fold(
             (VirtualPolynomial::<E>::new(exp_point.len()), E::ONE),
             |(mut vp_acc, bc), (_, poly)| {
@@ -700,7 +704,8 @@ where
             .into_mle()
             .into();
 
-        // Make the VirtualPolynomial
+        // Make the VirtualPolynomial to prove that the mask was applied correctly. This Virtual Polynomial is
+        // eq(sumcheck_point,x) * (shifted_input_mle * mask.tril_mle + mask.bias_mle).
         let mut vp = VirtualPolynomial::<E>::new(tril_mle.num_vars());
         vp.add_mle_list(vec![shifted_input_mle, tril_mle], E::ONE);
         vp.add_mle_list(vec![bias_mle], E::ONE);
