@@ -8,6 +8,7 @@ use std::{
 use timed_core::Output;
 #[cfg(feature = "blake")]
 use transcript::blake::BlakeTranscript;
+use utils::{MeasureStage, info_metrics};
 use zkml::{
     model::Model,
     quantization::{AbsoluteMax, InferenceObserver, ModelMetadata},
@@ -273,40 +274,56 @@ fn read_model(args: &Args, inputs: &InputJSON) -> Result<(Model<Element>, ModelM
 }
 
 fn run(args: Args) -> anyhow::Result<()> {
-    info!("[+] Reading raw input/output from {}", args.io);
-    let run_inputs = InputJSON::from(&args.io, args.num_samples).context("loading input:")?;
-    info!("[+] Found {} IO samples", run_inputs.input_data.len());
-    let (model, md) = read_model(&args, &run_inputs)?;
-    info!("[+] Model loaded");
-    model.describe();
+    let (run_inputs, model, md) = {
+        info_metrics!(
+            format!("[+] Reading model {}", args.io),
+            format!("[-] Finished reading model {}", args.io),
+        );
 
-    let run_inputs = run_inputs.filter(args.run_indices.as_ref());
+        info!("[+] Reading raw input/output from {}", args.io);
+        let run_inputs = InputJSON::from(&args.io, args.num_samples).context("loading input:")?;
 
-    // Get float accuracy if float model is available
-    let float_accuracy = if let Some(ref float_model) = md.float_model {
-        info!("[+] Running float model");
-        run_float_model(&run_inputs, float_model)?
-    } else {
-        info!("[!] No float model available");
-        0.0
+        info!("[+] Found {} IO samples", run_inputs.input_data.len());
+        let (model, md) = read_model(&args, &run_inputs)?;
+
+        info!("[+] Model loaded");
+        model.describe();
+
+        (run_inputs.filter(args.run_indices.as_ref()), model, md)
     };
 
-    info!("[+] Computing PyTorch accuracy");
-    let num_samples = run_inputs.output_data.len();
-    let pytorch_accuracy = run_inputs.compute_pytorch_accuracy();
+    let (float_accuracy, num_samples, pytorch_accuracy) = {
+        info_metrics!("[+] Computing accuracy", "[-] Finished computing accuracy");
+
+        let float_accuracy = if let Some(ref float_model) = md.float_model {
+            info!("[+] Running float model");
+            run_float_model(&run_inputs, float_model)?
+        } else {
+            info!("[!] No float model available");
+            0.0
+        };
+
+        info!("[+] Computing PyTorch accuracy");
+        let num_samples = run_inputs.output_data.len();
+        let pytorch_accuracy = run_inputs.compute_pytorch_accuracy();
+
+        (float_accuracy, num_samples, pytorch_accuracy)
+    };
+
     info!("[+] Quantizing inputs with strategy: {}", args.quantization);
     let (inputs, given_outputs) = run_inputs.to_elements(&md);
 
-    // Generate context once and measure the time
-    let now = time::Instant::now();
+    let measure = MeasureStage::new(
+        "[+] Generating context for proving".into(),
+        "[+] Finished generating context for proving".into(),
+    );
     let ctx = if !args.skip_proving {
-        info!("[+] Generating context for proving");
         Some(Context::<F, Pcs<F>>::generate(&model, None).expect("unable to generate context"))
     } else {
         None
     };
-    let setup_time = now.elapsed().as_millis();
-    info!("STEP: {} took {}ms", CSV_SETUP, setup_time);
+    let context_metrics = measure.metrics();
+    let setup_time = context_metrics.elapsed.as_millis();
 
     // Collect accuracies for final average
     let mut accuracies = Vec::new();
@@ -328,12 +345,21 @@ fn run(args: Args) -> anyhow::Result<()> {
         // Store the setup time in the bencher (without re-running setup)
         bencher.set(CSV_SETUP, setup_time);
 
-        let input_tensor = model.load_input_flat(vec![input])?;
-        // let input_tensor : Tensor<Element> = Tensor::new(model.input_not_padded.clone(), input);
+        let input_tensor = {
+            info_metrics!(
+                "[+] Loading model inputs",
+                "[-] Finished loading model inputs"
+            );
 
-        info!("[+] Running inference");
-        // Handle model.run failures gracefully
-        let trace_result = bencher.r(CSV_INFERENCE, || model.run(&input_tensor));
+            // Tensor::new(model.input_not_padded.clone(), input);
+            model.load_input_flat(vec![input])?
+        };
+
+        let trace_result = {
+            info_metrics!("[+] Running inference", "[-] Finished running inference");
+
+            bencher.r(CSV_INFERENCE, || model.run(&input_tensor))
+        };
 
         // If model.run fails, print the error and continue to the next input
         let trace = match trace_result {
@@ -349,6 +375,7 @@ fn run(args: Args) -> anyhow::Result<()> {
                 continue; // Skip to the next input without writing to CSV
             }
         };
+
         // TEST:
         //  This prints the min/max in f32 of the output of each layer for this run
         //  Useful to check consistency with pytorch for example
@@ -363,11 +390,12 @@ fn run(args: Args) -> anyhow::Result<()> {
         //        );
         //    }
         //}
+
         let output = trace.outputs()?[0];
         let accuracy = argmax_compare(&given_output, output.get_data());
         accuracies.push(accuracy);
         bencher.set(CSV_ACCURACY, accuracy);
-        // Log per-run accuracy
+
         info!(
             "Run {}/{}: Accuracy: {}",
             i + 1,
@@ -378,30 +406,41 @@ fn run(args: Args) -> anyhow::Result<()> {
             info!("[+] Skipping proving");
             continue;
         }
-        info!("[+] Running prover");
-        let io = trace.to_verifier_io();
-        let mut prover_transcript = new_transcript();
-        let prover = Prover::<_, _, _>::new(ctx.as_ref().unwrap(), &mut prover_transcript);
-        let proof = bencher.r(CSV_PROVING, move || {
-            prover.prove(trace).expect("unable to generate proof")
-        });
+
+        let (io, proof) = {
+            info_metrics!("[+] Running prover", "[-] Finished running prover");
+
+            let io = trace.to_verifier_io();
+            let mut prover_transcript = new_transcript();
+            let prover = Prover::<_, _, _>::new(ctx.as_ref().unwrap(), &mut prover_transcript);
+
+            let proof = bencher.r(CSV_PROVING, move || {
+                prover.prove(trace).expect("unable to generate proof")
+            });
+
+            (io, proof)
+        };
 
         // Serialize proof using MessagePack and calculate size in KB
         let proof_bytes = to_vec_named(&proof)?;
         let proof_size_kb = proof_bytes.len() as f64 / 1024.0;
         bencher.set(CSV_PROOF_SIZE, format!("{proof_size_kb:.3}"));
 
-        info!("[+] Running verifier");
-        let mut verifier_transcript = new_transcript();
-        bencher.r(CSV_VERIFYING, || {
-            verify::<_, _, _>(
-                ctx.as_ref().unwrap().clone(),
-                proof,
-                io,
-                &mut verifier_transcript,
-            )
-            .expect("invalid proof")
-        });
+        {
+            info_metrics!("[+] Running verifier", "[-] Finished running verifier");
+
+            let mut verifier_transcript = new_transcript();
+            bencher.r(CSV_VERIFYING, || {
+                verify::<_, _, _>(
+                    ctx.as_ref().unwrap().clone(),
+                    proof,
+                    io,
+                    &mut verifier_transcript,
+                )
+                .expect("invalid proof")
+            });
+        }
+
         info!("[+] Verify proof: valid");
 
         bencher.flush(&args.bench)?;

@@ -67,6 +67,7 @@ p3-field = { workspace = true }
 p3-goldilocks = { workspace = true }
 p3-poseidon2 = { workspace = true }
 p3-symmetric = { workspace = true }
+utils = { path = "../utils" }
 
 # worker-related dependencies
 alloy = { version = "1.0" }
