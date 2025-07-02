@@ -21,55 +21,11 @@ use serde::{Deserialize, Serialize};
 use crate::{Tensor, layers::provable::LayerOut};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub(crate) struct MhaQk {
+pub struct Mha<N> {
+    inputs_reshape: Reshape, // ToDo: can be removed once we will include padding in QKV layer
     num_heads: usize,
     head_dim: usize,
     qk: ConcatMatMul,
-}
-
-impl MhaQk {
-    fn new(num_heads: usize, head_dim: usize) -> Self {
-        Self {
-            num_heads,
-            head_dim,
-            qk: ConcatMatMul::new(
-                InputMatrixDimensions::new(1, 2, 0),
-                InputMatrixDimensions::new(1, 2, 0),
-            ),
-        }
-    }
-
-    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
-        // // qk is now of shape [num_heads,q_len, seq_len]
-        // // v is of shape [num_heads, seq_len, head_dim].
-        let q_len = input_shapes[0][0];
-        let seq_len = input_shapes[1][0];
-        assert!(
-            q_len == 1 || q_len == seq_len,
-            "q should either be a vector OR have same seq_len as K and V"
-        );
-        match padding_mode {
-            PaddingMode::NoPadding => {
-                vec![vec![self.num_heads, q_len, seq_len].into()]
-            }
-            PaddingMode::Padding => {
-                vec![
-                    vec![
-                        self.num_heads.next_power_of_two(),
-                        q_len.next_power_of_two(),
-                        seq_len.next_power_of_two(),
-                    ]
-                    .into(),
-                ]
-            }
-        }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Mha<N> {
-    inputs_reshape: Reshape, // ToDo: can be removed once we will include padding in QKV layer
-    qk: MhaQk,
     softmax: Softmax<N>,
     final_mul: ConcatMatMul,
     final_reshape: Reshape, /* ToDo: can be removed once we will handle unpadding in subsequent linear layer */
@@ -78,7 +34,10 @@ pub struct Mha<N> {
 impl<N: Number> Mha<N> {
     pub fn new(num_heads: usize, head_dim: usize) -> anyhow::Result<Self> {
         let inputs_reshape = Reshape::new_subspace(1..2, vec![num_heads, head_dim]);
-        let qk = MhaQk::new(num_heads, head_dim);
+        let qk = ConcatMatMul::new(
+                InputMatrixDimensions::new(1, 2, 0),
+                InputMatrixDimensions::new(1, 2, 0),
+            );
         let softmax = Softmax::new()
             .with_scale(N::from_f32((1.0 / (head_dim as f32)).sqrt())?);
         let final_mul = ConcatMatMul::new_with_permute(
@@ -90,7 +49,8 @@ impl<N: Number> Mha<N> {
         let final_reshape = Reshape::new_subspace(1..=2, vec![num_heads * head_dim]);
         Ok(Self {
             inputs_reshape,
-
+            num_heads,
+            head_dim,
             qk,
             softmax,
             final_mul,
@@ -200,9 +160,9 @@ impl<N: Number> OpInfo for Mha<N> {
     fn describe(&self) -> String {
         format!(
             "MHA({}, {}): \t {} \t {}, \t {}",
-            self.qk.num_heads,
-            self.qk.head_dim,
-            self.qk.qk.describe(),
+            self.num_heads,
+            self.head_dim,
+            self.qk.describe(),
             self.softmax.describe(),
             self.final_mul.describe(),
         )
@@ -211,44 +171,6 @@ impl<N: Number> OpInfo for Mha<N> {
 
     fn is_provable(&self) -> bool {
         true
-    }
-}
-
-impl<N: Number> Evaluate<N> for MhaQk {
-    fn evaluate<E: ExtensionField>(
-        &self,
-        inputs: &[&Tensor<N>],
-        unpadded_input_shapes: Vec<Shape>,
-    ) -> anyhow::Result<LayerOut<N, E>> {
-        ensure!(inputs.len() == 2, "MHA_QK expects 2 inputs");
-        let q = inputs[0].clone();
-        let k = inputs[1].clone();
-        let q_len = q.get_shape()[0];
-        let seq_len = k.get_shape()[0];
-        ensure!(
-            q_len == 1 || q_len == seq_len,
-            "q should either be a vector OR have same seq_len as K and V"
-        );
-        let out = self.qk.evaluate::<E>(inputs, unpadded_input_shapes)?;
-        let qk = out.outputs()[0];
-        assert_eq!(qk.get_shape(), vec![self.num_heads, q_len, seq_len].into());
-        // CAUSAL MASK
-        // First it sets to 0 the part that should be ignored on each Q "sequence" for each head
-        // Then it adds minus infinity to the same part.
-        // We do it in two steps like this because during proving, given we're in integer world, the -minus-infinity
-        // would be dynamically depending on the size of Q and K^T. Also because we need to exactly fix -minus-infinity
-        // to the lowest minimum value that _softmax_ can handle, so it needs to be a constant. Just "adding the causal mask"
-        // would not give us these guarantees.
-        let zeros = zeroifier(self.num_heads, q_len, seq_len);
-        let minus_infinity = infinitizer(self.num_heads, q_len, seq_len, N::MIN);
-        let qk_zeroified = qk.mul(&zeros);
-        let qk_infinitized = qk_zeroified.add(&minus_infinity);
-
-        // The next operation in transformer is softmax row by row, and then qk @ v, "row by row" - but
-        // it's actually "head by head" which is the highest dimension.
-        // So for the shapes, it's [q_len,seq_len] @ [seq_len, head_dim] = [q_len, head_dim]
-        // This is done in separate layer in the framework since we first need to prove softmax which happens separatedly
-        Ok(LayerOut::from_vec(vec![qk_infinitized]))
     }
 }
 
@@ -296,7 +218,7 @@ impl QuantizeOp for Mha<f32> {
         );
         // there is no requant layers after that, softmax takes care of it.
         Ok(QuantizeOutput::new(
-            Mha::new(self.qk.num_heads, self.qk.head_dim)?,
+            Mha::new(self.num_heads, self.head_dim)?,
             output_scalings,
         ))
     }
@@ -386,38 +308,29 @@ mod test {
         struct Params {
             seq_len: usize,
             q_len: usize,
-            should_fail: bool,
         }
         for params in vec![
             Params {
                 seq_len: 2,
                 q_len: 1,
-                should_fail: false,
             },
             Params {
                 seq_len: 2,
                 q_len: 2,
-                should_fail: false,
             },
             Params {
                 seq_len: 2,
                 q_len: 3,
-                should_fail: true,
             },
         ] {
             let num_heads = 2;
             let head_dim = 4;
-            let mha_qk = MhaQk::new(num_heads, head_dim);
+            let mha_qk = Mha::<Element>::new(num_heads, head_dim).unwrap().qk;
             let q_len = params.q_len;
             let seq_len = params.seq_len;
             let q = Tensor::<Element>::random(&vec![q_len, num_heads, head_dim].into());
             let k = Tensor::<Element>::random(&vec![seq_len, num_heads, head_dim].into());
-            let output = mha_qk.evaluate::<GoldilocksExt2>(&[&q, &k], vec![]);
-            if params.should_fail {
-                assert!(output.is_err());
-                continue;
-            }
-            let mut output = output.expect("mha_qk should not fail");
+            let mut output = mha_qk.evaluate::<GoldilocksExt2>(&[&q, &k], vec![]).unwrap();
             assert_eq!(output.outputs.len(), 1);
             let qk = output.outputs.remove(0);
             // normally [1,seq_len] per head, so with all heads [num_heads, 1, seq_len]
