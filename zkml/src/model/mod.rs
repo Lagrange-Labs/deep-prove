@@ -1244,7 +1244,7 @@ pub(crate) mod test {
             .collect_vec();
 
         let input_tensors = model.prepare_inputs(input_tensors).unwrap();
-
+        println!("Input tensors: {:?}", input_tensors.iter().map(|t| t.get_data()).collect_vec());
         let trace = model.run(&input_tensors)?;
         println!("trace: {:?}", trace.outputs()?.iter().map(|t| t.get_data()).collect_vec());
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"model");

@@ -1,6 +1,5 @@
 use multilinear_extensions::{
-    mle::{IntoMLE, MultilinearExtension},
-    virtual_poly::VPAuxInfo,
+    mle::{IntoMLE, MultilinearExtension}, util::ceil_log2, virtual_poly::VPAuxInfo
 };
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
@@ -250,12 +249,12 @@ impl Add<f32> {
             quant_info: Some(quant_info.clone()),
         };
         // we assume the inputs are quantized between [MIN, MAX] so add only produces values between [2 * MIN, 2 * MAX]
-        // since we do symmetric quantization, we can take min. However, we also need to take into account M1*shift2 and M2*shift1
+        // However, we also need to take into account M1*shift2 and M2*shift1
         let max = quant_info.left_scale().max(quant_info.right_scale());
-        let maxlog = if max > 1 { max.ilog2() as usize } else { 1 };
+        let maxlog = if max > 1 { ceil_log2(max as usize) } else { 1 };
         // so we do gross estimation of x1 * max + x2 * max => which in bit size means (MIN.log2() + maxlog) + 1
         // we also append a final +1 to void offsetted values being zeros
-        let intermediate_bit_size = (crate::quantization::MAX.ilog2() as usize + maxlog) + 1 + 1;
+        let intermediate_bit_size = crate::quantization::MAX.ilog2() as usize + maxlog + 1 + 1;
         println!("intermediate_bit_size: {}", intermediate_bit_size);
         println!("global shift: {}", quant_info.global_shift());
         // now we need to prepare the requant layer's scaling. The requant layer performs s1 * s2 / s3
