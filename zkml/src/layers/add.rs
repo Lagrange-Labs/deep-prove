@@ -35,7 +35,7 @@ use super::provable::LayerOut;
 const OPERAND_POLY_ID: u64 = 0xff;
 /// Constant that defines the amount of fixed point precision to use for multiplying the "eps" in eps * 2^-n part
 /// with the inputs.
-pub(crate) const M_FIXED_PRECISION: usize = 20;
+pub(crate) const M_FIXED_PRECISION: usize = 16;
 
 /// Add layer that adds two tensors together.
 /// If there is two inputs, no static weight, then the output shape is the same as the first input.
@@ -128,7 +128,11 @@ impl Evaluate<Element> for Add<Element> {
         };
         let left_scaled = left_tensor.scalar_mul(&(quant_info.left_scale()));
         let right_scaled = right_tensor.scalar_mul(&(quant_info.right_scale()));
-        let result = left_scaled.add(&right_scaled);
+        let mut result = left_scaled.add(&right_scaled);
+        // we check if we need to scale the result or not
+        if !quant_info.requires_requant() {
+            result = result.scalar_mul(&(quant_info.global_multiplier_element()));
+        }
         Ok(LayerOut::from_vec(vec![result]))
     }
 }
@@ -193,38 +197,57 @@ impl OpInfo for AddCtx {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct QuantInfo {
     m1: f32,
-    shift1: i32,
     m2: f32,
-    shift2: i32,
+    shift: i32,
 }
 
 impl QuantInfo {
+    pub fn new(left_scaling: &ScalingFactor, right_scaling: &ScalingFactor, output_scaling: &ScalingFactor) -> Self {
+        let (shift_out, m_out) = split_scale_into_multiplier(output_scaling.scale());
+        let s1p = left_scaling.scale() / m_out;
+        let s2p = right_scaling.scale() / m_out;
+        Self { m1: s1p, m2: s2p, shift: shift_out }
+    }
     pub fn left_scale(&self) -> Element {
         let m_scaled: f32 = self.m1 * (1 << M_FIXED_PRECISION) as f32;
-        (m_scaled * 2f32.powf(self.shift2 as f32)) as Element
+        m_scaled.round() as Element
     }
     pub fn right_scale(&self) -> Element {
         let m_scaled: f32 = self.m2 * (1 << M_FIXED_PRECISION) as f32;
-        (m_scaled * 2f32.powf(self.shift1 as f32)) as Element
+        m_scaled.round() as Element
     }
     // returns the exponent of the denominator 2^n, what the requant layer will have to perform as shift
     pub fn global_shift(&self) -> i32 {
-        self.shift1 + self.shift2 + M_FIXED_PRECISION as i32
+        -self.shift + M_FIXED_PRECISION as i32
+    }
+    pub fn requires_requant(&self) -> bool {
+        self.shift <= M_FIXED_PRECISION as i32
+    }
+    fn global_multiplier(&self) -> f32 {
+       2f32.powf(self.global_shift() as f32)
+    }
+    pub(crate) fn global_multiplier_element(&self) -> Element {
+        self.global_multiplier() as Element
     }
 }
 
 /// Normally, scaling add is done by scaling both inputs, so requant should happen _before_ the add.
 /// y = (s1 * x1 + s2 * x2) / s3 where s1 is the left input scaling factor, s2 is the right input scaling factor,
 /// and s3 is the output scaling factor.
-/// In quantized world, we approximate s1' = s1 / s3 = M1 / 2^shift1 and s2' = s2 / s3 = M2 / 2^shift2
+/// In quantized world, we approximate s3 = m * 2^-n
 /// so we can rewrite the equation as:
-/// y = (x1 * M1 / 2^shift1 + x2 * M2 / 2^shift2)
-/// so if we put under a common denomiator we have:
-/// y = (x1 * M1 * 2^shift2 + x2 * M2 * 2^shift1) / (2^{shift1 + shift2})
+/// y = (x1 * s1 / (m * 2^-n) + x2 * s2 / (m * 2^-n))
+/// y = (x1 * s1 / m + x2 * s2 / m) / 2^-n
+/// y = (x1 * s1 / m + x2 * s2 / m) * 2^n
 ///
-/// Since the numerators are constant, we can just multiply the claims by the respective M1,M2, and shift1 and shift2
-/// and have only a single requant layer after to apply the denominator.
-///
+/// Due to accuracy issues, we're actually using fixed point precision so 
+/// y = ((x1 * s1 * 2^precision / m) + (x2 * s2 * 2^precision / m)) / (2^-n * 2^precision)
+/// y = ((x1 * s1 * 2^precision / m) + (x2 * s2 * 2^precision / m)) / 2^{-n + precision}
+/// y = ((x1 * s1 * 2^precision / m) + (x2 * s2 * 2^precision / m)) * 2^{n - precision}
+/// 
+/// So if `n >= precision`, the exponent is positive and thus we can simply scale the claim by an integer
+/// If `n <= precision`, then the exponent is negative, and thus we need a division, so we need a requant layer.
+/// 
 /// NOTE: in the case there is a right operand, then we need to quantize the right operand, as in a dense layer.
 impl Add<f32> {
     fn quantize(
@@ -233,26 +256,21 @@ impl Add<f32> {
         output_scaling: ScalingFactor,
     ) -> anyhow::Result<QuantizeOutput<Add<Element>>> {
         let left_scaling = input_scaling[0];
-        // s1p = s1/s3 = M1 / 2^shift1
-        let s1p = left_scaling.scale() / output_scaling.scale();
-        let (shift1, m1) = split_scale_into_multiplier(s1p);
-        // s2p = s2/s3 = M2 / 2^shift2
         let right_scaling = match self.operand {
             Some((ref t, _)) => ScalingFactor::from_tensor(t, None),
             None => input_scaling[1],
         };
-        let s2p = right_scaling.scale() / output_scaling.scale();
-        let (shift2, m2) = split_scale_into_multiplier(s2p);
-        let quant_info = QuantInfo {
-            m1,
-            shift1,
-            m2,
-            shift2,
-        };
+        let quant_info = QuantInfo::new(&left_scaling,&right_scaling,&output_scaling);
         let quantized_model = Add::<Element> {
             operand: self.operand.map(|(t, s)| (t.quantize(&right_scaling), s)),
             quant_info: Some(quant_info.clone()),
         };
+        // we need to decide if we need a requant layer or not, and if so, what the scaling factor should be
+        // if not, we just return the quantized model
+        if !quant_info.requires_requant() {
+            return Ok(QuantizeOutput::new(quantized_model, vec![output_scaling]));
+        }
+
         // we assume the inputs are quantized between [MIN, MAX] so add only produces values between [2 * MIN, 2 * MAX]
         // However, we also need to take into account M1*shift2 and M2*shift1
         let max = quant_info
@@ -263,13 +281,11 @@ impl Add<f32> {
         // so we do gross estimation of x1 * max + x2 * max => which in bit size means (MIN.log2() + maxlog) + 1
         // we also append a final +1 to void offsetted values being zeros
         let intermediate_bit_size = crate::quantization::MAX.ilog2() as usize + maxlog + 1 + 1;
-        println!("intermediate_bit_size: {}", intermediate_bit_size);
-        println!("global shift: {}", quant_info.global_shift());
         // now we need to prepare the requant layer's scaling. The requant layer performs s1 * s2 / s3
         // we want the requant to perform 1 * 1 / 2^{shift1 + shift2} so s1=1, s2=1, s3=2^{shift1 + shift2}
         let os1 = ScalingFactor::from_scale(1.0, None);
         let os2 = ScalingFactor::from_scale(1.0, None);
-        let os3 = ScalingFactor::from_scale(2f32.powf(quant_info.global_shift() as f32), None);
+        let os3 = ScalingFactor::from_scale(quant_info.global_multiplier_element() as f32, None);
         let requant = Requant::from_scaling_factors(os1, os2, os3, intermediate_bit_size);
         Ok(QuantizeOutput::new(quantized_model, vec![output_scaling]).with_requant(requant))
     }
@@ -515,7 +531,7 @@ mod test {
         // NOTE: for some reason the result is not exactly within small bounds of the float value
         // so we have to increase tolerance to 30%
         let close_to_float =
-            is_close_with_tolerance(computed_result.get_data(), t3.get_data(), 1e-2_f32, 0.3);
+            is_close_with_tolerance(computed_result.get_data(), t3.get_data(), 1e-2_f32, 0.1);
         println!("computed_result: {:?}", computed_result.get_data());
         println!("t3: {:?}", t3.get_data());
         assert!(within_range, "output is not within range");
@@ -620,12 +636,7 @@ mod test {
         );
 
         // now do with the proper method where we put on the same denominator
-        let quant_info = QuantInfo {
-            m1,
-            shift1,
-            m2,
-            shift2,
-        };
+        let quant_info = QuantInfo::new(&s1,&s2,&s3);
         let qt1_scaled = qt1.scalar_mul(&quant_info.left_scale());
         let qt2_scaled = qt2.scalar_mul(&quant_info.right_scale());
         let q_result = qt1_scaled.add(&qt2_scaled);
