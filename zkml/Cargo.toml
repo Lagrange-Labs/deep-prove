@@ -23,6 +23,7 @@ path = "src/bin/cli/main.rs"
 [features]
 default = []
 blake = ["mpcs/blake"]
+mem-track = ["utils/mem-track"]
 
 [dependencies]
 anyhow.workspace = true

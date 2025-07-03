@@ -8,6 +8,10 @@ readme.workspace = true
 repository.workspace = true
 version.workspace = true
 
+[features]
+mem-track = ["dep:mem-track"]
+
 [dependencies]
 memory-stats = { version = "1.2.0" }
 tracing = {workspace = true}
+mem-track = { git = "https://github.com/hackaugusto/mem-track", branch = "main", optional = true }
