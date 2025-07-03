@@ -95,6 +95,18 @@ struct AllocatorMetrics {
     /// Note: The peak memory usage can be reset, this is used to measure
     /// the memore usage in a span of time.
     peak: usize,
+    in_use: usize,
+}
+
+impl AllocatorMetrics {
+    #[cfg(feature = "mem-track")]
+    fn with_peak_and_in_use(peak: usize, in_use: usize) -> Self {
+        AllocatorMetrics {
+            peak,
+            in_use,
+            ..Default::default()
+        }
+    }
 }
 
 /// Generates memory flame graphs for the period of time this object is alive.
