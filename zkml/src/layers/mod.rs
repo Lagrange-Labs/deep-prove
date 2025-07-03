@@ -324,9 +324,6 @@ impl Evaluate<Element> for Layer<Element> {
         inputs: &[&Tensor<Element>],
         unpadded_input_shapes: Vec<Vec<usize>>,
     ) -> Result<LayerOut<Element, E>> {
-        #[cfg(feature = "capture-layers-quant")]
-        let input_hash = sha256_hex(&(self, inputs));
-
         let output = match self {
             Layer::Dense(dense) => dense.evaluate(inputs, unpadded_input_shapes),
             Layer::Convolution(convolution) => convolution.evaluate(inputs, unpadded_input_shapes),
@@ -343,23 +340,13 @@ impl Evaluate<Element> for Layer<Element> {
         {
             if let Ok(output) = output.as_ref() {
                 let layer_kind = self.as_simple_str();
-                let output_hash = sha256_hex(&output.outputs);
-                capture_quant::store(layer_kind, &input_hash, &output_hash, &output.outputs);
+                let out_dir = std::path::PathBuf::from("layers-quant").join(layer_kind);
+                capture_quant::store(&out_dir, &(self, inputs), &output.outputs);
             }
         }
 
         output
     }
-}
-
-#[cfg(feature = "capture-layers-quant")]
-fn sha256_hex<T>(data: &T) -> String
-where
-    T: Serialize,
-{
-    let bytes = serde_json::to_vec(data).unwrap();
-    let hash = <sha2::Sha256 as sha2::Digest>::digest(bytes);
-    format!("{hash:X}")
 }
 
 impl<E: ExtensionField> ProveInfo<E> for Layer<Element>
