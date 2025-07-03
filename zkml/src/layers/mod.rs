@@ -99,7 +99,7 @@ where
 
 impl<T> Layer<T> {
     /// Convert a layer to a string only containing its kind
-    pub fn as_simple_str(&self) -> &'static str {
+    pub fn as_kind_str(&self) -> &'static str {
         match self {
             Layer::Dense(_) => "dense",
             Layer::Convolution(_) => "convolution",
@@ -337,7 +337,7 @@ impl Evaluate<Element> for Layer<Element> {
         #[cfg(feature = "capture-layers-quant")]
         {
             if let Ok(output) = output.as_ref() {
-                let layer_kind = self.as_simple_str();
+                let layer_kind = self.as_kind_str();
                 let out_dir = std::path::PathBuf::from("layers-quant").join(layer_kind);
                 crate::capture::store(&out_dir, &(self, inputs), &output.outputs);
             }
