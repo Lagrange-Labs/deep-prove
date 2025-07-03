@@ -555,8 +555,8 @@ where
             (LayerCtx::Positional, LayerProof::Positional) => {
                 unimplemented!("Positional layer not implemented")
             }
-            (LayerCtx::Add(ctx), LayerProof::Add(_)) => {
-                unimplemented!("Add layer not implemented")
+            (LayerCtx::Add(ctx), LayerProof::Add(proof)) => {
+                ctx.verify(proof, last_claims, verifier, shape_step)
             }
             (LayerCtx::Logits, LayerProof::Logits) => {
                 unimplemented!("Logits layer not implemented")

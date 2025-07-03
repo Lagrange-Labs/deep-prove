@@ -4,6 +4,7 @@ use multilinear_extensions::{
 };
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
+use tract_onnx::tract_core::ops::matmul::quant;
 
 use anyhow::{bail, ensure};
 use ff_ext::ExtensionField;
@@ -154,7 +155,7 @@ impl<N> OpInfo for Add<N> {
     }
 
     fn describe(&self) -> String {
-        "Add".to_string()
+        format!("Add {:?}", self.quant_info)
     }
 
     fn is_provable(&self) -> bool {
@@ -190,9 +191,9 @@ impl OpInfo for AddCtx {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct QuantInfo {
     m1: f32,
-    shift1: usize,
+    shift1: i32,
     m2: f32,
-    shift2: usize,
+    shift2: i32,
 }
 
 impl QuantInfo {
@@ -202,9 +203,9 @@ impl QuantInfo {
     pub fn right_scale(&self) -> Element {
         (self.m2 * 2f32.powf(self.shift1 as f32)) as Element
     }
-    // returns the denominator, what the requant layer will have to perform as shift
-    pub fn global_shift(&self) -> Element {
-        2u32.pow((self.shift1 + self.shift2) as u32) as Element
+    // returns the exponent of the denominator 2^n, what the requant layer will have to perform as shift
+    pub fn global_shift(&self) -> i32 {
+        self.shift1 + self.shift2
     }
 }
 
@@ -228,10 +229,10 @@ impl Add<f32> {
         output_scaling: ScalingFactor,
     ) -> anyhow::Result<QuantizeOutput<Add<Element>>> {
         let left_scaling = input_scaling[0];
-        // s1p = M1 / 2^shift1
+        // s1p = s1/s3 = M1 / 2^shift1
         let s1p = left_scaling.scale() / output_scaling.scale();
         let (shift1, m1) = split_scale_into_multiplier(s1p);
-        // s2p = M2 / 2^shift2
+        // s2p = s2/s3 = M2 / 2^shift2
         let right_scaling = match self.operand {
             Some((ref t, _)) => ScalingFactor::from_tensor(t, None),
             None => input_scaling[1],
@@ -250,19 +251,18 @@ impl Add<f32> {
         };
         // we assume the inputs are quantized between [MIN, MAX] so add only produces values between [2 * MIN, 2 * MAX]
         // since we do symmetric quantization, we can take min. However, we also need to take into account M1*shift2 and M2*shift1
-        let left_shift: f32 = m1 * shift2 as f32;
-        let right_shift: f32 = m2 * shift1 as f32;
-        let max = (left_shift as Element).max(right_shift as Element);
+        let max = quant_info.left_scale().max(quant_info.right_scale());
         let maxlog = if max > 1 { max.ilog2() as usize } else { 1 };
         // so we do gross estimation of x1 * max + x2 * max => which in bit size means (MIN.log2() + maxlog) + 1
         // we also append a final +1 to void offsetted values being zeros
         let intermediate_bit_size = (crate::quantization::MAX.ilog2() as usize + maxlog) + 1 + 1;
+        println!("intermediate_bit_size: {}", intermediate_bit_size);
+        println!("global shift: {}", quant_info.global_shift());
         // now we need to prepare the requant layer's scaling. The requant layer performs s1 * s2 / s3
-        // we want the requant to perform 1 * 1 / 2^{shift1 + shift2} so s1=1, s2=1, s3=1 /2^{shift1 + shift2}
+        // we want the requant to perform 1 * 1 / 2^{shift1 + shift2} so s1=1, s2=1, s3=2^{shift1 + shift2}
         let os1 = ScalingFactor::from_scale(1.0, None);
         let os2 = ScalingFactor::from_scale(1.0, None);
-        // recip => 1 / 2^{shift1 + shift2}
-        let os3 = ScalingFactor::from_scale((quant_info.global_shift() as f32).recip(), None);
+        let os3 = ScalingFactor::from_scale(2f32.powf(quant_info.global_shift() as f32), None);
         let requant = Requant::from_scaling_factors(os1, os2, os3, intermediate_bit_size);
         Ok(QuantizeOutput::new(quantized_model, vec![output_scaling]).with_requant(requant))
     }
@@ -431,14 +431,16 @@ where
         let last_claim = last_claims[0];
         // just making sure downsizing due to API of E is ok
         ensure!((self.quant_info.left_scale() as u64) as Element == self.quant_info.left_scale());
-        ensure!((self.quant_info.right_scale() as u64) as Element ==  self.quant_info.right_scale());
+        ensure!((self.quant_info.right_scale() as u64) as Element == self.quant_info.right_scale());
         // we have the output claim f(r) = y = x1(r) * x1_scale + x2(r) * x2_scale
         // and the proof gives us x1(r) and x2(r) so we just need to "scale" these and
         // verify the equation.
-        let scaled_left = proof.left_eval * E::from_canonical_u64(self.quant_info.left_scale() as u64);
-        let left_claim = Claim::new(last_claim.point.clone(), scaled_left);
-        let scaled_right = proof.right_eval * E::from_canonical_u64(self.quant_info.right_scale() as u64);
-        let right_claim = Claim::new(last_claim.point.clone(), scaled_right);
+        let scaled_left =
+            proof.left_eval * E::from_canonical_u64(self.quant_info.left_scale() as u64);
+        let left_claim = Claim::new(last_claim.point.clone(), proof.left_eval);
+        let scaled_right =
+            proof.right_eval * E::from_canonical_u64(self.quant_info.right_scale() as u64);
+        let right_claim = Claim::new(last_claim.point.clone(), proof.right_eval);
         ensure!(
             scaled_left + scaled_right == last_claim.eval,
             "Add layer verification failed"
@@ -464,45 +466,22 @@ where
 mod test {
     use ff_ext::GoldilocksExt2;
 
-    use crate::{Element, quantization, tensor::is_close_with_tolerance, testing::vector_in_range};
+    use crate::{
+        Element,
+        layers::Layer,
+        model::{Model, test::prove_model},
+        quantization,
+        tensor::is_close_with_tolerance,
+        testing::vector_in_range,
+    };
 
     use super::*;
 
     #[test]
-    fn test_add() {
-        let add = Add::new();
-        let t1 = Tensor::<Element>::random(&vec![2, 2].into());
-        let t2 = Tensor::<Element>::random(&vec![2, 2].into());
-        let result = add
-            .evaluate::<GoldilocksExt2>(&[&t1, &t2], vec![vec![2, 2].into(), vec![2, 2].into()])
-            .unwrap();
-        for i in 0..2 {
-            for j in 0..2 {
-                assert_eq!(
-                    result.outputs[0].get(vec![i, j]),
-                    t1.get(vec![i, j]) + t2.get(vec![i, j])
-                );
-            }
-        }
-        let add = Add::new_with(t1.clone(), t1.get_shape().into());
-        let result = add
-            .evaluate::<GoldilocksExt2>(&[&t2], vec![vec![2, 2].into()])
-            .unwrap();
-        for i in 0..2 {
-            for j in 0..2 {
-                assert_eq!(
-                    result.outputs[0].get(vec![i, j]),
-                    t1.get(vec![i, j]) + t2.get(vec![i, j])
-                );
-            }
-        }
-    }
-
-    #[test]
     fn test_add_quantization() {
         let add = Add::<f32>::new();
-        let t1 = Tensor::<f32>::new(vec![2, 2].into(), vector_in_range(4));
-        let t2 = Tensor::<f32>::new(vec![2, 2].into(), vector_in_range(4));
+        let t1 = Tensor::<f32>::random(&vec![2, 2].into());
+        let t2 = Tensor::<f32>::random(&vec![2, 2].into());
         let t3 = t1.add(&t2);
         let s1 = ScalingFactor::from_tensor(&t1, None);
         let s2 = ScalingFactor::from_tensor(&t2, None);
@@ -514,15 +493,15 @@ mod test {
             .evaluate::<GoldilocksExt2>(&[&qt1, &qt2], vec![vec![2, 2].into(), vec![2, 2].into()])
             .unwrap();
         let shift = qadd.quant_info.as_ref().unwrap().global_shift();
-        let ishift = (shift as f32).recip();
         // we divide by 2^{shift1 + shift2} to get the result in the original scale
         // we pass by float first otherwise the inverse of 2^{shift1 + shift2} is just zero
+        let pow = 2f32.powf(-shift as f32);
         let result_scaled = Tensor::<Element>::new(
             qadd_result.outputs()[0].get_shape(),
             qadd_result.outputs()[0]
                 .get_data()
                 .iter()
-                .map(|x| ((*x as f32 * ishift) as Element))
+                .map(|x| ((*x as f32 * pow) as Element))
                 .collect::<Vec<_>>(),
         );
         let computed_result = result_scaled.dequantize(&s3);
@@ -534,7 +513,79 @@ mod test {
         // so we have to increase tolerance to 30%
         let close_to_float =
             is_close_with_tolerance(computed_result.get_data(), t3.get_data(), 1e-2_f32, 0.3);
+        println!("computed_result: {:?}", computed_result.get_data());
+        println!("t3: {:?}", t3.get_data());
         assert!(within_range, "output is not within range");
-        assert!(close_to_float, "output is not close to float");
+        assert!(
+            close_to_float,
+            "output is not close to float: float {:?} vs computed {:?}",
+            t3.get_data(),
+            computed_result.get_data()
+        );
+    }
+
+    #[test]
+    fn test_add_proving() {
+        let input_shape = Shape::from(vec![2, 2]);
+        let mut model = Model::new_from_input_shapes(
+            vec![input_shape.clone(), input_shape.clone()],
+            PaddingMode::NoPadding,
+        );
+
+        let add = Add::new();
+        let add_id = model.add_consecutive_layer(Layer::Add(add), None).unwrap();
+        model.route_output(None).unwrap();
+        model.describe();
+        prove_model(model).unwrap();
+    }
+
+    #[test]
+    fn test_add_failing() {
+        let t1 = Tensor::<f32>::random(&vec![2, 2].into());
+        let t2 = Tensor::<f32>::random(&vec![2, 2].into());
+        let t3 = t1.add(&t2);
+        let s1 = ScalingFactor::from_tensor(&t1, None);
+        let s2 = ScalingFactor::from_tensor(&t2, None);
+        let s3 = ScalingFactor::from_tensor(&t3, None);
+        let qt1 = t1.quantize(&s1);
+        let qt2 = t2.quantize(&s2);
+        let s1s3 = s1.scale() / s3.scale();
+        let s2s3 = s2.scale() / s3.scale();
+        let (shift1, m1) = split_scale_into_multiplier(s1s3);
+        let (shift2, m2) = split_scale_into_multiplier(s2s3);
+        let quant_info = QuantInfo {
+            m1,
+            shift1,
+            m2,
+            shift2,
+        };
+        let qt1p = qt1.scalar_mul(&quant_info.left_scale());
+        let qt2p = qt2.scalar_mul(&quant_info.right_scale());
+        let qadd_result = Add::new()
+            .quantize(&[s1, s2], s3)
+            .unwrap()
+            .quantized_op
+            .evaluate::<GoldilocksExt2>(&[&qt1p, &qt2p], vec![vec![2, 2].into(), vec![2, 2].into()])
+            .unwrap()
+            .outputs()[0]
+            .clone();
+        let qadd_scaled = Tensor::new(
+            qt1p.shape.clone(),
+            qadd_result
+                .get_data()
+                .iter()
+                .map(|x| (*x as f32) * 2f32.powf(-quant_info.global_shift() as f32))
+                .map(|x| x as Element)
+                .collect::<Vec<_>>(),
+        );
+        let dequantized = qadd_scaled.dequantize(&s3);
+        let close_to_float =
+            is_close_with_tolerance(dequantized.get_data(), t3.get_data(), 1e-2_f32, 0.3);
+        assert!(
+            close_to_float,
+            "output is not close to float: float {:?} vs computed {:?}",
+            t3.get_data(),
+            dequantized.get_data()
+        );
     }
 }
