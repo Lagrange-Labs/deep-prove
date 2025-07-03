@@ -49,7 +49,9 @@ gkr = { workspace = true }
 itertools.workspace = true
 memmap2 = { workspace = true }
 mpcs = { workspace = true }
-multilinear_extensions = { version = "0.1.0", path = "../multilinear_extensions", features = ["parallel"] }
+multilinear_extensions = { version = "0.1.0", path = "../multilinear_extensions", features = [
+    "parallel",
+] }
 num-traits = { workspace = true }
 object_store = { workspace = true }
 once_cell = { workspace = true }
@@ -69,7 +71,11 @@ thiserror = { workspace = true }
 timed = { workspace = true }
 timed-core = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["env-filter", "fmt", "json"] }
+tracing-subscriber = { workspace = true, features = [
+    "env-filter",
+    "fmt",
+    "json",
+] }
 tract-onnx = { workspace = true }
 transcript = { version = "0.1.0", path = "../transcript" }
 p3-field = { workspace = true }
@@ -80,7 +86,13 @@ utils = { path = "../utils" }
 
 # worker-related dependencies
 alloy = { version = "1.0" }
-tonic = { version = "0.12.3", features = ["transport", "tls", "tls-roots", "tls-webpki-roots", "gzip"] }
+tonic = { version = "0.12.3", features = [
+    "transport",
+    "tls",
+    "tls-roots",
+    "tls-webpki-roots",
+    "gzip",
+] }
 tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "fs"] }
 futures = { version = "0.3.30" }
 prost = { version = "0.13.3" }
