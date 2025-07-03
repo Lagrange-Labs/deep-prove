@@ -98,6 +98,10 @@ opt-level = 3
 [profile.release]
 lto = "fat"
 
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+
 #[patch."https://github.com/nikkolasg/timed-rs"]
 #timed = { path = "/Users/nalos/prog/timed/timed" }
 #timed-core = { path = "/Users/nalos/prog/timed/timed-core" }

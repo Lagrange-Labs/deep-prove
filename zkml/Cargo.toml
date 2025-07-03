@@ -26,6 +26,7 @@ default = []
 blake = ["mpcs/blake"]
 # Capture layers' quatization outputs for regression tests
 capture-layers-quant = []
+mem-track = ["utils/mem-track"]
 
 [dependencies]
 anyhow.workspace = true
