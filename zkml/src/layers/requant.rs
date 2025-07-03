@@ -459,7 +459,7 @@ impl Requant {
     fn apply(&self, elem: &Element) -> Element {
         let rounding = 1i128 << (self.shift() - 1);
         let unclamped = (rounding + elem * self.fixed_point_multiplier) >> self.shift();
-        //println!("requant.op() (shift {}) = {:?}",self.shift(),rounding + elem * self.fixed_point_multiplier);
+        // println!("requant.op() (shift {}) = {:?}",self.shift(),rounding + elem * self.fixed_point_multiplier);
         let sign = if unclamped.is_positive() || unclamped == 0i128 {
             1i128
         } else {

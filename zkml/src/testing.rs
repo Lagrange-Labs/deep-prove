@@ -19,13 +19,6 @@ pub fn random_vector(n: usize) -> Vec<Element> {
         .collect_vec()
 }
 
-pub fn vector_in_range(n: usize) -> Vec<f32> {
-    let mut rng = thread_rng();
-    (0..n)
-        .map(|_| rng.gen_range(quantization::MIN_FLOAT..=quantization::MAX_FLOAT) as f32)
-        .collect_vec()
-}
-
 pub fn random_field_vector<E: ExtensionField>(n: usize) -> Vec<E> {
     let mut rng = thread_rng();
     (0..n).map(|_| E::random(&mut rng)).collect_vec()

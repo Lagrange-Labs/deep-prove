@@ -349,7 +349,6 @@ mod test {
 
     #[test]
     fn test_split_scale_into_multiplier() {
-        let s = 0.125;
         for (s, exp_shift, exp_m) in vec![
             (0.125, 3, 1.0), // 2^-3 * 1.0 = 0.125
             (0.075, 4, 1.2),
