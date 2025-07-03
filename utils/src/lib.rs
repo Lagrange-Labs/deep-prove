@@ -3,6 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use bytesize::ByteSize;
 use memory_stats::{MemoryStats, memory_stats};
 use tracing::info;
 
@@ -25,7 +26,7 @@ mod track {
     #[global_allocator]
     static ALLOCATOR: BytesInUseTracker<System> = BytesInUseTracker::init(System);
 
-    pub(crate) fn peak_and_in_use() -> Option<AllocatorMetrics> {
+    pub(crate) fn allocator_metrics() -> Option<AllocatorMetrics> {
         let details = ALLOCATOR.reset();
         let allocator_metrics =
             details
@@ -45,7 +46,7 @@ mod track {
 mod track {
     use crate::AllocatorMetrics;
 
-    pub(crate) fn peak_and_in_use() -> Option<AllocatorMetrics> {
+    pub(crate) fn allocator_metrics() -> Option<AllocatorMetrics> {
         None
     }
 }
@@ -150,6 +151,21 @@ impl<'a> Drop for Guard<'a> {
     }
 }
 
+fn format_usize(v: Option<usize>) -> Option<String> {
+    v.map(|v| {
+        let formatter = ByteSize::b(v.try_into().expect("Should fit in a u64")).display();
+        format!("{}", formatter)
+    })
+}
+
+fn format_isize(v: Option<isize>) -> Option<String> {
+    v.map(|v| {
+        let prefix = if v.is_negative() { "-" } else { "" };
+        let formatter = ByteSize::b(v.abs().try_into().expect("Should fit in a u64")).display();
+        format!("{}{}", prefix, formatter)
+    })
+}
+
 impl<'a> MeasureStage<'a> {
     /// Start measuring a time span.
     pub fn new(start: Cow<'_, str>, close: Cow<'a, str>) -> Self {
@@ -158,17 +174,17 @@ impl<'a> MeasureStage<'a> {
         //
         // NOTE: Because of this nesting spans is currently not supported. That should
         // be possible to add with a stack of measurements.
-        let allocator_metrics = track::peak_and_in_use();
+        let allocator_metrics = track::allocator_metrics();
         let memory_stats = memory_stats();
         let memory = MemoryMetrics::from_measurements(None, memory_stats, allocator_metrics);
 
         info!(
-            physical_mem = memory.physical_mem,
-            virtual_mem = memory.virtual_mem,
-            allocated = memory.allocated,
-            deallocated = memory.deallocated,
-            num_alloc_calls = memory.num_alloc_calls,
-            peak = memory.peak,
+            physical_mem = format_usize(memory.physical_mem),
+            virtual_mem = format_usize(memory.virtual_mem),
+            allocated = format_usize(memory.allocated),
+            deallocated = format_usize(memory.deallocated),
+            num_alloc_calls = format_usize(memory.num_alloc_calls),
+            peak = format_usize(memory.peak),
             "{start}"
         );
 
@@ -197,18 +213,18 @@ impl<'a> MeasureStage<'a> {
         let memory = MemoryMetrics::from_measurements(
             self.memory_stats,
             memory_stats(),
-            track::peak_and_in_use(),
+            track::allocator_metrics(),
         );
 
         info!(
-            physical_mem = memory.physical_mem,
-            virtual_mem = memory.virtual_mem,
-            physical_mem_diff = memory.physical_mem_diff,
-            virtual_mem_diff = memory.virtual_mem_diff,
-            allocated = memory.allocated,
-            deallocated = memory.deallocated,
-            num_alloc_calls = memory.num_alloc_calls,
-            peak = memory.peak,
+            physical_mem = format_usize(memory.physical_mem),
+            virtual_mem = format_usize(memory.virtual_mem),
+            physical_mem_diff = format_isize(memory.physical_mem_diff),
+            virtual_mem_diff = format_isize(memory.virtual_mem_diff),
+            allocated = format_usize(memory.allocated),
+            deallocated = format_usize(memory.deallocated),
+            num_alloc_calls = format_usize(memory.num_alloc_calls),
+            peak = format_usize(memory.peak),
             elapsed = ?elapsed,
             "{}",
             self.close
