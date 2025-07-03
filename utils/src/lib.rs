@@ -10,15 +10,15 @@ use tracing::info;
 
 macro_rules! info_metrics {
     ($open: expr, $close: expr $(,)?) => {
-        let _guard = utils::MeasureStage::new($open.into(), $close.into()).guard();
+        let _guard = $crate::MeasureStage::new($open.into(), $close.into()).guard();
     };
 }
 
 pub struct MemoryMetrics {
     pub physical_mem: Option<usize>,
     pub virtual_mem: Option<usize>,
-    pub physical_mem_diff: Option<usize>,
-    pub virtual_mem_diff: Option<usize>,
+    pub physical_mem_diff: Option<isize>,
+    pub virtual_mem_diff: Option<isize>,
 }
 
 impl MemoryMetrics {
@@ -27,14 +27,26 @@ impl MemoryMetrics {
         new_memory_stats: Option<MemoryStats>,
     ) -> Self {
         match (old_memory_stats, new_memory_stats) {
-            (Some(old_memory_stats), Some(new_memory_stats)) => Self {
-                physical_mem: Some(new_memory_stats.physical_mem),
-                virtual_mem: Some(new_memory_stats.virtual_mem),
-                physical_mem_diff: Some(
-                    new_memory_stats.physical_mem - old_memory_stats.physical_mem,
-                ),
-                virtual_mem_diff: Some(new_memory_stats.virtual_mem - old_memory_stats.virtual_mem),
-            },
+            (Some(old_memory_stats), Some(new_memory_stats)) => {
+                let physical_mem_diff = Some(
+                    isize::try_from(new_memory_stats.physical_mem)
+                        .expect("diff must fit in an isize")
+                        - isize::try_from(old_memory_stats.physical_mem)
+                            .expect("diff must fit in an isize"),
+                );
+                let virtual_mem_diff = Some(
+                    isize::try_from(new_memory_stats.virtual_mem)
+                        .expect("diff must fit in an isize")
+                        - isize::try_from(old_memory_stats.virtual_mem)
+                            .expect("diff must fit in an isize"),
+                );
+                Self {
+                    physical_mem: Some(new_memory_stats.physical_mem),
+                    virtual_mem: Some(new_memory_stats.virtual_mem),
+                    physical_mem_diff,
+                    virtual_mem_diff,
+                }
+            }
             (None, Some(new_memory_stats)) => Self {
                 physical_mem: Some(new_memory_stats.physical_mem),
                 virtual_mem: Some(new_memory_stats.virtual_mem),

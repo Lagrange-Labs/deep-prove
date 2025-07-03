@@ -315,7 +315,7 @@ fn run(args: Args) -> anyhow::Result<()> {
 
     let measure = MeasureStage::new(
         "[+] Generating context for proving".into(),
-        "[+] Finished generating context for proving".into(),
+        "[-] Finished generating context for proving".into(),
     );
     let ctx = if !args.skip_proving {
         Some(Context::<F, Pcs<F>>::generate(&model, None).expect("unable to generate context"))
