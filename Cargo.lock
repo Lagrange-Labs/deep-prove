@@ -3334,6 +3334,7 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde_json",
+ "sha2",
  "simple-frontend",
  "statrs",
  "sumcheck",
