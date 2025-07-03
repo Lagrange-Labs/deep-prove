@@ -1,6 +1,4 @@
 pub mod activation;
-#[cfg(feature = "capture-layers-quant")]
-pub mod capture_quant;
 pub mod convolution;
 pub mod dense;
 pub mod flatten;
@@ -341,7 +339,7 @@ impl Evaluate<Element> for Layer<Element> {
             if let Ok(output) = output.as_ref() {
                 let layer_kind = self.as_simple_str();
                 let out_dir = std::path::PathBuf::from("layers-quant").join(layer_kind);
-                capture_quant::store(&out_dir, &(self, inputs), &output.outputs);
+                crate::capture::store(&out_dir, &(self, inputs), &output.outputs);
             }
         }
 

@@ -1,9 +1,11 @@
-//! Capture the output of layers' quantization for regression tests
+//! Capture the input hash, output hash and output json into files.
+//! The captured files may be used for regression tests.
 
 use serde::Serialize;
 use std::{fs, path::Path};
 
-// Store the output hash and the output at path containing the layer kind and input hash as dir names.
+/// Store the output's hash and the output as JSON in the output dir joined with
+/// input hash as a dir into files `output_hash.txt` and `data.json`.
 pub fn store<I, O>(out_dir: &Path, input: &I, output: &O)
 where
     I: Serialize,
