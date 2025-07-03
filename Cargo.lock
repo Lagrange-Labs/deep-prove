@@ -5529,7 +5529,7 @@ checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
 [[package]]
 name = "mem-track"
 version = "0.1.0"
-source = "git+https://github.com/hackaugusto/mem-track?branch=main#4a45790e125677c8bf49389ea4f94edc05c8e5d1"
+source = "git+https://github.com/hackaugusto/mem-track?branch=main#5412ddeadef078ee2e2f89d9dc5eaff188569d98"
 dependencies = [
  "backtrace",
  "crossbeam-utils",

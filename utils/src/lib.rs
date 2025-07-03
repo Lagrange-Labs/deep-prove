@@ -14,32 +14,46 @@ struct AllocatorMetrics {
     deallocated: usize,
     num_alloc_calls: usize,
     peak: usize,
+    in_use: usize,
+}
+
+impl AllocatorMetrics {
+    #[cfg(feature = "mem-track")]
+    fn with_peak_and_in_use(peak: usize, in_use: usize) -> Self {
+        AllocatorMetrics {
+            peak,
+            in_use,
+            ..Default::default()
+        }
+    }
 }
 
 #[cfg(feature = "mem-track")]
 mod track {
     use std::alloc::System;
 
-    use mem_track::peak::BytesInUseTracker;
+    use mem_track::peak::{global::GlobalPeakTracker, thread::BytesInUseTracker};
 
     use crate::AllocatorMetrics;
 
     #[global_allocator]
-    static ALLOCATOR: BytesInUseTracker<System> = BytesInUseTracker::init(System);
+    static ALLOCATOR: BytesInUseTracker<GlobalPeakTracker<System>> =
+        BytesInUseTracker::init(GlobalPeakTracker::init(System));
 
     pub(crate) fn allocator_metrics() -> Option<AllocatorMetrics> {
-        let details = ALLOCATOR.reset();
-        let allocator_metrics =
-            details
-                .into_iter()
-                .fold(AllocatorMetrics::default(), |mut state, data| {
-                    state.peak += data.peak;
-                    state.allocated += data.allocated;
-                    state.deallocated += data.deallocated;
-                    state.num_alloc_calls += data.num_alloc_calls;
-                    state
-                });
-        Some(allocator_metrics)
+        let global = ALLOCATOR.inner();
+        let metrics = AllocatorMetrics::with_peak_and_in_use(global.peak(), global.in_use());
+        global.reset();
+
+        let details = ALLOCATOR.reset_all_threads();
+        let metrics = details.into_iter().fold(metrics, |mut state, data| {
+            state.allocated += data.allocated;
+            state.deallocated += data.deallocated;
+            state.num_alloc_calls += data.num_alloc_calls;
+            state
+        });
+
+        Some(metrics)
     }
 }
 
@@ -68,6 +82,7 @@ pub struct MemoryMetrics {
     pub deallocated: Option<usize>,
     pub num_alloc_calls: Option<usize>,
     pub peak: Option<usize>,
+    pub in_use: Option<usize>,
 }
 
 impl MemoryMetrics {
@@ -79,6 +94,7 @@ impl MemoryMetrics {
         let allocated = allocator_metrics.as_ref().map(|v| v.allocated);
         let deallocated = allocator_metrics.as_ref().map(|v| v.deallocated);
         let peak = allocator_metrics.as_ref().map(|v| v.peak);
+        let in_use = allocator_metrics.as_ref().map(|v| v.in_use);
         let num_alloc_calls = allocator_metrics.as_ref().map(|v| v.num_alloc_calls);
 
         match (old_memory_stats, new_memory_stats) {
@@ -104,6 +120,7 @@ impl MemoryMetrics {
                     deallocated,
                     num_alloc_calls,
                     peak,
+                    in_use,
                 }
             }
             (None, Some(new_memory_stats)) => Self {
@@ -115,6 +132,7 @@ impl MemoryMetrics {
                 deallocated,
                 num_alloc_calls,
                 peak,
+                in_use,
             },
             (None, None) | (Some(_), None) => Self {
                 physical_mem: None,
@@ -125,6 +143,7 @@ impl MemoryMetrics {
                 deallocated,
                 num_alloc_calls,
                 peak,
+                in_use,
             },
         }
     }
@@ -186,6 +205,7 @@ impl<'a> MeasureStage<'a> {
             deallocated = format_bytes_usize(memory.deallocated),
             num_alloc_calls = memory.num_alloc_calls.map(|v| v.separate_with_commas()),
             peak = format_bytes_usize(memory.peak),
+            in_use = format_bytes_usize(memory.in_use),
             "{start}"
         );
 
@@ -226,6 +246,7 @@ impl<'a> MeasureStage<'a> {
             deallocated = format_bytes_usize(memory.deallocated),
             num_alloc_calls = memory.num_alloc_calls.map(|v|v.separate_with_commas()),
             peak = format_bytes_usize(memory.peak),
+            in_use = format_bytes_usize(memory.in_use),
             elapsed = ?elapsed,
             "{}",
             self.close
