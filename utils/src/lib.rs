@@ -5,6 +5,7 @@ use std::{
 
 use bytesize::ByteSize;
 use memory_stats::{MemoryStats, memory_stats};
+use thousands::Separable;
 use tracing::info;
 
 #[derive(Default)]
@@ -151,14 +152,14 @@ impl<'a> Drop for Guard<'a> {
     }
 }
 
-fn format_usize(v: Option<usize>) -> Option<String> {
+fn format_bytes_usize(v: Option<usize>) -> Option<String> {
     v.map(|v| {
         let formatter = ByteSize::b(v.try_into().expect("Should fit in a u64")).display();
         format!("{}", formatter)
     })
 }
 
-fn format_isize(v: Option<isize>) -> Option<String> {
+fn format_bytes_isize(v: Option<isize>) -> Option<String> {
     v.map(|v| {
         let prefix = if v.is_negative() { "-" } else { "" };
         let formatter = ByteSize::b(v.abs().try_into().expect("Should fit in a u64")).display();
@@ -179,12 +180,12 @@ impl<'a> MeasureStage<'a> {
         let memory = MemoryMetrics::from_measurements(None, memory_stats, allocator_metrics);
 
         info!(
-            physical_mem = format_usize(memory.physical_mem),
-            virtual_mem = format_usize(memory.virtual_mem),
-            allocated = format_usize(memory.allocated),
-            deallocated = format_usize(memory.deallocated),
-            num_alloc_calls = format_usize(memory.num_alloc_calls),
-            peak = format_usize(memory.peak),
+            physical_mem = format_bytes_usize(memory.physical_mem),
+            virtual_mem = format_bytes_usize(memory.virtual_mem),
+            allocated = format_bytes_usize(memory.allocated),
+            deallocated = format_bytes_usize(memory.deallocated),
+            num_alloc_calls = memory.num_alloc_calls.map(|v| v.separate_with_commas()),
+            peak = format_bytes_usize(memory.peak),
             "{start}"
         );
 
@@ -217,14 +218,14 @@ impl<'a> MeasureStage<'a> {
         );
 
         info!(
-            physical_mem = format_usize(memory.physical_mem),
-            virtual_mem = format_usize(memory.virtual_mem),
-            physical_mem_diff = format_isize(memory.physical_mem_diff),
-            virtual_mem_diff = format_isize(memory.virtual_mem_diff),
-            allocated = format_usize(memory.allocated),
-            deallocated = format_usize(memory.deallocated),
-            num_alloc_calls = format_usize(memory.num_alloc_calls),
-            peak = format_usize(memory.peak),
+            physical_mem = format_bytes_usize(memory.physical_mem),
+            virtual_mem = format_bytes_usize(memory.virtual_mem),
+            physical_mem_diff = format_bytes_isize(memory.physical_mem_diff),
+            virtual_mem_diff = format_bytes_isize(memory.virtual_mem_diff),
+            allocated = format_bytes_usize(memory.allocated),
+            deallocated = format_bytes_usize(memory.deallocated),
+            num_alloc_calls = memory.num_alloc_calls.map(|v|v.separate_with_commas()),
+            peak = format_bytes_usize(memory.peak),
             elapsed = ?elapsed,
             "{}",
             self.close

@@ -5529,7 +5529,7 @@ checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
 [[package]]
 name = "mem-track"
 version = "0.1.0"
-source = "git+https://github.com/hackaugusto/mem-track?branch=main#b21ea8559477bbf81dd06eebc641a7c93d366c06"
+source = "git+https://github.com/hackaugusto/mem-track?branch=main#4a45790e125677c8bf49389ea4f94edc05c8e5d1"
 dependencies = [
  "backtrace",
  "crossbeam-utils",
@@ -8827,6 +8827,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "thousands"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3bf63baf9f5039dadc247375c29eb13706706cfde997d0330d05aa63a77d8820"
+
+[[package]]
 name = "thread-tree"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9732,6 +9738,7 @@ dependencies = [
  "bytesize 2.0.1",
  "mem-track",
  "memory-stats",
+ "thousands",
  "tracing",
 ]
 
