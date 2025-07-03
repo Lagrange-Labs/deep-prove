@@ -202,11 +202,19 @@ struct QuantInfo {
 }
 
 impl QuantInfo {
-    pub fn new(left_scaling: &ScalingFactor, right_scaling: &ScalingFactor, output_scaling: &ScalingFactor) -> Self {
+    pub fn new(
+        left_scaling: &ScalingFactor,
+        right_scaling: &ScalingFactor,
+        output_scaling: &ScalingFactor,
+    ) -> Self {
         let (shift_out, m_out) = split_scale_into_multiplier(output_scaling.scale());
         let s1p = left_scaling.scale() / m_out;
         let s2p = right_scaling.scale() / m_out;
-        Self { m1: s1p, m2: s2p, shift: shift_out }
+        Self {
+            m1: s1p,
+            m2: s2p,
+            shift: shift_out,
+        }
     }
     pub fn left_scale(&self) -> Element {
         let m_scaled: f32 = self.m1 * (1 << M_FIXED_PRECISION) as f32;
@@ -224,7 +232,7 @@ impl QuantInfo {
         self.shift <= M_FIXED_PRECISION as i32
     }
     fn global_multiplier(&self) -> f32 {
-       2f32.powf(self.global_shift() as f32)
+        2f32.powf(self.global_shift() as f32)
     }
     pub(crate) fn global_multiplier_element(&self) -> Element {
         self.global_multiplier() as Element
@@ -240,14 +248,14 @@ impl QuantInfo {
 /// y = (x1 * s1 / m + x2 * s2 / m) / 2^-n
 /// y = (x1 * s1 / m + x2 * s2 / m) * 2^n
 ///
-/// Due to accuracy issues, we're actually using fixed point precision so 
+/// Due to accuracy issues, we're actually using fixed point precision so
 /// y = ((x1 * s1 * 2^precision / m) + (x2 * s2 * 2^precision / m)) / (2^-n * 2^precision)
 /// y = ((x1 * s1 * 2^precision / m) + (x2 * s2 * 2^precision / m)) / 2^{-n + precision}
 /// y = ((x1 * s1 * 2^precision / m) + (x2 * s2 * 2^precision / m)) * 2^{n - precision}
-/// 
+///
 /// So if `n >= precision`, the exponent is positive and thus we can simply scale the claim by an integer
 /// If `n <= precision`, then the exponent is negative, and thus we need a division, so we need a requant layer.
-/// 
+///
 /// NOTE: in the case there is a right operand, then we need to quantize the right operand, as in a dense layer.
 impl Add<f32> {
     fn quantize(
@@ -260,7 +268,7 @@ impl Add<f32> {
             Some((ref t, _)) => ScalingFactor::from_tensor(t, None),
             None => input_scaling[1],
         };
-        let quant_info = QuantInfo::new(&left_scaling,&right_scaling,&output_scaling);
+        let quant_info = QuantInfo::new(&left_scaling, &right_scaling, &output_scaling);
         let quantized_model = Add::<Element> {
             operand: self.operand.map(|(t, s)| (t.quantize(&right_scaling), s)),
             quant_info: Some(quant_info.clone()),
@@ -636,7 +644,7 @@ mod test {
         );
 
         // now do with the proper method where we put on the same denominator
-        let quant_info = QuantInfo::new(&s1,&s2,&s3);
+        let quant_info = QuantInfo::new(&s1, &s2, &s3);
         let qt1_scaled = qt1.scalar_mul(&quant_info.left_scale());
         let qt2_scaled = qt2.scalar_mul(&quant_info.right_scale());
         let q_result = qt1_scaled.add(&qt2_scaled);
