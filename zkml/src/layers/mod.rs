@@ -34,7 +34,7 @@ use crate::{
     iop::context::{ContextAux, ShapeStep, TableCtx},
     layers::{
         activation::{Activation, ActivationProof},
-        add::Add,
+        add::{Add, AddCtx, AddProof},
         concat_matmul::ConcatMatMul,
         convolution::Convolution,
         dense::Dense,
@@ -116,7 +116,7 @@ where
     LayerNorm,
     Flatten,
     Softmax,
-    Add,
+    Add(AddCtx),
     Reshape,
     Embeddings,
     Positional,
@@ -142,7 +142,7 @@ where
     ConcatMatMul,
     LayerNorm,
     Softmax,
-    Add,
+    Add(AddProof<E>),
     Embeddings,
     Positional,
     Logits,
@@ -163,7 +163,7 @@ where
             Self::ConcatMatMul => "ConcatMatMul".to_string(),
             Self::LayerNorm => "LayerNorm".to_string(),
             Self::Softmax => "Softmax".to_string(),
-            Self::Add => "Add".to_string(),
+            Self::Add(_) => "Add".to_string(),
             Self::Logits => "Logits".to_string(),
             Self::Reshape => "Reshape".to_string(),
             Self::Embeddings => "Embeddings".to_string(),
@@ -435,7 +435,7 @@ where
                 unimplemented!("LayerNorm proving layer not implemented")
             }
             Layer::Softmax(_softmax) => unimplemented!("Softmax proving layer not implemented"),
-            Layer::Add(_add) => unimplemented!("Add proving layer not implemented"),
+            Layer::Add(add) => add.step_info(id, aux),
             Layer::Logits(_logits) => unimplemented!("Logits proving layer not implemented"),
             Layer::Positional(_positional) => {
                 unimplemented!("Positional proving layer not implemented")
@@ -470,7 +470,7 @@ impl PadOp for Layer<Element> {
             }
             Layer::LayerNorm(_layernorm) => unimplemented!("LayerNorm layer not implemented"),
             Layer::Softmax(_softmax) => unimplemented!("Softmax layer not implemented"),
-            Layer::Add(_add) => unimplemented!("Add layer not implemented"),
+            Layer::Add(add) => Layer::Add(add.pad_node(si)?),
             Layer::Logits(_logits) => unimplemented!("Logits layer not implemented"),
             Layer::Positional(_positional) => unimplemented!("Positional layer not implemented"),
             Layer::Embeddings(_embeddings) => unimplemented!("Embeddings layer not implemented"),
@@ -528,8 +528,8 @@ where
             (Layer::Positional(_positional), LayerCtx::Positional) => {
                 unimplemented!("Positional layer not implemented")
             }
-            (Layer::Add(_add), LayerCtx::Add) => {
-                unimplemented!("Add layer not implemented")
+            (Layer::Add(add), LayerCtx::Add(info)) => {
+                add.prove(node_id, info, last_claims, step_data, prover)
             }
             (Layer::Logits(_logits), LayerCtx::Logits) => {
                 unimplemented!("Logits layer not implemented")
@@ -578,7 +578,7 @@ where
             }
             Layer::LayerNorm(_layernorm) => unimplemented!("LayerNorm layer not implemented"),
             Layer::Softmax(_softmax) => unimplemented!("Softmax layer not implemented"),
-            Layer::Add(_add) => unimplemented!("Add layer not implemented"),
+            Layer::Add(add) => add.gen_lookup_witness(id, gen, ctx, step_data),
             Layer::Logits(_logits) => unimplemented!("Logits layer not implemented"),
             Layer::Positional(_positional) => unimplemented!("Positional layer not implemented"),
             Layer::Embeddings(_embeddings) => unimplemented!("Embeddings layer not implemented"),
@@ -722,7 +722,7 @@ where
             Self::LayerNorm => "LayerNorm".to_string(),
             Self::Softmax => "Softmax".to_string(),
             Self::Positional => "Positional".to_string(),
-            Self::Add => "Add".to_string(),
+            Self::Add(_) => "Add".to_string(),
             Self::Logits => "Logits".to_string(),
             Self::Embeddings => "Embeddings".to_string(),
             Self::Convolution(_) => "Convolution".to_string(),
@@ -742,7 +742,7 @@ where
             LayerProof::ConcatMatMul => None,
             LayerProof::LayerNorm => None,
             LayerProof::Softmax => None,
-            LayerProof::Add => None,
+            LayerProof::Add(_) => None,
             LayerProof::Logits => None,
             LayerProof::Positional => None,
             LayerProof::Embeddings => None,

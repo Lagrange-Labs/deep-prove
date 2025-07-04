@@ -11,7 +11,7 @@ use tracing::warn;
 
 use crate::{
     Element,
-    tensor::{Number, Tensor},
+    tensor::{Number, Tensor, is_close},
 };
 pub use metadata::ModelMetadata;
 pub(crate) use strategy::InferenceTracker;
@@ -143,6 +143,21 @@ impl Default for ScalingFactor {
             quantized_domain: (*MIN, *MAX),
         }
     }
+}
+
+// s = m *  2^-shift, it returns the shift and the multiplier
+pub fn split_scale_into_multiplier(s: f32) -> (i32, f32) {
+    let shift = (-s.log2()).ceil() as i32;
+    let m = s / 2f32.powf(-shift as f32);
+    assert!(
+        is_close(&[m * (2f32.powf(-shift as f32) as f32)], &[s]),
+        "m * 2^shift != s -> m: {}, s: {}, shift: {}, m * 2^shift: {}",
+        m,
+        s,
+        shift,
+        m * (2f32.powf(-shift as f32) as f32)
+    );
+    (shift as i32, m)
 }
 
 /// Returns the scaling factors for the main tensor and for the bias tensor. These are the "model" scaling factors, or
@@ -278,7 +293,7 @@ impl MinMax for Element {
 
 #[cfg(test)]
 mod test {
-    use crate::quantization::{Fieldizer, IntoElement};
+    use crate::quantization::{Fieldizer, IntoElement, split_scale_into_multiplier};
 
     use crate::Element;
 
@@ -329,6 +344,21 @@ mod test {
                 "Element {} did not roundtrip correctly (got {})",
                 val, roundtrip
             );
+        }
+    }
+
+    #[test]
+    fn test_split_scale_into_multiplier() {
+        for (s, exp_shift, exp_m) in vec![
+            (0.125, 3, 1.0), // 2^-3 * 1.0 = 0.125
+            (0.075, 4, 1.2),
+        ]
+        // 2^-4 (= 0.0625) * 1.2 = 0.075
+        {
+            let (shift, m) = split_scale_into_multiplier(s);
+            assert_eq!(shift, exp_shift);
+            assert_eq!(m, exp_m);
+            assert_eq!(m * (2f32.powf(-shift as f32) as f32), s);
         }
     }
 }
