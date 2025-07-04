@@ -6,6 +6,7 @@ use anyhow::{bail, ensure};
 use ark_std::rand::{self, Rng, SeedableRng, rngs::StdRng};
 use ff_ext::{ExtensionField, GoldilocksExt2};
 use itertools::Itertools;
+use mpcs::util::plonky2_util::log2_ceil;
 use multilinear_extensions::{mle::DenseMultilinearExtension, util::ceil_log2};
 use p3_field::{FieldAlgebra, TwoAdicField};
 use p3_goldilocks::Goldilocks;
@@ -373,12 +374,24 @@ pub struct Tensor<T> {
     og_shape: Shape,
 }
 
+impl<T> AsRef<Tensor<T>> for Tensor<T> {
+    fn as_ref(&self) -> &Tensor<T> {
+        self
+    }
+}
+
 impl Tensor<Element> {
     /// Returns the maximum size in bits possible if this tensor is treated as a matrix inside
-    /// a matrix vector/matrix multiplication.
-    pub fn matmul_output_bitsize(&self) -> usize {
+    /// a matrix vector/matrix multiplication. It requires the optional inputs to specify the range
+    // of the quantized values in `self` and in the other matrix being multiplied with `self`
+    pub fn matmul_output_bitsize(
+        &self,
+        quantized_self_input_range: Option<usize>,
+        quantized_other_input_range: Option<usize>,
+    ) -> usize {
         assert!(self.is_matrix(), "Tensor is not a matrix");
-        self.shape.matmul_output_bitsize()
+        self.shape
+            .matmul_output_bitsize(quantized_self_input_range, quantized_other_input_range)
     }
 
     pub fn dequantize(&self, s: &ScalingFactor) -> Tensor<f32> {
@@ -818,6 +831,15 @@ where
             .chain(self.row_to_boolean_2d(row))
             .collect_vec()
     }
+
+    pub fn reshape(mut self, new_shape: Shape) -> Tensor<T> {
+        assert!(
+            self.shape.product() == new_shape.product(),
+            "Shape mismatch for reshape",
+        );
+        self.shape = new_shape;
+        self
+    }
 }
 
 impl<T> Tensor<T>
@@ -835,14 +857,6 @@ where
             .0
     }
 
-    pub fn reshape(mut self, new_shape: Shape) -> Tensor<T> {
-        assert!(
-            self.shape.product() == new_shape.product(),
-            "Shape mismatch for reshape",
-        );
-        self.shape = new_shape;
-        self
-    }
     pub fn max_abs_output(&self) -> T {
         self.data
             .iter()
@@ -1718,6 +1732,46 @@ impl PartialEq for Tensor<GoldilocksExt2> {
     }
 }
 
+impl<T: Default + Clone + Copy> Tensor<T> {
+    /// Permute a tensor, chaning its shape according to the `order` specified as input.
+    /// The `i`-th entry in the `order` vector specifies which dimension of the original
+    /// tensor should become the `i`-th dimension of the output tensor.
+    /// For instance, given an input tensor with shape `[7, 14, 23]` and `order = [2, 0, 1]`,
+    /// then the shape of the output tensor will be `[23, 7, 14]`
+    pub fn permute3d(&self, order: &[usize]) -> Self {
+        assert!(self.shape.len() == 3 && order.len() == 3);
+        assert!(order.iter().all(|x| *x < 3));
+        let (a, b, c) = (self.shape[0], self.shape[1], self.shape[2]);
+        let new_a = self.shape[order[0]];
+        let new_b = self.shape[order[1]];
+        let new_c = self.shape[order[2]];
+        let new_shape = vec![new_a, new_b, new_c].into();
+        let mut data = vec![T::default(); a * b * c];
+        for i in 0..a {
+            for j in 0..b {
+                for k in 0..c {
+                    let old_loc = i * b * c + j * c + k;
+                    let pos = vec![i, j, k];
+                    let new_i = pos[order[0]];
+                    let new_j = pos[order[1]];
+                    let new_k = pos[order[2]];
+                    let new_loc = new_i * new_b * new_c + new_j * new_c + new_k;
+                    assert!(
+                        new_loc < new_a * new_b * new_c,
+                        "Failed for {i}, {j}, {k} and {new_i}, {new_j}, {new_k}"
+                    );
+                    data[new_loc] = self.data[old_loc];
+                }
+            }
+        }
+        Self {
+            data,
+            shape: new_shape,
+            og_shape: self.shape.clone(),
+        }
+    }
+}
+
 impl<T: Number> Tensor<T> {
     pub fn max_value(&self) -> T {
         self.data.iter().fold(T::MIN, |max, x| max.cmp_max(x))
@@ -1772,38 +1826,6 @@ impl<T: Number> Tensor<T> {
             data: data,
             shape: new_shape.into(),
             og_shape: vec![0].into(),
-        }
-    }
-
-    pub fn permute3d(&self, order: &[usize]) -> Self {
-        assert!(self.shape.len() == 3 && order.len() == 3);
-        assert!(order.iter().all(|x| *x < 3));
-        let (a, b, c) = (self.shape[0], self.shape[1], self.shape[2]);
-        let new_a = self.shape[order[0]];
-        let new_b = self.shape[order[1]];
-        let new_c = self.shape[order[2]];
-        let new_shape = vec![new_a, new_b, new_c];
-        let mut data = vec![T::default(); a * b * c];
-        for i in 0..a {
-            for j in 0..b {
-                for k in 0..c {
-                    let old_loc = i * b * c + j * c + k;
-                    let mut new_pos = [0; 3];
-                    new_pos[order[0]] = i;
-                    new_pos[order[1]] = j;
-                    new_pos[order[2]] = k;
-                    let new_i = new_pos[0];
-                    let new_j = new_pos[1];
-                    let new_k = new_pos[2];
-                    let new_loc = new_i * new_b * new_c + new_j * new_c + new_k;
-                    data[new_loc] = self.data[old_loc];
-                }
-            }
-        }
-        Self {
-            data,
-            shape: new_shape.into(),
-            og_shape: self.shape.clone(),
         }
     }
 }
@@ -2009,11 +2031,7 @@ impl Shape {
     }
 
     pub fn permute(&self, permutation: &[usize]) -> Self {
-        let mut new_shape = vec![0; self.0.len()];
-        for (i, j) in permutation.iter().enumerate() {
-            new_shape[i] = self.0[*j];
-        }
-        Self(new_shape)
+        Self(permutation.iter().map(|i| self.0[*i]).collect())
     }
     pub fn next_power_of_two(&self) -> Self {
         Self(self.0.next_power_of_two())
@@ -2040,12 +2058,26 @@ impl Shape {
         assert!(self.is_matrix(), "Tensor is not a matrix");
         self.0[0]
     }
-    pub fn matmul_output_bitsize(&self) -> usize {
+    // Compute the bitsize of the output of the matrix multiplication of atesnor with shape `self`
+    // with another matrix with a compatbile shape. It requires the optional inputs to specify the range
+    // of the quantized values in `self` and in the other matrix being multiplied with `self`
+    pub fn matmul_output_bitsize(
+        &self,
+        quantized_self_input_range: Option<usize>,
+        quantized_other_input_range: Option<usize>,
+    ) -> usize {
         assert!(self.is_matrix(), "Tensor is not a matrix");
         // formula is 2^{2 * BIT_LEN + log(c) + 1} where c is the number of columns and +1 because of the bias
         let ncols = self.ncols();
         // - 1 because numbers are signed so only half of the range is used when doing multiplication
-        2 * (*quantization::BIT_LEN - 1) + ceil_log2(ncols) + 1
+        quantized_self_input_range
+            .map(|range| log2_ceil(range))
+            .unwrap_or(*quantization::BIT_LEN - 1)
+            + quantized_other_input_range
+                .map(|range| log2_ceil(range))
+                .unwrap_or(*quantization::BIT_LEN - 1)
+            + ceil_log2(ncols)
+            + 1
     }
     pub fn is_power_of_two(&self) -> bool {
         self.0.iter().all(|x| x.is_power_of_two())
@@ -2692,6 +2724,10 @@ mod test {
                 }
             }
         }
+
+        let tensor = Tensor::<Element>::random(&vec![18, 5, 27].into());
+        let permuted = tensor.permute3d(&vec![1, 2, 0]);
+        assert_eq!(permuted.get_shape(), vec![5, 27, 18].into())
     }
 
     #[test]
