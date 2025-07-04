@@ -95,7 +95,6 @@ struct AllocatorMetrics {
     /// Note: The peak memory usage can be reset, this is used to measure
     /// the memore usage in a span of time.
     peak: usize,
-    in_use: usize,
 }
 
 impl AllocatorMetrics {
