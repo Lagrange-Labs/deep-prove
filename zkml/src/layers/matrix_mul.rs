@@ -142,6 +142,8 @@ pub struct MatMulCtx<E> {
     pub(crate) left_matrix_shapes: Option<(Shape, Shape)>,
     /// Unpadded and padded shapes of the right matrix, if the right matrx is a constant matrix
     pub(crate) right_matrix_shapes: Option<(Shape, Shape)>,
+    /// True if the layer contains a final bias
+    pub(crate) with_bias: bool,
     pub(crate) config: Option<Config>,
 }
 
@@ -944,6 +946,7 @@ impl MatMul<Element> {
             left_matrix_shapes,
             right_matrix_shapes,
             config: self.config.clone(),
+            with_bias: self.bias.is_some(),
         };
 
         ctx_aux.model_polys = self.eval_constant_matrix().map(|evals| {
@@ -1057,13 +1060,16 @@ where
         let mut common_claims = HashMap::new();
         let (_, point_for_right) =
             MatMul::<Element>::split_claim(&last_claim, self.output_mle_num_vars);
-        if let Some(ref bias_eval) = proof.bias_eval {
+        if self.with_bias {
+            let bias_eval = proof
+                .bias_eval
+                .context("missing bias eval in matmul proof")?;
             // TODO: if we insert a point of wrong length, it should fail
             common_claims.insert(
                 BIAS_POLY_ID.to_string(),
                 Claim::new(point_for_right.to_vec(), bias_eval.clone()),
             );
-            last_claim.eval -= *bias_eval;
+            last_claim.eval -= bias_eval;
         }
 
         let subclaim = IOPVerifierState::<E>::verify(
