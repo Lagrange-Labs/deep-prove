@@ -245,12 +245,8 @@ impl Dense<f32> {
         input_scaling: &[ScalingFactor],
         output_scaling: ScalingFactor,
     ) -> anyhow::Result<QuantizeOutput<Dense<Element>>> {
-        let (model_scaling, bias_scaling) = model_scaling_factor_from_tensor_and_bias(
-            &input_scaling[0],
-            &output_scaling,
-            &self.matrix,
-            &self.bias,
-        );
+        let (model_scaling, bias_scaling) =
+            model_scaling_factor_from_tensor_and_bias(&input_scaling[0], &self.matrix, &self.bias);
         ensure!(
             input_scaling.len() == 1,
             "Number of input scaling factor for dense layer different from 1"

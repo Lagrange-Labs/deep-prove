@@ -110,6 +110,18 @@ where
     pub(crate) evaluations: Vec<E>,
 }
 
+impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> SoftmaxProof<E, PCS> {
+    pub(crate) fn get_lookup_data(&self) -> (Vec<E>, Vec<E>) {
+        let (exp_nums, exp_denoms) = self.exp_lookup.fractional_outputs();
+        let (range_nums, range_denoms) = self.range_lookup.fractional_outputs();
+        let (error_nums, error_denoms) = self.error_lookup.fractional_outputs();
+        (
+            [exp_nums, range_nums, error_nums].concat(),
+            [exp_denoms, range_denoms, error_denoms].concat(),
+        )
+    }
+}
+
 impl<N: Number> Default for Softmax<N> {
     fn default() -> Self {
         Softmax {
@@ -514,22 +526,18 @@ impl Evaluate<Element> for Softmax<Element> {
 
 impl PadOp for Softmax<Element> {}
 
-impl<E, PCS> ProvableOp<E, PCS> for Softmax<Element>
-where
-    E: ExtensionField + Serialize + DeserializeOwned,
-    E::BaseField: Serialize + DeserializeOwned,
-    PCS: PolynomialCommitmentScheme<E>,
-{
-    type Ctx = SoftmaxCtx;
-
-    fn prove<T: transcript::Transcript<E>>(
+impl Softmax<Element> {
+    pub(crate) fn prove_step<
+        E: ExtensionField,
+        PCS: PolynomialCommitmentScheme<E>,
+        T: transcript::Transcript<E>,
+    >(
         &self,
         node_id: NodeId,
-        _ctx: &Self::Ctx,
         last_claims: Vec<&Claim<E>>,
-        step_data: &StepData<E, E>,
+        softmax_data: &SoftmaxData<E>,
         prover: &mut crate::Prover<E, T, PCS>,
-    ) -> Result<Vec<Claim<E>>> {
+    ) -> Result<(Vec<Claim<E>>, SoftmaxProof<E, PCS>)> {
         // Check we have the correct number of claims
         ensure!(
             last_claims.len() == 1,
@@ -655,10 +663,6 @@ where
         let mask_eq: ArcMultilinearExtension<E> =
             compute_betas_eval(sumcheck_point).into_mle().into();
         // Pad the shift data if needed
-        let softmax_data = step_data.outputs.try_softmax_data().ok_or(anyhow!(
-            "Softmax LayerOut didn't have any ProvingData::Softmax"
-        ))?;
-
         let (mask, shifted_input) = if let PaddingMode::NoPadding = softmax_data.mask.padding_mode {
             let mut mask = softmax_data.mask.clone();
             mask.pad()?;
@@ -774,38 +778,27 @@ where
             .chain(std::iter::once(shift_eval))
             .collect::<Vec<E>>();
 
-        // Add the proof to the proof list
-        prover.push_proof(
-            node_id,
-            LayerProof::<E, PCS>::Softmax(SoftmaxProof::<E, PCS> {
-                exp_lookup: exp_logup_proof,
-                range_lookup: range_logup_proof,
-                error_lookup: error_logup_proof,
-                commitments,
-                accumulation_proof: sumcheck_proof,
-                mask_proof,
-                evaluations,
-            }),
-        );
+        let proof = SoftmaxProof::<E, PCS> {
+            exp_lookup: exp_logup_proof,
+            range_lookup: range_logup_proof,
+            error_lookup: error_logup_proof,
+            commitments,
+            accumulation_proof: sumcheck_proof,
+            mask_proof,
+            evaluations,
+        };
 
-        Ok(vec![input_claim])
+        Ok((vec![input_claim], proof))
     }
 
-    fn gen_lookup_witness(
+    pub(crate) fn lookup_witness<N, E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         id: NodeId,
         gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
-        step_data: &StepData<Element, E>,
+        output: &Tensor<N>,
+        softmax_data: &SoftmaxData<E>,
     ) -> Result<()> {
-        ensure!(
-            step_data.inputs.len() == 1,
-            "Found more than 1 input in inference step of Softmax layer"
-        );
-        ensure!(
-            step_data.outputs.outputs().len() == 1,
-            "Found more than 1 output in inference step of Softmax layer"
-        );
         // Get the data generated during quantised evaluation
         let SoftmaxData {
             shift_tensor,
@@ -814,9 +807,7 @@ where
             high_range_check,
             exp_lookup: (exp_input, exp_output),
             ..
-        } = step_data.outputs.try_softmax_data().ok_or(anyhow!(
-            "Could not get SoftmaxData during Softmax lookup witness generation"
-        ))?;
+        } = softmax_data;
         let num_vars = ceil_log2(exp_input.len());
         // We need to work out how many chunks to split the normalisation into to be range checked.
         let QuantisedSoftmaxData {
@@ -832,7 +823,7 @@ where
 
         // Now we construct the polynomials used in the lookups
         // To do this we need the size of the last dimension
-        let final_dim_size = *step_data.outputs.outputs()[0]
+        let final_dim_size = *output
             .get_shape()
             .last()
             .ok_or(anyhow!("Softmax output tensor did not have a shape"))?;
@@ -965,6 +956,56 @@ where
             ],
         );
         Ok(())
+    }
+}
+
+impl<E, PCS> ProvableOp<E, PCS> for Softmax<Element>
+where
+    E: ExtensionField + Serialize + DeserializeOwned,
+    E::BaseField: Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
+{
+    type Ctx = SoftmaxCtx;
+
+    fn prove<T: transcript::Transcript<E>>(
+        &self,
+        node_id: NodeId,
+        _ctx: &Self::Ctx,
+        last_claims: Vec<&Claim<E>>,
+        step_data: &StepData<E, E>,
+        prover: &mut crate::Prover<E, T, PCS>,
+    ) -> Result<Vec<Claim<E>>> {
+        let softmax_data = step_data.outputs.try_softmax_data().ok_or(anyhow!(
+            "Softmax LayerOut didn't have any ProvingData::Softmax"
+        ))?;
+
+        let (claims, proof) = self.prove_step(node_id, last_claims, softmax_data, prover)?;
+
+        // Add the proof to the proof list
+        prover.push_proof(node_id, LayerProof::<E, PCS>::Softmax(proof));
+
+        Ok(claims)
+    }
+
+    fn gen_lookup_witness(
+        &self,
+        id: NodeId,
+        gen: &mut LookupWitnessGen<E, PCS>,
+        ctx: &Context<E, PCS>,
+        step_data: &StepData<Element, E>,
+    ) -> Result<()> {
+        ensure!(
+            step_data.inputs.len() == 1,
+            "Found more than 1 input in inference step of Softmax layer"
+        );
+        ensure!(
+            step_data.outputs.outputs().len() == 1,
+            "Found more than 1 output in inference step of Softmax layer"
+        );
+        let softmax_data = step_data.outputs.try_softmax_data().ok_or(anyhow!(
+            "Softmax data not found in inference step for Sopftmax layer"
+        ))?;
+        self.lookup_witness(id, gen, ctx, &step_data.outputs.outputs()[0], softmax_data)
     }
 }
 
