@@ -297,7 +297,12 @@ impl<T> MatMul<T> {
             }
         };
         if let Some(bias) = self.bias.as_ref() {
-            ensure!(matmul.shape[1] == bias.shape[0], "Bias shape {:?} is incompatible with matmul shape {:?}", bias.shape, matmul.shape);
+            ensure!(
+                matmul.shape[1] == bias.shape[0],
+                "Bias shape {:?} is incompatible with matmul shape {:?}",
+                bias.shape,
+                matmul.shape
+            );
             Ok(matmul.add_dim2(&bias))
         } else {
             Ok(matmul)
@@ -490,7 +495,7 @@ where
     E: Serialize + DeserializeOwned,
 {
     fn step_info(&self, id: NodeId, mut ctx_aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
-        let (info,ctx_aux) = self.ctx(id, ctx_aux)?;
+        let (info, ctx_aux) = self.ctx(id, ctx_aux)?;
 
         // there is only one product (i.e. quadratic sumcheck)
         let info = LayerCtx::MatMul(info);
@@ -704,10 +709,9 @@ impl MatMul<Element> {
         T: Transcript<E>,
         PCS: PolynomialCommitmentScheme<E>,
     {
-
         let mut last_claim = last_claim.clone();
         let mut common_claims = HashMap::new();
-        
+
         let num_inputs = inputs.len();
         let (right_matrix, is_right_constant) = match &self.right_matrix {
             OperandMatrix::Weigth(mat) => (&Tensor::<E>::from(&mat.tensor), true),
@@ -781,19 +785,21 @@ impl MatMul<Element> {
         let mut right_mat_mle: DenseMultilinearExtension<E> = right_matrix.to_mle_2d();
         let mut left_mat_mle = left_matrix.to_mle_2d();
         // For a repeating matrix M like [v,v,v,...], where v is a column vector, then
-        // the trick is that M(r1,r2) = v(r1) - here we take the right split that corresponds to 
+        // the trick is that M(r1,r2) = v(r1) - here we take the right split that corresponds to
         // the number of variables that the bias has and substract its eval from the last claim.
-        // since output(r1,r2) = M1 * M2 + bias(r2) 
+        // since output(r1,r2) = M1 * M2 + bias(r2)
         let init_split = last_claim.clone();
         let (_, point_for_right) = Self::split_claim(&init_split, num_vars_2d);
 
         if let Some(bias) = &self.bias {
             let bias_eval = bias.evals_flat::<E>().into_mle().evaluate(&point_for_right);
             last_claim.eval -= bias_eval;
-            common_claims.insert(BIAS_POLY_ID.to_string(), Claim::new(point_for_right.to_vec(), bias_eval));
+            common_claims.insert(
+                BIAS_POLY_ID.to_string(),
+                Claim::new(point_for_right.to_vec(), bias_eval),
+            );
         }
         let (point_for_left, point_for_right) = Self::split_claim(&last_claim, num_vars_2d);
-
 
         // fix the variables for the left matrix; we need to fix the variables
         // corresponding to a row, so we must fix the HIGH variables
@@ -867,7 +873,11 @@ impl MatMul<Element> {
         Ok(output_claims)
     }
 
-    fn ctx<E: ExtensionField>(&self, id: NodeId, mut ctx_aux: ContextAux) -> Result<(MatMulCtx<E>, ContextAux)>
+    fn ctx<E: ExtensionField>(
+        &self,
+        id: NodeId,
+        mut ctx_aux: ContextAux,
+    ) -> Result<(MatMulCtx<E>, ContextAux)>
     where
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
@@ -1045,10 +1055,14 @@ where
         let mut last_claim = last_claim.clone();
         // claims to be verified with opening proofs
         let mut common_claims = HashMap::new();
-        let (_,point_for_right) = MatMul::<Element>::split_claim(&last_claim, self.output_mle_num_vars);
+        let (_, point_for_right) =
+            MatMul::<Element>::split_claim(&last_claim, self.output_mle_num_vars);
         if let Some(ref bias_eval) = proof.bias_eval {
             // TODO: if we insert a point of wrong length, it should fail
-            common_claims.insert(BIAS_POLY_ID.to_string(), Claim::new(point_for_right.to_vec(), bias_eval.clone()));
+            common_claims.insert(
+                BIAS_POLY_ID.to_string(),
+                Claim::new(point_for_right.to_vec(), bias_eval.clone()),
+            );
             last_claim.eval -= *bias_eval;
         }
 
@@ -1468,17 +1482,15 @@ mod tests {
 
     #[test]
     fn test_matmul_proving_with_bias() {
-        let [a,b,d] = [10,20,256];
+        let [a, b, d] = [10, 20, 256];
         let first_input_shape = vec![a, b];
         let matrix_shape: Shape = vec![b, d].into();
-        let mut model = Model::new_from_input_shapes(
-            vec![first_input_shape.into()],
-            PaddingMode::NoPadding,
-        );
+        let mut model =
+            Model::new_from_input_shapes(vec![first_input_shape.into()], PaddingMode::NoPadding);
 
         let mat = Tensor::<f32>::random(&matrix_shape);
         let bias = Tensor::<f32>::random(&vec![d].into());
-        let matmul = MatMul::new_constant(mat,Some(bias)).unwrap();
+        let matmul = MatMul::new_constant(mat, Some(bias)).unwrap();
         let _ = model
             .add_consecutive_layer(Layer::MatMul(matmul), None)
             .unwrap();
@@ -1489,12 +1501,12 @@ mod tests {
 
     #[test]
     fn test_matmul_proving_with_bias_and_transpose() {
-        let [a,b,d] = [10,20,256];
+        let [a, b, d] = [10, 20, 256];
         let first_input_shape = vec![a, b];
         // since we transpose B
-        let second_input_shape = vec![d,b];
+        let second_input_shape = vec![d, b];
         let mut model = Model::new_from_input_shapes(
-            vec![first_input_shape.into(),second_input_shape.into()],
+            vec![first_input_shape.into(), second_input_shape.into()],
             PaddingMode::NoPadding,
         );
         let bias = Tensor::<f32>::random(&vec![d].into());
@@ -1503,7 +1515,8 @@ mod tests {
             OperandMatrix::Input,
             Some(bias),
             Config::TransposeB,
-        ).unwrap();
+        )
+        .unwrap();
         let _ = model
             .add_consecutive_layer(Layer::MatMul(matmul), None)
             .unwrap();
