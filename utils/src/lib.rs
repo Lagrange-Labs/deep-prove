@@ -14,7 +14,6 @@ struct AllocatorMetrics {
     deallocated: usize,
     alloc_calls: usize,
     peak: usize,
-    in_use: usize,
 }
 
 #[cfg(feature = "mem-track")]
@@ -31,7 +30,6 @@ mod track {
     pub(crate) fn allocator_metrics() -> Option<AllocatorMetrics> {
         let metrics = AllocatorMetrics {
             peak: ALLOCATOR.peak(),
-            in_use: ALLOCATOR.in_use(),
             allocated: ALLOCATOR.allocated(),
             deallocated: ALLOCATOR.deallocated(),
             alloc_calls: ALLOCATOR.alloc_calls(),
@@ -79,7 +77,9 @@ impl MemoryMetrics {
         let allocated = allocator_metrics.as_ref().map(|v| v.allocated);
         let deallocated = allocator_metrics.as_ref().map(|v| v.deallocated);
         let peak = allocator_metrics.as_ref().map(|v| v.peak);
-        let in_use = allocator_metrics.as_ref().map(|v| v.in_use);
+        let in_use = allocator_metrics
+            .as_ref()
+            .map(|v| v.allocated.saturating_sub(v.deallocated));
         let alloc_calls = allocator_metrics.as_ref().map(|v| v.alloc_calls);
 
         match (old_memory_stats, new_memory_stats) {
