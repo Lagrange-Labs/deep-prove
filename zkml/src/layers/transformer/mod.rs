@@ -185,7 +185,7 @@ mod test {
     impl FlatAttention<f32> {
         pub fn new_from_parser(c: &LLMConfig, att: Attention<f32>) -> anyhow::Result<Self> {
             let qkv = qkv::QKV::new(att.q, att.q_bias, att.k, att.k_bias, att.v, att.v_bias);
-            let mha = mha::Mha::new(c.num_heads, c.head_dim())?;
+            let mha = mha::Mha::new(c.context_length, c.num_heads, c.head_dim())?;
             let ffn = FlatFFN::new_from_gguf(c, att.feedforward);
 
             let out = {
@@ -229,9 +229,9 @@ mod test {
             if let Some(gpt2_output) = gpt2_output {
                 ensure!(gpt2_output.is_qkv_close(qkv.outputs()));
             }
-            let (mha, softmax_out) = self
+            let (mha, _, softmax_out, _) = self
                 .mha
-                .evaluate_with_softmax_out::<GoldilocksExt2>(&qkv.outputs(), vec![])?;
+                .evaluate_with_intermediate_outputs::<GoldilocksExt2>(&qkv.outputs(), vec![])?;
 
             if let Some(gpt2_output) = gpt2_output {
                 assert!(
@@ -278,8 +278,9 @@ mod test {
             // Note in LLM, it's always the case that hidden_size = emb_size so we can apply residual
             let hidden_size = emb_size;
             let head_size = hidden_size / num_heads;
+            let context_length = 1024;
             let qkv = qkv::QKV::random(emb_size, hidden_size);
-            let mha = mha::Mha::new(num_heads, head_size)?;
+            let mha = mha::Mha::new(context_length, num_heads, head_size)?;
             let layernorm = layernorm::LayerNorm::random(emb_size);
             // let out = Dense::random(vec![hidden_size, hidden_size]);
             let out = {

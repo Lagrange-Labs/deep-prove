@@ -14,6 +14,7 @@ use crate::{
         matrix_mul::{MatMul, OperandMatrix},
         pooling::Pooling,
         provable::{Node, NodeId, OpInfo},
+        reshape::Reshape,
         transformer::qkv::QKV,
     },
     model::{Model, ToIterator},
@@ -30,7 +31,7 @@ pub enum PaddingMode {
 
 #[derive(Clone, Debug)]
 pub struct ShapeInfo {
-    shapes: Vec<ShapeData>,
+    pub(crate) shapes: Vec<ShapeData>,
 }
 
 impl ShapeInfo {
@@ -479,6 +480,35 @@ pub(crate) fn pad_concat_mat_mul(mat: ConcatMatMul, si: &mut ShapeInfo) -> Resul
         .collect_vec();
 
     Ok(mat)
+}
+
+pub(crate) fn pad_reshape_layer(reshape: Reshape, si: &mut ShapeInfo) -> Result<Reshape> {
+    let unpadded_output_shapes =
+        reshape.output_shapes(&si.unpadded_input_shapes(), PaddingMode::NoPadding);
+
+    let padded_output_shapes =
+        reshape.output_shapes(&si.padded_input_shapes(), PaddingMode::Padding);
+
+    ensure!(
+        unpadded_output_shapes.len() == padded_output_shapes.len(),
+        "Different number of unpadded output shapes and padded output shapes: {} vs {}",
+        unpadded_output_shapes.len(),
+        padded_output_shapes.len(),
+    );
+
+    // pad reshape depending on the type of reshape operation
+    let reshape = reshape.to_padded_reshape();
+
+    si.shapes
+        .iter_mut()
+        .zip(unpadded_output_shapes)
+        .zip(padded_output_shapes)
+        .for_each(|((sd, unpadded_shape), padded_shape)| {
+            sd.input_shape_og = unpadded_shape;
+            sd.input_shape_padded = padded_shape;
+        });
+
+    Ok(reshape)
 }
 
 fn pad_minimum(dim: usize) -> usize {

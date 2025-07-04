@@ -305,16 +305,12 @@ impl QKV<f32> {
                 (self.v, self.v_bias),
             ])
             .map(|(output_scaling, (tensor, bias))| {
-                let (model_scaling, bias_scaling) = model_scaling_factor_from_tensor_and_bias(
-                    &input_scaling[0],
-                    output_scaling,
-                    &tensor,
-                    &bias,
-                );
+                let (model_scaling, bias_scaling) =
+                    model_scaling_factor_from_tensor_and_bias(&input_scaling[0], &tensor, &bias);
                 let input_scaling = &input_scaling[0];
                 let quantized_matrix = tensor.quantize(&model_scaling);
                 let quantized_bias = bias.quantize(&bias_scaling);
-                let intermediate_bitsize = quantized_matrix.matmul_output_bitsize();
+                let intermediate_bitsize = quantized_matrix.matmul_output_bitsize(None, None);
                 let requant = Requant::from_scaling_factors(
                     *input_scaling,
                     model_scaling,

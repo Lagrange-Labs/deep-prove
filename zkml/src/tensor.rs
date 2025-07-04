@@ -8,6 +8,7 @@ use anyhow::{bail, ensure};
 use ark_std::rand::Rng;
 use ff_ext::{ExtensionField, GoldilocksExt2};
 use itertools::Itertools;
+use mpcs::util::plonky2_util::log2_ceil;
 use multilinear_extensions::{mle::DenseMultilinearExtension, util::ceil_log2};
 use p3_field::{FieldAlgebra, TwoAdicField};
 use p3_goldilocks::Goldilocks;
@@ -376,12 +377,24 @@ pub struct Tensor<T> {
     og_shape: Shape,
 }
 
+impl<T> AsRef<Tensor<T>> for Tensor<T> {
+    fn as_ref(&self) -> &Tensor<T> {
+        self
+    }
+}
+
 impl Tensor<Element> {
     /// Returns the maximum size in bits possible if this tensor is treated as a matrix inside
-    /// a matrix vector/matrix multiplication.
-    pub fn matmul_output_bitsize(&self) -> usize {
+    /// a matrix vector/matrix multiplication. It requires the optional inputs to specify the range
+    // of the quantized values in `self` and in the other matrix being multiplied with `self`
+    pub fn matmul_output_bitsize(
+        &self,
+        quantized_self_input_range: Option<usize>,
+        quantized_other_input_range: Option<usize>,
+    ) -> usize {
         assert!(self.is_matrix(), "Tensor is not a matrix");
-        self.shape.matmul_output_bitsize()
+        self.shape
+            .matmul_output_bitsize(quantized_self_input_range, quantized_other_input_range)
     }
 
     pub fn dequantize(&self, s: &ScalingFactor) -> Tensor<f32> {
@@ -821,6 +834,15 @@ where
             .chain(self.row_to_boolean_2d(row))
             .collect_vec()
     }
+
+    pub fn reshape(mut self, new_shape: Shape) -> Tensor<T> {
+        assert!(
+            self.shape.product() == new_shape.product(),
+            "Shape mismatch for reshape",
+        );
+        self.shape = new_shape;
+        self
+    }
 }
 
 impl<T> Tensor<T>
@@ -838,14 +860,6 @@ where
             .0
     }
 
-    pub fn reshape(mut self, new_shape: Shape) -> Tensor<T> {
-        assert!(
-            self.shape.product() == new_shape.product(),
-            "Shape mismatch for reshape",
-        );
-        self.shape = new_shape;
-        self
-    }
     pub fn max_abs_output(&self) -> T {
         self.data
             .iter()
@@ -2031,12 +2045,26 @@ impl Shape {
         assert!(self.is_matrix(), "Tensor is not a matrix");
         self.0[0]
     }
-    pub fn matmul_output_bitsize(&self) -> usize {
+    // Compute the bitsize of the output of the matrix multiplication of atesnor with shape `self`
+    // with another matrix with a compatbile shape. It requires the optional inputs to specify the range
+    // of the quantized values in `self` and in the other matrix being multiplied with `self`
+    pub fn matmul_output_bitsize(
+        &self,
+        quantized_self_input_range: Option<usize>,
+        quantized_other_input_range: Option<usize>,
+    ) -> usize {
         assert!(self.is_matrix(), "Tensor is not a matrix");
         // formula is 2^{2 * BIT_LEN + log(c) + 1} where c is the number of columns and +1 because of the bias
         let ncols = self.ncols();
         // - 1 because numbers are signed so only half of the range is used when doing multiplication
-        2 * (*quantization::BIT_LEN - 1) + ceil_log2(ncols) + 1
+        quantized_self_input_range
+            .map(|range| log2_ceil(range))
+            .unwrap_or(*quantization::BIT_LEN - 1)
+            + quantized_other_input_range
+                .map(|range| log2_ceil(range))
+                .unwrap_or(*quantization::BIT_LEN - 1)
+            + ceil_log2(ncols)
+            + 1
     }
     pub fn is_power_of_two(&self) -> bool {
         self.0.iter().all(|x| x.is_power_of_two())

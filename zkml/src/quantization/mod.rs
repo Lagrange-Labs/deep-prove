@@ -169,22 +169,21 @@ impl Default for ScalingFactor {
 /// S2 in the formula S1 * S2 / S3.
 pub fn model_scaling_factor_from_tensor_and_bias(
     input: &ScalingFactor,
-    output: &ScalingFactor,
     main: &Tensor<f32>,
     bias: &Tensor<f32>,
 ) -> (ScalingFactor, ScalingFactor) {
     let max_weight = main.max_abs_output();
     let max_bias = bias.max_abs_output();
     let main_sf = ScalingFactor::from_absolute_max(max_weight.max(max_bias), None);
-    let bias_sf = bias_scaling_matmul(input, output);
+    let bias_sf = bias_scaling_matmul(input, &main_sf);
     (main_sf, bias_sf)
 }
 
-pub fn bias_scaling_matmul(input: &ScalingFactor, output: &ScalingFactor) -> ScalingFactor {
+pub fn bias_scaling_matmul(input: &ScalingFactor, model: &ScalingFactor) -> ScalingFactor {
     let min_quantized = -(1 << (2 * (*BIT_LEN) - 1)) + 1;
     let max_quantized = (1 << (2 * (*BIT_LEN) - 1)) - 1;
     ScalingFactor::from_scale(
-        input.scale() * output.scale(),
+        input.scale() * model.scale(),
         Some((min_quantized, max_quantized)),
     )
 }

@@ -1,28 +1,141 @@
 //! Multihead attention layer:
 //! The module performs all the operations inside the multi-head attention layer, relying on
 //! ConcatMatMul and Softmax layers as building blocks.
+use std::iter::once;
+
 use crate::{
-    Element,
-    layers::{
-        concat_matmul::{ConcatMatMul, InputMatrixDimensions, Permutation},
-        provable::{Evaluate, OpInfo, QuantizeOp, QuantizeOutput},
-        reshape::Reshape,
-        transformer::softmax::Softmax,
+    Claim, Element, Prover, ScalingFactor,
+    iop::{
+        context::{ContextAux, ShapeStep},
+        verifier::Verifier,
     },
-    padding::PaddingMode,
-    quantization::Fieldizer,
+    layers::{
+        LayerCtx, LayerProof,
+        concat_matmul::{
+            ConcatMatMul, ConcatMatMulCtx, ConcatMatMulProof, InputMatrixDimensions, Permutation,
+        },
+        provable::{
+            Evaluate, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, ProvingData, QuantizeOp,
+            QuantizeOutput, VerifiableCtx,
+        },
+        reshape::{Reshape, ReshapeCtx},
+        transformer::softmax::{
+            OUTPUT_SCALE_FACTOR, Softmax, SoftmaxCtx, SoftmaxData, SoftmaxProof,
+        },
+    },
+    model::StepData,
+    padding::{PaddingMode, ShapeInfo},
+    quantization::{Fieldizer, TensorFielder},
     tensor::{Number, Shape},
 };
-use anyhow::ensure;
-use ff_ext::{ExtensionField, FieldFrom};
+use anyhow::{anyhow, ensure};
+use ff_ext::{ExtensionField, FieldFrom, SmallField};
+use itertools::Itertools;
+use mpcs::PolynomialCommitmentScheme;
+use p3_field::FieldAlgebra;
+use p3_goldilocks::Goldilocks;
+use poseidon::poseidon_hash::PoseidonHash;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use transcript::Transcript;
 
 use crate::{Tensor, layers::provable::LayerOut};
+
+#[derive(Clone, Debug)]
+pub struct MhaData<E: ExtensionField> {
+    // Output tensor of Mha before final reshape
+    pre_reshaping_out: Tensor<E>,
+    softmax_out: Tensor<E>,
+    softmax_data: SoftmaxData<E>,
+    softmax_in: Tensor<E>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MhaCtx<E> {
+    node_id: NodeId,
+    inputs_reshape: ReshapeCtx,
+    final_mul: ConcatMatMulCtx<E>,
+    softmax: SoftmaxCtx,
+    qk: ConcatMatMulCtx<E>,
+    final_reshape: ReshapeCtx,
+}
+
+struct MhaOutputShaper<'a> {
+    inputs_reshape: Box<&'a dyn OpInfo>,
+    final_mul: Box<&'a dyn OpInfo>,
+    softmax: Box<&'a dyn OpInfo>,
+    qk: Box<&'a dyn OpInfo>,
+    final_reshape: Box<&'a dyn OpInfo>,
+}
+
+impl<'a, N: Number> From<&'a Mha<N>> for MhaOutputShaper<'a> {
+    fn from(value: &'a Mha<N>) -> Self {
+        Self {
+            inputs_reshape: Box::new(&value.inputs_reshape),
+            final_mul: Box::new(&value.final_mul),
+            softmax: Box::new(&value.softmax),
+            qk: Box::new(&value.qk),
+            final_reshape: Box::new(&value.final_reshape),
+        }
+    }
+}
+
+impl<'a, E: ExtensionField> From<&'a MhaCtx<E>> for MhaOutputShaper<'a> {
+    fn from(value: &'a MhaCtx<E>) -> Self {
+        Self {
+            inputs_reshape: Box::new(&value.inputs_reshape),
+            final_mul: Box::new(&value.final_mul),
+            softmax: Box::new(&value.softmax),
+            qk: Box::new(&value.qk),
+            final_reshape: Box::new(&value.final_reshape),
+        }
+    }
+}
+
+impl<'a> MhaOutputShaper<'a> {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
+        let reshaped_input_shapes = self
+            .inputs_reshape
+            .output_shapes(&input_shapes, padding_mode);
+
+        let linear_out_shapes = self
+            .qk
+            .output_shapes(&reshaped_input_shapes[..2], padding_mode);
+
+        let soft_out_shapes = self.softmax.output_shapes(&linear_out_shapes, padding_mode);
+
+        let final_mul_input_shapes = vec![
+            soft_out_shapes[0].clone(),
+            reshaped_input_shapes[2].clone(), // V
+        ];
+
+        let final_mul_shapes = self
+            .final_mul
+            .output_shapes(&final_mul_input_shapes, padding_mode);
+
+        self.final_reshape
+            .output_shapes(&final_mul_shapes, padding_mode)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
+pub struct MhaProof<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> {
+    final_mul_proof: ConcatMatMulProof<E>,
+    softmax_proof: SoftmaxProof<E, PCS>,
+    qk_proof: ConcatMatMulProof<E>,
+}
+
+impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> MhaProof<E, PCS> {
+    pub(crate) fn get_lookup_data(&self) -> (Vec<E>, Vec<E>) {
+        self.softmax_proof.get_lookup_data()
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Mha<N> {
     inputs_reshape: Reshape, // ToDo: can be removed once we will include padding in QKV layer
+    context_length: usize,
     num_heads: usize,
     head_dim: usize,
     qk: ConcatMatMul,
@@ -32,23 +145,40 @@ pub struct Mha<N> {
 }
 
 impl<N: Number> Mha<N> {
-    pub fn new(num_heads: usize, head_dim: usize) -> anyhow::Result<Self> {
+    pub fn new(context_length: usize, num_heads: usize, head_dim: usize) -> anyhow::Result<Self> {
         let inputs_reshape = Reshape::new_subspace(1..2, vec![num_heads, head_dim]);
         let qk = ConcatMatMul::new(
-                InputMatrixDimensions::new(1, 2, 0),
-                InputMatrixDimensions::new(1, 2, 0),
-            );
-        let softmax = Softmax::new()
-            .with_scale(N::from_f32((1.0 / (head_dim as f32)).sqrt())?);
+            InputMatrixDimensions::new(1, 2, 0),
+            InputMatrixDimensions::new(1, 2, 0),
+        )
+        .with_max_shapes(
+            vec![
+                vec![context_length, num_heads, head_dim].into(),
+                vec![context_length, num_heads, head_dim].into(),
+            ],
+            None,
+            None, // use the default quantization range
+        );
+        let softmax = Softmax::new().with_scale(N::from_f32((1.0 / (head_dim as f32)).sqrt())?);
         let final_mul = ConcatMatMul::new_with_permute(
             InputMatrixDimensions::new(0, 2, 1),
             InputMatrixDimensions::new(1, 0, 2),
             Permutation::new(vec![1, 0, 2]),
+        )
+        .with_max_shapes(
+            vec![
+                vec![num_heads, context_length, context_length].into(),
+                vec![context_length, num_heads, head_dim].into(),
+            ],
+            Some(OUTPUT_SCALE_FACTOR), // here instead the output of softmax can be up
+            // to `OUTPUT_SCALE_FACTOR` rather than the usual quantization range
+            None,
         );
         // reshape the output from [q_len, num_heads, head_dim] to [q_len, num_heads*head_dim]
         let final_reshape = Reshape::new_subspace(1..=2, vec![num_heads * head_dim]);
         Ok(Self {
             inputs_reshape,
+            context_length,
             num_heads,
             head_dim,
             qk,
@@ -58,11 +188,46 @@ impl<N: Number> Mha<N> {
         })
     }
 
-    pub(crate) fn evaluate_with_softmax_out<E: ExtensionField>(
+    // compute ephemeral node ids to be employed for the sub-layers called in MHA.
+    // It uses a collision-resistant hash function to pseudo-randomly select an ephemeral id
+    // The id is ephemeral in the sense that it will not correspond to an actual node in the
+    // model
+    fn compute_ephemeral_node_id(node_id: NodeId, domain_separator: &str) -> NodeId {
+        let payload = once(Goldilocks::from_canonical_u64(node_id as u64))
+            .chain(
+                domain_separator
+                    .as_bytes()
+                    .into_iter()
+                    .map(|b| Goldilocks::from_canonical_u8(*b)),
+            )
+            .collect_vec();
+        PoseidonHash::hash_or_noop(&payload).0[0].to_canonical_u64() as usize
+    }
+
+    fn qk_node_id(node_id: NodeId) -> NodeId {
+        Self::compute_ephemeral_node_id(node_id, "qk")
+    }
+
+    fn softmax_node_id(node_id: NodeId) -> NodeId {
+        Self::compute_ephemeral_node_id(node_id, "softmax")
+    }
+
+    fn final_mul_node_id(node_id: NodeId) -> NodeId {
+        Self::compute_ephemeral_node_id(node_id, "final_mul")
+    }
+
+    /// Core method to evaluate the layer; it returns also the intermediate outputs of final_mul, softmax
+    /// and qk sub-layers, which might be necessary to build the proving data
+    pub(crate) fn evaluate_with_intermediate_outputs<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
         unpadded_input_shapes: Vec<Shape>,
-    ) -> anyhow::Result<(LayerOut<N, E>, LayerOut<N, E>)>
+    ) -> anyhow::Result<(
+        LayerOut<N, E>,
+        LayerOut<N, E>,
+        LayerOut<N, E>,
+        LayerOut<N, E>,
+    )>
     where
         Softmax<N>: Evaluate<N>,
     {
@@ -87,23 +252,23 @@ impl<N: Number> Mha<N> {
             .inputs_reshape
             .output_shapes(&unpadded_input_shapes, PaddingMode::NoPadding);
 
-        let linear_out = self.qk.evaluate::<E>(
+        let qk_out = self.qk.evaluate::<E>(
             &reshaped_inputs.outputs()[..2],
             reshaped_input_shapes[..2].to_vec(),
         )?;
 
-        let linear_out_shapes = self
+        let qk_out_shapes = self
             .qk
             .output_shapes(&reshaped_input_shapes, PaddingMode::NoPadding);
 
         // apply softmax
         let soft_out = self
             .softmax
-            .evaluate::<E>(&linear_out.outputs(), linear_out_shapes.clone())?;
+            .evaluate::<E>(&qk_out.outputs(), qk_out_shapes.clone())?;
 
         let soft_out_shapes = self
             .softmax
-            .output_shapes(&linear_out_shapes, PaddingMode::NoPadding);
+            .output_shapes(&qk_out_shapes, PaddingMode::NoPadding);
 
         ensure!(
             soft_out.outputs().len() == 1,
@@ -113,7 +278,7 @@ impl<N: Number> Mha<N> {
         let final_mul_input_shapes =
             vec![soft_out_shapes[0].clone(), reshaped_input_shapes[2].clone()];
 
-        let out = self.final_mul.evaluate::<E>(
+        let final_mul_out = self.final_mul.evaluate::<E>(
             &[soft_out.outputs()[0], reshaped_inputs.outputs()[2]],
             final_mul_input_shapes.clone(),
         )?;
@@ -122,35 +287,17 @@ impl<N: Number> Mha<N> {
             .final_mul
             .output_shapes(&final_mul_input_shapes, PaddingMode::NoPadding);
 
-        let out = self.final_reshape.evaluate(&out.outputs(), out_shapes)?;
+        let out = self
+            .final_reshape
+            .evaluate(&final_mul_out.outputs(), out_shapes)?;
 
-        Ok((out, soft_out))
+        Ok((out, final_mul_out, soft_out, qk_out))
     }
 }
 
 impl<N: Number> OpInfo for Mha<N> {
     fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
-        let reshaped_input_shapes = self
-            .inputs_reshape
-            .output_shapes(&input_shapes, padding_mode);
-
-        let linear_out_shapes = self
-            .qk
-            .output_shapes(&reshaped_input_shapes[..2], padding_mode);
-
-        let soft_out_shapes = self.softmax.output_shapes(&linear_out_shapes, padding_mode);
-
-        let final_mul_input_shapes = vec![
-            soft_out_shapes[0].clone(),
-            reshaped_input_shapes[2].clone(), // V
-        ];
-
-        let final_mul_shapes = self
-            .final_mul
-            .output_shapes(&final_mul_input_shapes, padding_mode);
-
-        self.final_reshape
-            .output_shapes(&final_mul_shapes, padding_mode)
+        MhaOutputShaper::from(self).output_shapes(input_shapes, padding_mode)
     }
 
     fn num_outputs(&self, _num_inputs: usize) -> usize {
@@ -180,7 +327,8 @@ impl Evaluate<f32> for Mha<f32> {
         inputs: &[&Tensor<f32>],
         unpadded_input_shapes: Vec<Shape>,
     ) -> anyhow::Result<LayerOut<f32, E>> {
-        let (out, _) = self.evaluate_with_softmax_out(inputs, unpadded_input_shapes)?;
+        let (out, _, _, _) =
+            self.evaluate_with_intermediate_outputs(inputs, unpadded_input_shapes)?;
 
         Ok(out)
     }
@@ -192,37 +340,425 @@ impl Evaluate<Element> for Mha<Element> {
         inputs: &[&Tensor<Element>],
         unpadded_input_shapes: Vec<Shape>,
     ) -> anyhow::Result<LayerOut<Element, E>> {
-        let (out, _) = self.evaluate_with_softmax_out(inputs, unpadded_input_shapes)?;
+        let (out, final_mul_out, soft_out, qk_out) =
+            self.evaluate_with_intermediate_outputs(inputs, unpadded_input_shapes)?;
 
-        Ok(out)
+        let LayerOut {
+            outputs,
+            proving_data,
+        } = soft_out;
+        let ProvingData::Softmax(softmax_data) = proving_data else {
+            Err(anyhow!("Softmax data not found while evaluating MhaLayer"))?
+        };
+        let data = MhaData {
+            pre_reshaping_out: final_mul_out.outputs()[0].to_fields(),
+            softmax_data,
+            softmax_out: outputs[0].to_fields(),
+            softmax_in: qk_out.outputs[0].to_fields(),
+        };
+        Ok(out.with_proving_data(ProvingData::Mha(data)))
     }
 }
 
 impl QuantizeOp for Mha<f32> {
     type QuantizedOp = Mha<Element>;
 
-    // NOTE: no requant layers after that, softmax takes care of it.
     fn quantize_op<S: crate::ScalingStrategy>(
         self,
         data: &S::AuxData,
         node_id: crate::layers::provable::NodeId,
         input_scaling: &[crate::ScalingFactor],
     ) -> anyhow::Result<QuantizeOutput<Self::QuantizedOp>> {
-        let num_outputs = self.num_outputs(input_scaling.len());
-        // it will return a scaling factors for all heads merged together, but that's what we want since we don't want
-        // to have one requant layer _per head_ it would be too costly. So we take the min/max accross all the heads concatenated.
-        let output_scalings = S::scaling_factors_for_node(data, node_id, num_outputs);
         ensure!(
-            output_scalings.len() == 2,
-            "MHA_QK should have 2 outputs scaling"
+            input_scaling.len() == 3,
+            "Expected 3 input scaling factors for MHA layer, found {}",
+            input_scaling.len()
         );
-        // there is no requant layers after that, softmax takes care of it.
-        Ok(QuantizeOutput::new(
-            Mha::new(self.num_heads, self.head_dim)?,
-            output_scalings,
-        ))
+
+        // for the first concat mat mul, we simply need to compute the scaling factor of the product, without requantization
+        let product_scaling = {
+            let scale = input_scaling[0].scale() * input_scaling[1].scale();
+            let output_domain = self.qk.output_domain();
+            let quantized_domain = Some((-output_domain, output_domain));
+            ScalingFactor::from_scale(scale, quantized_domain)
+        };
+
+        // quantize data for softmax
+        let QuantizeOutput {
+            quantized_op: quantized_softmax,
+            mut output_scalings,
+            ..
+        } = self
+            .softmax
+            .quantize_op::<S>(data, node_id, &vec![product_scaling])?;
+
+        ensure!(
+            output_scalings.len() == 1,
+            "Expected 1 output scaling for softmax, found {}",
+            output_scalings.len()
+        );
+
+        // prepare input scaling for final multiplication operation
+        let final_mul_scalings = vec![output_scalings.remove(0), input_scaling[2].clone()];
+        let quantized_out = self
+            .final_mul
+            .quantize_op::<S>(data, node_id, &final_mul_scalings)?;
+
+        let quantized_mha = Self::QuantizedOp {
+            inputs_reshape: self.inputs_reshape,
+            context_length: self.context_length,
+            num_heads: self.num_heads,
+            head_dim: self.head_dim,
+            qk: self.qk,
+            softmax: quantized_softmax,
+            final_mul: quantized_out.quantized_op,
+            final_reshape: self.final_reshape,
+        };
+        Ok(QuantizeOutput {
+            quantized_op: quantized_mha,
+            output_scalings: quantized_out.output_scalings,
+            requant_layer: quantized_out.requant_layer,
+        })
     }
 }
+
+impl<E: ExtensionField> ProveInfo<E> for Mha<Element> {
+    fn step_info(&self, id: NodeId, aux: ContextAux) -> anyhow::Result<(LayerCtx<E>, ContextAux)> {
+        let (ctx, mut reshaped_aux) = self.inputs_reshape.step_info(
+            id, // No need to have an ad-hoc id
+            aux,
+        )?;
+
+        let LayerCtx::<E>::Reshape(inputs_reshape_ctx) = ctx else {
+            unreachable!()
+        };
+
+        ensure!(
+            reshaped_aux.last_output_shape.len() == 3,
+            "Expected 3 input shapes in Mha layer ctx, found {}",
+            reshaped_aux.last_output_shape.len(),
+        );
+
+        // save v_shape as it is going to be used later on for `final_mul`
+        let v_shape = reshaped_aux.last_output_shape.pop().unwrap();
+
+        let qk_aux = ContextAux {
+            tables: reshaped_aux.tables,
+            last_output_shape: reshaped_aux.last_output_shape[..2].to_vec(),
+            model_polys: reshaped_aux.model_polys,
+        };
+
+        let (ctx, aux) = self.qk.step_info(Self::qk_node_id(id), qk_aux)?;
+
+        let LayerCtx::ConcatMatMul(qk_ctx) = ctx else {
+            unreachable!()
+        };
+
+        let (ctx, mut aux) = self.softmax.step_info(Self::softmax_node_id(id), aux)?;
+
+        let LayerCtx::<E>::Softmax(softmax_ctx) = ctx else {
+            unreachable!()
+        };
+
+        ensure!(
+            aux.last_output_shape.len() == 1,
+            "Expected 1 output shape from softmax when building Mha layer ctx, found {}",
+            aux.last_output_shape.len(),
+        );
+
+        // prepare `last_output_shape` in final mul `ContextAux`: we need to add `v_shape`
+        aux.last_output_shape.push(v_shape);
+        let (ctx, aux) = self.final_mul.step_info(Self::final_mul_node_id(id), aux)?;
+
+        let LayerCtx::ConcatMatMul(final_mul_ctx) = ctx else {
+            unreachable!()
+        };
+
+        let (ctx, aux) = self.final_reshape.step_info(
+            id, // No need to have an ad-hoc id
+            aux,
+        )?;
+
+        let LayerCtx::<E>::Reshape(final_reshape_ctx) = ctx else {
+            unreachable!()
+        };
+
+        let ctx = LayerCtx::Mha(MhaCtx {
+            node_id: id,
+            inputs_reshape: inputs_reshape_ctx,
+            final_mul: final_mul_ctx,
+            softmax: softmax_ctx,
+            qk: qk_ctx,
+            final_reshape: final_reshape_ctx,
+        });
+
+        Ok((ctx, aux))
+    }
+}
+
+impl PadOp for Mha<Element> {
+    fn pad_node(self, si: &mut ShapeInfo) -> anyhow::Result<Self>
+    where
+        Self: Sized,
+    {
+        let inputs_reshape = self.inputs_reshape.pad_node(si)?;
+
+        // Split `ShapeInfo` between inputs for qk and input v
+        let qk_si = ShapeInfo {
+            shapes: si.shapes[..2].to_vec(),
+        };
+
+        let v_shape = si.shapes[2].clone();
+
+        *si = qk_si;
+
+        let qk = self.qk.pad_node(si)?;
+
+        // softmax takes as input the output of qk, so we can just provide
+        // shape info `si`
+        let softmax = self.softmax.pad_node(si)?;
+
+        // now we need to build shape info for final_mul from softmax output
+        // and from `v`
+        si.shapes = vec![si.shapes[0].clone(), v_shape];
+        let final_mul = self.final_mul.pad_node(si)?;
+
+        let final_reshape = self.final_reshape.pad_node(si)?;
+
+        Ok(Self {
+            inputs_reshape,
+            context_length: self.context_length,
+            num_heads: self.num_heads.next_power_of_two(),
+            head_dim: self.head_dim.next_power_of_two(),
+            qk,
+            softmax,
+            final_mul,
+            final_reshape,
+        })
+    }
+}
+
+impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS> for Mha<Element> {
+    type Ctx = MhaCtx<E>;
+
+    fn prove<T: Transcript<E>>(
+        &self,
+        node_id: NodeId,
+        _ctx: &Self::Ctx,
+        last_claims: Vec<&Claim<E>>,
+        step_data: &StepData<E, E>,
+        prover: &mut Prover<E, T, PCS>,
+    ) -> anyhow::Result<Vec<Claim<E>>> {
+        let inputs = &step_data.inputs;
+
+        ensure!(
+            inputs.len() == 3,
+            "Expected 3 inputs when proving MHA layer, found {}",
+            inputs.len()
+        );
+
+        ensure!(
+            step_data.outputs.outputs().len() == 1,
+            "Expected 1 one output when proving MHA layer, found {}",
+            step_data.outputs.outputs().len()
+        );
+
+        // apply reshaping to input and output tensors before employing them in proving logic
+        let reshaped_inputs = self.inputs_reshape.evaluate_layer::<E, E>(
+            &inputs.iter().collect_vec(),
+            inputs.iter().map(|input| input.get_shape()).collect(),
+        )?;
+
+        let reshaped_inputs = reshaped_inputs.outputs();
+
+        let mha_data = step_data
+            .outputs
+            .try_mha_data()
+            .ok_or(anyhow!("MhaData not found when proving Mha layer"))?;
+
+        let (mut claims, final_mul_proof) = self.final_mul.prove_step(
+            last_claims,
+            &mha_data.pre_reshaping_out,
+            &vec![&mha_data.softmax_out, &reshaped_inputs[2]],
+            prover,
+        )?;
+
+        ensure!(
+            claims.len() == 2,
+            "Expected 2 input claims for mul with V in MhaLayer, found {}",
+            claims.len()
+        );
+
+        let v_input_claim = claims.pop().unwrap();
+        let softmax_out_claim = claims.pop().unwrap();
+
+        let (claims, softmax_proof) = self.softmax.prove_step(
+            node_id,
+            vec![&softmax_out_claim],
+            &mha_data.softmax_data,
+            prover,
+        )?;
+
+        ensure!(
+            claims.len() == 1,
+            "Expected 1 input claim for Softmax in MhaLayer, found {}",
+            claims.len()
+        );
+
+        let (mut input_claims, qk_proof) = self.qk.prove_step(
+            vec![&claims[0]],
+            &mha_data.softmax_in,
+            &reshaped_inputs[..2],
+            prover,
+        )?;
+
+        ensure!(
+            input_claims.len() == 2,
+            "Expected 2 input claims for QK matrix multiplication in Mha layer, found {}",
+            input_claims.len(),
+        );
+
+        // append claim about V to claims about Q and K
+        input_claims.push(v_input_claim);
+
+        // add proof for this node
+        let proof = MhaProof {
+            final_mul_proof,
+            softmax_proof,
+            qk_proof,
+        };
+
+        prover.push_proof(node_id, LayerProof::Mha(proof));
+
+        Ok(input_claims)
+    }
+
+    fn gen_lookup_witness(
+        &self,
+        id: NodeId,
+        gen: &mut crate::lookup::context::LookupWitnessGen<E, PCS>,
+        ctx: &crate::Context<E, PCS>,
+        step_data: &StepData<Element, E>,
+    ) -> anyhow::Result<()> {
+        let mha_data = step_data
+            .outputs
+            .try_mha_data()
+            .ok_or(anyhow!("MhaData not found when proving Mha layer"))?;
+        self.softmax
+            .lookup_witness(id, gen, ctx, &mha_data.softmax_out, &mha_data.softmax_data)
+    }
+}
+
+impl<E: ExtensionField> OpInfo for MhaCtx<E> {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
+        MhaOutputShaper::from(self).output_shapes(input_shapes, padding_mode)
+    }
+
+    fn num_outputs(&self, _num_inputs: usize) -> usize {
+        1
+    }
+
+    fn describe(&self) -> String {
+        format!(
+            "MHACtx({}): \t {} \t {}, \t {}",
+            self.node_id,
+            self.qk.describe(),
+            self.softmax.describe(),
+            self.final_mul.describe(),
+        )
+    }
+
+    fn is_provable(&self) -> bool {
+        true
+    }
+}
+
+impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> VerifiableCtx<E, PCS> for MhaCtx<E> {
+    type Proof = MhaProof<E, PCS>;
+
+    fn verify<T: transcript::Transcript<E>>(
+        &self,
+        proof: &Self::Proof,
+        last_claims: &[&Claim<E>],
+        verifier: &mut Verifier<E, T, PCS>,
+        shape_step: &ShapeStep,
+    ) -> anyhow::Result<Vec<Claim<E>>> {
+        // we first need to reconstruct the `ShapeStep` for each intermediate layer
+        ensure!(
+            shape_step.unpadded_input_shape.len() == 3,
+            "Expected 3 unpadded input shapes for MhaLayer, found {}",
+            shape_step.unpadded_input_shape.len()
+        );
+
+        ensure!(
+            shape_step.padded_input_shape.len() == 3,
+            "Expected 3 padded input shapes for MhaLayer, found {}",
+            shape_step.padded_input_shape.len()
+        );
+
+        let reshaped_inputs = LayerCtx::<E>::Reshape(self.inputs_reshape.clone()).shape_step(
+            &shape_step.unpadded_input_shape,
+            &shape_step.padded_input_shape,
+        );
+
+        let qk_shapes = LayerCtx::ConcatMatMul(self.qk.clone()).shape_step(
+            &reshaped_inputs.unpadded_output_shape[..2],
+            &reshaped_inputs.padded_output_shape[..2],
+        );
+
+        let softmax_shapes = LayerCtx::<E>::Softmax(self.softmax.clone()).shape_step(
+            &qk_shapes.unpadded_output_shape,
+            &qk_shapes.padded_output_shape,
+        );
+
+        let final_mul_shapes = LayerCtx::ConcatMatMul(self.final_mul.clone()).shape_step(
+            &vec![
+                softmax_shapes.unpadded_output_shape[0].clone(),
+                reshaped_inputs.unpadded_output_shape[2].clone(),
+            ],
+            &vec![
+                softmax_shapes.padded_output_shape[0].clone(),
+                reshaped_inputs.padded_output_shape[2].clone(),
+            ],
+        );
+
+        // now we call the verifier of each sub-layer
+        let mut claims = self.final_mul.verify(
+            &proof.final_mul_proof,
+            last_claims,
+            verifier,
+            &final_mul_shapes,
+        )?;
+
+        ensure!(
+            claims.len() == 2,
+            "Expected 2 input claims for multiplication with V when verifiying Mha layer, found {} claims",
+            claims.len(),
+        );
+
+        let v_input_claim = claims.pop().unwrap();
+
+        let softmax_out_claim = claims.pop().unwrap();
+
+        let claims = self.softmax.verify(
+            &proof.softmax_proof,
+            &vec![&softmax_out_claim],
+            verifier,
+            &softmax_shapes,
+        )?;
+
+        let mut input_claims =
+            self.qk
+                .verify(&proof.qk_proof, &vec![&claims[0]], verifier, &qk_shapes)?;
+
+        // add claim about V to input claims
+
+        input_claims.push(v_input_claim);
+
+        Ok(input_claims)
+    }
+}
+
 pub fn zeroifier<N: Number>(num_heads: usize, q_len: usize, seq_len: usize) -> Tensor<N> {
     let zeroified = (0..num_heads)
         .into_par_iter()
@@ -297,6 +833,8 @@ mod test {
 
     use crate::{
         Element,
+        layers::Layer,
+        model::{Model, test::prove_model},
         quantization::{self, Fieldizer},
         testing::random_field_vector,
     };
@@ -325,12 +863,16 @@ mod test {
         ] {
             let num_heads = 2;
             let head_dim = 4;
-            let mha_qk = Mha::<Element>::new(num_heads, head_dim).unwrap().qk;
             let q_len = params.q_len;
             let seq_len = params.seq_len;
+            let mha_qk = Mha::<Element>::new(seq_len, num_heads, head_dim)
+                .unwrap()
+                .qk;
             let q = Tensor::<Element>::random(&vec![q_len, num_heads, head_dim].into());
             let k = Tensor::<Element>::random(&vec![seq_len, num_heads, head_dim].into());
-            let mut output = mha_qk.evaluate::<GoldilocksExt2>(&[&q, &k], vec![]).unwrap();
+            let mut output = mha_qk
+                .evaluate::<GoldilocksExt2>(&[&q, &k], vec![])
+                .unwrap();
             assert_eq!(output.outputs.len(), 1);
             let qk = output.outputs.remove(0);
             // normally [1,seq_len] per head, so with all heads [num_heads, 1, seq_len]
@@ -363,7 +905,9 @@ mod test {
             let seq_len = params.seq_len;
             let qk = Tensor::<Element>::random(&vec![num_heads, q_len, seq_len].into());
             let v = Tensor::<Element>::random(&vec![seq_len, num_heads, head_dim].into());
-            let mha_mul = Mha::<Element>::new(num_heads, head_dim).unwrap().final_mul;
+            let mha_mul = Mha::<Element>::new(seq_len, num_heads, head_dim)
+                .unwrap()
+                .final_mul;
             let mut output = mha_mul
                 .evaluate::<GoldilocksExt2>(&[&qk, &v], vec![qk.get_shape(), v.get_shape()])
                 .expect("mha_final_mul should not fail");
@@ -611,5 +1155,25 @@ mod test {
         test_infinitizer_evaluation_for_num_heads::<0>();
         // test infinitizer with multiple heads
         test_infinitizer_evaluation_for_num_heads::<3>();
+    }
+
+    #[test]
+    fn test_proven_mha() {
+        let num_heads = 5;
+        let head_dim = 7;
+        let seq_len = 10;
+
+        let hidden_size = num_heads * head_dim;
+
+        let input_shape = Shape::new(vec![seq_len, hidden_size]);
+
+        let mut model = Model::new_from_input_shapes(vec![input_shape; 3], PaddingMode::NoPadding);
+
+        let mha = Mha::new(seq_len, num_heads, head_dim).unwrap();
+
+        _ = model.add_consecutive_layer(Layer::Mha(mha), None).unwrap();
+        model.route_output(None).unwrap();
+
+        _ = prove_model(model).unwrap();
     }
 }
