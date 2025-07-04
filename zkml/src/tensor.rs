@@ -2054,7 +2054,6 @@ impl FromIterator<usize> for Shape {
 
 #[cfg(test)]
 mod test {
-
     use ark_std::rand::{Rng, thread_rng};
     use ff_ext::GoldilocksExt2;
     use ndarray::{Array, Ix2, Order};
