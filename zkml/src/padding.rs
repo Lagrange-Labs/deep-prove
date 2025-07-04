@@ -332,6 +332,10 @@ pub(crate) fn pad_matmul(mut mat: MatMul<Element>, si: &mut ShapeInfo) -> Result
         input_shape_padded: vec![left_shape[0], right_shape[1]].into(),
         ignore_garbage_pad: None,
     }];
+    if let Some(mut bias) = mat.bias {
+        bias.pad_to_shape(right_shape.slice(1..));
+        mat.bias = Some(bias);
+    }
     Ok(mat)
 }
 
