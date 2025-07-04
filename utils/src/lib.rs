@@ -12,46 +12,31 @@ use tracing::info;
 struct AllocatorMetrics {
     allocated: usize,
     deallocated: usize,
-    num_alloc_calls: usize,
+    alloc_calls: usize,
     peak: usize,
     in_use: usize,
-}
-
-impl AllocatorMetrics {
-    #[cfg(feature = "mem-track")]
-    fn with_peak_and_in_use(peak: usize, in_use: usize) -> Self {
-        AllocatorMetrics {
-            peak,
-            in_use,
-            ..Default::default()
-        }
-    }
 }
 
 #[cfg(feature = "mem-track")]
 mod track {
     use std::alloc::System;
 
-    use mem_track::peak::{global::GlobalPeakTracker, thread::BytesInUseTracker};
+    use mem_track::peak::global::GlobalPeakTracker;
 
     use crate::AllocatorMetrics;
 
     #[global_allocator]
-    static ALLOCATOR: BytesInUseTracker<GlobalPeakTracker<System>> =
-        BytesInUseTracker::init(GlobalPeakTracker::init(System));
+    static ALLOCATOR: GlobalPeakTracker<System> = GlobalPeakTracker::init(System);
 
     pub(crate) fn allocator_metrics() -> Option<AllocatorMetrics> {
-        let global = ALLOCATOR.inner();
-        let metrics = AllocatorMetrics::with_peak_and_in_use(global.peak(), global.in_use());
-        global.reset();
-
-        let details = ALLOCATOR.reset_all_threads();
-        let metrics = details.into_iter().fold(metrics, |mut state, data| {
-            state.allocated += data.allocated;
-            state.deallocated += data.deallocated;
-            state.num_alloc_calls += data.num_alloc_calls;
-            state
-        });
+        let metrics = AllocatorMetrics {
+            peak: ALLOCATOR.peak(),
+            in_use: ALLOCATOR.in_use(),
+            allocated: ALLOCATOR.allocated(),
+            deallocated: ALLOCATOR.deallocated(),
+            alloc_calls: ALLOCATOR.alloc_calls(),
+        };
+        ALLOCATOR.reset_peak();
 
         Some(metrics)
     }
@@ -80,7 +65,7 @@ pub struct MemoryMetrics {
     pub virtual_mem_diff: Option<isize>,
     pub allocated: Option<usize>,
     pub deallocated: Option<usize>,
-    pub num_alloc_calls: Option<usize>,
+    pub alloc_calls: Option<usize>,
     pub peak: Option<usize>,
     pub in_use: Option<usize>,
 }
@@ -95,7 +80,7 @@ impl MemoryMetrics {
         let deallocated = allocator_metrics.as_ref().map(|v| v.deallocated);
         let peak = allocator_metrics.as_ref().map(|v| v.peak);
         let in_use = allocator_metrics.as_ref().map(|v| v.in_use);
-        let num_alloc_calls = allocator_metrics.as_ref().map(|v| v.num_alloc_calls);
+        let alloc_calls = allocator_metrics.as_ref().map(|v| v.alloc_calls);
 
         match (old_memory_stats, new_memory_stats) {
             (Some(old_memory_stats), Some(new_memory_stats)) => {
@@ -118,7 +103,7 @@ impl MemoryMetrics {
                     virtual_mem_diff,
                     allocated,
                     deallocated,
-                    num_alloc_calls,
+                    alloc_calls,
                     peak,
                     in_use,
                 }
@@ -130,7 +115,7 @@ impl MemoryMetrics {
                 virtual_mem_diff: None,
                 allocated,
                 deallocated,
-                num_alloc_calls,
+                alloc_calls,
                 peak,
                 in_use,
             },
@@ -141,7 +126,7 @@ impl MemoryMetrics {
                 virtual_mem_diff: None,
                 allocated,
                 deallocated,
-                num_alloc_calls,
+                alloc_calls,
                 peak,
                 in_use,
             },
@@ -203,7 +188,7 @@ impl<'a> MeasureStage<'a> {
             virtual_mem = format_bytes_usize(memory.virtual_mem),
             allocated = format_bytes_usize(memory.allocated),
             deallocated = format_bytes_usize(memory.deallocated),
-            num_alloc_calls = memory.num_alloc_calls.map(|v| v.separate_with_commas()),
+            alloc_calls = memory.alloc_calls.map(|v| v.separate_with_commas()),
             peak = format_bytes_usize(memory.peak),
             in_use = format_bytes_usize(memory.in_use),
             "{start}"
@@ -244,7 +229,7 @@ impl<'a> MeasureStage<'a> {
             virtual_mem_diff = format_bytes_isize(memory.virtual_mem_diff),
             allocated = format_bytes_usize(memory.allocated),
             deallocated = format_bytes_usize(memory.deallocated),
-            num_alloc_calls = memory.num_alloc_calls.map(|v|v.separate_with_commas()),
+            alloc_calls = memory.alloc_calls.map(|v|v.separate_with_commas()),
             peak = format_bytes_usize(memory.peak),
             in_use = format_bytes_usize(memory.in_use),
             elapsed = ?elapsed,
