@@ -294,7 +294,7 @@ impl Add<f32> {
         // we also append a final +1 to void offsetted values being zeros
         let intermediate_bit_size = crate::quantization::MAX.ilog2() as usize + maxlog + 1 + 1;
         // now we need to prepare the requant layer's scaling. The requant layer performs s1 * s2 / s3
-        // we want the requant to perform 1 * 1 / 2^{shift1 + shift2} so s1=1, s2=1, s3=2^{shift1 + shift2}
+        // we want the requant to perform 1 * 1 / 2^{-n + FIXED_POINT_PRECISION} so s1=1, s2=1, s3=2^{FIXED_POINT_PRECISION -n}
         let os1 = ScalingFactor::from_scale(1.0, None);
         let os2 = ScalingFactor::from_scale(1.0, None);
         let os3 = ScalingFactor::from_scale(quant_info.global_multiplier_element() as f32, None);
@@ -525,17 +525,14 @@ mod test {
         let qadd_result = qadd
             .evaluate::<GoldilocksExt2>(&[&qt1, &qt2], vec![vec![2, 2].into(), vec![2, 2].into()])
             .unwrap();
-        let shift = qadd.quant_info.as_ref().unwrap().global_shift();
-        // we divide by 2^{shift1 + shift2} to get the result in the original scale
-        // we pass by float first otherwise the inverse of 2^{shift1 + shift2} is just zero
-        let pow = 2f32.powf(-shift as f32);
+        let scale = qadd.quant_info.as_ref().unwrap().global_multiplier_element();
         let result_scaled = Tensor::<Element>::new(
             qadd_result.outputs()[0].get_shape(),
             qadd_result.outputs()[0]
                 .get_data()
                 .iter()
-                .map(|x| ((*x as f32 * pow) as Element))
-                .collect::<Vec<_>>(),
+                .map(|x| x / scale)
+                .collect::<Vec<_>>()
         );
         let computed_result = result_scaled.dequantize(&s3);
         let within_range = result_scaled
@@ -641,7 +638,7 @@ mod test {
         let q_result = qt1_scaled.add(&qt2_scaled);
         let dequantized = q_result.dequantize(&s3);
         let close_to_float =
-            is_close_with_tolerance(dequantized.get_data(), t3.get_data(), 1e-2_f32, 0.1);
+            is_close_with_tolerance(dequantized.get_data(), t3.get_data(), 1e-2_f32, 1e-2_f32);
         assert!(
             close_to_float,
             "THEORY output is not close to float: float {:?} vs computed {:?}",
