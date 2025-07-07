@@ -25,7 +25,12 @@ jobs:
       - name: Capture layers outputs on base
         run: |
           cd zkml
-          cargo test --features capture-layers-quant
+          # Skip tests that require py exported model
+          cargo test --features capture-layers-quant -- \
+            --skip layers::transformer::test::test_gpt2_model_full_pass \
+            --skip layers::transformer::test::test_read_gpt2_pytorch_embeddings \
+            --skip layers::transformer::test::test_read_gpt2_pytorch_output_first \
+            --skip parser::json::test::test_json_tensor_loader
           mv layers-quant ~/layers-quant-base
       - name: Checkout HEAD
         uses: actions/checkout@v4
@@ -34,7 +39,11 @@ jobs:
       - name: Capture layers outputs on HEAD
         run: |
           cd zkml
-          cargo test --features capture-layers-quant
+          cargo test --features capture-layers-quant -- \
+            --skip layers::transformer::test::test_gpt2_model_full_pass \
+            --skip layers::transformer::test::test_read_gpt2_pytorch_embeddings \
+            --skip layers::transformer::test::test_read_gpt2_pytorch_output_first \
+            --skip parser::json::test::test_json_tensor_loader
           mv layers-quant ~/layers-quant
           cp ../scripts/ci/cmp-layers-quant.sh ~/cmp-layers-quant.sh
       - name: Compare HEAD outputs against base
