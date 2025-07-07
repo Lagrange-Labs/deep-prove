@@ -18,14 +18,18 @@ struct AllocatorMetrics {
 
 #[cfg(feature = "mem-track")]
 mod track {
-    use std::alloc::System;
+    use std::{alloc::System, env, fs::OpenOptions, io::BufWriter, thread};
 
-    use mem_track::peak::global::GlobalPeakTracker;
+    use mem_track::{
+        flame::{FlameAlloc, format_flame_graph},
+        peak::global::GlobalPeakTracker,
+    };
 
     use crate::AllocatorMetrics;
 
     #[global_allocator]
-    static ALLOCATOR: GlobalPeakTracker<System> = GlobalPeakTracker::init(System);
+    static ALLOCATOR: GlobalPeakTracker<FlameAlloc<System>> =
+        GlobalPeakTracker::init(FlameAlloc::init(System));
 
     pub(crate) fn allocator_metrics() -> Option<AllocatorMetrics> {
         let metrics = AllocatorMetrics {
@@ -38,6 +42,43 @@ mod track {
 
         Some(metrics)
     }
+
+    pub(crate) fn flame_graph() {
+        if let Ok(file_prefix) = env::var("FLAMEGRAPH") {
+            let graph = ALLOCATOR.inner().global_flame_graph();
+
+            // Formatting the flame graph is an expensive operation, do it in the background.
+            thread::spawn(move || {
+                for i in 0..128 {
+                    if let Ok(file) = OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(format!("{file_prefix}_bytes_{i}.flame"))
+                    {
+                        let mut file = BufWriter::new(file);
+                        let _ = format_flame_graph(&mut file, graph.iter(), |v| v.bytes_allocated);
+                        if let Ok(file) = file.into_inner() {
+                            let _ = file.sync_all();
+                        }
+
+                        if let Ok(file) = OpenOptions::new()
+                            .write(true)
+                            .create_new(true)
+                            .open(format!("{file_prefix}_calls_{i}.flame"))
+                        {
+                            let mut file = BufWriter::new(file);
+                            let _ = format_flame_graph(&mut file, graph.iter(), |v| v.alloc_calls);
+                            if let Ok(file) = file.into_inner() {
+                                let _ = file.sync_all();
+                            }
+                        }
+
+                        break;
+                    }
+                }
+            });
+        }
+    }
 }
 
 #[cfg(not(feature = "mem-track"))]
@@ -46,6 +87,10 @@ mod track {
 
     pub(crate) fn allocator_metrics() -> Option<AllocatorMetrics> {
         None
+    }
+
+    pub(crate) fn flame_graph() {
+        // Empty
     }
 }
 
@@ -221,6 +266,8 @@ impl<'a> MeasureStage<'a> {
             memory_stats(),
             track::allocator_metrics(),
         );
+
+        track::flame_graph();
 
         info!(
             physical_mem = format_bytes_usize(memory.physical_mem),
