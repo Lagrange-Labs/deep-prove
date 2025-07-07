@@ -1,61 +1,92 @@
-# Embeddings
+# Embeddings Layer
 
-Embeddings is a map where the keys are the token id and the values are the embeddings vector. Informally, this is used to map the user input to weights that that the model can manipulate.
+The embeddings layer implements a lookup table operation that maps discrete token identifiers to dense vector representations. This is a fundamental component in transformer-based language models.
 
-More formally, the embeddings map is $E: \mathbb{T} \rightarrow \{\mathbb{R}\}^{e}$ where $\mathbb{T}$ is 
-set of token id and $e$ is the embedding size of the model.
+## Mathematical Formulation
 
-## Inference
+**Definition 1 (Embedding Map).** An embedding map is a function $E: \mathcal{T} \rightarrow \mathbb{R}^d$ where:
+- $\mathcal{T} = \{0, 1, \ldots, v-1\}$ is the finite set of token identifiers (vocabulary)
+- $v \in \mathbb{N}$ is the vocabulary size
+- $d \in \mathbb{N}$ is the embedding dimension
 
-The input tensor $x$ is a tensor of tokens IDs of shape $[s,1]$ where $s$ is the sequence length. 
-The map is a tensor of all the embeddings of shape $[v,e]$ where $v$ is the vocabulary size of the model. The operation takes every token id $id$ and outputs $E[id]$.
-The output shape is therefore $[s,e]$.
+The embedding map can be represented as a matrix $\mathbf{E} \in \mathbb{R}^{v \times d}$ where the $i$-th row $\mathbf{E}[i, :]$ contains the embedding vector for token $i$.
 
-## Proving
+**Definition 2 (Embedding Layer Operation).** Given an input sequence $\mathbf{x} = (x_1, x_2, \ldots, x_s) \in \mathcal{T}^s$ of length $s$, the embedding layer computes:
 
-### Rationale
+$$\text{Embed}(\mathbf{x}) = (\mathbf{E}[x_1, :], \mathbf{E}[x_2, :], \ldots, \mathbf{E}[x_s, :]) \in \mathbb{R}^{s \times d}$$
 
-Proving a non linear map operation is usually implemented using lookup tables. However, that is costly in terms of commitment since it requires to commit to the output. In this case, the output is $[s,e]$ and with gpt2 already, if we consider the maximum length, the output length is of 786432 elements. 
+## Inference Implementation
 
-It turns out that we can use a method close to what Lasso/Jolt is doing using one hot encoding vectors of the input. This method only requires 
-* proving a matrix multiplication via sumcheck between the table and the one hot encoding to create the correct output
-* the verifier to evaluate the one hot encoding at a random point.
+**Input:** Tensor $\mathbf{x} \in \mathbb{Z}^{s \times 1}$ containing token identifiers
 
-So the gist for the verifier boils down to efficiently evaluating the one hot encoding vector at a random point. Given the one hot encoding vector is highly structured, it is efficiently verifiable in $log(v)$ time. 
-We choose this approach as even though it increases verifier time, it is strictly better in terms of proving time due to not having to commit to the output.
+**Parameters:** Embedding matrix $\mathbf{E} \in \mathbb{R}^{v \times d}$
 
-### Setup
+**Output:** Tensor $\mathbf{R} \in \mathbb{R}^{s \times d}$ where $\mathbf{R}[i, :] = \mathbf{E}[x_i, :]$
 
-During the setup phase, the table $E$ needs to be committed to; which we call $C_E$.
+The operation is equivalent to:
+$$\mathbf{R} = \mathbf{H} \cdot \mathbf{E}$$
 
-### Prover
+where $\mathbf{H} \in \{0,1\}^{s \times v}$ is the one-hot encoding matrix defined by:
+$$\mathbf{H}[i, j] = \begin{cases} 
+1 & \text{if } j = x_i \\
+0 & \text{otherwise}
+\end{cases}$$
 
-The prover does the following operations:
-1. Creates the one hot encoding $H$ of shape $[s,v]$ where $H[i][x[i]] = 1$ and $0$ anywhere else.
-    * There are $s$ one hot encoding vectors, concatenated together.
-    * $x[i]$ is considered as $v$ boolean variables.
-2. Prove $R = H * E$ where $R$ is therefore the correct output of the embeddings layer. To do that, the prover just uses a sumcheck to prove the matrix multiplication as explained in TODO.
+## Zero-Knowledge Proof Protocol
 
-At the end, the prover is producing two claims:
-1. one claim $c_H$ : $H(r) = y_H$ 
-2. one claim $c_E$ : $E(r) = y_E$
+### Protocol Overview
 
-$c_E$ is to be proven via PCS opening, using our regular batch claim accumulation proving (TODO LINK).
-$c_H$ however is simply given to the verifier. The verifier will evaluate directly the $H$ polynomial efficiently.
+The goal is to prove correct execution of the embedding lookup without revealing the input tokens. We use a matrix multiplication approach that avoids committing to the large output tensor if we were using a lookup protocol approach. 
 
-### Verifier
+### Commitment Phase
 
-The verifier needs to
-1. Verify the sumcheck proof with the input claim, as in a regular dense layer.
-2. Verify the two claims $c_E$ and $c_H$.
-   A. $c_E$ is given to the verification routine of the batch claim verification protocol (TODO LINK).
-   B. $c_H$ is efficiently verified thanks to the following fact.
+**Commitment:** The prover commits to the embedding matrix $\mathbf{E}$ using a polynomial commitment scheme, producing commitment $C_E$.
 
-### Evaluating $H$ efficiently
+### Proving Phase
 
-Let's assume $s = 1$ for sake of explanation. In this case, we can express $H(y_H) = \beta(x[i],y)$. $\beta(..)$ can be efficiently verified by the verifier in $log(v)$ time (TODO LINK).
+**Step 1: One-hot Encoding Construction**
+The prover constructs the one-hot encoding matrix $\mathbf{H} \in \{0,1\}^{s \times v}$ as defined above.
 
-When we have a full sequence, we simply need to add some variables to address which input token in the list of input token we're dealing with. So $H(y_H) = \beta(\mathbf{i},x[i])$ where $\mathbf{i}$ is a vector of $log(s)$ variables to represent the "sequence space", so in total we have $log(s) + log(v)$ variables to $\beta$.
+**Step 2: Matrix Multiplication Proof**
+Using sumcheck protocol, the prover proves the relation:
+$$\mathbf{R} = \mathbf{H} \cdot \mathbf{E}$$
 
+This produces two polynomial evaluation claims:
+1. **Encoding claim:** $c_H: \tilde{\mathbf{H}}(\mathbf{r}) = y_H$ for random point $\mathbf{r} \in \mathbb{F}^{\log(s) + \log(v)}$
+2. **Embedding claim:** $c_E: \tilde{\mathbf{E}}(\mathbf{r}') = y_E$ for random point $\mathbf{r}' \in \mathbb{F}^{\log(v) + \log(d)}$
 
+where $\tilde{\mathbf{H}}$ and $\tilde{\mathbf{E}}$ are the multilinear extensions of $\mathbf{H}$ and $\mathbf{E}$, respectively.
 
+### Verification Phase
+
+The verifier performs the following checks:
+
+1. **Sumcheck Verification:** Verify the sumcheck proof for the matrix multiplication.
+2. **Embedding Claim:** Verify $c_E$ using the polynomial commitment scheme opening.
+3. **One-hot Claim:** Directly evaluate $\tilde{\mathbf{H}}(\mathbf{r})$ and verify $c_H$.
+
+### Efficient One-hot Evaluation
+
+**Theorem 1.** The multilinear extension of the one-hot encoding matrix $\mathbf{H}$ can be evaluated in $O(\log s + \log v)$ time.
+
+**Proof Sketch:** The one-hot encoding has a highly structured form. For a single token ($s = 1$), we have:
+$$\tilde{\mathbf{H}}(\mathbf{y}) = \beta(x_0, \mathbf{y})$$
+
+where $\beta(a, \mathbf{y})$ is the multilinear extension of the indicator function for value $a$:
+$$\beta(a, \mathbf{y}) = \prod_{i=0}^{\log v - 1} \left( a_i \cdot y_i + (1 - a_i) \cdot (1 - y_i) \right)$$
+
+where $a_i$ is the $i$-th bit of $a$ in binary representation.
+
+For the full sequence case, we can express the evaluation directly as:
+$$\tilde{\mathbf{H}}(\mathbf{r}) = \sum_{i=0}^{s-1} \beta(i \parallel x_i, \mathbf{r})$$
+
+where $i \parallel x_i$ denotes the concatenation of the binary representations of position $i$ and token $x_i$, and $\mathbf{r} \in \mathbb{F}^{\log s + \log v}$ is the evaluation point.
+
+This can be computed in $O(\log s + \log v)$ time using the Lagrange interpolation formula. □
+
+## Complexity Analysis
+
+- **Prover Time:** $O(svd)$ for the sumcheck protocol
+- **Verifier Time:** $O(\log s + \log v + \log d)$ 
+- **Communication:** $O(\log(svd))$ field elements
+- **Commitment Size:** $O(vd)$ for the embedding matrix
