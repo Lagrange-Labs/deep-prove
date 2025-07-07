@@ -131,8 +131,12 @@ impl Evaluate<Element> for Add<Element> {
         let mut result = left_scaled.add(&right_scaled);
         // we check if we need to scale the result or not
         if !quant_info.requires_requant() {
+            println!("NO REQUANT!!!!!!!!!!!!");
             result = result.scalar_mul(&(quant_info.global_multiplier_element()));
         }
+        println!("RESULT max ilog2() input1: {:?}", left_tensor.get_data().iter().map(|x| (x.abs() as u64).ilog2()).max());
+        println!("RESULT max ilog2() input2: {:?}", right_tensor.get_data().iter().map(|x| (x.abs() as u64).ilog2()).max());
+        println!("RESULT max ilog2() {:?}", result.get_data().iter().map(|x| (x.abs() as u64).ilog2()).max());
         Ok(LayerOut::from_vec(vec![result]))
     }
 }
@@ -295,6 +299,8 @@ impl Add<f32> {
         let os2 = ScalingFactor::from_scale(1.0, None);
         let os3 = ScalingFactor::from_scale(quant_info.global_multiplier_element() as f32, None);
         let requant = Requant::from_scaling_factors(os1, os2, os3, intermediate_bit_size);
+        println!("requant: bitsize {:?}, s3 {:?}", intermediate_bit_size, os3.scale().log2());
+        println!("requant: left_scale {:?}, right_scale {:?}", ceil_log2(quant_info.left_scale() as usize), ceil_log2(quant_info.right_scale() as usize));
         Ok(QuantizeOutput::new(quantized_model, vec![output_scaling]).with_requant(requant))
     }
 }
