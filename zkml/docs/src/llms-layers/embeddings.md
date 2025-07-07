@@ -33,6 +33,7 @@ During the setup phase, the table $E$ needs to be committed to; which we call $C
 The prover does the following operations:
 1. Creates the one hot encoding $H$ of shape $[s,v]$ where $H[i][x[i]] = 1$ and $0$ anywhere else.
     * There are $s$ one hot encoding vectors, concatenated together.
+    * $x[i]$ is considered as $v$ boolean variables.
 2. Prove $R = H * E$ where $R$ is therefore the correct output of the embeddings layer. To do that, the prover just uses a sumcheck to prove the matrix multiplication as explained in TODO.
 
 At the end, the prover is producing two claims:
@@ -44,6 +45,17 @@ $c_H$ however is simply given to the verifier. The verifier will evaluate direct
 
 ### Verifier
 
+The verifier needs to
+1. Verify the sumcheck proof with the input claim, as in a regular dense layer.
+2. Verify the two claims $c_E$ and $c_H$.
+   A. $c_E$ is given to the verification routine of the batch claim verification protocol (TODO LINK).
+   B. $c_H$ is efficiently verified thanks to the following fact.
+
+### Evaluating $H$ efficiently
+
+Let's assume $s = 1$ for sake of explanation. In this case, we can express $H(y_H) = \beta(x[i],y)$. $\beta(..)$ can be efficiently verified by the verifier in $log(v)$ time (TODO LINK).
+
+When we have a full sequence, we simply need to add some variables to address which input token in the list of input token we're dealing with. So $H(y_H) = \beta(\mathbf{i},x[i])$ where $\mathbf{i}$ is a vector of $log(s)$ variables to represent the "sequence space", so in total we have $log(s) + log(v)$ variables to $\beta$.
 
 
 
