@@ -65,5 +65,3 @@ jobs:
         with:
           components: clippy 
       - run: cargo clippy --all -- -D warnings
-        
->>>>>>> master
