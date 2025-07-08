@@ -334,6 +334,11 @@ where
 
     if !table_poly_claims.is_empty() {
         // If the table poly claims aren't empty there should only be 1
+        ensure!(
+            table_poly_claims.len() == 1,
+            "If table poly claims isn't empty we should only have 1, got: {}",
+            table_poly_claims.len()
+        );
         witness_verifier.add_table_claim(table_type, table_poly_claims[0].clone())?;
     }
 

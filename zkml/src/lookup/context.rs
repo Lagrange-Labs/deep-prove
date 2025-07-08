@@ -37,10 +37,60 @@ pub enum TableType {
     Range,
     /// Table used for clamping values, the inner [`usize`] denotes the maximum bit length a value can be before clamping to use this table
     Clamping(usize),
-    /// Table type used for computing Softmax, the first inner [`u32`] denotes the result of calling [`f32::to_bits`] on the temperature value, the second [`usize`] is the table size and the [`Element`] is the point at which we map everything to zero
-    Softmax(u32, usize, Element),
+    /// Table type used for computing Softmax, see the [`SoftmaxTableData`] struct for more info.
+    Softmax(SoftmaxTableData),
     /// Table used for checking the normalisation error in Softmax operations, the first inner [`Element`] is `1` quantised by the scale factor, the second inner [`Element`] is the absoloute value of the allowable error
     ErrorTable(Element, Element),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+/// Struct used to store Softmax table data
+pub struct SoftmaxTableData {
+    /// This is the result of calling [`f32::to_bits`] on the temperature value.
+    float_bits: u32,
+    /// The bit length of table size.
+    table_size: usize,
+    /// Any value larger than this gets mapped to zero.
+    bkm: Element,
+}
+
+impl SoftmaxTableData {
+    pub(crate) fn new(float_bits: u32, table_size: usize, bkm: Element) -> SoftmaxTableData {
+        SoftmaxTableData {
+            float_bits,
+            table_size,
+            bkm,
+        }
+    }
+
+    pub(crate) fn float_temperature(&self) -> f32 {
+        f32::from_bits(self.float_bits)
+    }
+
+    pub(crate) fn full_table_size(&self) -> Element {
+        1 << self.table_size
+    }
+
+    pub(crate) fn size(&self) -> usize {
+        self.table_size
+    }
+
+    pub(crate) fn bkm(&self) -> Element {
+        self.bkm
+    }
+
+    pub(crate) fn table_output(&self, j: Element) -> Element {
+        let float_temperature = self.float_temperature();
+        let base = 1i128 << (LOG_SCALE_FACTOR - 8);
+        let bkm = self.bkm();
+        let prod = base * j;
+        if prod >= bkm {
+            0i128
+        } else {
+            let float_exp = (-prod as f32 / (SCALE_FACTOR as f32 * float_temperature)).exp();
+            (float_exp * OUTPUT_SCALE_FACTOR as f32).round() as Element
+        }
+    }
 }
 
 impl TableType {
@@ -100,23 +150,15 @@ impl TableType {
                     field.into_iter().unzip();
                 (comb, vec![col_one, col_two])
             }
-            TableType::Softmax(val, size, bkm) => {
-                let float_temperature = f32::from_bits(*val);
-                let table_size = 1i128 << size;
-                let base = 1i128 << (LOG_SCALE_FACTOR - 8);
+            TableType::Softmax(table_data) => {
+                let table_size = table_data.full_table_size();
+
                 let (merged_lookup, (in_column, out_column)): (
                     Vec<Element>,
                     (Vec<E::BaseField>, Vec<E::BaseField>),
                 ) = (0i128..table_size)
                     .map(|j| {
-                        let prod = base * j;
-                        let out_elem = if prod >= *bkm {
-                            0i128
-                        } else {
-                            let float_exp =
-                                (-prod as f32 / (SCALE_FACTOR as f32 * float_temperature)).exp();
-                            (float_exp * OUTPUT_SCALE_FACTOR as f32).round() as Element
-                        };
+                        let out_elem = table_data.table_output(j);
                         let in_field: E = j.to_field();
                         let out_field: E = out_elem.to_field();
                         (
@@ -152,7 +194,9 @@ impl TableType {
             TableType::Relu => "Relu".to_string(),
             TableType::Range => "Range".to_string(),
             TableType::Clamping(size) => format!("Clamping: {}", size),
-            TableType::Softmax(temp, ..) => format!("Softmax - temperature: {}", temp),
+            TableType::Softmax(table_data) => {
+                format!("Softmax - temperature: {}", table_data.float_temperature())
+            }
             TableType::ErrorTable(quant_one, allowable_error) => {
                 format!(
                     "Error Table - quantised one: {}, allowable error: {}",
@@ -238,12 +282,13 @@ impl TableType {
 
                 Ok(vec![first_column, second_col_eval])
             }
-            TableType::Softmax(_, size, ..) => {
-                if point.len() != *size {
+            TableType::Softmax(table_data) => {
+                let size = table_data.size();
+                if point.len() != size {
                     return Err(LogUpError::VerifierError(format!(
                         "Point was not the correct size to produce a softmax table evaluation, point size: {}, expected: {}",
                         point.len(),
-                        *size
+                        size
                     )));
                 }
 
@@ -274,7 +319,7 @@ impl TableType {
         match self {
             TableType::Range | TableType::Relu => *quantization::BIT_LEN,
             TableType::Clamping(bits) => *bits,
-            TableType::Softmax(_, bits, _) => *bits,
+            TableType::Softmax(table_data) => table_data.size(),
             TableType::ErrorTable(_, allowable_error) => ceil_log2(2 * *allowable_error as usize),
         }
     }
@@ -282,27 +327,19 @@ impl TableType {
     /// Function that returns any MLEs that have to be committed for this [`TableType`]
     pub fn committed_columns<E: ExtensionField>(&self) -> Option<DenseMultilinearExtension<E>> {
         match self {
-            TableType::Softmax(val, size, bkm) => {
-                let float_temperature = f32::from_bits(*val);
-                let table_size = 1i128 << size;
-                let base = 1i128 << (LOG_SCALE_FACTOR - 8);
+            TableType::Softmax(table_data) => {
+                let table_size = table_data.full_table_size();
+
                 let out_column = (0i128..table_size)
                     .map(|j| {
-                        let prod = base * j;
-                        let out_elem = if prod >= *bkm {
-                            0i128
-                        } else {
-                            let float_exp =
-                                (-prod as f32 / (SCALE_FACTOR as f32 * float_temperature)).exp();
-                            (float_exp * OUTPUT_SCALE_FACTOR as f32).round() as Element
-                        };
-
+                        let out_elem = table_data.table_output(j);
                         let out_field: E = out_elem.to_field();
                         out_field.as_bases()[0]
                     })
                     .collect::<Vec<E::BaseField>>();
                 Some(DenseMultilinearExtension::<E>::from_evaluations_vec(
-                    *size, out_column,
+                    table_data.size(),
+                    out_column,
                 ))
             }
             TableType::ErrorTable(quant_one, allowable_error) => {
