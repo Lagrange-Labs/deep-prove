@@ -35,7 +35,6 @@ jobs:
           echo "DEEPPROVE_ASSET_DIR=${{ github.workspace }}/zkml/assets/scripts/llms/" >> $GITHUB_ENV
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - run: cargo test 
 
       - name: Run cargo test
         run: cargo test
