@@ -141,7 +141,7 @@ impl<N: Number> Mha<N> {
             InputMatrixDimensions::new(1, 2, 0),
             InputMatrixDimensions::new(1, 2, 0),
         )
-        .with_max_shapes(
+        .update_intermediate_bit_size(
             vec![
                 vec![context_length, num_heads, head_dim].into(),
                 vec![context_length, num_heads, head_dim].into(),
@@ -155,7 +155,7 @@ impl<N: Number> Mha<N> {
             InputMatrixDimensions::new(1, 0, 2),
             Permutation::new(vec![1, 0, 2]),
         )
-        .with_max_shapes(
+        .update_intermediate_bit_size(
             vec![
                 vec![num_heads, context_length, context_length].into(),
                 vec![context_length, num_heads, head_dim].into(),
@@ -526,10 +526,10 @@ impl PadOp for Mha<Element> {
         let padded_num_heads = self.num_heads.next_power_of_two();
         let padded_head_dim = self.head_dim.next_power_of_two();
 
-        let Reshape::Subspace((_, (to_add, _))) = &mut self.final_reshape else {
+        let Reshape::Subspace(subspace) = &mut self.final_reshape else {
             unreachable!("Final reshape in MHA layer must be Subspace variant")
         };
-        *to_add = vec![padded_head_dim*padded_num_heads];
+        subspace.to_add = vec![padded_head_dim*padded_num_heads];
 
         let final_reshape = self.final_reshape.pad_node(si)?;
 

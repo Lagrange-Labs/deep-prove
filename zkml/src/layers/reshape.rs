@@ -19,6 +19,22 @@ use crate::{Tensor, tensor::Number};
 use super::provable::{Evaluate, LayerOut, OpInfo};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Subspace {
+    // Indices in the shape of the tensor that we want to remove
+    pub(crate) to_remove: Range<usize>,
+    // Actual indices that we add in place of the removed indices
+    pub(crate) to_add: Vec<usize>,
+    // These are the original indices to be added in place of the 
+    // removed indices. They might differ from indices in `to_add`
+    // after we pad the node, as padding will make the indices in
+    // `to_add` powers of 2, while indices here will not be changed
+    // by padding operation. It is necessary to keep track of these
+    // indices to compute the unpadded output shapes for reshaped
+    // tensors
+    pub(crate) unpadded_to_add: Vec<usize>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Reshape {
     // First is the actual new shape, second one is the unpadded new shape
     Full((Vec<Shape>, Vec<Shape>)),
@@ -28,7 +44,7 @@ pub enum Reshape {
     // - v3 are the actual unpadded indices that we add in place
     // e.g. if tensor is [a,b,c], and we give Subspace(1..=2,vec![b/6,c,6]) then the
     // output shape is [a,b/6,c,6]
-    Subspace((Range<usize>, (Vec<usize>, Vec<usize>))),
+    Subspace(Subspace),
     /// Adds a 1 at the given index in the shape.
     Squeeze(usize),
 }
@@ -43,8 +59,13 @@ impl Reshape {
     pub fn new_subspace<R: RangeBounds<usize>>(to_remove: R, to_add: Vec<usize>) -> Self {
         let start = range_start(&to_remove).expect("invalid start bound");
         let end = range_end(&to_remove).expect("invalid end bound");
-        Self::Subspace((Range { start, end }, (to_add.clone(), to_add)))
+        Self::Subspace(Subspace { 
+            to_remove: Range { start, end }, 
+            to_add: to_add.clone(), 
+            unpadded_to_add: to_add 
+        })
     }
+
     pub fn new_squeeze(index: usize) -> Self {
         Self::Squeeze(index)
     }
@@ -53,10 +74,11 @@ impl Reshape {
             Reshape::Full((_, unpadded_new_dim)) => {
                 Reshape::Full((unpadded_new_dim.clone(), unpadded_new_dim.clone()))
             }
-            Reshape::Subspace((to_remove, (_, unpadded_to_add))) => Reshape::Subspace((
-                to_remove.clone(),
-                (unpadded_to_add.clone(), unpadded_to_add.clone()),
-            )),
+            Reshape::Subspace(subspace) => Reshape::Subspace(Subspace { 
+                to_remove: subspace.to_remove.clone(), 
+                to_add: subspace.unpadded_to_add.clone(), 
+                unpadded_to_add: subspace.unpadded_to_add.clone(), 
+            }),
             Reshape::Squeeze(index) => Reshape::Squeeze(*index),
         }
     }
@@ -70,10 +92,11 @@ impl Reshape {
                     .collect(),
                 unpadded_shapes.clone(),
             )),
-            Reshape::Subspace((to_remove, (to_add, unpadded_to_add))) => Reshape::Subspace((
-                to_remove.clone(),
-                (to_add.next_power_of_two(), unpadded_to_add.clone()),
-            )),
+            Reshape::Subspace(subspace) => Reshape::Subspace(Subspace { 
+                to_remove: subspace.to_remove.clone(), 
+                to_add: subspace.to_add.next_power_of_two(), 
+                unpadded_to_add: subspace.unpadded_to_add.clone() 
+            }),
             Reshape::Squeeze(index) => Reshape::Squeeze(*index), // no need to change anything,
         }
     }
@@ -87,11 +110,15 @@ impl Reshape {
                 vec![Shape::new(new_dim)]
             }
             Reshape::Full((ref new_dim, _)) => new_dim.clone(),
-            Reshape::Subspace((to_remove, (to_add, _))) => input_shapes
+            Reshape::Subspace(subspace) => input_shapes
                 .iter()
                 .map(|shape| {
                     let mut new_shape = shape.clone();
-                    new_shape.splice(to_remove.clone(), to_add.clone());
+                    println!(
+                        "moving from shape {:?} by splice({:?},{:?})",
+                        shape, subspace.to_remove, subspace.to_add
+                    );
+                    new_shape.splice(subspace.to_remove.clone(), subspace.to_add.clone());
                     new_shape
                 })
                 .collect::<Vec<Shape>>(),

@@ -129,7 +129,7 @@ pub enum ProvingData<E: ExtensionField> {
     Convolution(ConvData<E>),
     /// Variant for extra data used to prove [`Softmax`] that we compute anyway during quantised evaluation.
     Softmax(SoftmaxData<E>),
-    /// Variant for extra data used to prove Mha layer, computed during qwuantised evaluation
+    /// Variant for extra data used to prove Mha layer, computed during quantised evaluation
     Mha(MhaData<E>),
     /// Variant used when no extra data is returned.
     None,

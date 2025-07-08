@@ -68,7 +68,8 @@ pub struct InputMatrixDimensions {
     /// Index in the input shape that refers to the dimension that we concatenate over.
     concat_dimension: usize,
     /// Index in the input shape that refers to the dimension over which the matrix multiplication
-    /// of each chunk is performed
+    /// of each chunk is performed. For example, with two matrices A and B of shape [a,b,c] and [a,c,d], 
+    /// the `mat_mul_dimension` for A is 2 (c) and for B is 1 (c) as well.
     mat_mul_dimension: usize,
     /// Index in the input shape that refers to the dimension which will be part of the shape of
     /// the chunks of the output matrix
@@ -104,6 +105,9 @@ impl InputMatrixDimensions {
     }
 
     /// Build the point for the given input tensors over which the claim produced by sum-check is evaluated.
+    /// This is necessary in case we need to permute the input. The proving happens directly over the permuted 
+    /// tensor, and the claim produced is then "permuted" to be consistent with the fact the input is the 
+    /// non permuted matrix.
     fn build_point_for_input<E: ExtensionField>(
         &self,
         point_for_concat_dim: &[E],
@@ -124,10 +128,7 @@ impl InputMatrixDimensions {
     }
 
     /// Compute the MLE for the input tensor, checking if the tensor needs to be permuted for the sum-check
-    /// employed in proving. Besides the input tensors, it requires the following inputs:
-    /// - `concat_dimension`: the dimension over which the input tensors are concatenated
-    /// - `mat_mul_dimension`: the dimension over which the matrix multiplication is performed
-    /// - `not_mat_mul_dimension`: the dimension that is not involved in the matrix multiplication
+    /// employed in proving
     fn input_mle_for_proving<E: ExtensionField>(
         &self,
         input: &Tensor<E>,
@@ -149,8 +150,12 @@ impl InputMatrixDimensions {
             // no permutation needed, just compute the MLE
             let mut mle = input.data.clone().into_mle();
             if self.output_dimension == 0 {
+                // We need to fix the variables related to the first dimension, which are
+                // the most significant ones 
                 mle.fix_high_variables_in_place(partial_point);
             } else {
+                // Output dimension is the last dimension, so we need to fix the variables
+                // related to the last dimension, which are the least significant ones
                 mle.fix_variables_in_place_parallel(partial_point);
             }
             mle
@@ -402,7 +407,12 @@ impl ConcatMatMul {
             intermediate_bit_size: DEFAULT_INTERMEDIATE_BIT_SIZE,
         }
     }
-    pub fn with_max_shapes(
+    /// Update the intermediate bit size of `self`, which is necessary to properly quantize the layer,
+    /// using the following information about the input matrices:
+    /// - `max_shapes`: Shapes with the biggest possible dimensions for the input matrices
+    /// - `quantized_left_input_range`: Range of values for the left input matrix, when quantized
+    /// - `quantized_right_input_range`: Range of values for the right input matrix, when quantized
+    pub fn update_intermediate_bit_size(
         self,
         max_shapes: Vec<Shape>,
         quantized_left_input_range: Option<usize>,
@@ -693,6 +703,9 @@ where
             num_chunks,
             aux.last_output_shape[1][self.permutations.right.concat_dimension]
         );
+
+        ensure!(num_columns_left.is_power_of_two());
+        ensure!(num_chunks.is_power_of_two());
 
         let num_vars = (num_columns_left * num_chunks).ilog2() as usize;
 
