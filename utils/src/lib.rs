@@ -47,6 +47,7 @@ impl MemoryFlameGraph {
     /// # Panics
     ///
     /// If there is already a flame graph being collected.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         track::flame_graph_enable();
         Self {}
@@ -214,6 +215,7 @@ pub struct Metrics {
 
 impl Metrics {
     /// Start measuring a time span.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             when: Instant::now(),
@@ -376,5 +378,5 @@ fn format_bytes_usize(f: &mut std::fmt::Formatter<'_>, v: usize) -> std::fmt::Re
 fn format_bytes_isize(f: &mut std::fmt::Formatter<'_>, v: isize) -> std::fmt::Result {
     let prefix = if v.is_negative() { "-" } else { "" };
     let formatter = ByteSize::b(v.abs().try_into().expect("Should fit in a u64")).display();
-    write!(f, "{}{}", prefix, formatter)
+    write!(f, "{prefix}{formatter}")
 }
