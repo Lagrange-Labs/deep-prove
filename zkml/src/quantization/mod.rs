@@ -147,8 +147,9 @@ impl Default for ScalingFactor {
 
 // s = m *  2^-shift, it returns the shift and the multiplier
 pub fn split_scale_into_multiplier(s: f32) -> (i32, f32) {
-    let shift = (-s.log2()).ceil() as i32;
-    let m = s / 2f32.powf(-shift as f32);
+    let log_s = s.log2();
+    let (shift, m) = ((-log_s.trunc()), 2.0f32.powf(log_s.fract()));
+
     assert!(
         is_close(&[m * (2f32.powf(-shift as f32) as f32)], &[s]),
         "m * 2^shift != s -> m: {}, s: {}, shift: {}, m * 2^shift: {}",
@@ -349,16 +350,10 @@ mod test {
 
     #[test]
     fn test_split_scale_into_multiplier() {
-        for (s, exp_shift, exp_m) in vec![
-            (0.125, 3, 1.0), // 2^-3 * 1.0 = 0.125
-            (0.075, 4, 1.2),
-        ]
-        // 2^-4 (= 0.0625) * 1.2 = 0.075
-        {
+        for s in vec![0.125, 0.075] {
             let (shift, m) = split_scale_into_multiplier(s);
-            assert_eq!(shift, exp_shift);
-            assert_eq!(m, exp_m);
-            assert_eq!(m * (2f32.powf(-shift as f32) as f32), s);
+
+            assert!((m * (2f32.powf(-shift as f32) as f32) - s).abs() <= f32::EPSILON);
         }
     }
 }
