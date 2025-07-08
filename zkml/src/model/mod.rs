@@ -1228,8 +1228,10 @@ pub(crate) mod test {
 
     // Quantize and run a model over the given input, if any; returns the quantized model and the
     // quantized inputs
-    pub(crate) fn quantize_model(model: Model<f32>, float_inputs: Vec<Tensor<f32>>) 
-        -> anyhow::Result<(Model<Element>, Vec<Tensor<Element>>)> {
+    pub(crate) fn quantize_model(
+        model: Model<f32>,
+        float_inputs: Vec<Tensor<f32>>,
+    ) -> anyhow::Result<(Model<Element>, Vec<Tensor<Element>>)> {
         let (quantized_model, md) = InferenceObserver::new().quantize(model)?;
 
         // quantize input tensor
@@ -1242,7 +1244,10 @@ pub(crate) mod test {
         Ok((quantized_model, input_tensors))
     }
 
-    pub(crate) fn prove_quantized_model(model: Model<Element>, inputs: Vec<Tensor<Element>>) -> anyhow::Result<Vec<Tensor<Element>>> {
+    pub(crate) fn prove_quantized_model(
+        model: Model<Element>,
+        inputs: Vec<Tensor<Element>>,
+    ) -> anyhow::Result<Vec<Tensor<Element>>> {
         let model = pad_model(model)?;
 
         model.describe();
@@ -1264,7 +1269,7 @@ pub(crate) mod test {
     }
 
     pub(crate) fn prove_model(model: Model<f32>) -> anyhow::Result<Vec<Tensor<Element>>> {
-         let float_inputs = model
+        let float_inputs = model
             .input_shapes()
             .into_iter()
             .map(|shape| Tensor::random(&shape))

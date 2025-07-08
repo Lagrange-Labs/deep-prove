@@ -12,15 +12,25 @@ use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
 use transcript::{Challenge, Transcript};
 
 use crate::{
-    commit::same_poly, iop::{
+    Claim, Element, Prover, ScalingFactor, ScalingStrategy, Tensor,
+    commit::same_poly,
+    iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
-    }, layers::{
+    },
+    layers::{
+        LayerCtx, LayerProof,
         provable::{
             Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, QuantizeOp,
             QuantizeOutput, VerifiableCtx,
-        }, requant::Requant, LayerCtx, LayerProof
-    }, model::StepData, padding::{pad_qkv, PaddingMode, ShapeInfo}, quantization::model_scaling_factor_from_tensor_and_bias, tensor::{Number, Shape}, try_unzip, try_unzip_parallel, Claim, Element, Prover, ScalingFactor, ScalingStrategy, Tensor
+        },
+        requant::Requant,
+    },
+    model::StepData,
+    padding::{PaddingMode, ShapeInfo, pad_qkv},
+    quantization::model_scaling_factor_from_tensor_and_bias,
+    tensor::{Number, Shape},
+    try_unzip, try_unzip_parallel,
 };
 
 /// A layer that evaluates the tensor X against the matrices Q, K and V.
@@ -36,8 +46,8 @@ pub struct QKV<N> {
     pub(crate) k_bias: Tensor<N>,
     pub(crate) v: Tensor<N>,
     pub(crate) v_bias: Tensor<N>,
-    unpadded_shape: Shape, /* same shape for Q, K and V
-                            * pub cache: Option<CacheQKV<N>>, */
+    unpadded_shape: Shape,       /* same shape for Q, K and V
+                                  * pub cache: Option<CacheQKV<N>>, */
     pub(crate) num_heads: usize, // Needed to properly pad matrices for sub-sequent MHA layer
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -84,15 +94,15 @@ impl<E: ExtensionField> QKVProof<E> {
 fn compute_head_dim(unpadded_shape: &Shape, num_heads: usize) -> usize {
     let hidden_size = unpadded_shape[1];
 
-    hidden_size/num_heads
+    hidden_size / num_heads
 }
 
 fn padded_weight_shape(unpadded_shape: &Shape, num_heads: usize) -> Shape {
     let head_dim = compute_head_dim(unpadded_shape, num_heads);
 
     Shape::new(vec![
-        unpadded_shape[0].next_power_of_two(), 
-        head_dim.next_power_of_two() * num_heads.next_power_of_two()
+        unpadded_shape[0].next_power_of_two(),
+        head_dim.next_power_of_two() * num_heads.next_power_of_two(),
     ])
 }
 
@@ -112,7 +122,7 @@ impl<N: Number> QKV<N> {
         assert_eq!(q_bias.get_shape(), k_bias.get_shape());
         assert_eq!(q_bias.get_shape(), v_bias.get_shape());
         // mat mul : [a,b] * [b, c] -> [a, c] + [c]
-        
+
         let hidden_size = q.get_shape()[1];
         assert_eq!(
             hidden_size,
@@ -121,7 +131,8 @@ impl<N: Number> QKV<N> {
             q.get_shape(),
             q_bias.get_shape()
         );
-        ensure!(hidden_size % num_heads == 0, 
+        ensure!(
+            hidden_size % num_heads == 0,
             "Expected number of heads to be a divisor of hidden size, but it's not: hidden_size = {hidden_size}, num_heads = {num_heads}"
         );
         let unpadded_shape = q.get_shape();
@@ -217,7 +228,7 @@ impl<N: Number> OpInfo for QKV<N> {
             }
             PaddingMode::Padding => {
                 // compute head_dim from hidden_size and num_heads
-                let padded_weight = padded_weight_shape(&self.unpadded_shape, self.num_heads); 
+                let padded_weight = padded_weight_shape(&self.unpadded_shape, self.num_heads);
                 vec![
                     Shape::new(vec![input_shape[0], padded_weight[1]]),
                     Shape::new(vec![input_shape[0], padded_weight[1]]),
@@ -226,7 +237,7 @@ impl<N: Number> OpInfo for QKV<N> {
                 .into_iter()
                 .map(|shape| shape.next_power_of_two())
                 .collect::<Vec<_>>()
-            },
+            }
         }
     }
 
@@ -848,8 +859,8 @@ mod tests {
     use ff_ext::GoldilocksExt2;
 
     use crate::{
-        layers::{provable::evaluate_layer, Layer},
-        model::{test::prove_model, Model},
+        layers::{Layer, provable::evaluate_layer},
+        model::{Model, test::prove_model},
         padding::ShapeData,
         tensor::Shape,
     };
@@ -857,7 +868,11 @@ mod tests {
     use super::*;
 
     impl<N: Number> QKV<N> {
-        pub(crate) fn random(num_heads: usize, emb_size: usize, hidden_size: usize) -> Result<Self> {
+        pub(crate) fn random(
+            num_heads: usize,
+            emb_size: usize,
+            hidden_size: usize,
+        ) -> Result<Self> {
             let q = Tensor::<N>::random(&vec![emb_size, hidden_size].into());
             let q_bias = Tensor::<N>::random(&vec![hidden_size].into());
             let k = Tensor::<N>::random(&vec![emb_size, hidden_size].into());
@@ -937,7 +952,8 @@ mod tests {
             v.clone(),
             v_bias.clone(),
             num_heads,
-        ).unwrap();
+        )
+        .unwrap();
         let mut input = Tensor::<f32>::random(&vec![seq_len, emb_size].into());
         let output = qkv
             .evaluate::<GoldilocksExt2>(&[&input], vec![])
@@ -1012,7 +1028,7 @@ mod tests {
 
         // check data in padded layer is the same of original layer
         let head_dim = layer.compute_head_dim();
-        assert_eq!(head_dim, hidden_size/num_heads);
+        assert_eq!(head_dim, hidden_size / num_heads);
         let padded_head_dim = head_dim.next_power_of_two();
         [&layer.q, &layer.k, &layer.v]
             .into_iter()
@@ -1021,9 +1037,16 @@ mod tests {
                 let padded_weight_shape = padded_weight.get_shape();
                 for i in 0..padded_weight_shape[0] {
                     for j in 0..padded_weight_shape[1] {
-                        if i < embedding_size && j % padded_head_dim < head_dim && j/padded_head_dim < num_heads {
-                            let original_matrix_index = j/padded_head_dim*head_dim + j%padded_head_dim;
-                            assert_eq!(weight.get_2d(i, original_matrix_index), padded_weight.get_2d(i, j));
+                        if i < embedding_size
+                            && j % padded_head_dim < head_dim
+                            && j / padded_head_dim < num_heads
+                        {
+                            let original_matrix_index =
+                                j / padded_head_dim * head_dim + j % padded_head_dim;
+                            assert_eq!(
+                                weight.get_2d(i, original_matrix_index),
+                                padded_weight.get_2d(i, j)
+                            );
                         } else {
                             assert_eq!(0, padded_weight.get_2d(i, j));
                         }
@@ -1033,43 +1056,62 @@ mod tests {
 
         // test also evaluation over padded layer
         let mut input = Tensor::<Element>::random(&unpadded_input_shape);
-        let output = evaluate_layer::<GoldilocksExt2, _ ,_>(
+        let output = evaluate_layer::<GoldilocksExt2, _, _>(
             &layer,
-            &vec![&input], 
+            &vec![&input],
             Some(vec![unpadded_input_shape.clone()]),
-        ).unwrap();
+        )
+        .unwrap();
 
-        assert!(output.outputs().into_iter().zip(&unpadded_output_shapes).all(|(out, expected_shape)| 
-            out.get_shape() == *expected_shape
-        ));
+        assert!(
+            output
+                .outputs()
+                .into_iter()
+                .zip(&unpadded_output_shapes)
+                .all(|(out, expected_shape)| out.get_shape() == *expected_shape)
+        );
 
         input.pad_to_shape(padded_input_shape);
-        let padded_output = evaluate_layer::<GoldilocksExt2, _ ,_>(
+        let padded_output = evaluate_layer::<GoldilocksExt2, _, _>(
             &padded_layer,
-            &vec![&input], 
+            &vec![&input],
             Some(vec![unpadded_input_shape]),
-        ).unwrap();
+        )
+        .unwrap();
 
-        assert!(padded_output.outputs().into_iter().zip(&padded_output_shapes).all(|(out, expected_shape)| 
-            out.get_shape() == *expected_shape
-        ));
+        assert!(
+            padded_output
+                .outputs()
+                .into_iter()
+                .zip(&padded_output_shapes)
+                .all(|(out, expected_shape)| out.get_shape() == *expected_shape)
+        );
 
         // check that padded_output has same values of output in non-padded entries
-        output.outputs()
+        output
+            .outputs()
             .into_iter()
             .zip(padded_output.outputs())
-            .zip([&padded_layer.q_bias, &padded_layer.k_bias, &padded_layer.v_bias]) // we need to include the bias 
-                // vectors for the padded rows
+            .zip([
+                &padded_layer.q_bias,
+                &padded_layer.k_bias,
+                &padded_layer.v_bias,
+            ]) // we need to include the bias
+            // vectors for the padded rows
             .for_each(|((output, padded_out), padded_bias)| {
                 let padded_out_shape = padded_out.get_shape();
                 for i in 0..padded_out_shape[0] {
                     for j in 0..padded_out_shape[1] {
                         if i < num_inputs {
-                            if j % padded_head_dim < head_dim && j/padded_head_dim < num_heads {
-                            let original_matrix_index = j/padded_head_dim*head_dim + j%padded_head_dim;
-                            assert_eq!(output.get_2d(i, original_matrix_index), padded_out.get_2d(i, j));
+                            if j % padded_head_dim < head_dim && j / padded_head_dim < num_heads {
+                                let original_matrix_index =
+                                    j / padded_head_dim * head_dim + j % padded_head_dim;
+                                assert_eq!(
+                                    output.get_2d(i, original_matrix_index),
+                                    padded_out.get_2d(i, j)
+                                );
                             } else {
-                            assert_eq!(0, padded_out.get_2d(i, j));
+                                assert_eq!(0, padded_out.get_2d(i, j));
                             }
                         } else {
                             assert_eq!(padded_bias.get_data()[j], padded_out.get_2d(i, j));
@@ -1136,9 +1178,10 @@ mod tests {
             Model::<f32>::new_from_input_shapes(vec![input_shape], PaddingMode::NoPadding);
 
         let _qkv_node_id = model
-            .add_consecutive_layer(Layer::QKV(
-                QKV::random(num_heads, embedding_size, hidden_size).unwrap()
-            ), None)
+            .add_consecutive_layer(
+                Layer::QKV(QKV::random(num_heads, embedding_size, hidden_size).unwrap()),
+                None,
+            )
             .unwrap();
 
         model.route_output(None).unwrap();

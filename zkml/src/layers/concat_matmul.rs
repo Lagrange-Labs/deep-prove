@@ -68,7 +68,7 @@ pub struct InputMatrixDimensions {
     /// Index in the input shape that refers to the dimension that we concatenate over.
     concat_dimension: usize,
     /// Index in the input shape that refers to the dimension over which the matrix multiplication
-    /// of each chunk is performed. For example, with two matrices A and B of shape [a,b,c] and [a,c,d], 
+    /// of each chunk is performed. For example, with two matrices A and B of shape [a,b,c] and [a,c,d],
     /// the `mat_mul_dimension` for A is 2 (c) and for B is 1 (c) as well.
     mat_mul_dimension: usize,
     /// Index in the input shape that refers to the dimension which will be part of the shape of
@@ -105,8 +105,8 @@ impl InputMatrixDimensions {
     }
 
     /// Build the point for the given input tensors over which the claim produced by sum-check is evaluated.
-    /// This is necessary in case we need to permute the input. The proving happens directly over the permuted 
-    /// tensor, and the claim produced is then "permuted" to be consistent with the fact the input is the 
+    /// This is necessary in case we need to permute the input. The proving happens directly over the permuted
+    /// tensor, and the claim produced is then "permuted" to be consistent with the fact the input is the
     /// non permuted matrix.
     fn build_point_for_input<E: ExtensionField>(
         &self,
@@ -151,7 +151,7 @@ impl InputMatrixDimensions {
             let mut mle = input.data.clone().into_mle();
             if self.output_dimension == 0 {
                 // We need to fix the variables related to the first dimension, which are
-                // the most significant ones 
+                // the most significant ones
                 mle.fix_high_variables_in_place(partial_point);
             } else {
                 // Output dimension is the last dimension, so we need to fix the variables

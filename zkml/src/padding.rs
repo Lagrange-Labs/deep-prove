@@ -5,6 +5,7 @@ use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    Element, Tensor,
     layers::{
         concat_matmul::ConcatMatMul,
         convolution::Convolution,
@@ -15,17 +16,24 @@ use crate::{
         provable::{Node, NodeId, OpInfo},
         reshape::Reshape,
         transformer::qkv::QKV,
-    }, model::{Model, ToIterator}, parser::{check_filter, safe_conv2d_shape, safe_maxpool2d_shape}, tensor::Shape, Element, Tensor
+    },
+    model::{Model, ToIterator},
+    parser::{check_filter, safe_conv2d_shape, safe_maxpool2d_shape},
+    tensor::Shape,
 };
 
 #[derive(Clone, Debug)]
 pub enum GarbagePad {
     Convolution((Shape, Shape)),
-    MHA((Shape, Shape))
+    MHA((Shape, Shape)),
 }
 
 impl GarbagePad {
-    fn pad_matrix_to_ignore_garbage(&self, matrix: &mut Tensor<Element>, padded_matrix_shape: Shape) -> Result<()> {
+    fn pad_matrix_to_ignore_garbage(
+        &self,
+        matrix: &mut Tensor<Element>,
+        padded_matrix_shape: Shape,
+    ) -> Result<()> {
         match self {
             GarbagePad::Convolution(previous_shape) => {
                 let previous_input_shape_og = previous_shape.0.clone();
@@ -35,14 +43,14 @@ impl GarbagePad {
                     previous_input_shape_padded.as_ref(),
                     &padded_matrix_shape,
                 );
-            },
+            }
             GarbagePad::MHA(previous_shape) => {
                 *matrix = matrix.pad_matrix_to_ignore_mha_garbage(
-                    &previous_shape.0, 
-                    &previous_shape.1, 
-                    padded_matrix_shape
+                    &previous_shape.0,
+                    &previous_shape.1,
+                    padded_matrix_shape,
                 )?;
-            },
+            }
         }
 
         Ok(())
@@ -174,9 +182,10 @@ pub fn pad_model(mut model: Model<Element>) -> Result<Model<Element>> {
 
 pub(crate) fn reshape(si: &mut ShapeInfo) -> Result<Flatten> {
     si.shapes.iter_mut().for_each(|sd| {
-        sd.ignore_garbage_pad = Some(GarbagePad::Convolution(
-            (sd.input_shape_og.clone(), sd.input_shape_padded.clone())
-        ))
+        sd.ignore_garbage_pad = Some(GarbagePad::Convolution((
+            sd.input_shape_og.clone(),
+            sd.input_shape_padded.clone(),
+        )))
     });
     Ok(Flatten)
 }
@@ -342,8 +351,7 @@ pub(crate) fn pad_matmul(mut mat: MatMul<Element>, si: &mut ShapeInfo) -> Result
                 garbage_pad.pad_matrix_to_ignore_garbage(&mut m.tensor, padded_matrix_shape)?;
                 si.shapes[0].ignore_garbage_pad = None;
             } else {
-                m.tensor
-                    .reshape_to_fit_inplace_2d(padded_matrix_shape)
+                m.tensor.reshape_to_fit_inplace_2d(padded_matrix_shape)
             };
             (padded_input_shapes.pop().unwrap(), m.tensor.get_shape())
         }
@@ -428,7 +436,6 @@ pub(crate) fn pad_qkv(mut qkv: QKV<Element>, si: &mut ShapeInfo) -> Result<QKV<E
             qkv.num_heads,
             head_dim,
         ]));
-        
         let nrows = pad_minimum(sd.input_shape_padded.dim(1));
         weight_mat.pad_to_shape(
             vec![nrows, padded_num_heads, padded_head_dim].into()
@@ -444,12 +451,9 @@ pub(crate) fn pad_qkv(mut qkv: QKV<Element>, si: &mut ShapeInfo) -> Result<QKV<E
     [&mut qkv.q_bias, &mut qkv.k_bias, &mut qkv.v_bias]
         .into_iter()
         .for_each(|bias_vec| {
-            bias_vec.reshape_in_place(Shape::new(vec![
-                qkv.num_heads,
-                head_dim,
-            ]));
+            bias_vec.reshape_in_place(Shape::new(vec![qkv.num_heads, head_dim]));
             bias_vec.pad_to_shape(vec![padded_num_heads, padded_head_dim].into());
-            bias_vec.reshape_in_place(Shape::new(vec![padded_num_heads*padded_head_dim]))
+            bias_vec.reshape_in_place(Shape::new(vec![padded_num_heads * padded_head_dim]))
         });
 
     let padded_output_shapes = qkv.output_shapes(

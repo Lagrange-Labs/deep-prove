@@ -184,7 +184,15 @@ mod test {
 
     impl FlatAttention<f32> {
         pub fn new_from_parser(c: &LLMConfig, att: Attention<f32>) -> anyhow::Result<Self> {
-            let qkv = qkv::QKV::new(att.q, att.q_bias, att.k, att.k_bias, att.v, att.v_bias, c.num_heads)?;
+            let qkv = qkv::QKV::new(
+                att.q,
+                att.q_bias,
+                att.k,
+                att.k_bias,
+                att.v,
+                att.v_bias,
+                c.num_heads,
+            )?;
             let mha = mha::Mha::new(c.context_length, c.num_heads, c.head_dim())?;
             let ffn = FlatFFN::new_from_gguf(c, att.feedforward);
 

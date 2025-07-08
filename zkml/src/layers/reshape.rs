@@ -24,7 +24,7 @@ pub struct Subspace {
     pub(crate) to_remove: Range<usize>,
     // Actual indices that we add in place of the removed indices
     pub(crate) to_add: Vec<usize>,
-    // These are the original indices to be added in place of the 
+    // These are the original indices to be added in place of the
     // removed indices. They might differ from indices in `to_add`
     // after we pad the node, as padding will make the indices in
     // `to_add` powers of 2, while indices here will not be changed
@@ -59,10 +59,10 @@ impl Reshape {
     pub fn new_subspace<R: RangeBounds<usize>>(to_remove: R, to_add: Vec<usize>) -> Self {
         let start = range_start(&to_remove).expect("invalid start bound");
         let end = range_end(&to_remove).expect("invalid end bound");
-        Self::Subspace(Subspace { 
-            to_remove: Range { start, end }, 
-            to_add: to_add.clone(), 
-            unpadded_to_add: to_add 
+        Self::Subspace(Subspace {
+            to_remove: Range { start, end },
+            to_add: to_add.clone(),
+            unpadded_to_add: to_add,
         })
     }
 
@@ -74,10 +74,10 @@ impl Reshape {
             Reshape::Full((_, unpadded_new_dim)) => {
                 Reshape::Full((unpadded_new_dim.clone(), unpadded_new_dim.clone()))
             }
-            Reshape::Subspace(subspace) => Reshape::Subspace(Subspace { 
-                to_remove: subspace.to_remove.clone(), 
-                to_add: subspace.unpadded_to_add.clone(), 
-                unpadded_to_add: subspace.unpadded_to_add.clone(), 
+            Reshape::Subspace(subspace) => Reshape::Subspace(Subspace {
+                to_remove: subspace.to_remove.clone(),
+                to_add: subspace.unpadded_to_add.clone(),
+                unpadded_to_add: subspace.unpadded_to_add.clone(),
             }),
             Reshape::Squeeze(index) => Reshape::Squeeze(*index),
         }
@@ -92,10 +92,10 @@ impl Reshape {
                     .collect(),
                 unpadded_shapes.clone(),
             )),
-            Reshape::Subspace(subspace) => Reshape::Subspace(Subspace { 
-                to_remove: subspace.to_remove.clone(), 
-                to_add: subspace.to_add.next_power_of_two(), 
-                unpadded_to_add: subspace.unpadded_to_add.clone() 
+            Reshape::Subspace(subspace) => Reshape::Subspace(Subspace {
+                to_remove: subspace.to_remove.clone(),
+                to_add: subspace.to_add.next_power_of_two(),
+                unpadded_to_add: subspace.unpadded_to_add.clone(),
             }),
             Reshape::Squeeze(index) => Reshape::Squeeze(*index), // no need to change anything,
         }
