@@ -60,6 +60,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
       # Ensure rustfmt is installed and setup problem matcher
 
       - name: Install protoc via apt
