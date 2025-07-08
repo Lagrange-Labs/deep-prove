@@ -18,7 +18,7 @@ RUN groupadd -g ${GROUP_ID} lagrange && \
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get upgrade -y && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y libssl3 ca-certificates && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y libssl3 protobuf-compiler ca-certificates && \
     update-ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
