@@ -14,9 +14,6 @@ jobs:
         with:
           submodules: "recursive"
           
-      - name: Install protoc via apt
-        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-        
       - uses: actions/setup-python@v4
         with:
           python-version: '3.10.13'
@@ -64,6 +61,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Ensure rustfmt is installed and setup problem matcher
+
+      - name: Install protoc via apt
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: clippy 
