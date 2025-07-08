@@ -72,8 +72,8 @@ impl TableType {
                 (element_out, vec![field])
             }
             TableType::Clamping(size) => {
-                let max = 1i128 << (size - 1);
-                let min = -max;
+                let max: Element = 1 << (size - 1);
+                let min: Element = -max;
                 let (comb, field): (Vec<Element>, Vec<(E::BaseField, E::BaseField)>) = (min..max)
                     .map(|i| {
                         let out = if i < *quantization::MIN {
@@ -160,8 +160,8 @@ impl TableType {
                     acc + *p * E::from_canonical_u64(1u64 << index)
                 }) - E::from_canonical_u64(1u64 << (size - 1));
 
-                let max = 1i128 << (size - 1);
-                let min = -max;
+                let max: Element = 1 << (size - 1);
+                let min: Element = -max;
 
                 let second_col_eval = (min..max)
                     .map(|i| {
@@ -244,7 +244,7 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> LookupWitnessGen<E, 
     }
 }
 
-pub(crate) const COLUMN_SEPARATOR: Element = 1i128 << 32;
+pub(crate) const COLUMN_SEPARATOR: Element = 1 << 32;
 
 pub fn generate_lookup_witnesses<
     'a,
