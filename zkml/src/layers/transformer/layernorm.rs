@@ -118,7 +118,7 @@ impl Evaluate<f32> for LayerNorm<f32> {
             TensorData::new(self.beta.get_data().to_vec(), self.beta.get_shape()),
             &device,
         );
-        let config = BLayerNormConfig::new(embedding_size as usize).with_epsilon(self.eps as f64);
+        let config = BLayerNormConfig::new(embedding_size).with_epsilon(self.eps as f64);
         let mut norm = config.init(&device);
         norm.gamma = Param::from_tensor(gamma);
         norm.beta = Param::from_tensor(beta);

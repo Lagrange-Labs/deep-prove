@@ -57,11 +57,11 @@ impl LLMConfig {
     }
 
     pub fn model(&self, l: &FileTensorLoader) -> anyhow::Result<LLMModel> {
-        self.specific_config.model(l, &self)
+        self.specific_config.model(l, self)
     }
 
     pub fn model_json(&self, l: &json::FileTensorLoader) -> anyhow::Result<LLMModel> {
-        self.specific_config.model_json(l, &self)
+        self.specific_config.model_json(l, self)
     }
 }
 
@@ -111,7 +111,7 @@ impl GPT2Model {
         let positional = Positional::from_loader(loader, config)?;
         let num_layers = config.num_block;
         let blocks = (0..num_layers)
-            .map(|i| Attention::from_loader(&loader.pp(&format!("blk.{i}.")), &config))
+            .map(|i| Attention::from_loader(&loader.pp(&format!("blk.{i}.")), config))
             .collect::<anyhow::Result<Vec<Attention<f32>>>>()?;
         let final_norm = LayerNorm::from_loader(&loader.pp("output_"), config)?;
         let proj_weights = loader.get_tensor("output.weight")?.transpose();
@@ -131,7 +131,7 @@ impl FeedForward<f32> {
         // Create a sub-scope for the feed-forward network's LayerNorm
         let ffn_norm_loader = loader.pp("ffn_");
         // Use the new LayerNorm::from_loader
-        let norm = LayerNorm::from_loader(&ffn_norm_loader, &c)?;
+        let norm = LayerNorm::from_loader(&ffn_norm_loader, c)?;
 
         let up = loader.get_tensor("ffn_up.weight")?.transpose();
         let up_bias = loader.get_tensor("ffn_up.bias")?;
@@ -201,7 +201,7 @@ impl Attention<f32> {
 
         let attn_norm_loader = loader.pp("attn_");
         // Use new LayerNorm::from_loader
-        let norm = LayerNorm::from_loader(&attn_norm_loader, &c)?;
+        let norm = LayerNorm::from_loader(&attn_norm_loader, c)?;
 
         // attn_output.weight is stored as [out_features, in_features] in GGUF (same as PyTorch)
         // Our MatMul layer expects the right-hand constant to be in the orientation [in_features, out_features],
@@ -218,7 +218,7 @@ impl Attention<f32> {
         );
 
         // Use new FeedForward::from_loader
-        let ff = FeedForward::from_loader(loader, &c)?;
+        let ff = FeedForward::from_loader(loader, c)?;
 
         Ok(Self {
             out,
@@ -274,8 +274,8 @@ impl TokenizerData {
             .into_iter()
             .map(|v| {
                 v.to_string()
-                    .and_then(|s| Ok(s.clone()))
-                    .with_context(|| format!("failed to convert Value to String"))
+                    .cloned()
+                    .with_context(|| "failed to convert Value to String".to_string())
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
 
@@ -284,8 +284,8 @@ impl TokenizerData {
             .into_iter()
             .map(|v| {
                 v.to_string()
-                    .and_then(|s| Ok(s.clone()))
-                    .with_context(|| format!("failed to convert Value merges to String"))
+                    .cloned()
+                    .with_context(|| "failed to convert Value merges to String".to_string())
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
         let mut special_tokens = HashMap::new();
@@ -489,7 +489,7 @@ impl<R: Read + Seek + Send + 'static> TensorLoader<R> {
         })?;
         self.content
             .tensor(&mut *reader_guard, &full_name, &self.device)
-            .map(|qtensor| Arc::new(qtensor))
+            .map(Arc::new)
             .map_err(|e| anyhow::anyhow!("Failed to load QTensor '{}' from GGUF: {}", full_name, e))
     }
 

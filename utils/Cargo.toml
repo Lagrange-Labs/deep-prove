@@ -1,5 +1,6 @@
 [package]
 name = "utils"
+description = "various utils"
 categories.workspace = true
 edition.workspace = true
 keywords.workspace = true

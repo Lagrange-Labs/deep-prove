@@ -122,9 +122,9 @@ impl<N: Number> Evaluate<N> for MhaQK {
         let q = q.reshape(vec![q_len, self.num_heads, self.head_dim].into());
         let k = k.reshape(vec![seq_len, self.num_heads, self.head_dim].into());
         let v = v.reshape(vec![seq_len, self.num_heads, self.head_dim].into());
-        let q = q.permute3d(&vec![1, 0, 2]); // (num_head, seq_len, head_dim)
-        let k = k.permute3d(&vec![1, 0, 2]); // (num_head, seq_len, head_dim)
-        let v = v.permute3d(&vec![1, 0, 2]); // (num_head, seq_len, head_dim)
+        let q = q.permute3d(&[1, 0, 2]); // (num_head, seq_len, head_dim)
+        let k = k.permute3d(&[1, 0, 2]); // (num_head, seq_len, head_dim)
+        let v = v.permute3d(&[1, 0, 2]); // (num_head, seq_len, head_dim)
         let mut qkt_heads = (0..self.num_heads)
             .into_par_iter()
             .map(|head| {
@@ -231,7 +231,6 @@ pub fn zeroifier<N: Number>(num_heads: usize, q_len: usize, seq_len: usize) -> T
                 .into_par_iter()
                 .flat_map(|q| {
                     (0..seq_len)
-                        .into_iter()
                         .map(|e| if e > q { N::default() } else { N::unit() })
                         .collect::<Vec<_>>()
                 })
@@ -255,7 +254,6 @@ pub fn infinitizer<N: Number>(
                 .into_par_iter()
                 .flat_map(|q| {
                     (0..seq_len)
-                        .into_iter()
                         .map(|e| if e > q { minus_infinity } else { N::default() })
                         .collect::<Vec<_>>()
                 })

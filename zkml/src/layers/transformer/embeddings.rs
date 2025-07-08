@@ -52,7 +52,7 @@ impl<N: Number> Evaluate<N> for Embeddings<N> {
     ) -> anyhow::Result<LayerOut<N, E>> {
         ensure!(
             inputs.iter().all(|x| {
-                let shape: Shape = x.get_shape().into();
+                let shape: Shape = x.get_shape();
                 shape.rank() == 2 && shape.dim(1) == 1
             }),
             "embeddings only support 2d tensors with 1 value: {:?}",
@@ -70,9 +70,7 @@ impl<N: Number> Evaluate<N> for Embeddings<N> {
                 let idx = v[0].to_usize();
                 assert!(
                     idx < vocab_size,
-                    "idx {} out of bounds for vocab size {}",
-                    idx,
-                    vocab_size
+                    "idx {idx} out of bounds for vocab size {vocab_size}"
                 );
                 let emd_idx = idx * emb_size;
                 emb_data[emd_idx..emd_idx + emb_size].to_vec()

@@ -74,7 +74,7 @@ impl OpInfo for Reshape {
     fn output_shapes(&self, input_shapes: &[Shape], _padding_mode: PaddingMode) -> Vec<Shape> {
         match self.internal_output(input_shapes) {
             Ok(out) => out,
-            Err(e) => panic!("invalid reshape parameters: {:?}", e),
+            Err(e) => panic!("invalid reshape parameters: {e:?}"),
         }
     }
 
@@ -84,9 +84,9 @@ impl OpInfo for Reshape {
 
     fn describe(&self) -> String {
         match self {
-            Reshape::Squeeze(index) => format!("Reshape: squeeze({})", index),
-            Reshape::Full(ref new_dim) => format!("Reshape: fixed {:?}", new_dim),
-            Reshape::Subspace(_) => format!("Reshape: dynamic"),
+            Reshape::Squeeze(index) => format!("Reshape: squeeze({index})"),
+            Reshape::Full(ref new_dim) => format!("Reshape: fixed {new_dim:?}"),
+            Reshape::Subspace(_) => "Reshape: dynamic".to_string(),
         }
     }
 
@@ -107,7 +107,7 @@ impl<N: Number> Evaluate<N> for Reshape {
         let out_tensors = inputs.iter().map(|x| x.clone().clone()).collect::<Vec<_>>();
         let out_tensors = output_shapes
             .into_iter()
-            .zip(out_tensors.into_iter())
+            .zip(out_tensors)
             .map(|(new_dim, input_tensor)| input_tensor.reshape(new_dim))
             .collect();
         Ok(LayerOut::from_vec(out_tensors))

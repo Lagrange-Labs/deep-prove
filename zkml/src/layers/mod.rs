@@ -205,10 +205,10 @@ where
     }
 
     pub fn has_proof(&self) -> bool {
-        match self {
-            Self::Flatten | Self::Table(_) | Self::SchoolBookConvolution(_) => false,
-            _ => true,
-        }
+        !matches!(
+            self,
+            Self::Flatten | Self::Table(_) | Self::SchoolBookConvolution(_)
+        )
     }
 
     pub fn next_shape_step(&self, last_step: &ShapeStep) -> ShapeStep {

@@ -220,7 +220,7 @@ where
             requant_ids
                 .iter()
                 .map(|id| {
-                    let requant_node = self.nodes.get(&id).unwrap();
+                    let requant_node = self.nodes.get(id).unwrap();
                     format!(
                         "id: {:?}, inputs: {:?}, outputs: {:?}",
                         id, requant_node.inputs, requant_node.outputs
@@ -232,7 +232,7 @@ where
         // route inputs of the nodes using outputs of `input_node_id` to the newly inserted
         // requant node
         for requant_id in requant_ids.iter() {
-            let requant_node = self.nodes.get(&requant_id).ok_or(anyhow!(
+            let requant_node = self.nodes.get(requant_id).ok_or(anyhow!(
                 "Requant node {requant_id} just inserted not found in the model"
             ))?;
             for (i, wire) in requant_node.outputs.clone().iter().enumerate() {

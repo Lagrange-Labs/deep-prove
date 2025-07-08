@@ -30,7 +30,7 @@ type SumcheckStateV2<'a, F> = sumcheck::structs::IOPProverState<'a, F>;
 impl<E: ExtensionField> IOPProverState<E> {
     /// Prove process for data parallel circuits.
     #[tracing::instrument(skip_all, name = "gkr::prove_parallel")]
-    pub fn prove_parallel<'a>(
+    pub fn prove_parallel(
         circuit: &Circuit<E>,
         circuit_witness: &CircuitWitness<E>,
         output_evals: Vec<PointAndEval<E>>,

@@ -454,7 +454,7 @@ impl Tensor<Element> {
         let (x_vec, input): (Vec<Vec<F>>, Vec<Vec<F>>) = real_input
             .par_chunks(n_x * n_x)
             .map(|chunk| {
-                let xx_input = chunk.into_iter().cloned().rev().collect::<Vec<_>>();
+                let xx_input = chunk.iter().cloned().rev().collect::<Vec<_>>();
                 let mut xx_fft = xx_input
                     .iter()
                     .cloned()
@@ -831,7 +831,7 @@ where
         self.data
             .iter()
             .enumerate()
-            .fold((0, T::MIN), |acc, x| match acc.1.compare(&x.1) {
+            .fold((0, T::MIN), |acc, x| match acc.1.compare(x.1) {
                 Ordering::Less => (x.0, *x.1),
                 _ => acc,
             })
@@ -893,12 +893,7 @@ where
         let data = self
             .data
             .par_chunks(self.shape[1])
-            .flat_map_iter(|chunk| {
-                chunk
-                    .into_iter()
-                    .zip(other.data.iter())
-                    .map(|(a, b)| *a + *b)
-            })
+            .flat_map_iter(|chunk| chunk.iter().zip(other.data.iter()).map(|(a, b)| *a + *b))
             .collect::<Vec<_>>();
         Tensor {
             shape: self.shape.clone(),
@@ -1205,7 +1200,7 @@ where
             vec![vec![Default::default(); x[0].len() - w[0].len() + 1]; x.len() - w.len() + 1];
         out.par_iter_mut().enumerate().for_each(|(i, out_row)| {
             out_row.par_iter_mut().enumerate().for_each(|(j, out_val)| {
-                *out_val = self.conv_prod(&x, &w, i, j);
+                *out_val = self.conv_prod(x, w, i, j);
             });
         });
         out
@@ -1498,8 +1493,7 @@ where
                         for kw in 0..k_w {
                             let h = oh * stride + kh;
                             let w = ow * stride + kw;
-                            sum =
-                                sum + self.get_at_4d(n, c, h, w) * kernels.get_at_4d(o, c, kh, kw);
+                            sum += self.get_at_4d(n, c, h, w) * kernels.get_at_4d(o, c, kh, kw);
                         }
                     }
                 }
@@ -1573,9 +1567,7 @@ where
         {
             assert!(
                 *a < *s,
-                "Index out of bounds: {} >= {} - 0-based indexing forbids",
-                a,
-                s
+                "Index out of bounds: {a} >= {s} - 0-based indexing forbids"
             );
             flat_index += *a * multiplier;
             multiplier *= *s;
@@ -1760,7 +1752,7 @@ impl<T: Number> Tensor<T> {
         let data = self.data[range].to_vec();
         let new_shape = vec![dim2_end - dim2_start, self.shape[1]];
         Self {
-            data: data,
+            data,
             shape: new_shape.into(),
             og_shape: vec![0].into(),
         }
@@ -1916,7 +1908,7 @@ impl Shape {
     ///
     /// If `shape` is an empty vector.
     pub fn new(shape: Vec<usize>) -> Self {
-        assert!(shape.len() != 0, "Shape can not be empty");
+        assert!(!shape.is_empty(), "Shape can not be empty");
         Self(shape)
     }
 
@@ -1989,7 +1981,7 @@ impl Shape {
             .rev()
             .scan(1usize, |state, item| {
                 let el = Some(*state);
-                *state = *state * item;
+                *state *= item;
                 el
             })
             .collect::<Vec<_>>();

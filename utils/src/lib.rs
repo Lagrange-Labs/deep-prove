@@ -7,7 +7,6 @@ use memory_stats::{MemoryStats, memory_stats};
 use tracing::info;
 
 #[macro_export]
-
 macro_rules! info_metrics {
     ($open: expr, $close: expr $(,)?) => {
         let _guard = $crate::MeasureStage::new($open.into(), $close.into()).guard();

@@ -178,7 +178,7 @@ pub fn argmax_slice<N: Number>(v: &[N]) -> Option<usize> {
     Some(
         v.iter()
             .enumerate()
-            .fold((0, N::MIN), |acc, x| match acc.1.compare(&x.1) {
+            .fold((0, N::MIN), |acc, x| match acc.1.compare(x.1) {
                 Ordering::Less => (x.0, *x.1),
                 _ => acc,
             })

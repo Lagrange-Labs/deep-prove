@@ -191,10 +191,7 @@ impl<'a, I: Iterator<Item = &'a usize> + Sized> ParserFactory<'a, I> {
                 }),
             )
         } else {
-            Some(err(format!(
-                "Unknown node type: {op_name}: {:?}",
-                curr_node
-            )))
+            Some(err(format!("Unknown node type: {op_name}: {curr_node:?}")))
         }
     }
 }
@@ -216,12 +213,12 @@ fn load_reshape<'a, I: Iterator<Item = &'a usize> + Sized>(
     };
     let current_shape: Shape = current_shape
         .iter()
-        .map(|x| tdim_to_usize(x))
+        .map(tdim_to_usize)
         .collect::<Result<Vec<_>>>()?
         .into();
     let new_shape: Shape = new_shape
         .iter()
-        .map(|x| tdim_to_usize(x))
+        .map(tdim_to_usize)
         .collect::<Result<Vec<_>>>()?
         .into();
     ensure_onnx!(
@@ -434,8 +431,7 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
             weight.shape = Shape::new(vec![out_features, in_features]);
         } else {
             return err(format!(
-                "Could not determine layout of weights for Gemm. Shape: {:?}, expecting output dim of size {}",
-                weight_shape, out_features
+                "Could not determine layout of weights for Gemm. Shape: {weight_shape:?}, expecting output dim of size {out_features}"
             ));
         }
     }
