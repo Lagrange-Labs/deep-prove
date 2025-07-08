@@ -19,7 +19,7 @@ use crate::{
     model::{InferenceStep, InferenceTrace, ToIterator},
     tensor::get_root_of_unity,
 };
-use anyhow::anyhow;
+use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
 
 use itertools::Itertools;
@@ -131,6 +131,11 @@ where
 
             if !table_poly_claims.is_empty() {
                 // If the table poly claims aren't empty there should only be 1
+                ensure!(
+                    table_poly_claims.len() == 1,
+                    "If table poly claims isn't empty we should only have 1, got: {}",
+                    table_poly_claims.len()
+                );
                 self.commit_prover.add_table_claim(
                     &self.ctx.commitment_ctx,
                     table_type,

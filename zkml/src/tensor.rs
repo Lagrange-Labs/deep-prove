@@ -969,20 +969,7 @@ where
 
     /// Recursively pads the tensor so its ready to be viewed as an MLE
     pub fn pad_next_power_of_two(&self) -> Self {
-        let shape = self.get_shape();
-
-        if shape.iter().all(|dim| dim.is_power_of_two()) {
-            return self.clone();
-        }
-
-        let padded_data = Self::recursive_pad(self.get_data(), &shape, T::default());
-
-        let padded_shape = shape
-            .iter()
-            .map(|dim| dim.next_power_of_two())
-            .collect::<Shape>();
-
-        Tensor::<T>::new(padded_shape, padded_data)
+        self.generic_pad_next_power_of_two(T::default())
     }
 
     /// Recursively pads the tensor so its ready to be viewed as an MLE, the `padding_value` is the element that is used to pad

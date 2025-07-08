@@ -18,7 +18,7 @@ use crate::{
         transformer::mha::eval_zeroifier_mle,
     },
     lookup::{
-        context::{COLUMN_SEPARATOR, LookupWitnessGen, TableType},
+        context::{COLUMN_SEPARATOR, LookupWitnessGen, SoftmaxTableData, TableType},
         logup_gkr::{prover::batch_prove, structs::LogUpProof, verifier::verify_logup_proof},
         witness::LogUpWitness,
     },
@@ -61,8 +61,10 @@ pub(crate) const L_COUNT: f32 = 2.0f32;
 ///             `x -> exp(scale * x) / (\sum_{i \in dim} exp(scale * x_{i}))`.
 pub struct Softmax<N> {
     // By default, it's equal to 1
-    /// This is the factor we divide by before exponentiating, when thought of as a Boltzmann distribution this is
+    /// In the floating point case this is the factor we multiply by before exponentiating, when thought of as a Boltzmann distribution this is
     /// often referred to as the "Temperature".
+    ///
+    /// For the quantised verison this is the factor we must rescale by in order to make use of the lookup table.
     pub scalar: N,
     /// This is the maximum size of dimension that we will normalise over. For example in an Attention layer this would be the maximum context size.
     max_size: usize,
@@ -80,8 +82,8 @@ struct QuantisedSoftmaxData {
     lut: Vec<Element>,
     /// The error bound as calculated by the formulae given in the zkLLM paper
     error_bound: f32,
-    /// The float temperature for calculating row normalisation
-    float_temperature: f32,
+    /// This is the inverse of the float temperature for calculating row normalisation
+    inv_float_temperature: f32,
     /// This value indicates the point that we map everything greater than this to zero
     bkm: Element,
 }
@@ -136,7 +138,7 @@ impl<N: Number> Softmax<N> {
         // First we work out what we need to multiply by to get the input scale factor to be `SCALE_FACTOR`
         let input_scale_factor = input_scaling.scale();
         let temperature = self.scalar.to_f32()?;
-        let float_temperature = 1.0f32 / temperature;
+        let inv_float_temperature = 1.0f32 / temperature;
         let multiplier = (SCALE_FACTOR as f32 * input_scale_factor).round() as Element;
 
         // minimum_input is calculated as `(input_min - sqrt(d) * ln_n - d * input_max)/sqrt(d)` and then quantised
@@ -144,7 +146,7 @@ impl<N: Number> Softmax<N> {
         let input_max = input_scaling.max();
 
         let min_input_float = input_min
-            - float_temperature * (self.max_size as f32 * (input_max * temperature).exp()).ln();
+            - inv_float_temperature * (self.max_size as f32 * (input_max * temperature).exp()).ln();
         // Now that we have the minimum possible input as a float we need to work out how many integral bits we need to account for
         // We know that the minimum input is negative so first we take the absoloute value
         let min_input_abs = min_input_float.abs();
@@ -162,7 +164,7 @@ impl<N: Number> Softmax<N> {
             K_COUNT,
             M_COUNT,
             L_COUNT,
-            float_temperature,
+            inv_float_temperature,
         );
 
         let float_error = float_error.abs();
@@ -184,7 +186,7 @@ impl<N: Number> Softmax<N> {
                     0i128
                 } else {
                     let float_exp =
-                        (-prod as f32 / (SCALE_FACTOR as f32 * float_temperature)).exp();
+                        (-prod as f32 / (SCALE_FACTOR as f32 * inv_float_temperature)).exp();
                     (float_exp * OUTPUT_SCALE_FACTOR as f32).round() as Element
                 }
             })
@@ -195,7 +197,7 @@ impl<N: Number> Softmax<N> {
             input_scale_factor: input_scaling,
             lut,
             error_bound: float_error,
-            float_temperature,
+            inv_float_temperature,
             bkm,
         };
 
@@ -228,7 +230,7 @@ impl Softmax<Element> {
     ) -> Result<(Tensor<Element>, AttentionMask<Element>)> {
         let QuantisedSoftmaxData {
             input_scale_factor,
-            float_temperature,
+            inv_float_temperature,
             bkm,
             ..
         } = self.quant_info().ok_or(anyhow!("Attempted to calculate shift data for quantised Softmax with no QuantisedSoftmaxData present"))?;
@@ -238,12 +240,6 @@ impl Softmax<Element> {
         // 1. dequantise the input
         // 2. apply a float mask
         // 3. sum along the desired dim
-        let padding_mode = if input.shape != Shape::new(unpadded_input_shape.to_vec()) {
-            PaddingMode::Padding
-        } else {
-            PaddingMode::NoPadding
-        };
-
         let negative_infinity = -((bkm >> 16) + 1) << 16;
 
         // New way is calculate shift row by row (as if a mask is being used)
@@ -262,16 +258,18 @@ impl Softmax<Element> {
             .chunks(final_dim)
             .enumerate()
             .map(|(i, chunk)| {
+                // We add the check here to see if we are in the first row of a new channel, the first row has to be calculated
+                // differently so as to avoid getting rounding errors that lead to values we can't lookup.
                 if i % second_dim == 0 {
                     -chunk[0] * self.scalar
                 } else {
                     let sum = chunk
                         .iter()
                         .take(i % second_dim + 1)
-                        .map(|x| (input_scale_factor.dequantize(x) / float_temperature).exp())
+                        .map(|x| (input_scale_factor.dequantize(x) / inv_float_temperature).exp())
                         .sum::<f32>();
                     let log_sum = sum.ln();
-                    -(SCALE_FACTOR as f32 * float_temperature * log_sum).round() as Element
+                    -(SCALE_FACTOR as f32 * inv_float_temperature * log_sum).round() as Element
                 }
             })
             .collect::<Vec<Element>>();
@@ -284,8 +282,7 @@ impl Softmax<Element> {
             .chain(std::iter::once(1usize))
             .collect::<Vec<usize>>();
         let shift_tensor = Tensor::<Element>::new(shift_shape.into(), shift_data);
-        let mask =
-            AttentionMask::<Element>::new(unpadded_input_shape, negative_infinity, padding_mode)?;
+        let mask = AttentionMask::<Element>::new(input.shape.as_slice(), negative_infinity)?;
 
         Ok((shift_tensor, mask))
     }
@@ -332,8 +329,7 @@ impl Evaluate<f32> for Softmax<f32> {
         );
         let input = inputs[0];
         // Make the attention mask
-        let mask =
-            AttentionMask::<f32>::new(&input.shape, f32::NEG_INFINITY, PaddingMode::NoPadding)?;
+        let mask = AttentionMask::<f32>::new(&input.shape, f32::NEG_INFINITY)?;
         let masked_input = mask.apply(input)?;
 
         let chunk_size = *input
@@ -657,17 +653,10 @@ where
         let softmax_data = step_data.outputs.try_softmax_data().ok_or(anyhow!(
             "Softmax LayerOut didn't have any ProvingData::Softmax"
         ))?;
+        let mut mask = softmax_data.mask.clone();
+        mask.pad()?;
+        let shifted_input = softmax_data.shifted_input.pad_next_power_of_two();
 
-        let (mask, shifted_input) = if let PaddingMode::NoPadding = softmax_data.mask.padding_mode {
-            let mut mask = softmax_data.mask.clone();
-            mask.pad()?;
-            (mask, softmax_data.shifted_input.pad_next_power_of_two())
-        } else {
-            (
-                softmax_data.mask.clone(),
-                softmax_data.shifted_input.clone(),
-            )
-        };
         let tril_mle: ArcMultilinearExtension<E> = mask
             .tril
             .get_data()
@@ -808,7 +797,6 @@ where
         // Get the data generated during quantised evaluation
         let SoftmaxData {
             shift_tensor,
-            mask,
             low_range_check,
             high_range_check,
             exp_lookup: (exp_input, exp_output),
@@ -820,7 +808,7 @@ where
         // We need to work out how many chunks to split the normalisation into to be range checked.
         let QuantisedSoftmaxData {
             error_bound,
-            float_temperature,
+            inv_float_temperature,
             bkm,
             lut,
             ..
@@ -889,11 +877,7 @@ where
             .collect::<Vec<E::BaseField>>();
 
         // Pad the shift data if needed
-        let shift_tensor = if let PaddingMode::NoPadding = mask.padding_mode {
-            shift_tensor.pad_next_power_of_two()
-        } else {
-            shift_tensor.clone()
-        };
+        let shift_tensor = shift_tensor.pad_next_power_of_two();
 
         let shift_data = shift_tensor.get_data();
 
@@ -915,18 +899,23 @@ where
         lookups.extend(merged_range_check);
 
         // Need to recreate the parameters for the Softmax table
-        let float_temp_bits = float_temperature.to_bits();
+        let float_temp_bits = inv_float_temperature.to_bits();
 
         let lookups = gen
             .new_lookups
-            .get_mut(&TableType::Softmax(
+            .get_mut(&TableType::Softmax(SoftmaxTableData::new(
                 float_temp_bits,
                 ceil_log2(lut.len()),
                 *bkm,
-            ))
+            )))
             .ok_or(anyhow!(
                 "No table of type {} was expected",
-                TableType::Softmax(float_temp_bits, ceil_log2(lut.len()), *bkm,).name()
+                TableType::Softmax(SoftmaxTableData::new(
+                    float_temp_bits,
+                    ceil_log2(lut.len()),
+                    *bkm,
+                ))
+                .name()
             ))?;
         lookups.extend(merged_softmax);
 
@@ -947,7 +936,11 @@ where
                     exp_commits.to_vec(),
                     exp_evals.to_vec(),
                     2,
-                    TableType::Softmax(float_temp_bits, ceil_log2(lut.len()), *bkm),
+                    TableType::Softmax(SoftmaxTableData::new(
+                        float_temp_bits,
+                        ceil_log2(lut.len()),
+                        *bkm,
+                    )),
                 ),
                 LogUpWitness::<E, PCS>::new_lookup(
                     range_commits.to_vec(),
@@ -1019,7 +1012,11 @@ pub struct SoftmaxCtx {
 impl SoftmaxCtx {
     /// Getter function to retrive the [`TableType`]
     pub(crate) fn table_type(&self) -> TableType {
-        TableType::Softmax(self.temperature_bits, self.size, self.bkm)
+        TableType::Softmax(SoftmaxTableData::new(
+            self.temperature_bits,
+            self.size,
+            self.bkm,
+        ))
     }
 }
 
@@ -1051,21 +1048,24 @@ where
             let QuantisedSoftmaxData {
                 lut,
                 error_bound,
-                float_temperature,
+                inv_float_temperature,
                 bkm,
                 ..
             } = quant_info;
 
             // We convert the `f32` to bits so that the compiler doesn't complain about trait implementations
-            let float_temp_bits = float_temperature.to_bits();
+            let float_temp_bits = inv_float_temperature.to_bits();
             // Calculate the allowable error in normalisation as an Element
             let allowable_error = (*error_bound * OUTPUT_SCALE_FACTOR as f32).round() as Element;
             // Calculate the lookup table number of variables
             let size = ceil_log2(lut.len());
             // Add the tables that Softmax requires
             aux.tables.insert(TableType::Range);
-            aux.tables
-                .insert(TableType::Softmax(float_temp_bits, size, *bkm));
+            aux.tables.insert(TableType::Softmax(SoftmaxTableData::new(
+                float_temp_bits,
+                size,
+                *bkm,
+            )));
             aux.tables.insert(TableType::ErrorTable(
                 OUTPUT_SCALE_FACTOR as Element,
                 allowable_error,
@@ -1318,8 +1318,6 @@ pub struct AttentionMask<N> {
     pub tril: Tensor<N>,
     /// This is the bias we add elementwise to ensure all zeroes are replaced with `-inf`
     pub bias: Tensor<N>,
-    /// This is the indicator for whether the mask has been padded already
-    padding_mode: PaddingMode,
     /// The value for negative infinity
     negative_infinity: N,
 }
@@ -1329,7 +1327,6 @@ impl<N: Number> Default for AttentionMask<N> {
         AttentionMask {
             tril: Tensor::<N>::new(vec![].into(), vec![]),
             bias: Tensor::<N>::new(vec![].into(), vec![]),
-            padding_mode: PaddingMode::NoPadding,
             negative_infinity: N::MIN,
         }
     }
@@ -1337,11 +1334,7 @@ impl<N: Number> Default for AttentionMask<N> {
 
 impl<N: Number> AttentionMask<N> {
     /// Creates a new mask given the unpadded input shape and the value to use for `-inf`
-    pub fn new(
-        unpadded_shape: &[usize],
-        negtive_inf: N,
-        padding_mode: PaddingMode,
-    ) -> Result<AttentionMask<N>> {
+    pub fn new(unpadded_shape: &[usize], negtive_inf: N) -> Result<AttentionMask<N>> {
         // The input shape should have length either 2 or 3 and the final 2 dimensions should be equal
         let num_dims = unpadded_shape.len();
 
@@ -1363,20 +1356,13 @@ impl<N: Number> AttentionMask<N> {
         );
 
         // Now that we know all the dimensions line up make the lower triangular tensor
-        let mut shape = if num_dims == 2 {
+        let shape = if num_dims == 2 {
             let mut shape = unpadded_shape.to_vec();
             shape.insert(0, 1);
             shape
         } else {
             unpadded_shape.to_vec()
         };
-
-        match padding_mode {
-            PaddingMode::Padding => shape
-                .iter_mut()
-                .for_each(|val| *val = val.next_power_of_two()),
-            _ => {}
-        }
 
         // Make the tril and bias tensor
         let tril = Tensor::<N>::tril(shape[2], shape[0], 0);
@@ -1386,48 +1372,47 @@ impl<N: Number> AttentionMask<N> {
         Ok(AttentionMask {
             tril,
             bias,
-            padding_mode,
             negative_infinity: negtive_inf,
         })
     }
 
     /// Pads the [`AttentionMask`] for proving purposes
     fn pad(&mut self) -> Result<()> {
-        if let PaddingMode::Padding = self.padding_mode {
-            Ok(())
-        } else {
-            // First check that the bias and tril shapes agree
-            let shapes_equal = self
-                .tril
-                .shape
-                .iter()
-                .zip(self.bias.shape.iter())
-                .all(|(t, b)| *t == *b);
-            ensure!(
-                shapes_equal,
-                "Can't pad Attention Mask as tril and bias had different shapes"
-            );
+        // First check that the bias and tril shapes agree
+        let shapes_equal = self
+            .tril
+            .shape
+            .iter()
+            .zip(self.bias.shape.iter())
+            .all(|(t, b)| *t == *b);
+        ensure!(
+            shapes_equal,
+            "Can't pad Attention Mask as tril and bias had different shapes"
+        );
 
-            // Now we check to see if everything is already a power of two
-            if self.tril.shape.iter().all(|s| s.is_power_of_two()) {
-                return Ok(());
-            }
-
-            // Calculate padded tensors
-
-            // Make the bias tensor
-            self.bias = self
-                .bias
-                .generic_pad_next_power_of_two(self.negative_infinity);
-
-            // For tril we just expand to a larger lower triangular matrix
-            let padded_shape = self.bias.get_shape();
-            self.tril = Tensor::<N>::tril(padded_shape[2], padded_shape[0], 0);
-
-            // Now set the padding indicator
-            self.padding_mode = PaddingMode::Padding;
-            Ok(())
+        // Now we check to see if everything is already a power of two
+        if self.tril.shape.iter().all(|s| s.is_power_of_two()) {
+            return Ok(());
         }
+
+        // Calculate padded tensors
+        // For tril and bias we just expand to a larger lower/upper triangular matrix
+        let padded_shape = self
+            .bias
+            .get_shape()
+            .iter()
+            .map(|dim| dim.next_power_of_two())
+            .collect::<Vec<usize>>();
+        self.tril = Tensor::<N>::tril(padded_shape[2], padded_shape[0], 0);
+        self.bias = Tensor::<N>::tri(
+            padded_shape[2],
+            padded_shape[0],
+            0,
+            N::default(),
+            self.negative_infinity,
+        );
+
+        Ok(())
     }
 
     /// Apply the mask to an input, this method allows the input to have two or three dims and adjusts accordingly.
