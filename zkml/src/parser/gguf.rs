@@ -262,7 +262,7 @@ impl Embeddings<f32> {
     // TODO: make that a trait ? or part of the Layer enum ?
     pub fn from_loader(loader: &FileTensorLoader) -> anyhow::Result<Self> {
         let emb_tensor = loader.get_tensor("token_embd.weight")?;
-        Ok(Embeddings::new(emb_tensor))
+        Ok(Embeddings::new(emb_tensor)?)
     }
 }
 

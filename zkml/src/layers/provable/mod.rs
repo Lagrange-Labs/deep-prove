@@ -422,7 +422,7 @@ where
             LayerCtx::Softmax => unimplemented!("Softmax layer not implemented"),
             LayerCtx::Add => unimplemented!("Add layer not implemented"),
             LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
-            LayerCtx::Embeddings => unimplemented!("Embeddings layer not implemented"),
+            LayerCtx::Embeddings(ctx) => ctx.output_shapes(input_shapes,padding_mode),
             LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
             LayerCtx::Reshape => unimplemented!("Reshape layer not implemented"),
             LayerCtx::Activation(activation_ctx) => {
@@ -449,7 +449,7 @@ where
             LayerCtx::Softmax => unimplemented!("Softmax layer not implemented"),
             LayerCtx::Add => unimplemented!("Add layer not implemented"),
             LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
-            LayerCtx::Embeddings => unimplemented!("Embeddings layer not implemented"),
+            LayerCtx::Embeddings(ctx) => ctx.num_outputs(num_inputs),
             LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
             LayerCtx::Reshape => unimplemented!("Reshape layer not implemented"),
             LayerCtx::Activation(activation_ctx) => activation_ctx.num_outputs(num_inputs),
@@ -472,7 +472,7 @@ where
             LayerCtx::Softmax => unimplemented!("Softmax layer not implemented"),
             LayerCtx::Add => unimplemented!("Add layer not implemented"),
             LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
-            LayerCtx::Embeddings => unimplemented!("Embeddings layer not implemented"),
+            LayerCtx::Embeddings(ctx) => ctx.describe(),
             LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
             LayerCtx::Reshape => unimplemented!("Reshape layer not implemented"),
             LayerCtx::Activation(activation_ctx) => activation_ctx.describe(),
@@ -496,7 +496,7 @@ where
             LayerCtx::Softmax => unimplemented!("Softmax layer not implemented"),
             LayerCtx::Add => unimplemented!("Add layer not implemented"),
             LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
-            LayerCtx::Embeddings => unimplemented!("Embeddings layer not implemented"),
+            LayerCtx::Embeddings(ctx) => ctx.is_provable(),
             LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
             LayerCtx::Reshape => unimplemented!("Reshape layer not implemented"),
             LayerCtx::Requant(requant_ctx) => requant_ctx.is_provable(),
@@ -549,8 +549,8 @@ where
             (LayerCtx::MhaQK, LayerProof::MhaQK) => {
                 unimplemented!("MHA_QK layer not implemented")
             }
-            (LayerCtx::Embeddings, LayerProof::Embeddings) => {
-                unimplemented!("Embeddings layer not implemented")
+            (LayerCtx::Embeddings(ctx), LayerProof::Embeddings(proof)) => {
+                ctx.verify(proof, last_claims, verifier, shape_step)
             }
             (LayerCtx::Positional, LayerProof::Positional) => {
                 unimplemented!("Positional layer not implemented")

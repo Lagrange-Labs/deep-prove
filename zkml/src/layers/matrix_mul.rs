@@ -49,7 +49,7 @@ pub struct WeightMatrix<T> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum OperandMatrix<T> {
     /// The matrix is a constant matrix specified in the model
-    Weigth(WeightMatrix<T>),
+    Weight(WeightMatrix<T>),
     /// The matrix is input-dependent, so there is no tensor associated to it
     Input,
 }
@@ -57,7 +57,7 @@ pub enum OperandMatrix<T> {
 impl<T> OperandMatrix<T> {
     pub fn new_weight_matrix(matrix: Tensor<T>) -> Self {
         let unpadded_shape = matrix.get_shape();
-        OperandMatrix::Weigth(WeightMatrix {
+        OperandMatrix::Weight(WeightMatrix {
             tensor: matrix,
             unpadded_shape,
         })
@@ -65,14 +65,14 @@ impl<T> OperandMatrix<T> {
 
     pub(crate) fn is_matrix(&self) -> bool {
         match self {
-            OperandMatrix::Weigth(mat) => mat.tensor.is_matrix(),
+            OperandMatrix::Weight(mat) => mat.tensor.is_matrix(),
             OperandMatrix::Input => true,
         }
     }
 
     pub(crate) fn get_shape(&self, padding_mode: PaddingMode) -> Option<Shape> {
         match self {
-            OperandMatrix::Weigth(mat) => match padding_mode {
+            OperandMatrix::Weight(mat) => match padding_mode {
                 PaddingMode::NoPadding => Some(mat.unpadded_shape.clone()),
                 PaddingMode::Padding => Some(
                     mat.tensor
@@ -89,21 +89,21 @@ impl<T> OperandMatrix<T> {
 
     pub(crate) fn get_actual_shape(&self) -> Option<Shape> {
         match self {
-            OperandMatrix::Weigth(mat) => Some(mat.tensor.get_shape()),
+            OperandMatrix::Weight(mat) => Some(mat.tensor.get_shape()),
             OperandMatrix::Input => None,
         }
     }
 
     pub(crate) fn nrows(&self) -> Option<usize> {
         match self {
-            OperandMatrix::Weigth(mat) => Some(mat.tensor.nrows_2d()),
+            OperandMatrix::Weight(mat) => Some(mat.tensor.nrows_2d()),
             OperandMatrix::Input => None,
         }
     }
 
     pub(crate) fn ncols(&self) -> Option<usize> {
         match self {
-            OperandMatrix::Weigth(mat) => Some(mat.tensor.ncols_2d()),
+            OperandMatrix::Weight(mat) => Some(mat.tensor.ncols_2d()),
             OperandMatrix::Input => None,
         }
     }
@@ -113,7 +113,7 @@ impl<T> OperandMatrix<T> {
         T: Number,
     {
         match self {
-            OperandMatrix::Weigth(mat) => OperandMatrix::Weigth(WeightMatrix {
+            OperandMatrix::Weight(mat) => OperandMatrix::Weight(WeightMatrix {
                 tensor: mat.tensor.pad_next_power_of_two(),
                 unpadded_shape: mat.unpadded_shape,
             }),
@@ -146,7 +146,7 @@ pub struct MatMulCtx<E> {
 }
 
 /// Proof of the layer.
-#[derive(Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct MatMulProof<E: ExtensionField> {
     /// the actual sumcheck proof proving the matmul protocol
@@ -197,7 +197,7 @@ impl<T> MatMul<T> {
         }
         // check that we don't have 2 weight matrix being multiplied
         match (&left_matrix, &right_matrix) {
-            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) =>
+            (OperandMatrix::Weight(_), OperandMatrix::Weight(_)) =>
                 Err(anyhow!("Pointless to have a layer with 2 constant matrices, just use the product as a parameter in 
                 another layer"))?,
             _ => (), // all other configurations are allowed
@@ -205,7 +205,7 @@ impl<T> MatMul<T> {
         if let Some(bt) = bias.as_ref() {
             ensure!(bt.get_shape().len() == 1, "Bias must be a 1D tensor");
             match right_matrix {
-                OperandMatrix::Weigth(ref mat) => {
+                OperandMatrix::Weight(ref mat) => {
                     ensure!(
                         mat.tensor.get_shape()[1] == bt.get_shape()[0],
                         "bias shape {:?} is incompatible with right matrix shape {:?}",
@@ -229,11 +229,11 @@ impl<T> MatMul<T> {
         T: Number,
     {
         let matmul = match (&self.left_matrix, &self.right_matrix) {
-            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => panic!(
+            (OperandMatrix::Weight(_), OperandMatrix::Weight(_)) => panic!(
                 "Found layer with 2 constant matrices, which is useless as the 
                 product can be directly used instead"
             ),
-            (OperandMatrix::Weigth(mat), OperandMatrix::Input) => {
+            (OperandMatrix::Weight(mat), OperandMatrix::Input) => {
                 let right_matrix = inputs
                     .first()
                     .ok_or(anyhow!("No matrix provided as input to MatMul"))?;
@@ -255,7 +255,7 @@ impl<T> MatMul<T> {
                 mat.tensor
                     .matmul(transposed_matrix.as_ref().unwrap_or(&right_matrix))
             }
-            (OperandMatrix::Input, OperandMatrix::Weigth(mat)) => {
+            (OperandMatrix::Input, OperandMatrix::Weight(mat)) => {
                 let left_matrix = inputs
                     .first()
                     .ok_or(anyhow!("No matrix provided as input to MatMul"))?;
@@ -317,9 +317,9 @@ impl<T> MatMul<T> {
 
     pub(crate) fn num_inputs(&self) -> usize {
         match (&self.left_matrix, &self.right_matrix) {
-            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => 0,
-            (OperandMatrix::Weigth(_), OperandMatrix::Input) => 1,
-            (OperandMatrix::Input, OperandMatrix::Weigth(_)) => 1,
+            (OperandMatrix::Weight(_), OperandMatrix::Weight(_)) => 0,
+            (OperandMatrix::Weight(_), OperandMatrix::Input) => 1,
+            (OperandMatrix::Input, OperandMatrix::Weight(_)) => 1,
             (OperandMatrix::Input, OperandMatrix::Input) => 2,
         }
     }
@@ -503,14 +503,14 @@ impl MatMul<f32> {
         bias_scaling: Option<ScalingFactor>,
     ) -> MatMul<Element> {
         let left_matrix = match self.left_matrix {
-            OperandMatrix::Weigth(mat) => OperandMatrix::Weigth(WeightMatrix {
+            OperandMatrix::Weight(mat) => OperandMatrix::Weight(WeightMatrix {
                 tensor: mat.tensor.quantize(left_scaling),
                 unpadded_shape: mat.unpadded_shape,
             }),
             OperandMatrix::Input => OperandMatrix::Input, /* No need to quantize since it's an input, not a constant in the model */
         };
         let right_matrix = match self.right_matrix {
-            OperandMatrix::Weigth(mat) => OperandMatrix::Weigth(WeightMatrix {
+            OperandMatrix::Weight(mat) => OperandMatrix::Weight(WeightMatrix {
                 tensor: mat.tensor.quantize(right_scaling),
                 unpadded_shape: mat.unpadded_shape,
             }),
@@ -535,7 +535,7 @@ impl MatMul<f32> {
     ) -> anyhow::Result<QuantizeOutput<MatMul<Element>>> {
         let (left_matrix_scaling, right_matrix_scaling) =
             match (&self.left_matrix, &self.right_matrix) {
-                (OperandMatrix::Weigth(mat), OperandMatrix::Input) => {
+                (OperandMatrix::Weight(mat), OperandMatrix::Input) => {
                     ensure!(
                         input_scaling.len() == 1,
                         "Expected 1 input scaling factor for MatMul layer, found {}",
@@ -546,7 +546,7 @@ impl MatMul<f32> {
                         input_scaling[0].clone(),
                     )
                 }
-                (OperandMatrix::Input, OperandMatrix::Weigth(mat)) => {
+                (OperandMatrix::Input, OperandMatrix::Weight(mat)) => {
                     ensure!(
                         input_scaling.len() == 1,
                         "Expected 1 input scaling factor for MatMul layer, found {}",
@@ -565,7 +565,7 @@ impl MatMul<f32> {
                     );
                     (input_scaling[0].clone(), input_scaling[1].clone())
                 }
-                (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => Err(anyhow!(
+                (OperandMatrix::Weight(_), OperandMatrix::Weight(_)) => Err(anyhow!(
                     "Trying to quantize a layer with 2 constant matrices"
                 ))?,
             };
@@ -670,14 +670,14 @@ impl MatMul<Element> {
     // If there is no constant matrix in the layer, `None` is returned
     pub(crate) fn eval_constant_matrix(&self) -> Option<Vec<Element>> {
         match (&self.left_matrix, &self.right_matrix) {
-            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => panic!(
+            (OperandMatrix::Weight(_), OperandMatrix::Weight(_)) => panic!(
                 "Found layer with 2 constant matrices, which is useless as the 
                 product can be directly used instead"
             ),
-            (OperandMatrix::Weigth(mat), OperandMatrix::Input) => {
+            (OperandMatrix::Weight(mat), OperandMatrix::Input) => {
                 Some(mat.tensor.pad_next_power_of_two().data)
             }
-            (OperandMatrix::Input, OperandMatrix::Weigth(mat)) => {
+            (OperandMatrix::Input, OperandMatrix::Weight(mat)) => {
                 Some(mat.tensor.pad_next_power_of_two().data)
             }
             (OperandMatrix::Input, OperandMatrix::Input) => None,
@@ -704,7 +704,7 @@ impl MatMul<Element> {
         }
         let num_inputs = inputs.len();
         let (right_matrix, is_right_constant) = match &self.right_matrix {
-            OperandMatrix::Weigth(mat) => (&Tensor::<E>::from(&mat.tensor), true),
+            OperandMatrix::Weight(mat) => (&Tensor::<E>::from(&mat.tensor), true),
             OperandMatrix::Input => {
                 let matrix = inputs
                     .pop()
@@ -714,7 +714,7 @@ impl MatMul<Element> {
         };
         let transposed = self.is_right_transposed();
         let (left_matrix, is_left_constant) = match &self.left_matrix {
-            OperandMatrix::Weigth(mat) => (&Tensor::<E>::from(&mat.tensor), true),
+            OperandMatrix::Weight(mat) => (&Tensor::<E>::from(&mat.tensor), true),
             OperandMatrix::Input => {
                 let matrix = inputs
                     .pop()
@@ -849,23 +849,23 @@ impl MatMul<Element> {
         Ok(output_claims)
     }
 
-    fn ctx<E: ExtensionField>(&self, id: NodeId, ctx_aux: &mut ContextAux) -> Result<MatMulCtx<E>>
+    pub(crate) fn ctx<E: ExtensionField>(&self, id: NodeId, ctx_aux: &mut ContextAux) -> Result<MatMulCtx<E>>
     where
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
         let (left_shape, right_shape) = match (&self.left_matrix, &self.right_matrix) {
-            (OperandMatrix::Weigth(mat), OperandMatrix::Input) => {
+            (OperandMatrix::Weight(mat), OperandMatrix::Input) => {
                 (mat.tensor.get_shape(), ctx_aux.last_output_shape[0].clone())
             }
-            (OperandMatrix::Input, OperandMatrix::Weigth(mat)) => {
+            (OperandMatrix::Input, OperandMatrix::Weight(mat)) => {
                 (ctx_aux.last_output_shape[0].clone(), mat.tensor.get_shape())
             }
             (OperandMatrix::Input, OperandMatrix::Input) => (
                 ctx_aux.last_output_shape[0].clone(),
                 ctx_aux.last_output_shape[1].clone(),
             ),
-            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => {
+            (OperandMatrix::Weight(_), OperandMatrix::Weight(_)) => {
                 unreachable!("Found Matmul layer with 2 constant matrices, which is useless")
             }
         };
@@ -1162,7 +1162,7 @@ mod tests {
         assert!(padded.left_matrix.get_actual_shape().is_none());
 
         // Check original values are preserved
-        let padded_matrix = if let OperandMatrix::Weigth(matrix) = &padded.right_matrix {
+        let padded_matrix = if let OperandMatrix::Weight(matrix) = &padded.right_matrix {
             &matrix.tensor
         } else {
             unreachable!()
@@ -1213,12 +1213,12 @@ mod tests {
         assert!(padded.right_matrix.get_actual_shape().is_none());
 
         // Check values are preserved
-        let padded_matrix = if let OperandMatrix::Weigth(matrix) = &padded.left_matrix {
+        let padded_matrix = if let OperandMatrix::Weight(matrix) = &padded.left_matrix {
             &matrix.tensor
         } else {
             unreachable!()
         };
-        let left_matrix = if let OperandMatrix::Weigth(matrix) = &layer.left_matrix {
+        let left_matrix = if let OperandMatrix::Weight(matrix) = &layer.left_matrix {
             &matrix.tensor
         } else {
             unreachable!()
@@ -1260,7 +1260,7 @@ mod tests {
         assert!(padded.left_matrix.get_actual_shape().is_none());
 
         // Check original values are preserved and padding is zeros
-        let padded_matrix = if let OperandMatrix::Weigth(matrix) = &padded.right_matrix {
+        let padded_matrix = if let OperandMatrix::Weight(matrix) = &padded.right_matrix {
             &matrix.tensor
         } else {
             unreachable!()

@@ -582,7 +582,7 @@ mod test {
             gpt2_output.input_ids.iter().map(|x| *x as f32).collect(),
         );
         // also test on a single random token
-        let max_token = thread_rng().gen_range(0..llm_model.embeddings.emb.get_shape()[0]);
+        let max_token = thread_rng().gen_range(0..llm_model.embeddings.vocab_size);
         let single_input = Tensor::new(vec![1, 1].into(), vec![max_token as f32]);
         let model = llm_model
             .clone()

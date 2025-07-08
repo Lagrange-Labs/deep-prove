@@ -30,9 +30,7 @@ use requant::RequantCtx;
 use transcript::Transcript;
 
 use crate::{
-    Context, Element, ScalingStrategy,
-    iop::context::{ContextAux, ShapeStep, TableCtx},
-    layers::{
+    iop::context::{ContextAux, ShapeStep, TableCtx}, layers::{
         activation::{Activation, ActivationProof},
         add::Add,
         concat_matmul::ConcatMatMul,
@@ -42,20 +40,15 @@ use crate::{
         requant::{Requant, RequantProof},
         reshape::Reshape,
         transformer::{
-            embeddings::Embeddings,
+            embeddings::{Embeddings, EmbeddingsCtx, EmbeddingsProof},
             layernorm::LayerNorm,
             logits::Logits,
             mha::MhaQK,
             positional::Positional,
-            qkv::{QKV, QKVCtx, QKVProof},
+            qkv::{QKVCtx, QKVProof, QKV},
             softmax::Softmax,
         },
-    },
-    lookup::context::LookupWitnessGen,
-    model::StepData,
-    padding::{PaddingMode, ShapeInfo},
-    quantization::ScalingFactor,
-    tensor::{Number, Shape, Tensor},
+    }, lookup::context::LookupWitnessGen, model::StepData, padding::{PaddingMode, ShapeInfo}, quantization::ScalingFactor, tensor::{Number, Shape, Tensor}, Context, Element, ScalingStrategy
 };
 use activation::ActivationCtx;
 use convolution::{ConvCtx, ConvProof, SchoolBookConv, SchoolBookConvCtx};
@@ -118,7 +111,7 @@ where
     Softmax,
     Add,
     Reshape,
-    Embeddings,
+    Embeddings(EmbeddingsCtx<E>),
     Positional,
     Logits,
 }
@@ -143,7 +136,7 @@ where
     LayerNorm,
     Softmax,
     Add,
-    Embeddings,
+    Embeddings(EmbeddingsProof<E>),
     Positional,
     Logits,
     Dummy, // To be used for non-provable layers
@@ -166,7 +159,7 @@ where
             Self::Add => "Add".to_string(),
             Self::Logits => "Logits".to_string(),
             Self::Reshape => "Reshape".to_string(),
-            Self::Embeddings => "Embeddings".to_string(),
+            Self::Embeddings(_) => "Embeddings".to_string(),
             Self::Positional => "Positional".to_string(),
             Self::SchoolBookConvolution(_) => "Traditional Convolution".to_string(),
             Self::Convolution(_) => "Convolution".to_string(),
@@ -522,8 +515,8 @@ where
             (Layer::ConcatMatMul(_concat_matmul), LayerCtx::ConcatMatMul) => {
                 unimplemented!("ConcatMatMul layer not implemented")
             }
-            (Layer::Embeddings(_embeddings), LayerCtx::Embeddings) => {
-                unimplemented!("Embeddings layer not implemented")
+            (Layer::Embeddings(embeddings), LayerCtx::Embeddings(ctx)) => {
+                embeddings.prove(node_id, ctx, last_claims, step_data, prover)
             }
             (Layer::Positional(_positional), LayerCtx::Positional) => {
                 unimplemented!("Positional layer not implemented")
@@ -724,7 +717,7 @@ where
             Self::Positional => "Positional".to_string(),
             Self::Add => "Add".to_string(),
             Self::Logits => "Logits".to_string(),
-            Self::Embeddings => "Embeddings".to_string(),
+            Self::Embeddings(_) => "Embeddings".to_string(),
             Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
             Self::Requant(_) => "Requant".to_string(),
@@ -745,7 +738,7 @@ where
             LayerProof::Add => None,
             LayerProof::Logits => None,
             LayerProof::Positional => None,
-            LayerProof::Embeddings => None,
+            LayerProof::Embeddings(..) => None,
             LayerProof::Convolution(..) => None,
             LayerProof::Dummy => None,
             LayerProof::Activation(ActivationProof { lookup, .. })
