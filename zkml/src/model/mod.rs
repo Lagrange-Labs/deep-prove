@@ -1226,16 +1226,11 @@ pub(crate) mod test {
         assert_eq!(trace.steps.len(), 3);
     }
 
-    pub(crate) fn prove_model(model: Model<f32>) -> anyhow::Result<Vec<Tensor<Element>>> {
-        let float_inputs = model
-            .input_shapes()
-            .into_iter()
-            .map(|shape| Tensor::random(&shape))
-            .collect_vec();
+    // Quantize and run a model over the given input, if any; returns the quantized model and the
+    // quantized inputs
+    pub(crate) fn quantize_model(model: Model<f32>, float_inputs: Vec<Tensor<f32>>) 
+        -> anyhow::Result<(Model<Element>, Vec<Tensor<Element>>)> {
         let (quantized_model, md) = InferenceObserver::new().quantize(model)?;
-        let model = pad_model(quantized_model)?;
-
-        model.describe();
 
         // quantize input tensor
         let input_tensors = float_inputs
@@ -1244,7 +1239,15 @@ pub(crate) mod test {
             .map(|(tensor, s)| tensor.quantize(s))
             .collect_vec();
 
-        let input_tensors = model.prepare_inputs(input_tensors).unwrap();
+        Ok((quantized_model, input_tensors))
+    }
+
+    pub(crate) fn prove_quantized_model(model: Model<Element>, inputs: Vec<Tensor<Element>>) -> anyhow::Result<Vec<Tensor<Element>>> {
+        let model = pad_model(model)?;
+
+        model.describe();
+
+        let input_tensors = model.prepare_inputs(inputs).unwrap();
 
         let trace = model.run(&input_tensors)?;
         let outputs = trace.outputs()?.into_iter().cloned().collect();
@@ -1258,6 +1261,16 @@ pub(crate) mod test {
             BasicTranscript::new(b"model");
         verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript)?;
         Ok(outputs)
+    }
+
+    pub(crate) fn prove_model(model: Model<f32>) -> anyhow::Result<Vec<Tensor<Element>>> {
+         let float_inputs = model
+            .input_shapes()
+            .into_iter()
+            .map(|shape| Tensor::random(&shape))
+            .collect_vec();
+        let (quantized_model, quantized_inputs) = quantize_model(model, float_inputs)?;
+        prove_quantized_model(quantized_model, quantized_inputs)
     }
 
     #[test]

@@ -4,29 +4,19 @@
 use std::iter::once;
 
 use crate::{
-    Claim, Element, Prover, ScalingFactor,
     iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
-    },
-    layers::{
-        LayerCtx, LayerProof,
+    }, layers::{
         concat_matmul::{
             ConcatMatMul, ConcatMatMulCtx, ConcatMatMulProof, InputMatrixDimensions, Permutation,
-        },
-        provable::{
+        }, provable::{
             Evaluate, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, ProvingData, QuantizeOp,
             QuantizeOutput, VerifiableCtx,
-        },
-        reshape::{Reshape, ReshapeCtx},
-        transformer::softmax::{
-            OUTPUT_SCALE_FACTOR, Softmax, SoftmaxCtx, SoftmaxData, SoftmaxProof,
-        },
-    },
-    model::StepData,
-    padding::{PaddingMode, ShapeInfo},
-    quantization::{Fieldizer, TensorFielder},
-    tensor::{Number, Shape},
+        }, reshape::{Reshape, ReshapeCtx}, transformer::softmax::{
+            Softmax, SoftmaxCtx, SoftmaxData, SoftmaxProof, OUTPUT_SCALE_FACTOR
+        }, LayerCtx, LayerProof
+    }, model::StepData, padding::{GarbagePad, PaddingMode, ShapeInfo}, quantization::{Fieldizer, TensorFielder}, tensor::{Number, Shape}, Claim, Element, Prover, ScalingFactor
 };
 use anyhow::{anyhow, ensure};
 use ff_ext::{ExtensionField, FieldFrom, SmallField};
@@ -497,7 +487,7 @@ impl<E: ExtensionField> ProveInfo<E> for Mha<Element> {
 }
 
 impl PadOp for Mha<Element> {
-    fn pad_node(self, si: &mut ShapeInfo) -> anyhow::Result<Self>
+    fn pad_node(mut self, si: &mut ShapeInfo) -> anyhow::Result<Self>
     where
         Self: Sized,
     {
@@ -523,13 +513,32 @@ impl PadOp for Mha<Element> {
         si.shapes = vec![si.shapes[0].clone(), v_shape];
         let final_mul = self.final_mul.pad_node(si)?;
 
+              // add garbage pad information to `si`
+        ensure!(si.shapes.len() == 1, "Expected 1 output shape after padding Mha, found {}", si.shapes.len());
+
+        let garbage_pad = GarbagePad::MHA((
+            si.unpadded_input_shapes().pop().unwrap(),
+            si.padded_input_shapes().pop().unwrap(),
+        ));
+        si.shapes = vec![si.shapes.pop().unwrap().with_garbage_pad(garbage_pad)];
+
+        // need to properly pad the reshape new dimension
+        let padded_num_heads = self.num_heads.next_power_of_two();
+        let padded_head_dim = self.head_dim.next_power_of_two();
+
+        let Reshape::Subspace((_, (to_add, _))) = &mut self.final_reshape else {
+            unreachable!("Final reshape in MHA layer must be Subspace variant")
+        };
+        *to_add = vec![padded_head_dim*padded_num_heads];
+
         let final_reshape = self.final_reshape.pad_node(si)?;
 
-        Ok(Self {
+        Ok(
+            Self {
             inputs_reshape,
             context_length: self.context_length,
-            num_heads: self.num_heads.next_power_of_two(),
-            head_dim: self.head_dim.next_power_of_two(),
+            num_heads: padded_num_heads,
+            head_dim: padded_head_dim,
             qk,
             softmax,
             final_mul,
@@ -832,11 +841,7 @@ mod test {
     use multilinear_extensions::mle::MultilinearExtension;
 
     use crate::{
-        Element,
-        layers::Layer,
-        model::{Model, test::prove_model},
-        quantization::{self, Fieldizer},
-        testing::random_field_vector,
+        layers::{matrix_mul::{MatMul, OperandMatrix}, transformer::qkv::QKV, Layer}, model::{test::{prove_model, prove_quantized_model, quantize_model}, Model}, padding::pad_model, quantization::{self, Fieldizer}, testing::random_field_vector, Element
     };
 
     use super::*;
@@ -1175,5 +1180,217 @@ mod test {
         model.route_output(None).unwrap();
 
         _ = prove_model(model).unwrap();
+    }
+
+    #[test]
+    fn test_proven_mha_with_padding_and_unpadding() {
+        let num_heads = 5;
+        let head_dim = 3;
+        let seq_len = 13;
+        let embedding_size = 11;
+        let hidden_size = num_heads*head_dim;
+
+        let input_shape = Shape::new(vec![seq_len, embedding_size]);
+
+        let mut model = Model::new_from_input_shapes(vec![input_shape.clone()], PaddingMode::NoPadding);
+
+        // we pad in QKV node
+        let qkv_node_id = model
+            .add_consecutive_layer(Layer::QKV(
+                QKV::random(num_heads, embedding_size, hidden_size).unwrap()
+            ), None)
+            .unwrap();
+
+        let mha_node_id = model.add_consecutive_layer(Layer::Mha(
+                Mha::new(seq_len, num_heads, head_dim).unwrap()
+            ), Some(qkv_node_id)
+        ).unwrap();
+
+        // we add MatMul node to remove the padding garbage
+        let matmul_size = 37;
+
+        let matmul = MatMul::new(
+            OperandMatrix::Input,
+            OperandMatrix::new_weight_matrix(
+                Tensor::random(&vec![hidden_size, matmul_size].into())
+            )
+        ).unwrap();
+
+        let _mat_mul_id = model.add_consecutive_layer(Layer::MatMul(matmul), Some(mha_node_id)).unwrap();
+
+        model.route_output(None).unwrap();
+
+        // sample input for the model, and compute expected output
+        let input = vec![Tensor::random(&input_shape)];
+
+        let (quantized_model, quantized_input) = quantize_model(model.clone(), input).unwrap();
+        
+        let trace = quantized_model.run::<GoldilocksExt2>(&quantized_input).unwrap();
+        let outputs = trace.outputs().unwrap();
+
+        assert_eq!(outputs.len(), 1);
+
+        let expected_output = outputs[0].clone();
+
+        let outputs = prove_quantized_model(quantized_model.clone(), quantized_input).unwrap();
+
+        assert_eq!(outputs.len(), 1);
+
+        let output = &outputs[0];
+
+        let padded_output_shape = output.get_shape();
+
+        for i in 0..padded_output_shape[0] {
+            for j in 0..padded_output_shape[1] {
+                if i < seq_len {
+                    // it's a non-garbage row
+                    if j < matmul_size {
+                        // it's an actual entry, so we check it's the same as the unpadded output
+                        assert_eq!(expected_output.get_2d(i, j), output.get_2d(i, j), "Failed for {i} {j}");
+                    } else {
+                        // it's a padded entry, so check it's zero
+                        assert_eq!(0, output.get_2d(i, j));
+                    }
+                }
+            }
+        }
+    }
+
+
+    #[test]
+    fn test_removing_garbage() {
+        let seq_len = 12;
+        let num_heads = 5;
+        let head_dim = 6;
+        let hidden_size = num_heads*head_dim;
+
+        let matmul_size = 37;
+
+        let matrix_shape = Shape::new(vec![hidden_size, matmul_size]);
+
+        let matrix = Tensor::<Element>::random(&matrix_shape);
+
+        let padded_matrix_shape = matrix_shape.next_power_of_two();
+
+        let unpadded_mha_shape = Shape::new(vec![seq_len, num_heads, head_dim]);
+        let padded_mha_shape = unpadded_mha_shape.next_power_of_two();
+        
+
+        let padded_matrix = matrix.pad_matrix_to_ignore_mha_garbage(
+            &unpadded_mha_shape, 
+            &padded_mha_shape, 
+            padded_matrix_shape
+        ).unwrap();
+
+        let input_shape = Shape::new(vec![seq_len, hidden_size]);
+        let input = Tensor::random(&input_shape);
+
+        let output = input.matmul(&matrix);
+
+        println!("Matrix: {matrix:?}, padded: {padded_matrix:?}");
+
+        let padded_num_heads = num_heads.next_power_of_two();
+        let padded_head_dim = head_dim.next_power_of_two();
+        let padded_input_shape = Shape::new(vec![seq_len.next_power_of_two(), padded_head_dim*padded_num_heads]);
+
+        let mut padded_input_data = vec![Element::default(); padded_input_shape.product()];
+
+        input.data.iter().enumerate()
+            .for_each(|(i, value)| {
+                let col = i % input_shape[1];
+                let row = i/input_shape[1];
+                let padded_col = col/head_dim*padded_head_dim + col % head_dim;
+                padded_input_data[row*padded_input_shape[1] + padded_col] = *value
+            });
+
+        let padded_input = Tensor::new(padded_input_shape, padded_input_data);
+
+        let padded_output = padded_input.matmul(&padded_matrix);
+
+        let padded_out_shape = padded_output.get_shape();
+        
+
+        for i in 0..padded_out_shape[0] {
+            for j in 0..padded_out_shape[1] {
+                if i < seq_len {
+                    // it's a non-garbage row
+                    if j < matmul_size {
+                        // it's an actual entry, so we check it's the same as the unpadded output
+                        assert_eq!(output.get_2d(i, j), padded_output.get_2d(i, j), "Failed for {i} {j}");
+                    } else {
+                        // it's a padded entry, so check it's zero
+                        assert_eq!(0, padded_output.get_2d(i, j));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_mha_padding() {
+        let seq_len = 12;
+        let num_heads = 5;
+        let head_dim = 6;
+        let embedding_size = 11;
+        let hidden_size = num_heads * head_dim;
+
+        let input_shape = Shape::new(vec![seq_len, embedding_size]);
+
+        let mut model = Model::new_from_input_shapes(
+            vec![input_shape.clone()], 
+            PaddingMode::NoPadding
+        );
+
+        let qkv_node_id = model
+            .add_consecutive_layer(Layer::QKV(
+                QKV::random(num_heads, embedding_size, hidden_size).unwrap()
+            ), None)
+            .unwrap(); 
+
+        let mha = Mha::<f32>::new(seq_len, num_heads, head_dim).unwrap();
+
+        let _mha_id = model.add_consecutive_layer(Layer::Mha(mha), Some(qkv_node_id)).unwrap();
+
+        model.route_output(None).unwrap();
+
+        let inputs = vec![Tensor::random(&input_shape)];
+
+        let (quantized_model, inputs) = quantize_model(model, inputs).unwrap();
+
+        // run to get unpadded output
+        let mut outputs = quantized_model.run::<GoldilocksExt2>(&inputs).unwrap()
+            .outputs().unwrap().into_iter().cloned().collect_vec();
+
+        assert_eq!(outputs.len(), 1);
+
+        let unpadded_out = outputs.pop().unwrap();
+
+        // pad model
+        let padded_model = pad_model(quantized_model).unwrap();
+
+        // pad inputs
+        let padded_inputs = padded_model.prepare_inputs(inputs).unwrap();
+
+        // compute padded evaluation, with garbage removal in matmul
+        let mut outputs = padded_model.run::<GoldilocksExt2>(&padded_inputs).unwrap()
+            .outputs().unwrap().into_iter().cloned().collect_vec();
+
+        assert_eq!(outputs.len(), 1);
+
+        let padded_out = outputs.pop().unwrap();
+
+        // check that non-garbabe entires in padded output are the same as corresponding entries
+        // in unpadded_out, i.e., the padding didn't affect the results of MHA
+        let padded_out_shape = padded_out.get_shape();
+
+        let padded_head_dim = head_dim.next_power_of_two();
+        for i in 0..padded_out_shape[0] {
+            for j in 0..padded_out_shape[1] {
+                if i < seq_len && j % padded_head_dim < head_dim && j/padded_head_dim * head_dim < num_heads {
+                    let original_matrix_index = j/padded_head_dim*head_dim + j%padded_head_dim;
+                    assert_eq!(unpadded_out.get_2d(i, original_matrix_index), padded_out.get_2d(i, j), "Failed for {i} {j} {original_matrix_index}");
+                }
+            }
+        }
     }
 }

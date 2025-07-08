@@ -243,7 +243,8 @@ impl Attention<f32> {
             self.k_bias,
             self.v,
             self.v_bias,
-        );
+            c.num_heads,
+        )?;
         let mha = Mha::new(c.context_length, c.num_heads, c.head_dim())?;
         let out = MatMul::new_constant(self.out, Some(self.out_bias))?;
         // input is [seq_len, emb_size]

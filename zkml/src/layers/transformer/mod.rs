@@ -184,7 +184,7 @@ mod test {
 
     impl FlatAttention<f32> {
         pub fn new_from_parser(c: &LLMConfig, att: Attention<f32>) -> anyhow::Result<Self> {
-            let qkv = qkv::QKV::new(att.q, att.q_bias, att.k, att.k_bias, att.v, att.v_bias);
+            let qkv = qkv::QKV::new(att.q, att.q_bias, att.k, att.k_bias, att.v, att.v_bias, c.num_heads)?;
             let mha = mha::Mha::new(c.context_length, c.num_heads, c.head_dim())?;
             let ffn = FlatFFN::new_from_gguf(c, att.feedforward);
 
@@ -279,7 +279,7 @@ mod test {
             let hidden_size = emb_size;
             let head_size = hidden_size / num_heads;
             let context_length = 1024;
-            let qkv = qkv::QKV::random(emb_size, hidden_size);
+            let qkv = qkv::QKV::random(num_heads, emb_size, hidden_size)?;
             let mha = mha::Mha::new(context_length, num_heads, head_size)?;
             let layernorm = layernorm::LayerNorm::random(emb_size);
             // let out = Dense::random(vec![hidden_size, hidden_size]);
