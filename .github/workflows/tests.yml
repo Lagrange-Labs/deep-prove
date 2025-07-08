@@ -35,12 +35,7 @@ jobs:
           echo "DEEPPROVE_ASSET_DIR=${{ github.workspace }}/zkml/assets/scripts/llms/" >> $GITHUB_ENV
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-<<<<<<< HEAD
-        with:
-          toolchain: nightly
-=======
       - run: cargo test 
->>>>>>> master
 
       - name: Run cargo test
         run: cargo test
@@ -58,12 +53,6 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: rustfmt
-<<<<<<< HEAD
-          toolchain: nightly
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-=======
       - run: cargo fmt --all
 
   lint:
