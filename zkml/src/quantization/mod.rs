@@ -211,15 +211,15 @@ pub(crate) trait IntoElement {
 
 impl<F: ExtensionField> IntoElement for F {
     fn to_element(&self) -> Element {
-        let e = self.to_canonical_u64_vec()[0] as Element;
+        let e = self.to_canonical_u64_vec()[0];
         let modulus_half = <F::BaseField as SmallField>::MODULUS_U64 >> 1;
         // That means he's a positive number
         if *self == F::ZERO {
             0
         // we dont assume any bounds on the field elements, requant might happen at a later stage
         // so we assume the worst case
-        } else if e <= modulus_half as Element {
-            e
+        } else if e <= modulus_half {
+            e as Element
         } else {
             // That means he's a negative number - so take the diff with the modulus and recenter around 0
             let diff = <F::BaseField as SmallField>::MODULUS_U64 - e as u64;
