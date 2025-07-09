@@ -49,6 +49,7 @@ memmap2 = { workspace = true }
 mpcs = { workspace = true }
 multilinear_extensions = { version = "0.1.0", path = "../multilinear_extensions", features = ["parallel"] }
 num-traits = { workspace = true }
+object_store = { workspace = true }
 once_cell = { workspace = true }
 poseidon = { version = "0.1.0", path = "../poseidon" }
 rayon.workspace = true
