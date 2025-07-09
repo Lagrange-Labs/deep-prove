@@ -34,6 +34,7 @@ use sumcheck::structs::IOPProverState;
 use timed::timed_instrument;
 use tracing::debug;
 use transcript::Transcript;
+use utils::Metrics;
 
 /// Prover generates a series of sumcheck proofs to prove the inference of a model
 pub struct Prover<'a, E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>
@@ -383,12 +384,14 @@ where
         mut self,
         full_trace: InferenceTrace<'b, E, Element>,
     ) -> anyhow::Result<Proof<E, PCS>> {
-        // write commitments and polynomials info to transcript
+        debug!("== Instantiate witness context ==");
+        let metrics = Metrics::new();
         self.ctx.write_to_transcript(self.transcript)?;
-        // then create the context for the witness polys -
-        debug!("Prover : instantiate witness ctx...");
         self.instantiate_witness_ctx(&full_trace)?;
-        debug!("Prover : instantiate witness ctx done...");
+        debug!("== Witness context metrics {} ==", metrics.to_span());
+
+        debug!("== Generating claims ==");
+        let metrics = Metrics::new();
         let trace = full_trace.into_field();
         // this is the random set of variables to fix at each step derived as the output of
         // sumcheck.
@@ -432,10 +435,13 @@ where
             };
             claims_by_layer.insert(node_id, claims);
         }
+        debug!("== Claims generation metrics {} ==", metrics.to_span());
 
         // let trace_size = trace.last_step().id;
 
         // Now we have to make the table proofs
+        debug!("== Generate proof ==");
+        let metrics = Metrics::new();
         self.prove_tables()?;
 
         // now provide opening proofs for all claims accumulated during the proving steps
@@ -447,6 +453,7 @@ where
             table_proofs: self.table_proofs,
             commit: commit_proof,
         };
+        debug!("== Generate proof metrics {} ==", metrics.to_span());
 
         Ok(output_proof)
     }

@@ -101,6 +101,7 @@ lto = "fat"
 [profile.release-with-debug]
 inherits = "release"
 debug = true
+lto = "thin"
 
 #[patch."https://github.com/nikkolasg/timed-rs"]
 #timed = { path = "/Users/nalos/prog/timed/timed" }
