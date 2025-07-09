@@ -30,6 +30,7 @@ pub mod tensor;
 pub use tensor::Tensor;
 #[cfg(feature = "capture-layers-quant")]
 pub mod capture;
+pub mod store;
 #[cfg(test)]
 mod testing;
 
