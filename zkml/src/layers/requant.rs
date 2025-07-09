@@ -450,16 +450,6 @@ impl Requant {
         Self::from_multiplier(m, intermediate_bit_size)
     }
 
-    /// Method used to instantiate a new [`Requant`] from the scaling factors of all tensors involved in an addition layer.
-    pub fn from_add(
-        add_scale: ScalingFactor,
-        output_scale: ScalingFactor,
-        intermediate_bit_size: usize,
-    ) -> Requant {
-        let m = add_scale.scale() / output_scale.scale();
-        Self::from_multiplier(m, intermediate_bit_size)
-    }
-
     /// This returns the shift (including the part that depends on `S1 * S2/ S3`)
     pub(crate) fn shift(&self) -> usize {
         self.fp_scale + self.right_shift

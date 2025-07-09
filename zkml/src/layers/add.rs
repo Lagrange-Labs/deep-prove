@@ -214,6 +214,7 @@ impl QuantInfo {
 
         // We make a closure that we can use once we work out whic of the left and right inputs has higher precision. This closure takes both (once it knows which is high precision and which is low)
         // and calculates what we have to multiply the left input by, the right input by, the common scale factor after multiplying by both of these and also whether a requant step is required after the addition.
+        let minimum_precision_diff = *crate::quantization::BIT_LEN as f32;
         let scale_comparison = |h_precision: ScalingFactor,
                                 l_precision: ScalingFactor|
          -> (Element, Element, f32, bool) {
@@ -222,31 +223,42 @@ impl QuantInfo {
             match high_log.compare(&output_log) {
                 Ordering::Less => {
                     // In this case the common scaling factor should be output_scaling as long as it is suitably more precise
-                    let (common_scale, require_requant) = if output_log - high_log >= 8.0f32 {
-                        let common_scale = output_scaling.scale();
-                        (common_scale, false)
-                    } else {
-                        // The output scaling factor wasn't suitably large so we take the ceiling of high_log and add 8
-                        let ceiling_round = high_log.ceil() as usize;
-                        let common_scale = 2.0f32.powf(-(ceiling_round as f32 + 8.0f32));
-                        (common_scale, true)
-                    };
+                    // The rationale is that if we have `s3*y = s1*x1 + s2*x2` with `s1 = 2^-a`, `s2 = 2^-b` and `s3 = 2^-c` in this we have `c > a` and `c > b`.
+                    // Since we want to work out `y = s1/s3 * x1 + s2/s3 * x2` then `s1/s3 = 2^-a/2^-c = 2^(c-a)`, similaraly `s2/s3 = 2^(c-b)`.
+                    // What we are doing is checking that both `2^(c-a)` and `2^(c-b)` are bigger than `2^minimum_precision_diff` so that calling `(s1/s3).round()` and `(s2/s3).round()` retains a reasonable level of precision.
+                    let (common_scale, require_requant) =
+                        if output_log - high_log >= minimum_precision_diff {
+                            // In this case the output scale factor is small enough such that `1/output_scale.scale()` is at least 2^minimum_precision_diff * (1 / h_precision.scale())`
+                            // so we can scale up our inputs and don't have to requantise afterwards.
+                            let common_scale = output_scaling.scale();
+                            (common_scale, false)
+                        } else {
+                            // The output scaling factor wasn't suitably large so we take the ceiling of high_log and add `minimum_precision_diff`, this way we retain a reasonable
+                            // amount of accuracy.
+                            let ceiling_round = high_log.ceil() as usize;
+                            let common_scale =
+                                2.0f32.powf(-(ceiling_round as f32 + minimum_precision_diff));
+                            (common_scale, true)
+                        };
 
                     let left_rescale = (left_scaling.scale() / common_scale).round() as Element;
                     let right_rescale = (right_scaling.scale() / common_scale).round() as Element;
                     (left_rescale, right_rescale, common_scale, require_requant)
                 }
                 Ordering::Equal => {
-                    // In this case the common scaling factor should be output_scaling as long as it is suitably more precise than low_log
-                    let (common_scale, require_requant) = if output_log - low_log >= 8.0f32 {
-                        let common_scale = output_scaling.scale();
-                        (common_scale, false)
-                    } else {
-                        // The output scaling factor wasn't suitably large so we take the ceiling of high_log and add 8
-                        let ceiling_round = high_log.ceil() as usize;
-                        let common_scale = 2.0f32.powf(-(ceiling_round as f32 + 8.0f32));
-                        (common_scale, true)
-                    };
+                    // In this case the output scale factor is small enough such that `1/output_scale.scale()` is at least 2^minimum_precision_diff * (1 / h_precision.scale())`
+                    // so we can scale up our inputs and don't have to requantise afterwards.
+                    let (common_scale, require_requant) =
+                        if output_log - low_log >= minimum_precision_diff {
+                            let common_scale = output_scaling.scale();
+                            (common_scale, false)
+                        } else {
+                            // The output scaling factor wasn't suitably large so we take the ceiling of high_log and add 8
+                            let ceiling_round = high_log.ceil() as usize;
+                            let common_scale =
+                                2.0f32.powf(-(ceiling_round as f32 + minimum_precision_diff));
+                            (common_scale, true)
+                        };
 
                     let left_rescale = (left_scaling.scale() / common_scale).round() as Element;
                     let right_rescale = (right_scaling.scale() / common_scale).round() as Element;
@@ -353,13 +365,23 @@ impl Add<f32> {
         }
         // We don't need the quantised domain here as the Requant layer works everything out from scale factors and intermediate bit size.
         let add_scale = ScalingFactor::from_scale(quant_info.common_scale(), None);
-        let requant = Requant::from_add(
+        let requant = requant_from_add(
             add_scale,
             output_scaling,
             quant_info.intermediate_bit_size(),
         );
         Ok(QuantizeOutput::new(quantized_model, vec![output_scaling]).with_requant(requant))
     }
+}
+
+/// Function used to instantiate a new [`Requant`] from the scaling factors of all tensors involved in an addition layer.
+pub fn requant_from_add(
+    add_scale: ScalingFactor,
+    output_scale: ScalingFactor,
+    intermediate_bit_size: usize,
+) -> Requant {
+    let m = add_scale.scale() / output_scale.scale();
+    Requant::from_multiplier(m, intermediate_bit_size)
 }
 
 impl QuantizeOp for Add<f32> {
