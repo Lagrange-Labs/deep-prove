@@ -50,7 +50,10 @@ pub struct Permutation(Vec<usize>);
 
 impl Permutation {
     pub fn new(perm: Vec<usize>) -> Self {
-        assert!(perm.len() > 0, "Permutation must have at least one element");
+        assert!(
+            perm.len() > 1,
+            "Permutation must have at least two elements"
+        );
         assert!(
             perm.iter().all(|&x| x < perm.len()),
             "Permutation indices must be less than the length of the permutation"
