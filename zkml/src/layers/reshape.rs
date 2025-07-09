@@ -145,12 +145,11 @@ impl Reshape {
         let output_shapes =
             self.internal_output(&inputs.iter().map(|x| x.get_shape()).collect::<Vec<_>>())?;
         #[allow(suspicious_double_ref_op)]
-        let out_tensors = inputs.iter().map(|x| x.clone().clone()).collect::<Vec<_>>();
-        let out_tensors = output_shapes
+        let mut out_tensors = inputs.into_iter().map(|&x| x.clone()).collect::<Vec<_>>();
+        output_shapes
             .into_iter()
-            .zip(out_tensors.into_iter())
-            .map(|(new_dim, input_tensor)| input_tensor.reshape(new_dim))
-            .collect();
+            .zip(out_tensors.iter_mut())
+            .for_each(|(new_dim, input_tensor)| input_tensor.reshape_in_place(new_dim));
         Ok(LayerOut::from_vec(out_tensors))
     }
 }

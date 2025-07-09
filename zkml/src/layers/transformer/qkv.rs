@@ -49,6 +49,7 @@ pub struct QKV<N> {
     unpadded_shape: Shape,       /* same shape for Q, K and V
                                   * pub cache: Option<CacheQKV<N>>, */
     pub(crate) num_heads: usize, // Needed to properly pad matrices for sub-sequent MHA layer
+    pub(crate) head_dim: usize,  // Needed to properly pad matrices for sub-sequent MHA layer
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct QKVCtx<E> {
@@ -56,6 +57,7 @@ pub struct QKVCtx<E> {
     sumcheck_poly_aux: VPAuxInfo<E>,
     unpadded_shape: Shape, // same shape for Q, K and V
     num_heads: usize,
+    head_dim: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -91,15 +93,7 @@ impl<E: ExtensionField> QKVProof<E> {
     }
 }
 
-fn compute_head_dim(unpadded_shape: &Shape, num_heads: usize) -> usize {
-    let hidden_size = unpadded_shape[1];
-
-    hidden_size / num_heads
-}
-
-fn padded_weight_shape(unpadded_shape: &Shape, num_heads: usize) -> Shape {
-    let head_dim = compute_head_dim(unpadded_shape, num_heads);
-
+fn padded_weight_shape(unpadded_shape: &Shape, num_heads: usize, head_dim: usize) -> Shape {
     Shape::new(vec![
         unpadded_shape[0].next_power_of_two(),
         head_dim.next_power_of_two() * num_heads.next_power_of_two(),
@@ -116,11 +110,34 @@ impl<N: Number> QKV<N> {
         v_bias: Tensor<N>,
         num_heads: usize,
     ) -> anyhow::Result<Self> {
-        assert_eq!(q.get_shape(), k.get_shape());
-        assert_eq!(q.get_shape(), v.get_shape());
-        assert_eq!(q_bias.get_shape().len(), 1);
-        assert_eq!(q_bias.get_shape(), k_bias.get_shape());
-        assert_eq!(q_bias.get_shape(), v_bias.get_shape());
+        ensure!(
+            q.get_shape() == k.get_shape(),
+            "Incompatible shapes of q and k tensors in QKV layer: q = {:?}, k = {:?}",
+            q.get_shape(),
+            k.get_shape(),
+        );
+        ensure!(
+            q.get_shape() == v.get_shape(),
+            "Incompatible shapes of q and v tensors in QKV layer: q = {:?}, v = {:?}",
+            q.get_shape(),
+            v.get_shape(),
+        );
+        ensure!(
+            q_bias.get_shape().len() == 1,
+            "Bias in QKV layer is not a 1d tensor"
+        );
+        ensure!(
+            q_bias.get_shape() == k_bias.get_shape(),
+            "Incompatible shapes of q and k bias in QKV layer: q = {:?}, k = {:?}",
+            q_bias.get_shape(),
+            k_bias.get_shape(),
+        );
+        ensure!(
+            q_bias.get_shape() == v_bias.get_shape(),
+            "Incompatible shapes of q and v bias in QKV layer: q = {:?}, v = {:?}",
+            q_bias.get_shape(),
+            v_bias.get_shape(),
+        );
         // mat mul : [a,b] * [b, c] -> [a, c] + [c]
 
         let hidden_size = q.get_shape()[1];
@@ -135,6 +152,7 @@ impl<N: Number> QKV<N> {
             hidden_size % num_heads == 0,
             "Expected number of heads to be a divisor of hidden size, but it's not: hidden_size = {hidden_size}, num_heads = {num_heads}"
         );
+        let head_dim = hidden_size / num_heads;
         let unpadded_shape = q.get_shape();
         Ok(Self {
             q,
@@ -145,6 +163,7 @@ impl<N: Number> QKV<N> {
             v_bias,
             unpadded_shape,
             num_heads,
+            head_dim,
             // cache: None,
         })
     }
@@ -162,10 +181,6 @@ impl<N: Number> QKV<N> {
         let point_for_row = &claim_point[output_num_vars.1..];
         let point_for_column = &claim_point[..output_num_vars.1];
         Ok((point_for_row, point_for_column))
-    }
-
-    pub(crate) fn compute_head_dim(&self) -> usize {
-        compute_head_dim(&self.unpadded_shape, self.num_heads)
     }
 
     // Build evaluations point for claims related to a pair (input_matrix, weight matrix) produced
@@ -228,15 +243,15 @@ impl<N: Number> OpInfo for QKV<N> {
             }
             PaddingMode::Padding => {
                 // compute head_dim from hidden_size and num_heads
-                let padded_weight = padded_weight_shape(&self.unpadded_shape, self.num_heads);
+                let padded_weight =
+                    padded_weight_shape(&self.unpadded_shape, self.num_heads, self.head_dim);
                 vec![
-                    Shape::new(vec![input_shape[0], padded_weight[1]]),
-                    Shape::new(vec![input_shape[0], padded_weight[1]]),
-                    Shape::new(vec![input_shape[0], padded_weight[1]]),
+                    Shape::new(vec![
+                        input_shape[0].next_power_of_two(),
+                        padded_weight[1].next_power_of_two()
+                    ]);
+                    3
                 ]
-                .into_iter()
-                .map(|shape| shape.next_power_of_two())
-                .collect::<Vec<_>>()
             }
         }
     }
@@ -421,6 +436,7 @@ where
             sumcheck_poly_aux: vp_aux,
             unpadded_shape: self.unpadded_shape.clone(),
             num_heads: self.num_heads,
+            head_dim: self.head_dim,
         };
 
         Ok((LayerCtx::QKV(ctx), aux))
@@ -620,7 +636,9 @@ impl<E> OpInfo for QKVCtx<E> {
     fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         let weight_shape = match padding_mode {
             PaddingMode::NoPadding => &self.unpadded_shape,
-            PaddingMode::Padding => &padded_weight_shape(&self.unpadded_shape, self.num_heads),
+            PaddingMode::Padding => {
+                &padded_weight_shape(&self.unpadded_shape, self.num_heads, self.head_dim)
+            }
         };
 
         assert_eq!(
@@ -1027,7 +1045,7 @@ mod tests {
         assert_eq!(padded_layer.v_bias.get_shape(), padded_bias_shape);
 
         // check data in padded layer is the same of original layer
-        let head_dim = layer.compute_head_dim();
+        let head_dim = layer.head_dim;
         assert_eq!(head_dim, hidden_size / num_heads);
         let padded_head_dim = head_dim.next_power_of_two();
         [&layer.q, &layer.k, &layer.v]

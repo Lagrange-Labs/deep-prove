@@ -15,7 +15,7 @@ use crate::{
         pooling::Pooling,
         provable::{Node, NodeId, OpInfo},
         reshape::Reshape,
-        transformer::qkv::QKV,
+        transformer::{mha::pad_matrix_to_ignore_mha_garbage, qkv::QKV},
     },
     model::{Model, ToIterator},
     parser::{check_filter, safe_conv2d_shape, safe_maxpool2d_shape},
@@ -45,7 +45,8 @@ impl GarbagePad {
                 );
             }
             GarbagePad::MHA(previous_shape) => {
-                *matrix = matrix.pad_matrix_to_ignore_mha_garbage(
+                *matrix = pad_matrix_to_ignore_mha_garbage(
+                    &matrix,
                     &previous_shape.0,
                     &previous_shape.1,
                     padded_matrix_shape,
@@ -422,7 +423,7 @@ pub(crate) fn pad_qkv(mut qkv: QKV<Element>, si: &mut ShapeInfo) -> Result<QKV<E
     );
 
     // Pad weight matrices
-    let head_dim = qkv.compute_head_dim();
+    let head_dim = qkv.head_dim;
     let padded_head_dim = pad_minimum(head_dim);
     let padded_num_heads = pad_minimum(qkv.num_heads);
     [&mut qkv.q, &mut qkv.k, &mut qkv.v].into_iter().try_for_each(|weight_mat| {

@@ -244,31 +244,31 @@ impl<N: Number> Mha<N> {
             inputs.len()
         );
 
-        let reshaped_inputs = self
-            .inputs_reshape
-            .evaluate::<E>(inputs, unpadded_input_shapes.clone())?;
-
         let reshaped_input_shapes = self
             .inputs_reshape
             .output_shapes(&unpadded_input_shapes, PaddingMode::NoPadding);
+
+        let reshaped_inputs = self
+            .inputs_reshape
+            .evaluate::<E>(inputs, unpadded_input_shapes)?;
+
+        let qk_out_shapes = self
+            .qk
+            .output_shapes(&reshaped_input_shapes, PaddingMode::NoPadding);
 
         let qk_out = self.qk.evaluate::<E>(
             &reshaped_inputs.outputs()[..2],
             reshaped_input_shapes[..2].to_vec(),
         )?;
 
-        let qk_out_shapes = self
-            .qk
-            .output_shapes(&reshaped_input_shapes, PaddingMode::NoPadding);
-
         // apply softmax
-        let soft_out = self
-            .softmax
-            .evaluate::<E>(&qk_out.outputs(), qk_out_shapes.clone())?;
-
         let soft_out_shapes = self
             .softmax
             .output_shapes(&qk_out_shapes, PaddingMode::NoPadding);
+
+        let soft_out = self
+            .softmax
+            .evaluate::<E>(&qk_out.outputs(), qk_out_shapes)?;
 
         ensure!(
             soft_out.outputs().len() == 1,
@@ -278,14 +278,14 @@ impl<N: Number> Mha<N> {
         let final_mul_input_shapes =
             vec![soft_out_shapes[0].clone(), reshaped_input_shapes[2].clone()];
 
-        let final_mul_out = self.final_mul.evaluate::<E>(
-            &[soft_out.outputs()[0], reshaped_inputs.outputs()[2]],
-            final_mul_input_shapes.clone(),
-        )?;
-
         let out_shapes = self
             .final_mul
             .output_shapes(&final_mul_input_shapes, PaddingMode::NoPadding);
+
+        let final_mul_out = self.final_mul.evaluate::<E>(
+            &[soft_out.outputs()[0], &reshaped_inputs.outputs()[2]],
+            final_mul_input_shapes,
+        )?;
 
         let out = self
             .final_reshape
@@ -386,7 +386,7 @@ impl QuantizeOp for Mha<f32> {
         // quantize data for softmax
         let QuantizeOutput {
             quantized_op: quantized_softmax,
-            mut output_scalings,
+            output_scalings,
             ..
         } = self
             .softmax
@@ -399,7 +399,7 @@ impl QuantizeOp for Mha<f32> {
         );
 
         // prepare input scaling for final multiplication operation
-        let final_mul_scalings = vec![output_scalings.remove(0), input_scaling[2].clone()];
+        let final_mul_scalings = vec![output_scalings[0], input_scaling[2]];
         let quantized_out = self
             .final_mul
             .quantize_op::<S>(data, node_id, &final_mul_scalings)?;
@@ -496,6 +496,74 @@ impl<E: ExtensionField> ProveInfo<E> for Mha<Element> {
     }
 }
 
+pub(crate) fn pad_matrix_to_ignore_mha_garbage<T>(
+    matrix: &Tensor<T>,
+    unpadded_mha_shape: &Shape,
+    padded_mha_shape: &Shape,
+    padded_shape: Shape,
+) -> anyhow::Result<Tensor<T>>
+where
+    T: Copy + Clone + Send + Sync + Default,
+{
+    ensure!(
+        unpadded_mha_shape.rank() == padded_mha_shape.rank(),
+        "Rank of padded and unpadded shapes in garbage pad of Mha layer differ: unpadded = {}, padded {}",
+        unpadded_mha_shape.rank(),
+        padded_mha_shape.rank(),
+    );
+
+    ensure!(
+        unpadded_mha_shape.rank() == 3,
+        "Rank of shapes in garbage pad of Mha layer must be 3, found {}",
+        unpadded_mha_shape.rank()
+    );
+
+    ensure!(
+        padded_shape.is_matrix(),
+        "Target padded shape to remove garbage for Mha layer is not a matrix"
+    );
+
+    let num_heads = unpadded_mha_shape[1];
+    let padded_num_heads = padded_mha_shape[1];
+    let head_dim = unpadded_mha_shape[2];
+    let padded_head_dim = padded_mha_shape[2];
+
+    let nrows = padded_shape[0].max(padded_num_heads * padded_head_dim);
+    let ncols = padded_shape[1];
+
+    let unpadded_shape = matrix.get_shape();
+
+    ensure!(
+        unpadded_shape.is_matrix(),
+        "Tensor to be padded to remove garbage for Mha layer is not a matrix"
+    );
+
+    let padded_matrix_data = (0..nrows * ncols)
+        .into_par_iter()
+        .map(|i| {
+            let row = i / ncols;
+            let col = i % ncols;
+            // check if this row corresponds to a garbage entry in the matrix produced by Mha layer
+            let is_not_garbage_row =
+                row % padded_head_dim < head_dim && row / padded_head_dim < num_heads;
+            // check it the column of the row corresponds to an entry in the original matrix or it's a padding column
+            let is_not_padding_column = col < unpadded_shape[1];
+            let new_item = if is_not_garbage_row && is_not_padding_column {
+                // we need to get an entry from the original matrix
+                let original_row = row / padded_head_dim * head_dim + row % padded_head_dim;
+                matrix.get_data()[original_row * unpadded_shape[1] + col]
+            } else {
+                // it's either an entry in a garbage row or a padded column in a non-garbage row: in both cases,
+                // we fill it with 0
+                T::default()
+            };
+            new_item
+        })
+        .collect();
+
+    Ok(Tensor::new(vec![nrows, ncols].into(), padded_matrix_data))
+}
+
 impl PadOp for Mha<Element> {
     fn pad_node(mut self, si: &mut ShapeInfo) -> anyhow::Result<Self>
     where
@@ -503,14 +571,10 @@ impl PadOp for Mha<Element> {
     {
         let inputs_reshape = self.inputs_reshape.pad_node(si)?;
 
-        // Split `ShapeInfo` between inputs for qk and input v
-        let qk_si = ShapeInfo {
-            shapes: si.shapes[..2].to_vec(),
-        };
-
-        let v_shape = si.shapes[2].clone();
-
-        *si = qk_si;
+        // Save shape about input tensor v for later use; we can remove it from
+        // `si`, and leave only shapes about q and k inputs, because v is not
+        // necessary for the next operation
+        let v_shape = si.shapes.pop().unwrap();
 
         let qk = self.qk.pad_node(si)?;
 
@@ -520,7 +584,7 @@ impl PadOp for Mha<Element> {
 
         // now we need to build shape info for final_mul from softmax output
         // and from `v`
-        si.shapes = vec![si.shapes[0].clone(), v_shape];
+        si.shapes.push(v_shape);
         let final_mul = self.final_mul.pad_node(si)?;
 
         // add garbage pad information to `si`
@@ -1312,13 +1376,13 @@ mod test {
         let unpadded_mha_shape = Shape::new(vec![seq_len, num_heads, head_dim]);
         let padded_mha_shape = unpadded_mha_shape.next_power_of_two();
 
-        let padded_matrix = matrix
-            .pad_matrix_to_ignore_mha_garbage(
-                &unpadded_mha_shape,
-                &padded_mha_shape,
-                padded_matrix_shape,
-            )
-            .unwrap();
+        let padded_matrix = pad_matrix_to_ignore_mha_garbage(
+            &matrix,
+            &unpadded_mha_shape,
+            &padded_mha_shape,
+            padded_matrix_shape,
+        )
+        .unwrap();
 
         let input_shape = Shape::new(vec![seq_len, hidden_size]);
         let input = Tensor::random(&input_shape);

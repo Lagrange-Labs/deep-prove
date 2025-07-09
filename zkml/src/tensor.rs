@@ -1668,71 +1668,6 @@ where
 
         Tensor::new(mat_shp_pad.to_vec().into(), new_data)
     }
-
-    pub(crate) fn pad_matrix_to_ignore_mha_garbage(
-        &self,
-        unpadded_mha_shape: &Shape,
-        padded_mha_shape: &Shape,
-        padded_shape: Shape,
-    ) -> anyhow::Result<Tensor<T>> {
-        ensure!(
-            unpadded_mha_shape.rank() == padded_mha_shape.rank(),
-            "Rank of padded and unpadded shapes in garbage pad of Mha layer differ: unpadded = {}, padded {}",
-            unpadded_mha_shape.rank(),
-            padded_mha_shape.rank(),
-        );
-
-        ensure!(
-            unpadded_mha_shape.rank() == 3,
-            "Rank of shapes in garbage pad of Mha layer must be 3, found {}",
-            unpadded_mha_shape.rank()
-        );
-
-        ensure!(
-            padded_shape.is_matrix(),
-            "Target padded shape to remove garbage for Mha layer is not a matrix"
-        );
-
-        let num_heads = unpadded_mha_shape[1];
-        let padded_num_heads = padded_mha_shape[1];
-        let head_dim = unpadded_mha_shape[2];
-        let padded_head_dim = padded_mha_shape[2];
-
-        let nrows = padded_shape[0].max(padded_num_heads * padded_head_dim);
-        let ncols = padded_shape[1];
-
-        let unpadded_shape = self.get_shape();
-
-        ensure!(
-            unpadded_shape.is_matrix(),
-            "Tensor to be padded to remove garbage for Mha layer is not a matrix"
-        );
-
-        let padded_matrix_data = (0..nrows * ncols)
-            .into_par_iter()
-            .map(|i| {
-                let row = i / ncols;
-                let col = i % ncols;
-                // check if this row corresponds to a garbage entry in the matrix produced by Mha layer
-                let is_not_garbage_row =
-                    row % padded_head_dim < head_dim && row / padded_head_dim < num_heads;
-                // check it the column of the row corresponds to an entry in the original matrix or it's a padding column
-                let is_not_padding_column = col < unpadded_shape[1];
-                let new_item = if is_not_garbage_row && is_not_padding_column {
-                    // we need to get an entry from the original matrix
-                    let original_row = row / padded_head_dim * head_dim + row % padded_head_dim;
-                    self.data[original_row * unpadded_shape[1] + col]
-                } else {
-                    // it's either an entry in a garbage row or a padded column in a non-garbage row: in both cases,
-                    // we fill it with 0
-                    T::default()
-                };
-                new_item
-            })
-            .collect();
-
-        Ok(Tensor::new(vec![nrows, ncols].into(), padded_matrix_data))
-    }
 }
 
 impl<T> fmt::Display for Tensor<T>
@@ -2114,7 +2049,7 @@ impl Shape {
         assert!(self.is_matrix(), "Tensor is not a matrix");
         self.0[0]
     }
-    // Compute the bitsize of the output of the matrix multiplication of atesnor with shape `self`
+    // Compute the bitsize of the output of the matrix multiplication of a tensor with shape `self`
     // with another matrix with a compatbile shape. It requires the optional inputs to specify the range
     // of the quantized values in `self` and in the other matrix being multiplied with `self`
     pub fn matmul_output_bitsize(
