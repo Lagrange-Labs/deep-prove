@@ -459,7 +459,7 @@ impl Requant {
     fn apply(&self, elem: &Element) -> Element {
         let rounding = 1i128 << (self.shift() - 1);
         let unclamped = (rounding + elem * self.fixed_point_multiplier) >> self.shift();
-        // println!("requant.op() (shift {}) = {:?}",self.shift(),rounding + elem * self.fixed_point_multiplier);
+
         let sign = if unclamped.is_positive() || unclamped == 0i128 {
             1i128
         } else {
@@ -477,14 +477,14 @@ impl Requant {
 
     /// API for performing this op on a quantised tensor.
     pub fn op(&self, input: &Tensor<Element>) -> Result<Tensor<Element>> {
-        println!("Requant op input: {:?}", input.get_data());
+        // We use this value to determine if any of the inputs are too large to be requantised (i.e. they fall outside the clamping table)
+        let max_abs_val: Element = 1 << (self.intermediate_bit_size - 1);
         let res = input
             .get_data()
-            .iter()
-            .map(|e| self.apply(e))
-            .collect::<Vec<Element>>();
+            .iter().enumerate()
+            .map(|(i,e)| {if e.abs() <= max_abs_val {Ok(self.apply(e))} else {Err(anyhow!("Could not apply requantisation, tensor element {} had absoloute value too large, given value: {}, max value: {}", i, e, max_abs_val))}})
+            .collect::<Result<Vec<Element>, anyhow::Error>>()?;
 
-        println!("Requant op output: {:?}", res);
         Ok(Tensor::<Element>::new(input.get_shape(), res))
     }
 

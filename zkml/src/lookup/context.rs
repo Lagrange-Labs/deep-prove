@@ -8,7 +8,7 @@ use multilinear_extensions::{
     mle::{DenseMultilinearExtension, IntoMLE, MultilinearExtension},
     util::ceil_log2,
 };
-use p3_field::FieldAlgebra;
+use p3_field::{Field, FieldAlgebra};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::{debug, warn};
 use transcript::Transcript;
@@ -317,11 +317,40 @@ where
             let (table_column, column_evals) =
                 table_type.get_merged_table_column::<E>(COLUMN_SEPARATOR);
 
+            // Check to see that all the lookup values are present in the table
+            #[cfg(test)]
+            {
+                for key in table_lookup_data.keys() {
+                    let check = table_column.contains(key);
+                    if !check {
+                        println!(
+                            "Tried to lookup key: {}, for table: {}",
+                            key,
+                            table_type.name()
+                        );
+                    }
+                }
+            }
+            // We have to account for repeated entries in the lookup table. This is usually the case if the table we want to lookup from is not a power of two size, in that case we pick a row from the table
+            // and repeat it until the table has the desired size.
+            let table_column_map =
+                table_column
+                    .iter()
+                    .fold(BTreeMap::<Element, u64>::new(), |mut map, elem| {
+                        *map.entry(*elem).or_insert(0) += 1;
+                        map
+                    });
             let multiplicities = table_column
                 .iter()
                 .map(|table_val| {
                     if let Some(lookup_count) = table_lookup_data.get(table_val) {
-                        E::BaseField::from_canonical_u64(*lookup_count)
+                        let table_count = *table_column_map.get(table_val).unwrap();
+                        let inv = if table_count != 1 {
+                            E::BaseField::from_canonical_u64(table_count).inverse()
+                        } else {
+                            E::BaseField::ONE
+                        };
+                        E::BaseField::from_canonical_u64(*lookup_count) * inv
                     } else {
                         E::BaseField::ZERO
                     }
