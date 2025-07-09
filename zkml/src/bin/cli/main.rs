@@ -103,6 +103,10 @@ async fn main() -> anyhow::Result<()> {
             let input = Input::from_file(&inputs).context("loading input")?;
             let model_file = File::open(&onnx).await.context("opening model file")?;
             let model_bytes = unsafe { Mmap::map(&model_file) }.context("loading model file")?;
+            let model_file_hash = {
+                let hash = <sha2::Sha256 as sha2::Digest>::digest(&model_bytes);
+                format!("{hash:X}")
+            };
             let (model, model_metadata) = parse_model(model_bytes).context("parsing ONNX file")?;
             let task = tonic::Request::new(lagrange::SubmitTaskRequest {
                 task_bytes: zstd::encode_all(
@@ -111,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
                             model,
                             model_metadata,
                             input,
+                            model_file_hash,
                         },
                     ))
                     .context("serializing inference request")?

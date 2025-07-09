@@ -80,6 +80,9 @@ pub struct DeepProveRequest {
 
     /// An array of inputs to run proving for
     pub input: Input,
+
+    /// A hash of the model file
+    pub model_file_hash: String,
 }
 
 /// The `v1` proofs that have been computed by the worker
