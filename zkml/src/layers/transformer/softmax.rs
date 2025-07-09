@@ -145,8 +145,8 @@ impl<N: Number> Softmax<N> {
         let input_min = input_scaling.min();
         let input_max = input_scaling.max();
 
-        let min_input_float = input_min
-            - inv_float_temperature * (self.max_size as f32 * (input_max * temperature).exp()).ln();
+        let min_input_float =
+            input_min - (inv_float_temperature * (self.max_size as f32).ln() + input_max);
         // Now that we have the minimum possible input as a float we need to work out how many integral bits we need to account for
         // We know that the minimum input is negative so first we take the absoloute value
         let min_input_abs = min_input_float.abs();
