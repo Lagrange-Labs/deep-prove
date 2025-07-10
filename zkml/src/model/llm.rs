@@ -2,7 +2,7 @@
 //! and the output of the model. It can decide to re-run the model on a different input,
 //! to modify the inference trace, to modify the model, etc.
 //! The main usage of a driver for now is to run the LLM forward loop until a specific token or
-//! the maximum context length is reached. It will also be used to preprend a system model correctly.
+//! the maximum context length is reached. It will also be used to prepend a system model correctly.
 
 use serde::{Serialize, de::DeserializeOwned};
 use std::path::Path;
