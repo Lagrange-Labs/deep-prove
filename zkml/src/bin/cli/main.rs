@@ -13,7 +13,7 @@ use zkml::{
     Element, FloatOnnxLoader,
     middleware::{DeepProveRequest, DeepProveResponse, v1::Input},
     model::Model,
-    quantization::{AbsoluteMax, ModelMetadata},
+    quantization::{AbsoluteMax, ModelMetadata, ScalingStrategyKind},
 };
 
 mod lagrange {
@@ -108,6 +108,12 @@ async fn main() -> anyhow::Result<()> {
                 format!("{hash:X}")
             };
             let (model, model_metadata) = parse_model(model_bytes).context("parsing ONNX file")?;
+
+            // TODO Currently hard-coded in the ONNX loader. Adjust when choice is availabl
+            let scaling_strategy = ScalingStrategyKind::AbsoluteMax;
+            // TODO Currently hard-coded in the ONNX loader. Adjust when choice is availabl
+            let scaling_input_hash = None;
+
             let task = tonic::Request::new(lagrange::SubmitTaskRequest {
                 task_bytes: zstd::encode_all(
                     rmp_serde::to_vec(&DeepProveRequest::V1(
@@ -116,6 +122,8 @@ async fn main() -> anyhow::Result<()> {
                             model_metadata,
                             input,
                             model_file_hash,
+                            scaling_strategy,
+                            scaling_input_hash,
                         },
                     ))
                     .context("serializing inference request")?
