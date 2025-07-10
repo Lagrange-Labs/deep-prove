@@ -45,7 +45,7 @@ use crate::{
             embeddings::Embeddings,
             layernorm::LayerNorm,
             logits::Logits,
-            mha::MhaQK,
+            mha::Mha,
             positional::Positional,
             qkv::{QKV, QKVCtx, QKVProof},
             softmax::Softmax,
@@ -80,7 +80,7 @@ pub enum Layer<T> {
     // TODO: so far it's only flattening the input tensor, e.g. new_shape = vec![shape.iter().product()]
     Flatten(Flatten),
     QKV(QKV<T>),
-    MhaQK(MhaQK),
+    MhaQK(Mha<T>),
     ConcatMatMul(ConcatMatMul),
     LayerNorm(LayerNorm<T>),
     Softmax(Softmax<T>),
