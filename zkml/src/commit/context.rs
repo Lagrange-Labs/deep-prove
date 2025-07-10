@@ -110,6 +110,41 @@ where
         })
     }
 
+    /// Make a new [`CommitmentContext`] from known params
+    pub fn new_with_params(
+        polys: Vec<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>,
+        prover_params: PCS::ProverParam,
+        verifier_params: PCS::VerifierParam,
+    ) -> Result<CommitmentContext<E, PCS>> {
+        let model_comms_map = polys
+            .into_par_iter()
+            .map(|(node_id, polys_vec)| {
+                let model_comms = polys_vec
+                    .into_iter()
+                    .map(|(id, poly)| {
+                        let commit = PCS::commit(&prover_params, &poly)?;
+                        Result::<(_, _), anyhow::Error>::Ok((id, (commit, poly)))
+                    })
+                    .collect::<Result<
+                        BTreeMap<
+                            PolyId,
+                            (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>),
+                        >,
+                        _,
+                    >>()?;
+                Result::<(NodeId, BTreeMap<PolyId, (_, _)>), anyhow::Error>::Ok((
+                    node_id,
+                    model_comms,
+                ))
+            })
+            .collect::<Result<BTreeMap<NodeId, _>, _>>()?;
+        Ok(CommitmentContext {
+            prover_params,
+            verifier_params,
+            model_comms_map,
+        })
+    }
+
     /// Getter for the PCS prover params
     pub fn prover_params(&self) -> &PCS::ProverParam {
         &self.prover_params

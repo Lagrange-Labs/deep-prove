@@ -22,11 +22,13 @@ name = "deep-prove-cli"
 path = "src/bin/cli/main.rs"
 
 [features]
-default = []
+default = ["s3"]
 blake = ["mpcs/blake"]
 # Capture layers' quatization outputs for regression tests
 capture-layers-quant = []
 mem-track = ["utils/mem-track"]
+# Worker S3 storage
+s3 = []
 
 [dependencies]
 anyhow.workspace = true
