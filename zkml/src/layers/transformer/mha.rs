@@ -177,7 +177,7 @@ impl<N: Number> Mha<N> {
             vec![soft_out_shapes[0].clone(), unpadded_input_shapes[2].clone()];
 
         let out = self.final_mul.evaluate::<E>(
-            &vec![soft_out.outputs()[0], &inputs[2]],
+            &[soft_out.outputs()[0], inputs[2]],
             final_mul_input_shapes.clone(),
         )?;
 
@@ -334,7 +334,7 @@ impl<N: Number> Evaluate<N> for MhaFinalMul {
             "qk should have the same number of heads as the MHA"
         );
         let v = v.reshape(vec![seq_len, self.num_heads, self.head_dim].into());
-        let v = v.permute3d(&vec![1, 0, 2]); // (num_head, seq_len, head_dim)
+        let v = v.permute3d(&[1, 0, 2]); // (num_head, seq_len, head_dim)
         assert_eq!(
             v.get_shape(),
             vec![self.num_heads, seq_len, self.head_dim].into()
@@ -343,7 +343,7 @@ impl<N: Number> Evaluate<N> for MhaFinalMul {
         let unpadded_seq_len = unpadded_input_shapes[1][0];
 
         self.mul.evaluate(
-            &vec![&qk, &v],
+            &[&qk, &v],
             vec![
                 unpadded_input_shapes[0].clone(),
                 vec![self.num_heads, unpadded_seq_len, self.head_dim].into(),
@@ -450,8 +450,8 @@ pub fn eval_zeroifier_mle<F: ExtensionField + FieldFrom<u64>>(
     row_point: &[F],
 ) -> F {
     column_point
-        .into_iter()
-        .zip(row_point.into_iter())
+        .iter()
+        .zip(row_point)
         .fold(F::from_v(1), |acc, (&c, &r)| {
             acc * (F::from_v(1) - c - r + F::from_v(2) * c * r) + (F::from_v(1) - c) * r
         })
