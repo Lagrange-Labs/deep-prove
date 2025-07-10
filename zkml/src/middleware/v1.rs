@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::quantization::{QUANTIZATION_RANGE, ScalingStrategyKind};
 
-use super::{Element, Model, ModelMetadata, ProofG};
+use super::{Element, ModelMetadata, ProofG};
 
 /// A type of the proof for the `v1` of the protocol
 pub type Proof = ProofG<GoldilocksExt2, Basefold<GoldilocksExt2, BasefoldRSParams<Hasher>>>;
@@ -73,10 +73,7 @@ impl Input {
 #[derive(Serialize, Deserialize)]
 pub struct DeepProveRequest {
     /// The model
-    pub model: Model<Element>,
-
-    /// Model metadata
-    pub model_metadata: ModelMetadata,
+    pub model: Vec<u8>,
 
     /// An array of inputs to run proving for
     pub input: Input,

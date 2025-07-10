@@ -1,5 +1,7 @@
 //! PPs and scaled models KV storage.
 
+#![allow(clippy::manual_async_fn)]
+
 use ff_ext::GoldilocksExt2;
 use mpcs::{Basefold, BasefoldRSParams, Hasher, PolynomialCommitmentScheme};
 #[doc(inline)]
@@ -13,18 +15,23 @@ use crate::{
 use anyhow::{Context, bail};
 use object_store::{ObjectStore, PutPayload, aws::AmazonS3, path::Path};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, env, future::Future};
+use std::{
+    collections::HashMap,
+    env,
+    future::Future,
+    sync::{Arc, Mutex},
+};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct ParamsIndex<'a> {
-    model_file_hash: &'a str,
+    pub model_file_hash: &'a str,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct ModelIndex<'a> {
-    model_file_hash: &'a str,
-    scaling_strategy: ScalingStrategyKind,
-    scaling_input_hash: Option<&'a str>,
+    pub model_file_hash: &'a str,
+    pub scaling_strategy: ScalingStrategyKind,
+    pub scaling_input_hash: Option<&'a str>,
 }
 
 type F = GoldilocksExt2;
@@ -38,8 +45,8 @@ pub struct Params {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct ScaledModel {
-    model: Model<Element>,
-    model_metadata: ModelMetadata,
+    pub model: Model<Element>,
+    pub model_metadata: ModelMetadata,
 }
 
 pub trait Store {
@@ -51,6 +58,19 @@ pub trait Store {
     ) -> impl Future<Output = anyhow::Result<Params>> + Send
     where
         F: Fn() -> Params + Send + Sync;
+
+    /// Try to get the params from store.
+    fn get_params(
+        &mut self,
+        index: ParamsIndex<'_>,
+    ) -> impl Future<Output = anyhow::Result<Option<Params>>> + Send;
+
+    /// Try to get the params from store.
+    fn insert_params(
+        &mut self,
+        index: ParamsIndex<'_>,
+        params: Params,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send;
 
     /// Try to get the model from store. If not present, initialize the value with the given function, store it and return.
     fn get_or_init_model_with<F>(
@@ -84,7 +104,7 @@ impl Store for S3Store {
                     let bytes = result.bytes().await?;
                     let value = serde_json::from_slice::<Params>(&bytes)
                         .context("Decoding params value from S3")?;
-                    return Ok(value);
+                    Ok(value)
                 }
                 Err(object_store::Error::NotFound { .. }) => {
                     let value = init();
@@ -97,6 +117,45 @@ impl Store for S3Store {
                     bail!(e);
                 }
             }
+        }
+    }
+
+    fn get_params(
+        &mut self,
+        index: ParamsIndex<'_>,
+    ) -> impl Future<Output = anyhow::Result<Option<Params>>> + Send {
+        async move {
+            let key = params_key(index);
+            let S3Store(store) = self;
+            let location = Path::parse(&key)?;
+            match store.get(&location).await {
+                Ok(result) => {
+                    let bytes = result.bytes().await?;
+                    let value = serde_json::from_slice::<Params>(&bytes)
+                        .context("Decoding params value from S3")?;
+                    Ok(Some(value))
+                }
+                Err(object_store::Error::NotFound { .. }) => Ok(None),
+                Err(e) => {
+                    bail!(e);
+                }
+            }
+        }
+    }
+
+    fn insert_params(
+        &mut self,
+        index: ParamsIndex<'_>,
+        params: Params,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send {
+        async move {
+            let value_bytes: Vec<u8> =
+                serde_json::to_vec(&params).expect("Must be able to serialize params to store");
+            let key = params_key(index);
+            let S3Store(store) = self;
+            let location = Path::parse(&key)?;
+            store.put(&location, PutPayload::from(value_bytes)).await?;
+            Ok(())
         }
     }
 
@@ -117,7 +176,7 @@ impl Store for S3Store {
                     let bytes = result.bytes().await?;
                     let value = serde_json::from_slice::<ScaledModel>(&bytes)
                         .context("Decoding scaled model value from S3")?;
-                    return Ok(value);
+                    Ok(value)
                 }
                 Err(object_store::Error::NotFound { .. }) => {
                     let value = init();
@@ -135,8 +194,13 @@ impl Store for S3Store {
 }
 
 /// In-memory store for testing.
-// TODO consider using object_store::memory::InMemory
+#[derive(Clone, Default)]
 pub struct MemStore {
+    inner: Arc<Mutex<MemStoreInner>>,
+}
+
+#[derive(Clone, Default)]
+pub struct MemStoreInner {
     pps: HashMap<Key, Params>,
     models: HashMap<Key, ScaledModel>,
 }
@@ -152,15 +216,40 @@ impl Store for MemStore {
     {
         async move {
             let key = params_key(index);
-            let value = match self.pps.get(&key) {
+            let mut guard = self.inner.lock().unwrap();
+            let value = match guard.pps.get(&key) {
                 Some(value) => value.clone(),
                 None => {
                     let value = init();
-                    self.pps.insert(key, value.clone());
+                    guard.pps.insert(key, value.clone());
                     value
                 }
             };
             Ok(value)
+        }
+    }
+
+    fn get_params(
+        &mut self,
+        index: ParamsIndex<'_>,
+    ) -> impl Future<Output = anyhow::Result<Option<Params>>> + Send {
+        async move {
+            let key = params_key(index);
+            let guard = self.inner.lock().unwrap();
+            Ok(guard.pps.get(&key).cloned())
+        }
+    }
+
+    fn insert_params(
+        &mut self,
+        index: ParamsIndex<'_>,
+        params: Params,
+    ) -> impl Future<Output = anyhow::Result<()>> + Send {
+        async move {
+            let key = params_key(index);
+            let mut guard = self.inner.lock().unwrap();
+            guard.pps.insert(key, params);
+            Ok(())
         }
     }
 
@@ -174,11 +263,12 @@ impl Store for MemStore {
     {
         async move {
             let key = model_key(index);
-            let value = match self.models.get(&key) {
+            let mut guard = self.inner.lock().unwrap();
+            let value = match guard.models.get(&key) {
                 Some(value) => value.clone(),
                 None => {
                     let value = init();
-                    self.models.insert(key, value.clone());
+                    guard.models.insert(key, value.clone());
                     value
                 }
             };

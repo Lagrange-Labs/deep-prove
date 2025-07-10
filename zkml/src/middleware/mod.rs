@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{Element, Proof as ProofG, model::Model, quantization::ModelMetadata};
+use super::{Element, Proof as ProofG, quantization::ModelMetadata};
 
 pub mod v1;
 

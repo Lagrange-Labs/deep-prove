@@ -7,6 +7,7 @@ use clap::Parser;
 use ff_ext::GoldilocksExt2;
 use futures::{FutureExt, StreamExt};
 use mpcs::{Basefold, BasefoldRSParams, Hasher};
+use object_store::aws::AmazonS3;
 use reqwest::StatusCode;
 use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
 
@@ -16,7 +17,7 @@ use tracing::{debug, error, info};
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt::format::FmtSpan};
 
 use zkml::{
-    Context, Prover, default_transcript,
+    Context, Element, FloatOnnxLoader, Prover, default_transcript,
     middleware::{
         DeepProveRequest, DeepProveResponse,
         v1::{
@@ -24,6 +25,9 @@ use zkml::{
             Proof as ProofV1,
         },
     },
+    model::Model,
+    quantization::{AbsoluteMax, ModelMetadata},
+    store::{self, AmazonS3Builder, Store},
 };
 
 use crate::lagrange::WorkerToGwResponse;
@@ -35,23 +39,67 @@ mod lagrange {
 type F = GoldilocksExt2;
 type Pcs<E> = Basefold<E, BasefoldRSParams<Hasher>>;
 
-fn run_model_v1(model: DeepProveRequestV1) -> Result<Vec<ProofV1>> {
+async fn run_model_v1(model: DeepProveRequestV1, mut store: impl Store) -> Result<Vec<ProofV1>> {
     info!("Proving inference");
     let DeepProveRequestV1 {
         model,
-        model_metadata,
         input,
         model_file_hash,
         scaling_strategy,
         scaling_input_hash,
     } = model;
 
+    let params_index = store::ParamsIndex {
+        model_file_hash: &model_file_hash,
+    };
+    let model_index = store::ModelIndex {
+        model_file_hash: &model_file_hash,
+        scaling_strategy,
+        scaling_input_hash: scaling_input_hash.as_deref(),
+    };
+
+    let params = store.get_params(params_index).await?;
+    let is_stored_params = params.is_some();
+
+    let store::ScaledModel {
+        model,
+        model_metadata,
+    } = store
+        .get_or_init_model_with(model_index, move || {
+            // TODO parse_model in `spawn_blocking?`
+            // TODO error handling
+            let (model, model_metadata) = parse_model(&model).unwrap();
+            store::ScaledModel {
+                model,
+                model_metadata,
+            }
+        })
+        .await?;
+
     let inputs = input.to_elements(&model_metadata);
 
     let mut failed_inputs = vec![];
-    let ctx =
-        Some(Context::<F, Pcs<F>>::generate(&model, None).context("unable to generate context")?);
+    // TODO `spawn_blocking?`
+    let ctx = Context::<F, Pcs<F>>::generate(
+        &model,
+        None,
+        params.map(|store::Params { prover, verifier }| (prover, verifier)),
+    )
+    .context("unable to generate context")?;
 
+    if !is_stored_params {
+        store
+            .insert_params(
+                params_index,
+                store::Params {
+                    prover: ctx.commitment_ctx.prover_params().clone(),
+                    verifier: ctx.commitment_ctx.verifier_params().clone(),
+                },
+            )
+            .await?;
+    }
+
+    // TODO `spawn_blocking?`
     let mut proofs = vec![];
     for (i, input) in inputs.into_iter().enumerate() {
         debug!("Running input #{i}");
@@ -75,7 +123,7 @@ fn run_model_v1(model: DeepProveRequestV1) -> Result<Vec<ProofV1>> {
             }
         };
         let mut prover_transcript = default_transcript();
-        let prover = Prover::<_, _, _>::new(ctx.as_ref().unwrap(), &mut prover_transcript);
+        let prover = Prover::<_, _, _>::new(&ctx, &mut prover_transcript);
         let proof = prover.prove(trace).context("unable to generate proof")?;
 
         proofs.push(proof);
@@ -83,6 +131,13 @@ fn run_model_v1(model: DeepProveRequestV1) -> Result<Vec<ProofV1>> {
 
     info!("Proving done.");
     Ok(proofs)
+}
+
+fn parse_model(bytes: &[u8]) -> anyhow::Result<(Model<Element>, ModelMetadata)> {
+    let strategy = AbsoluteMax::new();
+    FloatOnnxLoader::from_bytes_with_scaling_strategy(bytes, strategy)
+        .with_keep_float(true)
+        .build()
 }
 
 fn setup_logging(json: bool) {
@@ -150,6 +205,7 @@ struct Args {
 async fn process_message_from_gw(
     msg: WorkerToGwResponse,
     outbound_tx: &tokio::sync::mpsc::Sender<WorkerToGwRequest>,
+    store: impl Store,
 ) -> anyhow::Result<()> {
     let task: DeepProveRequest = rmp_serde::from_slice(
         zstd::decode_all(msg.task.as_slice())
@@ -158,7 +214,9 @@ async fn process_message_from_gw(
     )?;
 
     let result = match task {
-        DeepProveRequest::V1(deep_prove_request_v1) => run_model_v1(deep_prove_request_v1),
+        DeepProveRequest::V1(deep_prove_request_v1) => {
+            run_model_v1(deep_prove_request_v1, store).await
+        }
     };
 
     let reply = match result {
@@ -262,6 +320,13 @@ async fn main() -> anyhow::Result<()> {
     let healthcheck_handler = tokio::spawn(serve_health_check(args.healthcheck_addr));
     let mut healthcheck_handler = healthcheck_handler.fuse();
 
+    // TODO: config
+    let s3: AmazonS3 = AmazonS3Builder::new().build().context("AWS S3 bulder")?;
+    #[cfg(feature = "s3")]
+    let store = store::S3Store::from(s3);
+    #[cfg(not(feature = "s3"))]
+    let store = store::MemStore::default();
+
     loop {
         info!("Waiting for message...");
         tokio::select! {
@@ -274,7 +339,7 @@ async fn main() -> anyhow::Result<()> {
                         break;
                     }
                 };
-                process_message_from_gw(msg, &outbound_tx).await?;
+                process_message_from_gw(msg, &outbound_tx, store.clone()).await?;
             }
             h = &mut healthcheck_handler => {
                 if let Err(e) = h {

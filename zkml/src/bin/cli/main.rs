@@ -10,10 +10,8 @@ use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
 use tracing::info;
 use url::Url;
 use zkml::{
-    Element, FloatOnnxLoader,
     middleware::{DeepProveRequest, DeepProveResponse, v1::Input},
-    model::Model,
-    quantization::{AbsoluteMax, ModelMetadata, ScalingStrategyKind},
+    quantization::ScalingStrategyKind,
 };
 
 mod lagrange {
@@ -59,13 +57,6 @@ enum Command {
     Fetch {},
 }
 
-fn parse_model(bytes: Mmap) -> anyhow::Result<(Model<Element>, ModelMetadata)> {
-    let strategy = AbsoluteMax::new();
-    FloatOnnxLoader::from_bytes_with_scaling_strategy(bytes, strategy)
-        .with_keep_float(true)
-        .build()
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -107,7 +98,9 @@ async fn main() -> anyhow::Result<()> {
                 let hash = <sha2::Sha256 as sha2::Digest>::digest(&model_bytes);
                 format!("{hash:X}")
             };
-            let (model, model_metadata) = parse_model(model_bytes).context("parsing ONNX file")?;
+            let model = model_bytes.to_vec();
+            // TODO maybe validate here only?
+            // let (model, model_metadata) = parse_model(model_bytes).context("parsing ONNX file")?;
 
             // TODO Currently hard-coded in the ONNX loader. Adjust when choice is availabl
             let scaling_strategy = ScalingStrategyKind::AbsoluteMax;
@@ -119,7 +112,6 @@ async fn main() -> anyhow::Result<()> {
                     rmp_serde::to_vec(&DeepProveRequest::V1(
                         zkml::middleware::v1::DeepProveRequest {
                             model,
-                            model_metadata,
                             input,
                             model_file_hash,
                             scaling_strategy,

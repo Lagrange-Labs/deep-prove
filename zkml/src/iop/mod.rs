@@ -113,7 +113,8 @@ mod test {
         model.describe();
         let trace = model.run(&input).unwrap();
         let io = trace.to_verifier_io();
-        let ctx = Context::<F, Pcs<F>>::generate(&model, None).expect("unable to generate context");
+        let ctx =
+            Context::<F, Pcs<F>>::generate(&model, None, None).expect("unable to generate context");
         let mut prover_transcript = default_transcript();
         let prover = Prover::<_, _, _>::new(&ctx, &mut prover_transcript);
         let proof = prover.prove(trace).expect("unable to generate proof");
@@ -128,7 +129,8 @@ mod test {
         model.describe();
         let trace = model.run(&input).unwrap();
         let io = trace.to_verifier_io();
-        let ctx = Context::<F, Pcs<F>>::generate(&model, None).expect("unable to generate context");
+        let ctx =
+            Context::<F, Pcs<F>>::generate(&model, None, None).expect("unable to generate context");
         let mut prover_transcript = default_transcript();
         let prover = Prover::<_, _, _>::new(&ctx, &mut prover_transcript);
         let proof = prover.prove(trace).expect("unable to generate proof");
