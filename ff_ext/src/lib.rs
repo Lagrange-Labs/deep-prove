@@ -119,16 +119,23 @@ pub trait ExtensionField:
 }
 
 mod impl_goldilocks {
+    use std::sync::LazyLock;
+
     use crate::{
         ExtensionField, FieldFrom, FieldInto, FromUniformBytes, GoldilocksExt2, SmallField,
-        poseidon::{PoseidonField, new_array},
+        poseidon::PoseidonField,
     };
     use p3_field::{FieldAlgebra, FieldExtensionAlgebra, PrimeField64};
     use p3_goldilocks::{
         Goldilocks, HL_GOLDILOCKS_8_EXTERNAL_ROUND_CONSTANTS,
-        HL_GOLDILOCKS_8_INTERNAL_ROUND_CONSTANTS, Poseidon2GoldilocksHL,
+        HL_GOLDILOCKS_8_INTERNAL_ROUND_CONSTANTS, MATRIX_DIAG_8_GOLDILOCKS,
     };
-    use p3_poseidon2::ExternalLayerConstants;
+    use p3_poseidon2::{
+        ExternalLayer, InternalLayer, MDSMat4, add_rc_and_sbox_generic,
+        external_initial_permute_state, external_terminal_permute_state, internal_permute_state,
+        matmul_internal,
+    };
+    use p3_symmetric::{CryptographicPermutation, Permutation};
 
     impl FieldFrom<u64> for Goldilocks {
         fn from_v(v: u64) -> Self {
@@ -157,16 +164,82 @@ mod impl_goldilocks {
         }
     }
 
-    impl PoseidonField for Goldilocks {
-        type T = Poseidon2GoldilocksHL<8>;
-        fn get_perm() -> Self::T {
-            Poseidon2GoldilocksHL::new(
-                ExternalLayerConstants::<Goldilocks, 8>::new_from_saved_array(
-                    HL_GOLDILOCKS_8_EXTERNAL_ROUND_CONSTANTS,
-                    new_array,
-                ),
-                new_array(HL_GOLDILOCKS_8_INTERNAL_ROUND_CONSTANTS).to_vec(),
+    /// Implements the poseidon permutation without the need for allocations.
+    #[derive(Copy, Clone)]
+    pub struct NoAllocPoseidon {}
+
+    #[derive(Copy, Clone)]
+    struct NoAllocExternalLayer();
+
+    #[derive(Copy, Clone)]
+    struct NoAllocInternalLayer();
+
+    const WIDTH: usize = 8;
+    const GOLDILOCKS_S_BOX_DEGREE: u64 = 7;
+    static INITIAL_EXTERNAL_CONSTANTS: LazyLock<[[Goldilocks; WIDTH]; 4]> = LazyLock::new(|| {
+        HL_GOLDILOCKS_8_EXTERNAL_ROUND_CONSTANTS[0]
+            .map(|inner| inner.map(Goldilocks::from_canonical_u64))
+    });
+    static TERMINAL_EXTERNAL_CONSTANTS: LazyLock<[[Goldilocks; WIDTH]; 4]> = LazyLock::new(|| {
+        HL_GOLDILOCKS_8_EXTERNAL_ROUND_CONSTANTS[1]
+            .map(|inner| inner.map(Goldilocks::from_canonical_u64))
+    });
+    static INTERNAL_CONSTANTS: LazyLock<[Goldilocks; 22]> = LazyLock::new(|| {
+        HL_GOLDILOCKS_8_INTERNAL_ROUND_CONSTANTS.map(Goldilocks::from_canonical_u64)
+    });
+
+    impl<FA: FieldAlgebra<F = Goldilocks>> ExternalLayer<FA, WIDTH, GOLDILOCKS_S_BOX_DEGREE>
+        for NoAllocExternalLayer
+    {
+        fn permute_state_initial(&self, state: &mut [FA; WIDTH]) {
+            external_initial_permute_state(
+                state,
+                &*INITIAL_EXTERNAL_CONSTANTS,
+                add_rc_and_sbox_generic::<_, GOLDILOCKS_S_BOX_DEGREE>,
+                &MDSMat4,
+            );
+        }
+
+        fn permute_state_terminal(&self, state: &mut [FA; WIDTH]) {
+            external_terminal_permute_state(
+                state,
+                &*TERMINAL_EXTERNAL_CONSTANTS,
+                add_rc_and_sbox_generic::<_, GOLDILOCKS_S_BOX_DEGREE>,
+                &MDSMat4,
+            );
+        }
+    }
+
+    impl<FA: FieldAlgebra<F = Goldilocks>> InternalLayer<FA, WIDTH, GOLDILOCKS_S_BOX_DEGREE>
+        for NoAllocInternalLayer
+    {
+        /// Perform the internal layers of the Poseidon2 permutation on the given state.
+        fn permute_state(&self, state: &mut [FA; 8]) {
+            internal_permute_state::<FA, 8, GOLDILOCKS_S_BOX_DEGREE>(
+                state,
+                |x| matmul_internal(x, MATRIX_DIAG_8_GOLDILOCKS),
+                &*INTERNAL_CONSTANTS,
             )
+        }
+    }
+
+    static EXTERNAL_LAYER: NoAllocExternalLayer = NoAllocExternalLayer();
+    static INTERNAL_LAYER: NoAllocInternalLayer = NoAllocInternalLayer();
+
+    impl Permutation<[Goldilocks; WIDTH]> for NoAllocPoseidon {
+        fn permute_mut(&self, state: &mut [Goldilocks; WIDTH]) {
+            EXTERNAL_LAYER.permute_state_initial(state);
+            INTERNAL_LAYER.permute_state(state);
+            EXTERNAL_LAYER.permute_state_terminal(state);
+        }
+    }
+    impl CryptographicPermutation<[Goldilocks; WIDTH]> for NoAllocPoseidon {}
+
+    impl PoseidonField for Goldilocks {
+        type T = NoAllocPoseidon;
+
+        fn get_perm() -> Self::T {
+            NoAllocPoseidon {}
         }
     }
 
