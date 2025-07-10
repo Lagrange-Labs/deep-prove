@@ -1224,8 +1224,14 @@ pub(crate) mod test {
         let trace = model.run::<E>(&[input_tensor]).unwrap();
         assert_eq!(trace.steps.len(), 3);
     }
-
     pub(crate) fn prove_model(model: Model<f32>) -> anyhow::Result<()> {
+        prove_model_with(model, None)
+    }
+
+    pub(crate) fn prove_model_with(
+        model: Model<f32>,
+        qinput: Option<Vec<Tensor<Element>>>,
+    ) -> anyhow::Result<()> {
         let float_inputs = model
             .input_shapes()
             .into_iter()
@@ -1237,11 +1243,13 @@ pub(crate) mod test {
         model.describe();
 
         // quantize input tensor
-        let input_tensors = float_inputs
-            .into_iter()
-            .zip(&md.input)
-            .map(|(tensor, s)| tensor.quantize(s))
-            .collect_vec();
+        let input_tensors = qinput.unwrap_or_else(|| {
+            float_inputs
+                .into_iter()
+                .zip(&md.input)
+                .map(|(tensor, s)| tensor.quantize(s))
+                .collect_vec()
+        });
 
         let input_tensors = model.prepare_inputs(input_tensors).unwrap();
 

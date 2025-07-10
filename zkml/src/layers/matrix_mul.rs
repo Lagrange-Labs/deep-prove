@@ -628,13 +628,15 @@ where
         step_data: &StepData<E, E>,
         prover: &mut Prover<E, T, PCS>,
     ) -> Result<Vec<Claim<E>>> {
-        Ok(self.prove_step(
+        let (claims, proof) = self.prove_step(
             node_id,
             prover,
             last_claims[0],
             step_data.inputs.iter().collect(),
             step_data.outputs.outputs()[0],
-        )?)
+        )?;
+        prover.push_proof(node_id, LayerProof::MatMul(proof));
+        Ok(claims)
     }
 }
 
@@ -692,7 +694,7 @@ impl MatMul<Element> {
         last_claim: &Claim<E>,
         mut inputs: Vec<&Tensor<E>>,
         output: &Tensor<E>,
-    ) -> Result<Vec<Claim<E>>>
+    ) -> Result<(Vec<Claim<E>>, MatMulProof<E>)>
     where
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
@@ -845,11 +847,14 @@ impl MatMul<Element> {
             individual_claims: state.get_mle_final_evaluations(),
         };
 
-        prover.push_proof(node_id, LayerProof::MatMul(proof));
-        Ok(output_claims)
+        Ok((output_claims, proof))
     }
 
-    pub(crate) fn ctx<E: ExtensionField>(&self, id: NodeId, ctx_aux: &mut ContextAux) -> Result<MatMulCtx<E>>
+    pub(crate) fn ctx<E: ExtensionField>(
+        &self,
+        id: NodeId,
+        ctx_aux: &mut ContextAux,
+    ) -> Result<MatMulCtx<E>>
     where
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,

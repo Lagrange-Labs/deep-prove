@@ -5,7 +5,7 @@ use crate::{
     commit::context::{CommitmentVerifier, PolyId},
     iop::{ChallengeStorage, context::ShapeStep},
     layers::{
-        LayerProof,
+        LayerCtx, LayerProof,
         provable::{NodeCtx, NodeId, OpInfo, VerifiableCtx},
     },
     lookup::{context::TableType, logup_gkr::verifier::verify_logup_proof},
@@ -36,6 +36,9 @@ pub struct IO<E> {
 impl<E> IO<E> {
     pub fn new(input: Vec<Tensor<E>>, output: Vec<Tensor<E>>) -> Self {
         Self { input, output }
+    }
+    pub fn inputs(&self) -> &[Tensor<E>] {
+        &self.input
     }
 }
 
@@ -230,22 +233,27 @@ where
             })?;
 
         // 6. input verification: evaluating the input at the random evaluation point from the sumcheck
-        io.input
-            .iter()
-            .zip(input_claims)
-            .enumerate()
-            .map(|(i, (input, claim))| {
-                let input_mle = input.get_data().to_vec().into_mle();
-                let computed_randomized_input = input_mle.evaluate(&claim.point);
-                let given_randomized_input = claim.eval;
-                ensure!(
-                    computed_randomized_input == given_randomized_input,
-                    "input {} not valid from proof",
-                    i
-                );
-                Ok(())
-            })
-            .fold_ok((), |_, _| ())?;
+        let mut inputs_iter = io.input.into_iter();
+        for (node_id, claims) in input_claims.into_iter() {
+            // we assume the inputs are given in the same order as the claims, "flattened"
+            let inputs = (0..claims.len())
+                .map(|_| {
+                    inputs_iter
+                        .next()
+                        .ok_or(anyhow!("Not enough inputs for node {node_id}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let node_ctx = ctx
+                .steps_info
+                .nodes
+                .get(&node_id)
+                .ok_or(anyhow!("Node {node_id} not found"))?;
+            <LayerCtx<E> as VerifiableCtx<E, PCS>>::verify_input_claim(
+                &node_ctx.ctx,
+                &inputs,
+                &claims,
+            )?;
+        }
 
         // 7. verify the opening of the accumulation of claims
         self.commit_verifier
