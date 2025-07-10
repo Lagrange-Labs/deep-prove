@@ -104,9 +104,7 @@ const RESHAPE: [&str; 2] = ["Flatten", "Reshape"];
 
 fn is_mlp(model: &ModelProto) -> Result<bool> {
     let mut prev_was_gemm_or_matmul = false;
-    let Some(graph) = model.graph.as_ref() else {
-        bail!("Model has no a graph")
-    };
+    let graph = model.graph.as_ref().context("Model has no a graph")?;
 
     for node in graph.node.iter() {
         if LINEAR_ALG.contains(&node.op_type.as_str()) {
@@ -134,9 +132,7 @@ fn is_cnn(model: &ModelProto) -> Result<bool> {
     let mut is_cnn = true;
     let mut found_lin = false;
 
-    let Some(graph) = model.graph.as_ref() else {
-        bail!("Model has no a graph")
-    };
+    let graph = model.graph.as_ref().context("Model has no a graph")?;
     let mut previous_op = "";
 
     for node in graph.node.iter() {
