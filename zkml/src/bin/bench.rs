@@ -300,7 +300,7 @@ fn run(args: Args) -> anyhow::Result<()> {
     info!("[+] Computed PyTorch accuracy");
 
     let span = metrics.to_span();
-    stream_metrics("Accuracy", &span);
+    stream_metrics("Accuracy metrics", &span);
     info!("== Accuracy metrics: {} ==", span);
 
     info!("== Creating context ==");

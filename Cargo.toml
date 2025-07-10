@@ -102,6 +102,7 @@ lto = "fat"
 inherits = "release"
 debug = true
 lto = "thin"
+debug-assertions = true
 
 #[patch."https://github.com/nikkolasg/timed-rs"]
 #timed = { path = "/Users/nalos/prog/timed/timed" }

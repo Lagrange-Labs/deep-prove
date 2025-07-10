@@ -602,9 +602,8 @@ impl<W: Write> StreamingRecorder<Writer<W>> {
         record.push(name.as_ref().into());
         record.push(format!("{:?}", metrics.elapsed).into());
 
-        let offset = record.len() - 1;
-        let user_columns = self.column_names.len() - Self::FIXED_COLUMNS;
-        record.resize_with(offset + user_columns, || "".into());
+        let new_length = self.column_names.len() - Self::FIXED_COLUMNS + 2;
+        record.resize_with(new_length, || "".into());
 
         for (name, value) in data.into_iter() {
             let pos = self
@@ -612,7 +611,11 @@ impl<W: Write> StreamingRecorder<Writer<W>> {
                 .iter()
                 .position(|column_name| name.as_ref() == column_name)
                 .ok_or_else(|| RecorderError::UnkownName(name.as_ref().to_string()))?;
-            record.insert(pos + offset, value.to_string().into());
+
+            let storage = record
+                .get_mut(pos)
+                .expect("Position returned form a valid iterator above");
+            *storage = value.to_string().into();
         }
 
         record.push(format_field(metrics.physical_mem));
