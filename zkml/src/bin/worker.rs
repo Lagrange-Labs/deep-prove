@@ -42,10 +42,9 @@ fn run_model_v1(model: DeepProveRequestV1) -> Result<Vec<ProofV1>> {
         model_metadata,
         input,
         model_file_hash,
+        scaling_strategy,
+        scaling_input_hash,
     } = model;
-
-    // TODO use for store
-    let _ = model_file_hash;
 
     let inputs = input.to_elements(&model_metadata);
 

@@ -5,7 +5,7 @@ use ff_ext::GoldilocksExt2;
 use mpcs::{Basefold, BasefoldRSParams, Hasher};
 use serde::{Deserialize, Serialize};
 
-use crate::quantization::QUANTIZATION_RANGE;
+use crate::quantization::{QUANTIZATION_RANGE, ScalingStrategyKind};
 
 use super::{Element, Model, ModelMetadata, ProofG};
 
@@ -83,6 +83,12 @@ pub struct DeepProveRequest {
 
     /// A hash of the model file
     pub model_file_hash: String,
+
+    /// Model scaling strategy
+    pub scaling_strategy: ScalingStrategyKind,
+
+    /// A hash of model scaling strategy input, if any
+    pub scaling_input_hash: Option<String>,
 }
 
 /// The `v1` proofs that have been computed by the worker
