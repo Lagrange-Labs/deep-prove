@@ -5556,7 +5556,7 @@ checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
 [[package]]
 name = "mem-track"
 version = "0.1.0"
-source = "git+https://github.com/hackaugusto/mem-track?branch=main#925e37a6f64278e9f6c622c00050c23bf0b4f75b"
+source = "git+https://github.com/hackaugusto/mem-track?branch=main#5cb94b75b2401e331ba23afe5f983a13693bdcff"
 dependencies = [
  "addr2line 0.25.0",
  "arrayvec",
@@ -9796,9 +9796,13 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 name = "utils"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bytesize 2.0.1",
+ "csv",
+ "flate2",
  "mem-track",
  "memory-stats",
+ "thiserror 2.0.12",
  "thousands",
  "tracing",
 ]
