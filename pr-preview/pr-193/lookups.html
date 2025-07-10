@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Layers - DeepProve: Lagrange&#x27;s zkML</title>
+        <title>Lookup Arguments - DeepProve: Lagrange&#x27;s zkML</title>
 
 
         <!-- Custom HTML head -->
@@ -169,18 +169,24 @@
                 <div id="content" class="content">
                     <main>
                         <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
-<h1 id="layers"><a class="header" href="#layers">Layers</a></h1>
-<p>We currently support a number of different layers in our models. We describe them, and the procedure for proving each of them in the sections that follow:</p>
+<h1 id="lookup-arguments"><a class="header" href="#lookup-arguments">Lookup Arguments</a></h1>
+<p>There are many types of operation that occur in a Model that don't lend themselves to being proven algebraically. In order to prove correct execution of these operations efficiently we make use of a Lookup Argument. The Lookup argument we use is based on the <a href="https://eprint.iacr.org/2023/1284.pdf">GKR variant</a> of <a href="https://eprint.iacr.org/2022/1530.pdf">LogUp</a>, but we make some slight adaptations.</p>
+<p>The following sections go in to more detail about the protocol as a whole and the tables we use:</p>
 <ul>
-<li><a href="./relu.html">Relu</a>, we prove correct execution of this function using a <a href="./lookups.html">lookup argument</a></li>
+<li>The <a href="./end_to_end_lu.html">End-to-End Lookup Protocol</a> describes modifications we make to reduce the total amount of proving work.</li>
+<li><a href="./relu.html">Relu</a> describes the table used for the Relu activation function.</li>
+<li><a href="./range_check.html">Range Checks</a> describes the procedure for performing range checks, which we make use of when requantising and pooling</li>
 </ul>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="maxpool.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
 
-                            <a rel="next prefetch" href="maxpool.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="end_to_end_lu.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -190,8 +196,11 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="maxpool.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
 
-                    <a rel="next prefetch" href="maxpool.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="end_to_end_lu.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
