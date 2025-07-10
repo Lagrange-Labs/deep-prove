@@ -560,7 +560,7 @@ impl<W: Write> StreamingRecorder<Writer<W>> {
         let mut record: Vec<Cow<'_, str>> = Vec::with_capacity(self.column_names.len());
 
         record.push(name.as_ref().into());
-        record.push(format!("{:?}", metrics.elapsed).into());
+        record.push(metrics.elapsed.as_millis().to_string().into());
 
         let user_columns = self.column_names.len() - Self::FIXED_COLUMNS;
         for _i in 0..user_columns {
@@ -600,7 +600,7 @@ impl<W: Write> StreamingRecorder<Writer<W>> {
         // NOTE: Keep in sync with order in the constructor
         let mut record: Vec<Cow<'_, str>> = Vec::with_capacity(self.column_names.len());
         record.push(name.as_ref().into());
-        record.push(format!("{:?}", metrics.elapsed).into());
+        record.push(metrics.elapsed.as_millis().to_string().into());
 
         let new_length = self.column_names.len() - Self::FIXED_COLUMNS + 2;
         record.resize_with(new_length, || "".into());
