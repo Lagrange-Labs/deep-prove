@@ -451,7 +451,7 @@ where
         );
         step_data.outputs.outputs().into_iter().try_for_each(|out| {
                 ensure!(out.get_shape() == expected_output_shape,
-                    "Expected shape {expected_output_shape:?} for output of QKV layer, foudn shape {:?}", out.get_shape(),
+                    "Expected shape {expected_output_shape:?} for output of QKV layer, found shape {:?}", out.get_shape(),
                 );
                 Ok(())
             }

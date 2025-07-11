@@ -193,7 +193,7 @@ impl<N: Number> Evaluate<N> for MhaQK {
         // The next operation in transformer is softmax row by row, and then qk @ v, "row by row" - but
         // it's actually "head by head" which is the highest dimension.
         // So for the shapes, it's [q_len,seq_len] @ [seq_len, head_dim] = [q_len, head_dim]
-        // This is done in separate layer in the framework since we first need to prove softmax which happens separatedly
+        // This is done in separate layer in the framework since we first need to prove softmax which happens separately
         Ok(LayerOut::from_vec(vec![qk_infinitized, v]))
     }
 }
@@ -210,7 +210,7 @@ impl QuantizeOp for MhaQK {
     ) -> anyhow::Result<QuantizeOutput<Self::QuantizedOp>> {
         let num_outputs = self.num_outputs(input_scaling.len());
         // it will return a scaling factors for all heads merged together, but that's what we want since we don't want
-        // to have one requant layer _per head_ it would be too costly. So we take the min/max accross all the heads concatenated.
+        // to have one requant layer _per head_ it would be too costly. So we take the min/max across all the heads concatenated.
         let output_scalings = S::scaling_factors_for_node(data, node_id, num_outputs);
         ensure!(
             output_scalings.len() == 2,
