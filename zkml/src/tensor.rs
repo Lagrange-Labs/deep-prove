@@ -966,86 +966,51 @@ where
         self.shape[0] = new_len;
         self
     }
-    pub(crate) fn pad_next_power_of_two_2d(mut self) -> Self {
-        assert!(self.is_matrix(), "Tensor is not a matrix");
-        // assume the matrix is already well formed and there is always n_rows and n_cols
-        // this is because we control the creation of the matrix in the first place
 
-        let rows = self.nrows_2d();
-        let cols = self.ncols_2d();
-
-        let new_rows = if rows.is_power_of_two() {
-            rows
-        } else {
-            rows.next_power_of_two()
-        };
-
-        let new_cols = if cols.is_power_of_two() {
-            cols
-        } else {
-            cols.next_power_of_two()
-        };
-
-        let mut padded = Tensor::zeros(vec![new_rows, new_cols].into());
-
-        // Parallelize row-wise copying
-        padded
-            .data
-            .par_chunks_mut(new_cols)
-            .enumerate()
-            .for_each(|(i, row)| {
-                if i < rows {
-                    row[..cols].copy_from_slice(&self.data[i * cols..(i + 1) * cols]);
-                }
-            });
-
-        self = padded;
-
-        self
-    }
     /// Recursively pads the tensor so its ready to be viewed as an MLE
     pub fn pad_next_power_of_two(&self) -> Self {
+        self.generic_pad_next_power_of_two(T::default())
+    }
+
+    /// Recursively pads the tensor so its ready to be viewed as an MLE, the `padding_value` is the element that is used to pad
+    pub fn generic_pad_next_power_of_two(&self, padding_value: T) -> Self {
         let shape = self.get_shape();
 
         if shape.iter().all(|dim| dim.is_power_of_two()) {
             return self.clone();
         }
 
-        let padded_data = Self::recursive_pad(self.get_data(), &shape);
+        let padded_data = Self::recursive_pad(self.get_data(), &shape, padding_value);
 
         let padded_shape = shape
             .iter()
             .map(|dim| dim.next_power_of_two())
-            .collect::<Shape>();
+            .collect::<Vec<usize>>();
 
-        Tensor::<T>::new(padded_shape, padded_data)
+        Tensor::<T>::new(padded_shape.into(), padded_data)
     }
-    fn recursive_pad(data: &[T], remaining_dims: &[usize]) -> Vec<T> {
+    fn recursive_pad(data: &[T], remaining_dims: &[usize], padding_value: T) -> Vec<T> {
         match remaining_dims.len() {
             // If the remaining dims show we are a vector simply pad
             1 => data
                 .iter()
                 .cloned()
-                .chain(std::iter::repeat(T::default()))
+                .chain(std::iter::repeat(padding_value))
                 .take(remaining_dims[0].next_power_of_two())
                 .collect::<Vec<T>>(),
-            // If the remaining dims show that we are a matrix call the matrix method
-            2 => {
-                let tmp_tensor = Tensor::<T>::new(remaining_dims.to_vec().into(), data.to_vec())
-                    .pad_next_power_of_two_2d();
-                tmp_tensor.data.clone()
-            }
             // Otherwise we recurse
             _ => {
                 let chunk_size = remaining_dims[1..].iter().product::<usize>();
                 let mut unpadded_data = data
                     .par_chunks(chunk_size)
-                    .map(|data_chunk| Self::recursive_pad(data_chunk, &remaining_dims[1..]))
+                    .map(|data_chunk| {
+                        Self::recursive_pad(data_chunk, &remaining_dims[1..], padding_value)
+                    })
                     .collect::<Vec<Vec<T>>>();
                 let elem_size = unpadded_data[0].len();
                 unpadded_data.resize(
                     remaining_dims[0].next_power_of_two(),
-                    vec![T::default(); elem_size],
+                    vec![padding_value; elem_size],
                 );
                 unpadded_data.concat()
             }
@@ -1520,6 +1485,45 @@ where
             shape: self.shape.clone(),
             og_shape: self.og_shape.clone(),
         })
+    }
+    /// Makes a [`Tensor`] that is a batch of lower triangular matrices.
+    /// - `matrix_dim` the number specifying the dimensions of each individual matrix (lower triangular amtrix must be square)
+    /// - `num_matrices` specifies how many matrices to make
+    /// - `diag` specifies the "offset" for the diagonal, an offset of `1` means we keep two `1`s on the first row instead of 1, and offset of `-1` means all `zeroes`
+    pub fn tril(matrix_dim: usize, num_matrices: usize, diag: i32) -> Tensor<T> {
+        Self::tri(matrix_dim, num_matrices, diag, T::unit(), T::default())
+    }
+
+    /// Makes a [`Tensor`] that is a batch of lower triangular matrices.
+    /// - `matrix_dim` the number specifying the dimensions of each individual matrix (lower triangular amtrix must be square)
+    /// - `num_matrices` specifies how many matrices to make
+    /// - `diag` specifies the "offset" for the diagonal, an offset of `1` means we keep two `lower_val`s on the first row instead of 1, and offset of `-1` means all `upper_val`
+    /// - `lower_val` specifies the value to fill the lower triangular part with
+    /// - `upper_val` specifies the value to fill the upper triangular part with
+    pub fn tri(
+        matrix_dim: usize,
+        num_matrices: usize,
+        diag: i32,
+        lower_val: T,
+        upper_val: T,
+    ) -> Tensor<T> {
+        // We make one matrix and then just clone it
+        let data = (0i32..matrix_dim as i32)
+            .flat_map(|i| {
+                if (i + diag).is_negative() {
+                    vec![upper_val; matrix_dim]
+                } else {
+                    std::iter::repeat_n(lower_val, (i + diag + 1) as usize)
+                        .chain(std::iter::repeat(upper_val))
+                        .take(matrix_dim)
+                        .collect::<Vec<T>>()
+                }
+            })
+            .cycle()
+            .take(num_matrices * matrix_dim * matrix_dim)
+            .collect::<Vec<T>>();
+
+        Tensor::<T>::new(vec![num_matrices, matrix_dim, matrix_dim].into(), data)
     }
 }
 
@@ -2049,10 +2053,10 @@ impl FromIterator<usize> for Shape {
 #[cfg(test)]
 mod test {
     use ark_std::rand::Rng;
-    use ff_ext::GoldilocksExt2;
+    use ff_ext::{FieldFrom, GoldilocksExt2};
     use ndarray::{Array, Ix2, Order};
 
-    use crate::rng_from_env_or_random;
+    use crate::{rng_from_env_or_random, testing::random_field_vector};
 
     use super::*;
     use multilinear_extensions::mle::MultilinearExtension;
@@ -2384,9 +2388,15 @@ mod test {
         let tensor_a = Tensor::<Element>::new(shape_a.clone(), vec![1; shape_a.product()]);
 
         let shape_b = vec![4, 1, 1];
-        let tensor_b = Tensor::<Element>::new(shape_b.into(), vec![1, 1, 1, 0]);
+        let tensor_b = Tensor::<Element>::new(shape_b.clone().into(), vec![1, 1, 1, 0]);
 
         let tensor_c = tensor_a.pad_next_power_of_two();
+        assert_eq!(tensor_b, tensor_c);
+
+        // Here we test the generic padding
+        let tensor_b = Tensor::<Element>::new(shape_b.into(), vec![1, 1, 1, 17]);
+
+        let tensor_c = tensor_a.generic_pad_next_power_of_two(17i128);
         assert_eq!(tensor_b, tensor_c);
     }
 
@@ -2783,5 +2793,116 @@ mod test {
             stacked.get_data(),
             vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
         );
+    }
+
+    fn eval_lteq_poly(x_i: &[Element], y_i: &[Element]) -> Element {
+        assert_eq!(x_i.len(), y_i.len());
+        x_i.into_iter()
+            .rev()
+            .zip(y_i.into_iter().rev())
+            .fold(Element::from(1), |acc, (x, y)| {
+                acc * (1 - x - y + 2 * x * y) + (1 - x) * y
+            })
+    }
+
+    fn eval_mle<F: ExtensionField + FieldFrom<u64>>(point: &[F]) -> F {
+        let x_i = &point[..point.len() / 2];
+        let y_i = &point[point.len() / 2..];
+        x_i.into_iter()
+            .zip(y_i.into_iter())
+            .fold(F::from_v(1), |acc, (&x, &y)| {
+                acc * (F::from_v(1) - x - y + F::from_v(2) * x * y) + (F::from_v(1) - x) * y
+            })
+    }
+
+    fn to_be_bits<const NUM_BITS: usize>(x: Element) -> [Element; NUM_BITS] {
+        (0..NUM_BITS)
+            .rev()
+            .map(|i| {
+                let mask = 1 << i;
+                let bit = (x & Element::from(mask)) >> i;
+                bit
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_zeroifier_evaluation() {
+        // create zeroifier matrix
+        const NUM_BITS: usize = 4;
+        let num_columns = 1 << NUM_BITS;
+        let zeroifier_data = (0..num_columns * num_columns)
+            .map(|i| {
+                let r = i / num_columns;
+                let c = i % num_columns;
+                if r >= c {
+                    Element::from(1)
+                } else {
+                    Element::from(0)
+                }
+            })
+            .collect_vec();
+        println!("Data: {zeroifier_data:?}");
+        let zeroifier = Tensor::new(vec![num_columns, num_columns].into(), zeroifier_data);
+        assert_eq!(zeroifier.get_2d(0, 0), Element::from(1));
+        assert_eq!(
+            zeroifier.get_2d(num_columns - 1, num_columns - 1),
+            Element::from(1)
+        );
+        assert_eq!(zeroifier.get_2d(0, 1), Element::from(0));
+        assert_eq!(zeroifier.get_2d(1, 1), Element::from(1));
+        assert_eq!(zeroifier.get_2d(1, 2), Element::from(0));
+
+        let mle = zeroifier.to_2d_mle::<GoldilocksExt2>();
+
+        for i in 0..num_columns {
+            for j in 0..num_columns {
+                let x_i = to_be_bits::<NUM_BITS>(Element::from(i as u64));
+                let y_i = to_be_bits::<NUM_BITS>(Element::from(j as u64));
+                let cmp = eval_lteq_poly(&y_i, &x_i);
+                assert_eq!(
+                    zeroifier.get_2d(i, j),
+                    cmp,
+                    "Zeroifier evaluation failed for ({}, {})",
+                    i,
+                    j
+                );
+                // build point for MLE: first column bits in little-endiian order, then rows bits in little-endian order
+                let point = y_i
+                    .into_iter()
+                    .rev()
+                    .chain(x_i.into_iter().rev())
+                    .map(|bit| GoldilocksExt2::from_v(bit as u64))
+                    .collect_vec();
+                let eval = mle.evaluate(&point);
+                assert_eq!(eval, GoldilocksExt2::from_v(cmp as u64));
+                let quick_eval = eval_mle(&point);
+                assert_eq!(eval, quick_eval);
+            }
+        }
+
+        // test over random points
+        for _ in 0..10 {
+            let point = random_field_vector::<GoldilocksExt2>(NUM_BITS * 2);
+            assert_eq!(mle.evaluate(&point), eval_mle(&point),);
+        }
+    }
+
+    #[test]
+    fn test_tril() {
+        // Test diag = 0
+        let tensor = Tensor::<Element>::tril(4, 1, 0);
+        let real_value: Vec<Element> = vec![1, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1];
+        assert_eq!(tensor.get_data(), real_value);
+        // Test diag = 1
+        let tensor = Tensor::<Element>::tril(4, 1, 1);
+        let real_value: Vec<Element> = vec![1, 1, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1];
+        assert_eq!(tensor.get_data(), real_value);
+        // Test diag = -1
+        let tensor = Tensor::<Element>::tril(4, 1, -1);
+        let real_value: Vec<Element> = vec![0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0];
+        assert_eq!(tensor.get_data(), real_value);
     }
 }

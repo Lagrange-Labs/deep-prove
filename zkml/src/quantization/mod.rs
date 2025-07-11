@@ -84,6 +84,22 @@ impl ScalingFactor {
         }
     }
 
+    /// Create a [`ScalingFactor`] from its constituent parts. Useful for operations like Softmax where its
+    /// important to preserve its structure as a probability distribution.
+    pub(crate) fn from_parts(
+        max: f32,
+        min: f32,
+        scale: f32,
+        quantized_domain: (Element, Element),
+    ) -> ScalingFactor {
+        Self {
+            max,
+            min,
+            scale,
+            quantized_domain,
+        }
+    }
+
     pub fn min(&self) -> f32 {
         self.min
     }
@@ -94,6 +110,10 @@ impl ScalingFactor {
 
     pub fn scale(&self) -> f32 {
         self.scale
+    }
+
+    pub fn domain(&self) -> (Element, Element) {
+        self.quantized_domain
     }
     /// M = S1 * S2 / S3
     pub fn m(&self, s2: &Self, s3: &Self) -> f32 {

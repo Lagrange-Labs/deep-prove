@@ -12,14 +12,14 @@ use crate::{
         provable::{NodeId, OpInfo, ProvableOp},
     },
     lookup::{
-        context::{LookupWitness, TABLE_POLY_ID_OFFSET, generate_lookup_witnesses},
+        context::{LookupWitness, generate_lookup_witnesses},
         logup_gkr::prover::batch_prove as logup_batch_prove,
         witness::LogUpWitness,
     },
     model::{InferenceStep, InferenceTrace, ToIterator},
     tensor::get_root_of_unity,
 };
-use anyhow::anyhow;
+use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
 
 use itertools::Itertools;
@@ -107,8 +107,6 @@ where
 
     #[timed::timed_instrument(level = "debug")]
     fn prove_tables(&mut self) -> anyhow::Result<()> {
-        let mut poly_id = TABLE_POLY_ID_OFFSET;
-
         self.table_witness.iter().try_for_each(|table_witness| {
             let logup_input = table_witness.get_logup_input(&self.challenge_storage)?;
             let comm_with_wit = table_witness
@@ -127,12 +125,29 @@ where
                 table_proof.output_claims().first().unwrap().clone(),
             )?;
 
+            // Add any table poly claims to the commitment prover
+            let table_type = table_witness.table_type();
+            let table_poly_claims = table_type.table_claims(table_proof.output_claims());
+
+            if !table_poly_claims.is_empty() {
+                // If the table poly claims aren't empty there should only be 1
+                ensure!(
+                    table_poly_claims.len() == 1,
+                    "If table poly claims isn't empty we should only have 1, got: {}",
+                    table_poly_claims.len()
+                );
+                self.commit_prover.add_table_claim(
+                    &self.ctx.commitment_ctx,
+                    table_type,
+                    table_poly_claims[0].clone(),
+                )?;
+            }
+
             self.table_proofs.push(TableProof {
                 multiplicity_commit,
                 lookup: table_proof,
             });
 
-            poly_id += 1;
             Ok(())
         })
     }
