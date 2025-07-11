@@ -14,6 +14,7 @@ use anyhow::{Context, Result, bail, ensure};
 use std::{collections::HashMap, iter::Peekable};
 use tracing::debug;
 use tract_onnx::{
+    pb::ModelProto,
     prelude::*,
     tract_core::{
         self,
@@ -51,12 +52,20 @@ macro_rules! ensure_onnx {
         };
     }
 
-pub fn from_path(path: &str) -> Result<Model<f32>> {
+pub fn from_proto(proto: &ModelProto) -> Result<Model<f32>> {
+    let model = tract_onnx::onnx().model_for_proto_model(proto)?;
+    from_inference_model(model)
+}
+
+#[cfg(test)]
+fn from_path(path: &str) -> Result<Model<f32>> {
+    let model = tract_onnx::onnx().model_for_path(path)?;
+    from_inference_model(model)
+}
+
+fn from_inference_model(model: InferenceModel) -> Result<Model<f32>> {
     let model = {
-        let pmodel = tract_onnx::onnx()
-            .model_for_path(path)?
-            .into_typed()?
-            .into_decluttered()?;
+        let pmodel = model.into_typed()?.into_decluttered()?;
         // so far we dont support batching
         let mut values = SymbolValues::default();
         let symbol = pmodel.sym("batch_size");

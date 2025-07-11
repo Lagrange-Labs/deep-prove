@@ -1,12 +1,11 @@
-use std::{
-    path::{Path, PathBuf},
-    str::FromStr,
-};
+use std::{path::PathBuf, str::FromStr};
 
 use alloy::signers::local::LocalSigner;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use lagrange::ProofChannelResponse;
+use memmap2::Mmap;
+use tokio::fs::File;
 use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
 use tracing::info;
 use url::Url;
@@ -60,17 +59,11 @@ enum Command {
     Fetch {},
 }
 
-fn parse_model<P: AsRef<Path>>(p: P) -> anyhow::Result<(Model<Element>, ModelMetadata)> {
+fn parse_model(bytes: Mmap) -> anyhow::Result<(Model<Element>, ModelMetadata)> {
     let strategy = AbsoluteMax::new();
-    FloatOnnxLoader::new_with_scaling_strategy(
-        p.as_ref()
-            .as_os_str()
-            .to_str()
-            .context("failed to convert path to string")?,
-        strategy,
-    )
-    .with_keep_float(true)
-    .build()
+    FloatOnnxLoader::from_bytes_with_scaling_strategy(bytes, strategy)
+        .with_keep_float(true)
+        .build()
 }
 
 #[tokio::main]
@@ -107,8 +100,10 @@ async fn main() -> anyhow::Result<()> {
 
     match args.command {
         Command::Submit { onnx, inputs } => {
-            let input = Input::from_file(&inputs).context("loading input:")?;
-            let (model, model_metadata) = parse_model(&onnx).context("parsing ONNX file")?;
+            let input = Input::from_file(&inputs).context("loading input")?;
+            let model_file = File::open(&onnx).await.context("opening model file")?;
+            let model_bytes = unsafe { Mmap::map(&model_file) }.context("loading model file")?;
+            let (model, model_metadata) = parse_model(model_bytes).context("parsing ONNX file")?;
             let task = tonic::Request::new(lagrange::SubmitTaskRequest {
                 task_bytes: zstd::encode_all(
                     rmp_serde::to_vec(&DeepProveRequest::V1(
