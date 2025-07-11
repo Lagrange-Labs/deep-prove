@@ -30,9 +30,7 @@ use requant::RequantCtx;
 use transcript::Transcript;
 
 use crate::{
-    Context, Element, ScalingStrategy,
-    iop::context::{ContextAux, ShapeStep, TableCtx},
-    layers::{
+    iop::context::{ContextAux, ShapeStep, TableCtx}, layers::{
         activation::{Activation, ActivationProof},
         add::{Add, AddCtx, AddProof},
         concat_matmul::ConcatMatMul,
@@ -46,16 +44,11 @@ use crate::{
             layernorm::LayerNorm,
             logits::Logits,
             mha::MhaQK,
-            positional::Positional,
-            qkv::{QKV, QKVCtx, QKVProof},
+            positional::{Positional, PositionalCtx, PositionalProof},
+            qkv::{QKVCtx, QKVProof, QKV},
             softmax::Softmax,
         },
-    },
-    lookup::context::LookupWitnessGen,
-    model::StepData,
-    padding::{PaddingMode, ShapeInfo},
-    quantization::ScalingFactor,
-    tensor::{Number, Shape, Tensor},
+    }, lookup::context::LookupWitnessGen, model::StepData, padding::{PaddingMode, ShapeInfo}, quantization::ScalingFactor, tensor::{Number, Shape, Tensor}, Context, Element, ScalingStrategy
 };
 use activation::ActivationCtx;
 use convolution::{ConvCtx, ConvProof, SchoolBookConv, SchoolBookConvCtx};
@@ -119,7 +112,7 @@ where
     Add(AddCtx),
     Reshape,
     Embeddings,
-    Positional,
+    Positional(PositionalCtx),
     Logits,
 }
 
@@ -144,7 +137,7 @@ where
     Softmax,
     Add(AddProof<E>),
     Embeddings,
-    Positional,
+    Positional(PositionalProof<E>),
     Logits,
     Dummy, // To be used for non-provable layers
 }
@@ -167,7 +160,7 @@ where
             Self::Logits => "Logits".to_string(),
             Self::Reshape => "Reshape".to_string(),
             Self::Embeddings => "Embeddings".to_string(),
-            Self::Positional => "Positional".to_string(),
+            Self::Positional(_) => "Positional".to_string(),
             Self::SchoolBookConvolution(_) => "Traditional Convolution".to_string(),
             Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
@@ -525,8 +518,8 @@ where
             (Layer::Embeddings(_embeddings), LayerCtx::Embeddings) => {
                 unimplemented!("Embeddings layer not implemented")
             }
-            (Layer::Positional(_positional), LayerCtx::Positional) => {
-                unimplemented!("Positional layer not implemented")
+            (Layer::Positional(positional), LayerCtx::Positional(info)) => {
+                positional.prove(node_id, info, last_claims, step_data, prover)
             }
             (Layer::Add(add), LayerCtx::Add(info)) => {
                 add.prove(node_id, info, last_claims, step_data, prover)
@@ -721,7 +714,7 @@ where
             Self::ConcatMatMul => "ConcatMatMul".to_string(),
             Self::LayerNorm => "LayerNorm".to_string(),
             Self::Softmax => "Softmax".to_string(),
-            Self::Positional => "Positional".to_string(),
+            Self::Positional(_) => "Positional".to_string(),
             Self::Add(_) => "Add".to_string(),
             Self::Logits => "Logits".to_string(),
             Self::Embeddings => "Embeddings".to_string(),
@@ -744,7 +737,7 @@ where
             LayerProof::Softmax => None,
             LayerProof::Add(_) => None,
             LayerProof::Logits => None,
-            LayerProof::Positional => None,
+            LayerProof::Positional(_) => None,
             LayerProof::Embeddings => None,
             LayerProof::Convolution(..) => None,
             LayerProof::Dummy => None,
