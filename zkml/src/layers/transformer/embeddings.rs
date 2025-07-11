@@ -1,5 +1,6 @@
 use crate::{
     ScalingFactor, ScalingStrategy,
+    commit::compute_betas_eval,
     layers::{
         LayerProof,
         provable::{QuantizeOp, QuantizeOutput},
@@ -87,7 +88,8 @@ impl<N: Number> OpInfo for Embeddings<N> {
                     self.emb_size.next_power_of_two(),
                 ]
                 .into(),
-            ),
+            )
+            .next_power_of_two(),
         };
         vec![shape]
     }
@@ -179,7 +181,8 @@ impl PadOp for Embeddings<Element> {
             PaddingMode::Padding,
         );
         si.shapes.push(shape_data);
-        self.mat.pad_node(si).map(|mat| Self { mat, ..self })
+        let r = self.mat.pad_node(si).map(|mat| Self { mat, ..self })?;
+        Ok(r)
     }
 }
 
@@ -350,11 +353,25 @@ where
         ensure!(inputs.len() == 1, "embeddings only support 1 input tensor");
         ensure!(claims.len() == 1, "embeddings only support 1 claim");
         let input = &inputs[0];
-        let one_hot = one_hot_encoding(&input.get_data(), self.vocab_size, PaddingMode::Padding);
         let one_hot_claim = &claims[0];
-        let computed = one_hot.get_data().into_mle().evaluate(&one_hot_claim.point);
+        let vocab_nv = self.vocab_size.next_power_of_two().ilog2();
+        let seq_len_nv = input.get_shape().dim(0).next_power_of_two().ilog2();
         ensure!(
-            computed == one_hot_claim.eval,
+            vocab_nv + seq_len_nv ==  one_hot_claim.point.len() as u32,
+            "vocab_nv: {vocab_nv}, seq_len_nv: {seq_len_nv}, one_hot_claim.point.len(): {}",
+            one_hot_claim.point.len()
+        );
+        let (r1, r2) = one_hot_claim.point.split_at(seq_len_nv as usize);
+        let b1 = compute_betas_eval(r1);
+        let b2 = compute_betas_eval(r2);
+        let mut sum = E::ZERO;
+        for (idx, token) in input.get_data().iter().enumerate() {
+            let token_value = token.to_canonical_u64_vec()[0] as usize;
+            let selector = b1[idx] * b2[token_value];
+            sum += selector;
+        }
+        ensure!(
+            sum == one_hot_claim.eval,
             "one hot encoding claim is incorrect"
         );
         Ok(())
@@ -380,10 +397,10 @@ fn one_hot_encoding<E: ExtensionField>(indices: &[E], vb: usize, mode: PaddingMo
                 indices.len().is_power_of_two(),
                 "indices length must be a power of two"
             );
-            let target_len = (indices.len() * vocab_size).next_power_of_two();
+            let target_len = indices.len() * vocab_size;
             let curr_len = data.len();
             data.into_iter()
-                .chain(std::iter::repeat(E::ZERO).take(target_len - curr_len))
+                .chain(std::iter::repeat_n(E::ZERO, target_len - curr_len))
                 .collect()
         }
     };
@@ -393,9 +410,7 @@ fn one_hot_encoding<E: ExtensionField>(indices: &[E], vb: usize, mode: PaddingMo
 fn one_hot_shape(input_shape: &Shape, vocab_size: usize, mode: PaddingMode) -> Shape {
     match mode {
         PaddingMode::NoPadding => input_shape.insert(1, vocab_size),
-        PaddingMode::Padding => input_shape
-            .insert(1, vocab_size.next_power_of_two())
-            .next_power_of_two(),
+        PaddingMode::Padding => input_shape.insert(1, vocab_size.next_power_of_two()),
     }
 }
 
