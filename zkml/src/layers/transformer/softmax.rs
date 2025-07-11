@@ -696,11 +696,6 @@ where
             .last()
             .ok_or(anyhow!("Exponential lookup in Softmax had no commitments"))?;
 
-        vp.add_mle_list(
-            vec![exp_output.clone().into(), error_beta.clone()],
-            batch_challenge * two_mult,
-        );
-
         // If zero table lookups exists we need to extract their data and them to the sumcheck (as we want all our Claims to be on the same point)
         if logup_proofs.len() == 4 {
             let zero_table_claims = logup_proofs[3].output_claims();
@@ -736,11 +731,18 @@ where
                 .map(|(_, poly)| ArcMultilinearExtension::<E>::from(poly.clone()))
                 .collect::<Vec<_>>();
             layer_out_prod.push(exp_output.clone().into());
+            let mut error_poly = layer_out_prod.clone();
             layer_out_prod.push(last_claim_beta);
+            error_poly.push(error_beta);
 
-            vp.add_mle_list(layer_out_prod, batch_challenge);
+            vp.add_mle_list(error_poly, batch_challenge * two_mult);
+            vp.add_mle_list(layer_out_prod, batch_challenge * alpha);
         } else {
             // In this case the layer output is just the exp table output
+            vp.add_mle_list(
+                vec![exp_output.clone().into(), error_beta.clone()],
+                batch_challenge * two_mult,
+            );
             vp.add_mle_list(
                 vec![exp_output.clone().into(), last_claim_beta],
                 batch_challenge * alpha,
@@ -867,7 +869,7 @@ where
             // Extract the zero table lookup evaluations
             let zero_table_evals = all_evals
                 .iter()
-                .skip(8)
+                .skip(7)
                 .take(commits[3].len())
                 .copied()
                 .collect::<Vec<E>>();
@@ -978,7 +980,9 @@ where
             .get_shape()
             .last()
             .ok_or(anyhow!("Softmax output tensor did not have a shape"))?;
-        let normalisation_lookup = exp_output
+        let layer_output = step_data.outputs.outputs()[0];
+        let normalisation_lookup = layer_output
+            .get_data()
             .chunks(final_dim_size)
             .map(|chunk| chunk.iter().sum::<Element>())
             .collect::<Vec<Element>>();
@@ -1424,23 +1428,27 @@ where
             .claims()
             .iter()
             .chain(range_claims.claims().iter())
-            .chain(error_claims.claims().iter())
             .fold((E::ZERO, E::ONE), |(acc, chal_acc), claim| {
                 (acc + chal_acc * claim.eval, chal_acc * alpha)
             });
 
         // If we have zero table lookups add them here
         let claimed_sum = if logup_claims.len() == 4 {
-            logup_claims[3]
+            let (sum, bc) = logup_claims[3]
                 .claims()
                 .iter()
+                .chain(error_claims.claims().iter())
                 .fold(
                     (partial_claimed_sum, batch_challenge),
                     |(acc, chal_acc), claim| (acc + chal_acc * claim.eval, chal_acc * alpha),
-                )
-                .0
+                );
+            sum + bc * last_claim.eval
         } else {
-            partial_claimed_sum + batch_challenge * last_claim.eval
+            let (sum, bc) = error_claims.claims().iter().fold(
+                (partial_claimed_sum, batch_challenge),
+                |(acc, chal_acc), claim| (acc + chal_acc * claim.eval, chal_acc * alpha),
+            );
+            sum + bc * last_claim.eval
         };
 
         let exp_point = exp_claims.point();
@@ -1819,7 +1827,7 @@ mod tests {
         let scale = 1.0f32 / 768.0f32.sqrt();
         let softmax = Softmax::<f32>::new_with_scale(scale, 1024);
 
-        for num_tokens in 10..11 {
+        for num_tokens in 1015..1016 {
             // Make random q and k vectors
             let test_q = Tensor::<f32>::random(&vec![num_tokens, 768].into());
             let test_k = Tensor::<f32>::random(&vec![768, num_tokens].into());
