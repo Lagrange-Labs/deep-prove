@@ -10,8 +10,7 @@ use std::env;
 use tracing::warn;
 
 use crate::{
-    Element,
-    tensor::{Number, Tensor, is_close},
+    tensor::{is_close, Number, Tensor, TensorSlice}, Element
 };
 pub use metadata::ModelMetadata;
 pub(crate) use strategy::InferenceTracker;
@@ -234,12 +233,22 @@ where
     T: Fieldizer<F>,
 {
     fn to_fields(self) -> Tensor<F> {
+        TensorSlice::from(self).to_fields()
+    }
+}
+
+impl<'a, F: ExtensionField, T> TensorFielder<F> for &TensorSlice<'a, T>
+where
+    T: Fieldizer<F>,
+{
+    fn to_fields(self) -> Tensor<F> {
         Tensor::new(
             self.get_shape(),
             self.get_data().iter().map(|i| i.to_field()).collect_vec(),
         )
     }
 }
+
 
 pub fn max_range_from_weight<T: Number>(weight: &T, min_input: &T, max_input: &T) -> (T, T) {
     let min = if weight.is_negative() {
