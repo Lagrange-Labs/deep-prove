@@ -53,7 +53,7 @@ pub(crate) const LOG_SCALE_FACTOR: usize = 24;
 /// The scale factor for our fixed point arithmetic
 pub(crate) const SCALE_FACTOR: usize = 1 << LOG_SCALE_FACTOR;
 /// The scale factor of the outputs of the `exp` lookup
-pub(crate) const OUTPUT_SCALE_FACTOR: usize = 1 << (LOG_SCALE_FACTOR - 1);
+pub(crate) const OUTPUT_SCALE_FACTOR: usize = 1 << 12;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Stores data about the Softmax operation, which is used to map a tensor of values to a tensor of probability distributions.
@@ -294,13 +294,18 @@ impl Softmax<Element> {
                 if i % second_dim == 0 {
                     -chunk[0] * self.scalar
                 } else {
+                    let max = *chunk.iter().take(i % second_dim + 1).max().unwrap();
                     let sum = chunk
                         .iter()
                         .take(i % second_dim + 1)
-                        .map(|x| (input_scale_factor.dequantize(x) / inv_float_temperature).exp())
+                        .map(|x| {
+                            (input_scale_factor.dequantize(&(x - max)) / inv_float_temperature)
+                                .exp()
+                        })
                         .sum::<f32>();
                     let log_sum = sum.ln();
                     -(SCALE_FACTOR as f32 * inv_float_temperature * log_sum).round() as Element
+                        - max * self.scalar
                 }
             })
             .collect::<Vec<Element>>();
@@ -369,11 +374,15 @@ impl Evaluate<f32> for Softmax<f32> {
             .get_data()
             .chunks(chunk_size)
             .flat_map(|vec| {
+                let max: f32 = *vec
+                    .iter()
+                    .max_by(|i, j| i.partial_cmp(j).unwrap_or(std::cmp::Ordering::Less))
+                    .unwrap();
                 let scaled = vec
                     .iter()
                     .map(|x| {
                         if *x != f32::NEG_INFINITY {
-                            self.scalar * x
+                            self.scalar * (x - max)
                         } else {
                             *x
                         }
@@ -949,6 +958,7 @@ impl Softmax<Element> {
             ..
         } = softmax_data;
         let num_vars = ceil_log2(exp_input.len());
+
         // We need to work out how many chunks to split the normalisation into to be range checked.
         let QuantisedSoftmaxData {
             error_bound,
@@ -1334,6 +1344,12 @@ where
 
             // There are no common commitments for this layer
             aux.model_polys = None;
+            aux.max_poly_len = aux
+                .last_output_shape
+                .iter()
+                .fold(aux.max_poly_len, |acc, shapes| {
+                    acc.max(shapes.next_power_of_two().product())
+                });
 
             // The output shape is the same as the input shape so we don't need to update it
             // return the LayerCtx and the updated ContextAux
@@ -1584,7 +1600,7 @@ where
             evaluations[0] * two_to_the_16 + evaluations[3] * two_to_the_8 + evaluations[2];
 
         let mask_input_eval = if !self.number_zero_chunks.is_zero() {
-            let softmax_table_vars = ceil_log2(self.bkm as usize);
+            let softmax_table_vars = ceil_log2(self.bkm as usize >> 16);
             let zero_table_init_multiplier =
                 E::from_canonical_u64(1u64 << (16 + softmax_table_vars));
             let zero_table_size = E::from_canonical_u64(1u64 << self.zero_table_vars);

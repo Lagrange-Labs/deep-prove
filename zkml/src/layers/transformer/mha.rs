@@ -447,6 +447,7 @@ impl<E: ExtensionField> ProveInfo<E> for Mha<Element> {
             tables: reshaped_aux.tables,
             last_output_shape: reshaped_aux.last_output_shape[..2].to_vec(),
             model_polys: reshaped_aux.model_polys,
+            max_poly_len: reshaped_aux.max_poly_len,
         };
 
         let (ctx, aux) = self.qk.step_info(Self::qk_node_id(id), qk_aux)?;
@@ -1277,7 +1278,7 @@ mod test {
         init_test_logging("info");
         let num_heads = 12;
         let head_dim = 64;
-        let seq_len = 10;
+        let seq_len = 1024;
         let embedding_size = 768;
         let hidden_size = num_heads * head_dim;
 
