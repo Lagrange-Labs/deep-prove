@@ -919,7 +919,7 @@ mod test {
     use multilinear_extensions::mle::MultilinearExtension;
 
     use crate::{
-        Element,
+        Element, init_test_logging,
         layers::{
             Layer,
             matrix_mul::{MatMul, OperandMatrix},
@@ -1274,10 +1274,11 @@ mod test {
 
     #[test]
     fn test_proven_mha_with_padding_and_unpadding() {
-        let num_heads = 5;
-        let head_dim = 3;
-        let seq_len = 13;
-        let embedding_size = 11;
+        init_test_logging("info");
+        let num_heads = 12;
+        let head_dim = 64;
+        let seq_len = 10;
+        let embedding_size = 768;
         let hidden_size = num_heads * head_dim;
 
         let input_shape = Shape::new(vec![seq_len, embedding_size]);

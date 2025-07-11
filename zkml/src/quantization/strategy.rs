@@ -165,9 +165,9 @@ impl InferenceTracker {
                 })
                 .clone(),
         );
-        let min = d.percentile(5) as f32;
-        let max = d.percentile(95) as f32;
-        assert!(min <= max);
+        // let min = d.percentile(5) as f32;
+        // let max = d.percentile(95) as f32;
+        // assert!(min <= max);
         //(min, max)
         (d.min() as f32, d.max() as f32)
         // let mean = d.mean().unwrap();

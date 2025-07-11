@@ -114,10 +114,13 @@ where
 
 impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> SoftmaxProof<E, PCS> {
     pub(crate) fn get_lookup_data(&self) -> (Vec<E>, Vec<E>) {
-        let (nums, denoms): (Vec<Vec<E>>, Vec<Vec<E>>) =
-                    self.logup_proofs.iter().map(|p| p.fractional_outputs()).unzip();
+        let (nums, denoms): (Vec<Vec<E>>, Vec<Vec<E>>) = self
+            .logup_proofs
+            .iter()
+            .map(|p| p.fractional_outputs())
+            .unzip();
 
-                (nums.concat(), denoms.concat())
+        (nums.concat(), denoms.concat())
     }
 }
 
@@ -718,16 +721,12 @@ impl Softmax<Element> {
                 compute_betas_eval(zero_table_point).into_mle().into();
 
             // Now add all the zero table polys to the sumcheck
-            let batch_challenge =
-                commits[3]
-                    .iter()
-                    .fold(batch_challenge * alpha, |chal_acc, (_, poly)| {
-                        vp.add_mle_list(
-                            vec![zero_table_beta.clone(), poly.clone().into()],
-                            chal_acc,
-                        );
-                        chal_acc * alpha
-                    });
+            let batch_challenge = commits[3]
+                .iter()
+                .fold(batch_challenge, |chal_acc, (_, poly)| {
+                    vp.add_mle_list(vec![zero_table_beta.clone(), poly.clone().into()], chal_acc);
+                    chal_acc * alpha
+                });
 
             // Finally we prove that the last claim is the product of all the zero table outputs and the exp output
             let mut layer_out_prod = commits[3]
@@ -1549,23 +1548,24 @@ where
         // Fianlly add the error check and the last claim, for this we need the output column of the exponential lookup
         let exp_output_claim = evaluations[1];
 
-        calc_subclaim += batch_challenge * error_beta_eval * two_mult * exp_output_claim;
         if !self.number_zero_chunks.is_zero() {
             // Need to add in the zero table lookup related values in this case
             let zero_table_beta_eval = eq_xy_eval(logup_claims[3].point(), &sumcheck_point);
 
-            let (new_calc_subclaim, batch_challenge) = evaluations[4..].iter().fold(
-                (calc_subclaim, batch_challenge * alpha),
+            let (new_calc_subclaim, batch_challenge) = evaluations[5..].iter().fold(
+                (calc_subclaim, batch_challenge),
                 |(subclaim_acc, bc), &claim| {
                     (subclaim_acc + zero_table_beta_eval * claim * bc, bc * alpha)
                 },
             );
+            let output_eval =
+                evaluations[6..].iter().step_by(2).copied().product::<E>() * exp_output_claim;
             calc_subclaim = new_calc_subclaim
                 + batch_challenge
-                    * evaluations[5..].iter().step_by(2).copied().product::<E>()
-                    * exp_output_claim
-                    * last_claim_beta_eval;
+                    * output_eval
+                    * (error_beta_eval * two_mult + alpha * last_claim_beta_eval);
         } else {
+            calc_subclaim += batch_challenge * error_beta_eval * two_mult * exp_output_claim;
             calc_subclaim += batch_challenge * alpha * last_claim_beta_eval * exp_output_claim;
         }
 
@@ -1588,7 +1588,7 @@ where
             let zero_table_init_multiplier =
                 E::from_canonical_u64(1u64 << (16 + softmax_table_vars));
             let zero_table_size = E::from_canonical_u64(1u64 << self.zero_table_vars);
-            evaluations[4..]
+            evaluations[5..]
                 .iter()
                 .step_by(2)
                 .fold(
