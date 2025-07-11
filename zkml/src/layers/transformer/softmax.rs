@@ -583,6 +583,7 @@ type CommsAndProofs<PCS, E> = (
 );
 
 impl Softmax<Element> {
+    #[allow(clippy::type_complexity)]
     pub(crate) fn prove_step<
         E: ExtensionField,
         PCS: PolynomialCommitmentScheme<E>,
@@ -931,12 +932,12 @@ impl Softmax<Element> {
         Ok((vec![input_claim], proof))
     }
 
-    pub(crate) fn lookup_witness<N, E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>(
+    pub(crate) fn lookup_witness<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         id: NodeId,
         gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
-        output: &Tensor<N>,
+        output: &Tensor<Element>,
         softmax_data: &SoftmaxData<E>,
     ) -> Result<()> {
         // Get the data generated during quantised evaluation
@@ -969,8 +970,7 @@ impl Softmax<Element> {
             .get_shape()
             .last()
             .ok_or(anyhow!("Softmax output tensor did not have a shape"))?;
-        let layer_output = step_data.outputs.outputs()[0];
-        let normalisation_lookup = layer_output
+        let normalisation_lookup = output
             .get_data()
             .chunks(final_dim_size)
             .map(|chunk| chunk.iter().sum::<Element>())
@@ -1207,7 +1207,7 @@ where
         let softmax_data = step_data.outputs.try_softmax_data().ok_or(anyhow!(
             "Softmax data not found in inference step for Sopftmax layer"
         ))?;
-        self.lookup_witness(id, gen, ctx, &step_data.outputs.outputs()[0], softmax_data)
+        self.lookup_witness(id, gen, ctx, step_data.outputs.outputs()[0], softmax_data)
     }
 }
 

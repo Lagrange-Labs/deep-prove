@@ -230,8 +230,7 @@ impl MatrixPermutations {
         }
         if let Some(ref permute) = self.permute {
             println!(
-                "ConcatMatMul: Permute: {:?} over resulting shape {:?}",
-                permute, mat_result_shape
+                "ConcatMatMul: Permute: {permute:?} over resulting shape {mat_result_shape:?}",
             );
             mat_result_shape = mat_result_shape.permute(&permute.0);
         }
@@ -330,7 +329,7 @@ impl MatrixPermutations {
             .permute
             .as_ref()
             .map(|p| {
-                let mut new_dimensions = vec![0; 3];
+                let mut new_dimensions = [0; 3];
                 p.0.iter()
                     .enumerate()
                     .for_each(|(i, &source_dim)| new_dimensions[source_dim] = i);
@@ -435,7 +434,7 @@ impl ConcatMatMul {
     }
 
     pub(crate) fn output_domain(&self) -> Element {
-        1 << self.intermediate_bit_size as Element - 1
+        (1 << self.intermediate_bit_size as Element) - 1
     }
 
     pub fn ensure_shape_consistency<S: Borrow<Shape>>(&self, shapes: &[S]) -> anyhow::Result<()> {
@@ -552,7 +551,7 @@ impl ConcatMatMul {
         let proof_point = &proof.point;
         let (point_for_concat_dim, point_for_mat_mul_dim) = self
             .permutations
-            .split_sumcheck_point(&proof_point, &input_shapes)?;
+            .split_sumcheck_point(proof_point, &input_shapes)?;
 
         let left_point = self.permutations.left.build_point_for_input(
             point_for_concat_dim,
@@ -712,7 +711,7 @@ where
 
         let num_vars = (num_columns_left * num_chunks).ilog2() as usize;
 
-        let vp_aux = VPAuxInfo::from_mle_list_dimensions(&vec![vec![num_vars, num_vars, num_vars]]);
+        let vp_aux = VPAuxInfo::from_mle_list_dimensions(&[vec![num_vars, num_vars, num_vars]]);
 
         aux.last_output_shape = self.output_shapes(&aux.last_output_shape, PaddingMode::Padding);
 
@@ -842,7 +841,7 @@ where
 
         let (point_for_concat_dim, point_for_mat_mul_dim) = self
             .permutations
-            .split_sumcheck_point(&sumcheck_point, &padded_input_shapes)?;
+            .split_sumcheck_point(&sumcheck_point, padded_input_shapes)?;
 
         // first, verify the claim about the `beta_MLE` used in the sumcheck in `prove`.
         // The MLE of  claim should be equal to \beta(x_c, point_for_concat), where x_c are the coordinates of the

@@ -45,7 +45,7 @@ use crate::{Tensor, layers::provable::LayerOut};
 pub struct MhaData<E: ExtensionField> {
     // Output tensor of Mha before final reshape
     pre_reshaping_out: Tensor<E>,
-    softmax_out: Tensor<E>,
+    softmax_out: Tensor<Element>, // this needs to be an `Element` to call Softmax::lookup_witness
     softmax_data: SoftmaxData<E>,
     softmax_in: Tensor<E>,
 }
@@ -61,21 +61,21 @@ pub struct MhaCtx<E> {
 }
 
 struct MhaOutputShaper<'a> {
-    inputs_reshape: Box<&'a dyn OpInfo>,
-    final_mul: Box<&'a dyn OpInfo>,
-    softmax: Box<&'a dyn OpInfo>,
-    qk: Box<&'a dyn OpInfo>,
-    final_reshape: Box<&'a dyn OpInfo>,
+    inputs_reshape: &'a dyn OpInfo,
+    final_mul: &'a dyn OpInfo,
+    softmax: &'a dyn OpInfo,
+    qk: &'a dyn OpInfo,
+    final_reshape: &'a dyn OpInfo,
 }
 
 impl<'a, N: Number> From<&'a Mha<N>> for MhaOutputShaper<'a> {
     fn from(value: &'a Mha<N>) -> Self {
         Self {
-            inputs_reshape: Box::new(&value.inputs_reshape),
-            final_mul: Box::new(&value.final_mul),
-            softmax: Box::new(&value.softmax),
-            qk: Box::new(&value.qk),
-            final_reshape: Box::new(&value.final_reshape),
+            inputs_reshape: &value.inputs_reshape,
+            final_mul: &value.final_mul,
+            softmax: &value.softmax,
+            qk: &value.qk,
+            final_reshape: &value.final_reshape,
         }
     }
 }
@@ -83,11 +83,11 @@ impl<'a, N: Number> From<&'a Mha<N>> for MhaOutputShaper<'a> {
 impl<'a, E: ExtensionField> From<&'a MhaCtx<E>> for MhaOutputShaper<'a> {
     fn from(value: &'a MhaCtx<E>) -> Self {
         Self {
-            inputs_reshape: Box::new(&value.inputs_reshape),
-            final_mul: Box::new(&value.final_mul),
-            softmax: Box::new(&value.softmax),
-            qk: Box::new(&value.qk),
-            final_reshape: Box::new(&value.final_reshape),
+            inputs_reshape: &value.inputs_reshape,
+            final_mul: &value.final_mul,
+            softmax: &value.softmax,
+            qk: &value.qk,
+            final_reshape: &value.final_reshape,
         }
     }
 }
@@ -96,7 +96,7 @@ impl<'a> MhaOutputShaper<'a> {
     fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         let reshaped_input_shapes = self
             .inputs_reshape
-            .output_shapes(&input_shapes, padding_mode);
+            .output_shapes(input_shapes, padding_mode);
 
         let linear_out_shapes = self
             .qk
@@ -197,7 +197,7 @@ impl<N: Number> Mha<N> {
             .chain(
                 domain_separator
                     .as_bytes()
-                    .into_iter()
+                    .iter()
                     .map(|b| Goldilocks::from_canonical_u8(*b)),
             )
             .collect_vec();
@@ -218,6 +218,7 @@ impl<N: Number> Mha<N> {
 
     /// Core method to evaluate the layer; it returns also the intermediate outputs of final_mul, softmax
     /// and qk sub-layers, which might be necessary to build the proving data
+    #[allow(clippy::type_complexity)]
     pub(crate) fn evaluate_with_intermediate_outputs<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
@@ -283,7 +284,7 @@ impl<N: Number> Mha<N> {
             .output_shapes(&final_mul_input_shapes, PaddingMode::NoPadding);
 
         let final_mul_out = self.final_mul.evaluate::<E>(
-            &[soft_out.outputs()[0], &reshaped_inputs.outputs()[2]],
+            &[soft_out.outputs()[0], reshaped_inputs.outputs()[2]],
             final_mul_input_shapes,
         )?;
 
@@ -353,7 +354,7 @@ impl Evaluate<Element> for Mha<Element> {
         let data = MhaData {
             pre_reshaping_out: final_mul_out.outputs()[0].to_fields(),
             softmax_data,
-            softmax_out: outputs[0].to_fields(),
+            softmax_out: outputs[0].clone(),
             softmax_in: qk_out.outputs[0].to_fields(),
         };
         Ok(out.with_proving_data(ProvingData::Mha(data)))
@@ -390,7 +391,7 @@ impl QuantizeOp for Mha<f32> {
             ..
         } = self
             .softmax
-            .quantize_op::<S>(data, node_id, &vec![product_scaling])?;
+            .quantize_op::<S>(data, node_id, &[product_scaling])?;
 
         ensure!(
             output_scalings.len() == 1,
@@ -665,7 +666,7 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS> f
         let (mut claims, final_mul_proof) = self.final_mul.prove_step(
             last_claims,
             &mha_data.pre_reshaping_out,
-            &vec![&mha_data.softmax_out, &reshaped_inputs[2]],
+            &[&mha_data.softmax_out.to_fields(), reshaped_inputs[2]],
             prover,
         )?;
 
@@ -798,11 +799,11 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> VerifiableCtx<E, PCS
         );
 
         let final_mul_shapes = LayerCtx::ConcatMatMul(self.final_mul.clone()).shape_step(
-            &vec![
+            &[
                 softmax_shapes.unpadded_output_shape[0].clone(),
                 reshaped_inputs.unpadded_output_shape[2].clone(),
             ],
-            &vec![
+            &[
                 softmax_shapes.padded_output_shape[0].clone(),
                 reshaped_inputs.padded_output_shape[2].clone(),
             ],
@@ -828,14 +829,14 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> VerifiableCtx<E, PCS
 
         let claims = self.softmax.verify(
             &proof.softmax_proof,
-            &vec![&softmax_out_claim],
+            &[&softmax_out_claim],
             verifier,
             &softmax_shapes,
         )?;
 
         let mut input_claims =
             self.qk
-                .verify(&proof.qk_proof, &vec![&claims[0]], verifier, &qk_shapes)?;
+                .verify(&proof.qk_proof, &[&claims[0]], verifier, &qk_shapes)?;
 
         // add claim about V to input claims
 

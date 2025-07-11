@@ -46,7 +46,7 @@ impl GarbagePad {
             }
             GarbagePad::MHA(previous_shape) => {
                 *matrix = pad_matrix_to_ignore_mha_garbage(
-                    &matrix,
+                    matrix,
                     &previous_shape.0,
                     &previous_shape.1,
                     padded_matrix_shape,

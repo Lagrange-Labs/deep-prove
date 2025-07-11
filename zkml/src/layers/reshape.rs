@@ -145,7 +145,7 @@ impl Reshape {
         let output_shapes =
             self.internal_output(&inputs.iter().map(|x| x.get_shape()).collect::<Vec<_>>())?;
         #[allow(suspicious_double_ref_op)]
-        let mut out_tensors = inputs.into_iter().map(|&x| x.clone()).collect::<Vec<_>>();
+        let mut out_tensors = inputs.iter().map(|&x| x.clone()).collect::<Vec<_>>();
         output_shapes
             .into_iter()
             .zip(out_tensors.iter_mut())

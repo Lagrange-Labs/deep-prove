@@ -1740,7 +1740,7 @@ impl<T: Default + Clone + Copy> Tensor<T> {
             for j in 0..b {
                 for k in 0..c {
                     let old_loc = i * b * c + j * c + k;
-                    let pos = vec![i, j, k];
+                    let pos = [i, j, k];
                     let new_i = pos[order[0]];
                     let new_j = pos[order[1]];
                     let new_k = pos[order[2]];
@@ -2062,10 +2062,10 @@ impl Shape {
         let ncols = self.ncols();
         // - 1 because numbers are signed so only half of the range is used when doing multiplication
         quantized_self_input_range
-            .map(|range| log2_ceil(range))
+            .map(log2_ceil)
             .unwrap_or(*quantization::BIT_LEN - 1)
             + quantized_other_input_range
-                .map(|range| log2_ceil(range))
+                .map(log2_ceil)
                 .unwrap_or(*quantization::BIT_LEN - 1)
             + ceil_log2(ncols)
             + 1
