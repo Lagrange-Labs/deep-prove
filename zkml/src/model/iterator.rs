@@ -48,14 +48,14 @@ where
 {
     fn to_forward_iterator<'a>(&'a self) -> ModelCtxForwardIterator<'a, E> {
         NodeIterator {
-            unvisited_nodes: self.nodes.keys().cloned().collect(),
+            unvisited_nodes: self.node_ids.clone(),
             nodes: &self.nodes,
         }
     }
 
     fn to_backward_iterator<'a>(&'a self) -> ModelCtxBackwardIterator<'a, E> {
         NodeIterator {
-            unvisited_nodes: self.nodes.keys().cloned().collect(),
+            unvisited_nodes: self.node_ids.clone(),
             nodes: &self.nodes,
         }
     }

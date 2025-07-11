@@ -277,7 +277,7 @@ impl Positional<f32> {
 impl Embeddings<f32> {
     pub fn from_json(l: &FileTensorLoader) -> anyhow::Result<Self> {
         let emb_tensor = l.get_tensor("token_embd.weight")?;
-        Ok(Embeddings::new(emb_tensor))
+        Ok(Embeddings::new(emb_tensor)?)
     }
 }
 

@@ -6,6 +6,7 @@ use ark_std::rand::{self, SeedableRng, rngs::StdRng};
 use ff_ext::ExtensionField;
 use gkr::structs::PointAndEval;
 use itertools::Itertools;
+use multilinear_extensions::util::ceil_log2;
 use rayon::iter::ParallelIterator;
 use serde::{Deserialize, Serialize};
 use std::{env, str::FromStr};
@@ -49,6 +50,9 @@ pub struct Claim<E> {
 impl<E> Claim<E> {
     pub fn new(point: Vec<E>, eval: E) -> Self {
         Self { point, eval }
+    }
+    pub fn mle_num_vars(&self) -> usize {
+        self.point.len()
     }
 }
 
