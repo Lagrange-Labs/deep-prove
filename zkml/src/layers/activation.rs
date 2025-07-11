@@ -76,7 +76,7 @@ impl<N> OpInfo for Activation<N> {
     fn describe(&self) -> String {
         match self {
             Activation::Relu(_relu) => format!("RELU: {}", 1 << Relu::num_vars()),
-            Activation::Gelu(_gelu) => format!("GELU"),
+            Activation::Gelu(_gelu) => "GELU".to_string(),
         }
     }
 
@@ -495,6 +495,12 @@ impl Relu {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GELU<N> {
     _n: PhantomData<N>,
+}
+
+impl<N> Default for GELU<N> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<N> GELU<N> {

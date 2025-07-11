@@ -38,6 +38,12 @@ pub struct ConcatMatMul {
 
 const DEFAULT_INTERMEDIATE_BIT_SIZE: usize = 25;
 
+impl Default for ConcatMatMul {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConcatMatMul {
     pub fn new() -> Self {
         Self {

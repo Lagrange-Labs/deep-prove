@@ -18,6 +18,12 @@ pub struct Softmax<N> {
     pub apply_on_dim: Option<usize>,
 }
 
+impl<N: Number> Default for Softmax<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<N: Number> Softmax<N> {
     pub fn new() -> Self {
         Self {
@@ -52,7 +58,7 @@ impl Evaluate<f32> for Softmax<f32> {
         let output = input
             .slice_on_dim(dim)
             .0
-            .map(|vec| {
+            .flat_map(|vec| {
                 let scaled = vec
                     .iter()
                     .map(|x| self.scale * x)
@@ -61,7 +67,6 @@ impl Evaluate<f32> for Softmax<f32> {
                 let sum = scaled.iter().sum::<f32>();
                 scaled.iter().map(|x| x / sum).collect::<Vec<_>>()
             })
-            .flatten()
             .collect::<Vec<_>>();
         let output_tensor = Tensor::new(input.get_shape(), output);
         Ok(LayerOut::from_vec(vec![output_tensor]))

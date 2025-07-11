@@ -61,12 +61,11 @@ impl Input {
 
     pub fn to_elements(self, md: &ModelMetadata) -> Vec<Vec<Element>> {
         let input_sf = md.input.first().unwrap();
-        let inputs = self
-            .input_data
+
+        self.input_data
             .into_iter()
             .map(|input| input.into_iter().map(|e| input_sf.quantize(&e)).collect())
-            .collect();
-        inputs
+            .collect()
     }
 }
 

@@ -171,7 +171,7 @@ impl<N: Number> QKV<N> {
         // add claims about output tensors without bias to the transcript, to then squeeze the challenge necessary to batch the matrix multiplication
         // sum-check equation
         last_claims
-            .into_iter()
+            .iter()
             .zip(evals_pre_bias)
             .for_each(|(&claim, evals)| {
                 transcript.append_field_element_exts(&claim.point);
@@ -299,18 +299,15 @@ impl QKV<f32> {
         // for each tensor, we look at the scaling factor and the scaling factor of the associated bias
         let (matrices, (biases, requants)): (Vec<_>, (Vec<_>, Vec<_>)) = output_scaling
             .iter()
-            .zip(
-                vec![
-                    (self.q, self.q_bias),
-                    (self.k, self.k_bias),
-                    (self.v, self.v_bias),
-                ]
-                .into_iter(),
-            )
+            .zip(vec![
+                (self.q, self.q_bias),
+                (self.k, self.k_bias),
+                (self.v, self.v_bias),
+            ])
             .map(|(output_scaling, (tensor, bias))| {
                 let (model_scaling, bias_scaling) = model_scaling_factor_from_tensor_and_bias(
                     &input_scaling[0],
-                    &output_scaling,
+                    output_scaling,
                     &tensor,
                     &bias,
                 );
@@ -669,7 +666,7 @@ where
 
         // compute claims for the bias vector, subtracting the `pre_bias_evals` found in the proof from the output claims
         let bias_claims = last_claims
-            .into_iter()
+            .iter()
             .zip(&proof.pre_bias_evals)
             .map(|(&claim, eval)| {
                 let bias_eval = claim.eval - *eval;
@@ -772,6 +769,12 @@ pub struct CacheQKV<N> {
     cache_k: Tensor<N>,
     cache_v: Tensor<N>,
     initialized: bool,
+}
+
+impl<N: Number> Default for CacheQKV<N> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<N: Number> CacheQKV<N> {

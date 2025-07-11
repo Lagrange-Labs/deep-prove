@@ -62,7 +62,7 @@ impl From<&Token> for u32 {
 }
 
 impl Token {
-    pub fn to_number<N: Number>(&self) -> N {
+    pub fn as_number<N: Number>(&self) -> N {
         N::from_usize(self.0)
     }
 }
@@ -115,13 +115,13 @@ pub enum LLMModel {
 }
 
 impl LLMModel {
-    pub fn to_provable_model(
+    pub fn into_provable_model(
         self,
         c: &LLMConfig,
         user_input_shape: Shape,
     ) -> anyhow::Result<Model<f32>> {
         match self {
-            Self::GPT2(model) => model.to_provable_model(c, user_input_shape),
+            Self::GPT2(model) => model.into_provable_model(c, user_input_shape),
         }
     }
 }
@@ -156,7 +156,7 @@ impl GPT2Model {
     /// Creates a Model<f32> from the GPT2Model. Currently it does NOT support the embeddings and positional nor
     /// multiple passes.
     /// User input shape is the shape of the user input tensor.
-    pub fn to_provable_model(
+    pub fn into_provable_model(
         self,
         c: &LLMConfig,
         user_input_shape: Shape,
@@ -329,8 +329,8 @@ impl TokenizerData {
     pub fn into_tokenizer(self) -> impl LLMTokenizer {
         let temp_dir = env::temp_dir();
         let pid = process::id();
-        let vocab_path = temp_dir.join(format!("vocab-{}.json", pid));
-        let merges_path = temp_dir.join(format!("merges-{}.txt", pid));
+        let vocab_path = temp_dir.join(format!("vocab-{pid}.json"));
+        let merges_path = temp_dir.join(format!("merges-{pid}.txt"));
 
         // Prepare vocab.json content
         let values: HashMap<String, i64> = self

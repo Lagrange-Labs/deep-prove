@@ -211,7 +211,7 @@ where
     /// Requires as inputs the contexts for all the nodes in the model
     /// and the set of claims for the input tensors of all the nodes of
     /// the model
-    pub(crate) fn input_claims<'a, I: Iterator<Item = (&'a NodeId, &'a Self)>>(
+    pub(crate) fn input_claims<'a, I: Iterator<Item = (NodeId, &'a Self)>>(
         nodes: I,
         claims_by_node: &HashMap<NodeId, Vec<Claim<E>>>,
     ) -> Result<Vec<(NodeId, Vec<&Claim<E>>)>> {
@@ -223,7 +223,7 @@ where
             for (i, edge) in ctx.inputs.iter().enumerate() {
                 if edge.node.is_none() {
                     let claims_for_node = claims_by_node
-                        .get(node_id)
+                        .get(&node_id)
                         .ok_or(anyhow!("Claim not found for node {}", node_id))?;
                     node_claims.push(&claims_for_node[i]);
                     min_index = min_index.min(edge.index);
@@ -231,7 +231,9 @@ where
                     total += 1;
                 }
             }
-            claims.push((*node_id, node_claims));
+            if !node_claims.is_empty() {
+                claims.push((node_id, node_claims));
+            }
         }
         ensure!(
             !claims.is_empty(),
@@ -241,7 +243,6 @@ where
             min_index == 0 && max_index == total - 1,
             "Not all input claims were found"
         );
-
         Ok(claims)
     }
 }

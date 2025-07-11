@@ -76,7 +76,7 @@ impl<N: Number> OpInfo for Embeddings<N> {
         assert_eq!(
             input_shapes[0].rank(),
             1,
-            "embeddings only support 2d tensors"
+            "embeddings only support 1d tensors"
         );
         let seq_len = input_shapes[0].dim(0);
         let shape = match padding_mode {
@@ -142,9 +142,7 @@ impl<N: Number> Evaluate<N> for Embeddings<N> {
                 let idx = v.to_usize();
                 assert!(
                     idx < vocab_size,
-                    "idx {} out of bounds for vocab size {}",
-                    idx,
-                    vocab_size
+                    "idx {idx} out of bounds for vocab size {vocab_size}"
                 );
                 let emd_idx = idx * emb_size;
                 emb_data[emd_idx..emd_idx + emb_size].to_vec()
@@ -408,7 +406,10 @@ mod tests {
     use p3_field::FieldAlgebra;
 
     use crate::{
-        layers::Layer, model::{test::prove_model_with, Model}, quantization::TensorFielder, Element
+        Element,
+        layers::Layer,
+        model::{Model, test::prove_model_with},
+        quantization::TensorFielder,
     };
 
     use super::*;

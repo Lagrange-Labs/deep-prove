@@ -87,9 +87,9 @@ pub fn pad_model(mut model: Model<Element>) -> Result<Model<Element>> {
             .into_iter()
             .zip(model.padded_input_shapes())
             .map(|(unpadded_shape, padded_shape)| ShapeData {
-                input_shape_padded: padded_shape.into(),
+                input_shape_padded: padded_shape,
                 ignore_garbage_pad: None,
-                input_shape_og: unpadded_shape.into(),
+                input_shape_og: unpadded_shape,
             })
             .collect(),
     };
@@ -148,8 +148,8 @@ pub(crate) fn pooling(p: Pooling, si: &mut ShapeInfo) -> Result<Pooling> {
             sd.input_shape_padded.is_power_of_two(),
             "Input shape for max pool is not padded"
         );
-        sd.input_shape_og = safe_maxpool2d_shape(&sd.input_shape_og)?.into();
-        sd.input_shape_padded = safe_maxpool2d_shape(&sd.input_shape_padded)?.into();
+        sd.input_shape_og = safe_maxpool2d_shape(&sd.input_shape_og)?;
+        sd.input_shape_padded = safe_maxpool2d_shape(&sd.input_shape_padded)?;
     }
     Ok(p)
 }
@@ -164,7 +164,7 @@ pub(crate) fn pad_conv(
         "More than 1 input shape found when padding convolution layer"
     );
     let sd = si.shapes.first_mut().unwrap();
-    sd.input_shape_og = safe_conv2d_shape(&sd.input_shape_og, &c.filter.get_shape())?.into();
+    sd.input_shape_og = safe_conv2d_shape(&sd.input_shape_og, &c.filter.get_shape())?;
     let weight_shape = c.filter.get_shape();
     // Perform basic sanity checks on the tensor dimensions
     check_filter(&weight_shape).context("filter shape test failed:")?;
@@ -193,7 +193,7 @@ pub(crate) fn pad_conv(
     );
 
     let new_conv = new_conv_good.into_padded_and_ffted(&sd.input_shape_og);
-    let output_shape: Shape = safe_conv2d_shape(&sd.input_shape_padded, &weight_shape)?.into();
+    let output_shape: Shape = safe_conv2d_shape(&sd.input_shape_padded, &weight_shape)?;
     sd.input_shape_padded = output_shape.next_power_of_two();
     Ok(new_conv)
 }
@@ -205,7 +205,7 @@ pub(crate) fn pad_dense(mut d: Dense<Element>, si: &mut ShapeInfo) -> Result<Den
         "More than 1 input shape found when padding dense layer"
     );
     let sd = si.shapes.first_mut().unwrap();
-    let matrix_shape: Shape = d.matrix.get_shape().into();
+    let matrix_shape: Shape = d.matrix.get_shape();
     let nrows = matrix_shape.nrows();
     sd.input_shape_og = vec![nrows].into();
     ensure!(
@@ -328,7 +328,7 @@ pub(crate) fn pad_matmul(mut mat: MatMul<Element>, si: &mut ShapeInfo) -> Result
         "MatMul layer has garbage padding to be removed",
     );
     si.shapes = vec![ShapeData {
-        input_shape_og: unpadded_output_shape.into(),
+        input_shape_og: unpadded_output_shape,
         input_shape_padded: vec![left_shape[0], right_shape[1]].into(),
         ignore_garbage_pad: None,
     }];
@@ -352,8 +352,10 @@ pub(crate) fn pad_qkv(mut qkv: QKV<Element>, si: &mut ShapeInfo) -> Result<QKV<E
         "Padded input shape for QKV is not 2D"
     );
 
-    let unpadded_output_shapes =
-        qkv.output_shapes(&vec![sd.input_shape_og.clone()], PaddingMode::NoPadding);
+    let unpadded_output_shapes = qkv.output_shapes(
+        std::slice::from_ref(&sd.input_shape_og),
+        PaddingMode::NoPadding,
+    );
     let expected_num_outputs = qkv.num_outputs(1);
     ensure!(
         unpadded_output_shapes.len() == expected_num_outputs,
@@ -391,8 +393,10 @@ pub(crate) fn pad_qkv(mut qkv: QKV<Element>, si: &mut ShapeInfo) -> Result<QKV<E
             bias_vec.pad_to_shape(vec![pad_minimum(new_len)].into())
         });
 
-    let padded_output_shapes =
-        qkv.output_shapes(&vec![sd.input_shape_padded.clone()], PaddingMode::Padding);
+    let padded_output_shapes = qkv.output_shapes(
+        std::slice::from_ref(&sd.input_shape_padded),
+        PaddingMode::Padding,
+    );
     ensure!(
         unpadded_output_shapes.len() == padded_output_shapes.len(),
         "Number of unpadded output shapes different from number of padded output shapes for QKV layer"

@@ -8,7 +8,7 @@ use std::{
 use timed_core::Output;
 #[cfg(feature = "blake")]
 use transcript::blake::BlakeTranscript;
-use utils::{MeasureStage, info_metrics};
+use utils::Metrics;
 use zkml::{
     model::Model,
     quantization::{AbsoluteMax, InferenceObserver, ModelMetadata},
@@ -274,62 +274,61 @@ fn read_model(args: &Args, inputs: &InputJSON) -> Result<(Model<Element>, ModelM
 }
 
 fn run(args: Args) -> anyhow::Result<()> {
-    let (run_inputs, model, md) = {
-        info_metrics!(
-            format!("[+] Reading model {}", args.io),
-            format!("[-] Finished reading model {}", args.io),
-        );
+    info!("== Reading Model ==");
+    let metrics = Metrics::new();
 
-        info!("[+] Reading raw input/output from {}", args.io);
-        let run_inputs = InputJSON::from(&args.io, args.num_samples).context("loading input:")?;
-
-        info!("[+] Found {} IO samples", run_inputs.input_data.len());
-        let (model, md) = read_model(&args, &run_inputs)?;
-
-        info!("[+] Model loaded");
-        model.describe();
-
-        (run_inputs.filter(args.run_indices.as_ref()), model, md)
-    };
-
-    let (float_accuracy, num_samples, pytorch_accuracy) = {
-        info_metrics!("[+] Computing accuracy", "[-] Finished computing accuracy");
-
-        let float_accuracy = if let Some(ref float_model) = md.float_model {
-            info!("[+] Running float model");
-            run_float_model(&run_inputs, float_model)?
-        } else {
-            info!("[!] No float model available");
-            0.0
-        };
-
-        info!("[+] Computing PyTorch accuracy");
-        let num_samples = run_inputs.output_data.len();
-        let pytorch_accuracy = run_inputs.compute_pytorch_accuracy();
-
-        (float_accuracy, num_samples, pytorch_accuracy)
-    };
-
-    info!("[+] Quantizing inputs with strategy: {}", args.quantization);
-    let (inputs, given_outputs) = run_inputs.into_elements(&md);
-
-    let measure = MeasureStage::new(
-        "[+] Generating context for proving".into(),
-        "[-] Finished generating context for proving".into(),
+    let run_inputs = InputJSON::from(&args.io, args.num_samples).context("loading input:")?;
+    info!(
+        "[+] Read input from {} with {} IO samples",
+        args.io,
+        run_inputs.input_data.len()
     );
+
+    let (model, md) = read_model(&args, &run_inputs)?;
+
+    info!("[+] Model loaded:");
+    model.describe();
+
+    let run_inputs = run_inputs.filter(args.run_indices.as_ref());
+
+    info!("== Reading model metrics: {} ==", metrics.to_span());
+
+    info!("== Accuracy ==");
+    let metrics = Metrics::new();
+
+    let float_accuracy = if let Some(ref float_model) = md.float_model {
+        let float_accuracy = run_float_model(&run_inputs, float_model)?;
+        info!("[+] Ran float model");
+        float_accuracy
+    } else {
+        info!("[!] No float model available");
+        0.0
+    };
+
+    let num_samples = run_inputs.output_data.len();
+    let pytorch_accuracy = run_inputs.compute_pytorch_accuracy();
+    info!("[+] Computed PyTorch accuracy");
+
+    info!("== Accuracy metrics: {} ==", metrics.to_span());
+
+    info!("== Creating context ==");
+    let metrics = Metrics::new();
+
+    let (inputs, given_outputs) = run_inputs.into_elements(&md);
+    info!("[+] Quantized inputs with strategy: {}", args.quantization);
+
     let ctx = if !args.skip_proving {
         Some(Context::<F, Pcs<F>>::generate(&model, None).expect("unable to generate context"))
     } else {
         None
     };
-    let context_metrics = measure.metrics();
-    let setup_time = context_metrics.elapsed.as_millis();
 
-    // Collect accuracies for final average
+    let metrics = metrics.to_span();
+    let setup_time = metrics.elapsed.as_millis();
+    info!("== Context creation metrics: {} ==", metrics);
+
     let mut accuracies = Vec::new();
-    // Track failed inputs
     let mut failed_inputs = Vec::new();
-
     let input_iter = inputs.into_iter().zip(given_outputs).enumerate();
 
     for (i, (input, given_output)) in input_iter {
@@ -345,31 +344,22 @@ fn run(args: Args) -> anyhow::Result<()> {
         // Store the setup time in the bencher (without re-running setup)
         bencher.set(CSV_SETUP, setup_time);
 
-        let input_tensor = {
-            info_metrics!(
-                "[+] Loading model inputs",
-                "[-] Finished loading model inputs"
-            );
+        info!("== Running model ==");
+        let metrics = Metrics::new();
+        let input_tensor = model.load_input_flat(vec![input])?;
 
-            // Tensor::new(model.input_not_padded.clone(), input);
-            model.load_input_flat(vec![input])?
-        };
-
-        let trace_result = {
-            info_metrics!("[+] Running inference", "[-] Finished running inference");
-
-            bencher.r(CSV_INFERENCE, || model.run(&input_tensor))
-        };
+        let trace_result = bencher.r(CSV_INFERENCE, || model.run(&input_tensor));
+        info!("== Running model metrics: {} ==", metrics.to_span());
 
         // If model.run fails, print the error and continue to the next input
         let trace = match trace_result {
             Ok(trace) => trace,
-            Err(e) => {
+            Err(err) => {
                 info!(
                     "[!] Error running inference for input {}/{}: {}",
                     i + 1,
                     args.num_samples,
-                    e
+                    err,
                 );
                 failed_inputs.push(i);
                 continue; // Skip to the next input without writing to CSV
@@ -407,41 +397,40 @@ fn run(args: Args) -> anyhow::Result<()> {
             continue;
         }
 
-        let (io, proof) = {
-            info_metrics!("[+] Running prover", "[-] Finished running prover");
+        info!("== Proving ==");
+        let metrics = Metrics::new();
 
-            let io = trace.to_verifier_io();
-            let mut prover_transcript = new_transcript();
-            let prover = Prover::<_, _, _>::new(ctx.as_ref().unwrap(), &mut prover_transcript);
+        let io = trace.to_verifier_io();
+        let mut prover_transcript = new_transcript();
+        let prover = Prover::<_, _, _>::new(ctx.as_ref().unwrap(), &mut prover_transcript);
 
-            let proof = bencher.r(CSV_PROVING, move || {
-                prover.prove(trace).expect("unable to generate proof")
-            });
-
-            (io, proof)
-        };
+        let proof = bencher.r(CSV_PROVING, move || {
+            prover.prove(trace).expect("unable to generate proof")
+        });
 
         // Serialize proof using MessagePack and calculate size in KB
         let proof_bytes = to_vec_named(&proof)?;
         let proof_size_kb = proof_bytes.len() as f64 / 1024.0;
         bencher.set(CSV_PROOF_SIZE, format!("{proof_size_kb:.3}"));
 
-        {
-            info_metrics!("[+] Running verifier", "[-] Finished running verifier");
+        info!("== Proving metrics: {} ==", metrics.to_span());
 
-            let mut verifier_transcript = new_transcript();
-            bencher.r(CSV_VERIFYING, || {
-                verify::<_, _, _>(
-                    ctx.as_ref().unwrap().clone(),
-                    proof,
-                    io,
-                    &mut verifier_transcript,
-                )
-                .expect("invalid proof")
-            });
-        }
+        info!("== Proving ==");
+        let metrics = Metrics::new();
+
+        let mut verifier_transcript = new_transcript();
+        bencher.r(CSV_VERIFYING, || {
+            verify::<_, _, _>(
+                ctx.as_ref().unwrap().clone(),
+                proof,
+                io,
+                &mut verifier_transcript,
+            )
+            .expect("invalid proof")
+        });
 
         info!("[+] Verify proof: valid");
+        info!("== Verifier metrics: {} ==", metrics.to_span());
 
         bencher.flush(&args.bench)?;
         info!("[+] Benchmark results appended to {}", args.bench);
@@ -499,7 +488,6 @@ impl CSVBencher {
         let now = time::Instant::now();
         let output = f();
         let elapsed = now.elapsed().as_millis();
-        info!("STEP: {} took {}ms", column, elapsed);
         self.data.insert(column.to_string(), elapsed.to_string());
         output
     }

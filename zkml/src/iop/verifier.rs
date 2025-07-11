@@ -183,10 +183,6 @@ where
             let shape_step = shape_steps
                 .get(&node_id)
                 .ok_or(anyhow!("Shape for node {node_id} not found"))?;
-            println!(
-                "VERIFIER: Verifying proof {} for node {node_id}",
-                node_proof.variant_name(),
-            );
             let claims_for_verify = step.claims_for_node(&claims_by_layer, &out_claims)?;
             let claims = {
                 if step.ctx.is_provable() {
@@ -201,8 +197,6 @@ where
             };
             claims_by_layer.insert(node_id, claims);
         }
-
-        let input_claims = NodeCtx::input_claims(ctx.steps_info.nodes.iter(), &claims_by_layer)?;
 
         // 5. Verify the lookup table proofs
         let mut table_poly_id = proof.steps.len();
@@ -232,6 +226,9 @@ where
                 Result::<(), anyhow::Error>::Ok(())
             })?;
 
+        // inputs are assigned at inference time using the forward iterator so we need to use the same ordering here.
+        let input_claims =
+            NodeCtx::input_claims(ctx.steps_info.to_forward_iterator(), &claims_by_layer)?;
         // 6. input verification: evaluating the input at the random evaluation point from the sumcheck
         let mut inputs_iter = io.input.into_iter();
         for (node_id, claims) in input_claims.into_iter() {

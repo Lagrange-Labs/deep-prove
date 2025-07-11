@@ -497,7 +497,7 @@ mod test {
                 .context(format!("failed to open file {}", debug_output_path.clone()))?,
         )?;
         let input = Tensor::new(
-            vec![gpt2_output.input_ids.len(), 1].into(),
+            vec![gpt2_output.input_ids.len()].into(),
             gpt2_output.input_ids.iter().map(|x| *x as f32).collect(),
         );
         let embedded = llm_model
@@ -578,19 +578,19 @@ mod test {
         let input = Tensor::new(
             // setup 1 as last dimension since embeddings iterate over last dimension
             // or call unsqueeze
-            vec![gpt2_output.input_ids.len(), 1].into(),
+            vec![gpt2_output.input_ids.len()].into(),
             gpt2_output.input_ids.iter().map(|x| *x as f32).collect(),
         );
         // also test on a single random token
         let max_token = thread_rng().gen_range(0..llm_model.embeddings.vocab_size);
-        let single_input = Tensor::new(vec![1, 1].into(), vec![max_token as f32]);
+        let single_input = Tensor::new(vec![1].into(), vec![max_token as f32]);
         let model = llm_model
             .clone()
-            .to_provable_model(&config, Shape::from(single_input.get_shape()))?;
+            .into_provable_model(&config, Shape::from(single_input.get_shape()))?;
         model.describe();
         model.run_float(&[single_input.clone()])?;
 
-        let model = llm_model.to_provable_model(&config, Shape::from(input.get_shape()))?;
+        let model = llm_model.into_provable_model(&config, Shape::from(input.get_shape()))?;
         let output = model.run_float(&[input.clone()])?[0].clone();
         // since the expected output is only for one token, but our model generates logits for all tokens,
         // we take the last element of the model output

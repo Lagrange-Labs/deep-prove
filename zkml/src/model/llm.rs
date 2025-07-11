@@ -67,7 +67,7 @@ impl Driver<f32> {
         // even though the llm runtime doesn't care about the model input shape, which is designed for "static" input shapes, we still
         // need to provide one.
         let init_user_shape = Shape::from(vec![1]);
-        let model = llm_model.to_provable_model(&config, init_user_shape)?;
+        let model = llm_model.into_provable_model(&config, init_user_shape)?;
         Ok(Self {
             model,
             config,
@@ -103,7 +103,7 @@ where
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
-        let eos_token: N = self.config.specific_config.eos_token().to_number();
+        let eos_token: N = self.config.specific_config.eos_token().as_number();
         let mut seq_len = input.len();
         let user_len = seq_len;
         // -1 because we at least want to generate ONE token
@@ -114,8 +114,8 @@ where
         let mut trace = InferenceTrace::default();
         // convert the input to the correct number type and add a dimension to make it 2d, because the embeddings layer expects a 2d tensor
         let mut tensor = Tensor::new(
-            vec![input.len(), 1].into(),
-            input.into_iter().map(|t| t.to_number()).collect::<Vec<_>>(),
+            vec![input.len()].into(),
+            input.into_iter().map(|t| t.as_number()).collect::<Vec<_>>(),
         );
         let max_window = self.max_context.unwrap_or(self.config.context_length);
         while seq_len < max_window {

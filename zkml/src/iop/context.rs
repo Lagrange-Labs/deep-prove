@@ -124,9 +124,11 @@ where
             .fold(0usize, |acc, shapes| acc.max(shapes.product()));
         let mut model_polys = Vec::<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>::new();
         let mut step_infos = HashMap::new();
+        let mut node_ids_in_order = BTreeSet::new();
         let mut shapes: HashMap<NodeId, Vec<Shape>> = HashMap::new();
         debug!("Context : layer info generation ...");
         for (id, node) in model.to_forward_iterator() {
+            node_ids_in_order.insert(id);
             trace!(
                 "Context : {}-th layer {}info generation ...",
                 id,
@@ -226,7 +228,10 @@ where
         debug!("Context : lookup generation ...");
         let lookup_ctx = LookupContext::new(&ctx_aux.tables);
         Ok(Self {
-            steps_info: ModelCtx { nodes: step_infos },
+            steps_info: ModelCtx {
+                nodes: step_infos,
+                node_ids: node_ids_in_order,
+            },
             commitment_ctx,
             lookup: lookup_ctx,
             unpadded_input_shapes: model.unpadded_input_shapes(),

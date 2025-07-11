@@ -6,7 +6,6 @@ pub mod verifier;
 
 #[cfg(test)]
 mod tests {
-    use ark_std::rand::thread_rng;
     use ff_ext::{ExtensionField, FromUniformBytes, GoldilocksExt2};
     use itertools::izip;
     use multilinear_extensions::mle::{DenseMultilinearExtension, MultilinearExtension};
@@ -21,12 +20,13 @@ mod tests {
             verifier::verify_logup_proof,
         },
         quantization::Fieldizer,
+        rng_from_env_or_random,
         testing::random_vector,
     };
 
     #[test]
     fn test_logup_prove() {
-        let mut rng = thread_rng();
+        let mut rng = rng_from_env_or_random();
         for n in 5..15 {
             let column = random_vector(1 << n)
                 .into_iter()

@@ -5,7 +5,7 @@ use crate::{
     quantization::{self, MAX_FLOAT, MIN_FLOAT},
 };
 use anyhow::{bail, ensure};
-use ark_std::rand::{self, Rng, SeedableRng, rngs::StdRng};
+use ark_std::rand::Rng;
 use ff_ext::{ExtensionField, GoldilocksExt2};
 use itertools::Itertools;
 use multilinear_extensions::{mle::DenseMultilinearExtension, util::ceil_log2};
@@ -454,7 +454,7 @@ impl Tensor<Element> {
         let (x_vec, input): (Vec<Vec<F>>, Vec<Vec<F>>) = real_input
             .par_chunks(n_x * n_x)
             .map(|chunk| {
-                let xx_input = chunk.into_iter().cloned().rev().collect::<Vec<_>>();
+                let xx_input = chunk.iter().cloned().rev().collect::<Vec<_>>();
                 let mut xx_fft = xx_input
                     .iter()
                     .cloned()
@@ -831,7 +831,7 @@ where
         self.data
             .iter()
             .enumerate()
-            .fold((0, T::MIN), |acc, x| match acc.1.compare(&x.1) {
+            .fold((0, T::MIN), |acc, x| match acc.1.compare(x.1) {
                 Ordering::Less => (x.0, *x.1),
                 _ => acc,
             })
@@ -893,12 +893,7 @@ where
         let data = self
             .data
             .par_chunks(self.shape[1])
-            .flat_map_iter(|chunk| {
-                chunk
-                    .into_iter()
-                    .zip(other.data.iter())
-                    .map(|(a, b)| *a + *b)
-            })
+            .flat_map_iter(|chunk| chunk.iter().zip(other.data.iter()).map(|(a, b)| *a + *b))
             .collect::<Vec<_>>();
         Tensor {
             shape: self.shape.clone(),
@@ -1205,7 +1200,7 @@ where
             vec![vec![Default::default(); x[0].len() - w[0].len() + 1]; x.len() - w.len() + 1];
         out.par_iter_mut().enumerate().for_each(|(i, out_row)| {
             out_row.par_iter_mut().enumerate().for_each(|(j, out_val)| {
-                *out_val = self.conv_prod(&x, &w, i, j);
+                *out_val = self.conv_prod(x, w, i, j);
             });
         });
         out
@@ -1498,8 +1493,7 @@ where
                         for kw in 0..k_w {
                             let h = oh * stride + kh;
                             let w = ow * stride + kw;
-                            sum =
-                                sum + self.get_at_4d(n, c, h, w) * kernels.get_at_4d(o, c, kh, kw);
+                            sum += self.get_at_4d(n, c, h, w) * kernels.get_at_4d(o, c, kh, kw);
                         }
                     }
                 }
@@ -1573,9 +1567,7 @@ where
         {
             assert!(
                 *a < *s,
-                "Index out of bounds: {} >= {} - 0-based indexing forbids",
-                a,
-                s
+                "Index out of bounds: {a} >= {s} - 0-based indexing forbids"
             );
             flat_index += *a * multiplier;
             multiplier *= *s;
@@ -1714,16 +1706,18 @@ impl<T: Number> Tensor<T> {
     pub fn min_value(&self) -> T {
         self.data.iter().fold(T::MAX, |min, x| min.cmp_min(x))
     }
+    #[cfg(test)]
     pub fn random(shape: &Shape) -> Self {
-        Self::random_seed(shape, Some(rand::random::<u64>()))
+        Self::random_seed(shape, Some(crate::seed_from_env_or_rng()))
     }
 
     /// Creates a random matrix with a given number of rows and cols.
     /// NOTE: doesn't take a rng as argument because to generate it in parallel it needs be sync +
     /// sync which is not true for basic rng core.
+    #[cfg(test)]
     pub fn random_seed(shape: &Shape, seed: Option<u64>) -> Self {
-        let seed = seed.unwrap_or(rand::random::<u64>()); // Use provided seed or default
-        let mut rng = StdRng::seed_from_u64(seed);
+        let seed = seed.unwrap_or_else(|| crate::seed_from_env_or_rng()); // Use provided seed or default
+        let mut rng = <crate::StdRng as ark_std::rand::SeedableRng>::seed_from_u64(seed);
         let size = shape.product();
         let data = (0..size).map(|_| T::random(&mut rng)).collect();
         Self {
@@ -1758,7 +1752,7 @@ impl<T: Number> Tensor<T> {
         let data = self.data[range].to_vec();
         let new_shape = vec![dim2_end - dim2_start, self.shape[1]];
         Self {
-            data: data,
+            data,
             shape: new_shape.into(),
             og_shape: vec![0].into(),
         }
@@ -1874,8 +1868,7 @@ impl<T> Tensor<T> {
     }
 
     pub fn unsqueeze(self, index: usize) -> Self {
-        let new_shape = self.shape.clone();
-        new_shape.insert(index, 1);
+        let new_shape = self.shape.insert(index, 1);
         Self {
             data: self.data,
             shape: new_shape,
@@ -1914,7 +1907,7 @@ impl Shape {
     ///
     /// If `shape` is an empty vector.
     pub fn new(shape: Vec<usize>) -> Self {
-        assert!(shape.len() != 0, "Shape can not be empty");
+        assert!(!shape.is_empty(), "Shape can not be empty");
         Self(shape)
     }
 
@@ -1987,7 +1980,7 @@ impl Shape {
             .rev()
             .scan(1usize, |state, item| {
                 let el = Some(*state);
-                *state = *state * item;
+                *state *= item;
                 el
             })
             .collect::<Vec<_>>();
@@ -2075,9 +2068,11 @@ impl FromIterator<usize> for Shape {
 #[cfg(test)]
 mod test {
 
-    use ark_std::rand::{Rng, thread_rng};
+    use ark_std::rand::Rng;
     use ff_ext::GoldilocksExt2;
     use ndarray::{Array, Ix2, Order};
+
+    use crate::rng_from_env_or_random;
 
     use super::*;
     use multilinear_extensions::mle::MultilinearExtension;
@@ -2211,7 +2206,7 @@ mod test {
         }
 
         pub fn random_eval_point(&self) -> Vec<E> {
-            let mut rng = thread_rng();
+            let mut rng = rng_from_env_or_random();
             let r = rng.gen_range(0..self.nrows_2d());
             let c = rng.gen_range(0..self.ncols_2d());
             self.position_to_boolean_2d(r, c)
@@ -2225,10 +2220,8 @@ mod test {
         let mat = mat.pad_next_power_of_two();
         println!("matrix {}", mat);
         let mut mle = mat.to_2d_mle::<E>();
-        let (chosen_row, chosen_col) = (
-            thread_rng().gen_range(0..shape[0]),
-            thread_rng().gen_range(0..shape[1]),
-        );
+        let mut rng = rng_from_env_or_random();
+        let (chosen_row, chosen_col) = (rng.gen_range(0..shape[0]), rng.gen_range(0..shape[1]));
         let elem = mat.get_2d(chosen_row, chosen_col);
         let elem_field: E = elem.to_field();
         println!("(x,y) = ({},{}) ==> {:?}", chosen_row, chosen_col, elem);
