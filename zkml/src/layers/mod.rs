@@ -781,19 +781,11 @@ where
             LayerProof::MhaQK => None,
             LayerProof::ConcatMatMul => None,
             LayerProof::LayerNorm => None,
-            LayerProof::Softmax(SoftmaxProof {
-                exp_lookup,
-                range_lookup,
-                error_lookup,
-                ..
-            }) => {
-                let (exp_nums, exp_denoms) = exp_lookup.fractional_outputs();
-                let (range_nums, range_denoms) = range_lookup.fractional_outputs();
-                let (error_nums, error_denoms) = error_lookup.fractional_outputs();
-                Some((
-                    [exp_nums, range_nums, error_nums].concat(),
-                    [exp_denoms, range_denoms, error_denoms].concat(),
-                ))
+            LayerProof::Softmax(SoftmaxProof { logup_proofs, .. }) => {
+                let (nums, denoms): (Vec<Vec<E>>, Vec<Vec<E>>) =
+                    logup_proofs.iter().map(|p| p.fractional_outputs()).unzip();
+
+                Some((nums.concat(), denoms.concat()))
             }
             LayerProof::Add => None,
             LayerProof::Logits => None,

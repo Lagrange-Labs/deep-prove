@@ -20,6 +20,16 @@ use transcript::Transcript;
 
 pub type PolyId = String;
 
+type ModelCommitmentsMap<PCS, E> = BTreeMap<
+    NodeId,
+    BTreeMap<
+        PolyId,
+        (
+            <PCS as PolynomialCommitmentScheme<E>>::CommitmentWithWitness,
+            DenseMultilinearExtension<E>,
+        ),
+    >,
+>;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 /// Struct that stores general information about commitments used for proving inference in a [`Model`].
@@ -34,10 +44,7 @@ where
     /// Verifier parameters for the [`PolynomialCommitmentScheme`]
     verifier_params: PCS::VerifierParam,
     /// This field contains a [`BTreeMap`] where the key is a [`NodeId`] and the value is a vector of tuples of [`PolynomialCommitmentScheme::CommitmentWithWitness`]  and [`DenseMultilinearExtension<E>`] corresponding to that ID.
-    model_comms_map: BTreeMap<
-        NodeId,
-        BTreeMap<PolyId, (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
-    >,
+    model_comms_map: ModelCommitmentsMap<PCS, E>,
     /// This field contains a [`BTreeMap`] relating to lookup tables used by the model
     table_comms_map: HashMap<TableType, (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
 }

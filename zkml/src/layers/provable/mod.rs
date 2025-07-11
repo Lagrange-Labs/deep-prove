@@ -122,6 +122,7 @@ impl<N: Number> Node<N> {
 /// Enum if the output of evaluating a layer returns extra data needed during proving.
 /// This should only be implemented for quantised layers.
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum ProvingData<E: ExtensionField> {
     /// Variant for extra data used in proving that we compute during evalaution of quantised convolution.
     Convolution(ConvData<E>),

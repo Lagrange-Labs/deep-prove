@@ -28,6 +28,8 @@ use crate::{
 use rayon::prelude::*;
 pub const TABLE_POLY_ID_OFFSET: usize = 666;
 
+type LookupAndColumns<BaseField> = (Vec<Element>, (Vec<BaseField>, Vec<BaseField>));
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 /// Enum used for establishing the different table types needed to prove non-linear functions in a model.
 pub enum TableType {
@@ -41,6 +43,8 @@ pub enum TableType {
     Softmax(SoftmaxTableData),
     /// Table used for checking the normalisation error in Softmax operations, the first inner [`Element`] is `1` quantised by the scale factor, the second inner [`Element`] is the absoloute value of the allowable error
     ErrorTable(Element, Element),
+    /// Table use to check if a value is zero or not, returns 1 if the value is zero and zero otherwise, the [`usize`] indicates how many variables the table has.
+    ZeroTable(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -156,20 +160,18 @@ impl TableType {
             TableType::Softmax(table_data) => {
                 let table_size = table_data.full_table_size();
 
-                let (merged_lookup, (in_column, out_column)): (
-                    Vec<Element>,
-                    (Vec<E::BaseField>, Vec<E::BaseField>),
-                ) = (0i128..table_size)
-                    .map(|j| {
-                        let out_elem = table_data.table_output(j);
-                        let in_field: E = j.to_field();
-                        let out_field: E = out_elem.to_field();
-                        (
-                            j + COLUMN_SEPARATOR * out_elem,
-                            (in_field.as_bases()[0], out_field.as_bases()[0]),
-                        )
-                    })
-                    .unzip();
+                let (merged_lookup, (in_column, out_column)): LookupAndColumns<E::BaseField> =
+                    (0i128..table_size)
+                        .map(|j| {
+                            let out_elem = table_data.table_output(j);
+                            let in_field: E = j.to_field();
+                            let out_field: E = out_elem.to_field();
+                            (
+                                j + COLUMN_SEPARATOR * out_elem,
+                                (in_field.as_bases()[0], out_field.as_bases()[0]),
+                            )
+                        })
+                        .unzip();
                 (merged_lookup, vec![in_column, out_column])
             }
             TableType::ErrorTable(quant_one, allowable_error) => {
@@ -189,6 +191,20 @@ impl TableType {
                     .unzip();
                 (element_out, vec![field])
             }
+            TableType::ZeroTable(bit_size) => {
+                let table_size: Element = 1 << bit_size;
+                let (merged_lookup, (in_column, out_column)): LookupAndColumns<E::BaseField> = (0
+                    ..table_size)
+                    .map(|i| {
+                        let out: Element = if i != 0 { 0 } else { 1 };
+                        let merged_val = i + COLUMN_SEPARATOR * out;
+                        let i_field: E = i.to_field();
+                        let out_field: E = out.to_field();
+                        (merged_val, (i_field.as_bases()[0], out_field.as_bases()[0]))
+                    })
+                    .unzip();
+                (merged_lookup, vec![in_column, out_column])
+            }
         }
     }
 
@@ -196,16 +212,16 @@ impl TableType {
         match self {
             TableType::Relu => "Relu".to_string(),
             TableType::Range => "Range".to_string(),
-            TableType::Clamping(size) => format!("Clamping: {}", size),
+            TableType::Clamping(size) => format!("Clamping: {size}"),
             TableType::Softmax(table_data) => {
                 format!("Softmax - temperature: {}", table_data.float_temperature())
             }
             TableType::ErrorTable(quant_one, allowable_error) => {
                 format!(
-                    "Error Table - quantised one: {}, allowable error: {}",
-                    quant_one, allowable_error
+                    "Error Table - quantised one: {quant_one}, allowable error: {allowable_error}",
                 )
             }
+            TableType::ZeroTable(bit_size) => format!("Zero: {bit_size}"),
         }
     }
 
@@ -302,6 +318,26 @@ impl TableType {
                 ])
             }
             TableType::ErrorTable(..) => Ok(vec![]),
+            TableType::ZeroTable(bit_size) => {
+                if point.len() != *bit_size {
+                    return Err(LogUpError::VerifierError(format!(
+                        "Point was not the correct size to produce a softmax table evaluation, point size: {}, expected: {}",
+                        point.len(),
+                        bit_size
+                    )));
+                }
+
+                let (in_column_eval, out_column_eval) = point.iter().enumerate().fold(
+                    (E::ZERO, E::ONE),
+                    |(in_acc, out_acc), (index, p)| {
+                        (
+                            in_acc + *p * E::from_canonical_u64(1u64 << index),
+                            out_acc * (E::ONE - *p),
+                        )
+                    },
+                );
+                Ok(vec![in_column_eval, out_column_eval])
+            }
         }
     }
 
@@ -314,6 +350,7 @@ impl TableType {
             }
             TableType::Clamping(_) => transcript.get_and_append_challenge(b"Clamping").elements,
             TableType::Softmax(..) => transcript.get_and_append_challenge(b"Softmax").elements,
+            TableType::ZeroTable(..) => transcript.get_and_append_challenge(b"Zero").elements,
         }
     }
 
@@ -324,6 +361,7 @@ impl TableType {
             TableType::Clamping(bits) => *bits,
             TableType::Softmax(table_data) => table_data.size(),
             TableType::ErrorTable(_, allowable_error) => ceil_log2(2 * *allowable_error as usize),
+            TableType::ZeroTable(bits) => *bits,
         }
     }
 

@@ -430,8 +430,8 @@ pub fn infinitizer<N: Number>(
 /// Currently, it works only for a square zeroifier matrix
 pub fn eval_zeroifier_mle<F: ExtensionField>(column_point: &[F], row_point: &[F]) -> F {
     column_point
-        .into_iter()
-        .zip(row_point.into_iter())
+        .iter()
+        .zip(row_point)
         .fold(F::ONE, |acc, (&c, &r)| {
             acc * (F::ONE - c - r + F::from_canonical_u64(2) * c * r) + (F::ONE - c) * r
         })

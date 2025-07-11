@@ -111,6 +111,10 @@ impl ScalingFactor {
     pub fn scale(&self) -> f32 {
         self.scale
     }
+
+    pub fn domain(&self) -> (Element, Element) {
+        self.quantized_domain
+    }
     /// M = S1 * S2 / S3
     pub fn m(&self, s2: &Self, s3: &Self) -> f32 {
         self.scale() * s2.scale() / s3.scale()
