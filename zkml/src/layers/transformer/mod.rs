@@ -28,7 +28,7 @@ pub fn causal_mask(num_heads: usize, q_len: usize, seq_len: usize) -> Tensor<f32
 }
 
 #[cfg(test)]
-mod test {
+pub(crate) mod test {
     use std::fs::File;
 
     use anyhow::{Context, ensure};
@@ -341,12 +341,12 @@ mod test {
     }
 
     #[derive(Debug, Deserialize)]
-    struct GPT2Output {
+    pub(crate) struct GPT2Output {
         #[allow(dead_code)]
         token: String,
-        input_ids: Vec<u32>,
+        pub(crate) input_ids: Vec<u32>,
         // flattened input embeddings
-        inputs_embeds: Vec<f32>,
+        pub(crate) inputs_embeds: Vec<f32>,
         layers: Vec<GPT2LayerOutput>,
         // output of final projection before logits selection
         logits: Vec<f32>,

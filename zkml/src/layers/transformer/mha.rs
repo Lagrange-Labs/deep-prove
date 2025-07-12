@@ -915,6 +915,9 @@ pub fn eval_infinitizer_mle<F: ExtensionField + FieldFrom<u64>>(
 
 #[cfg(test)]
 mod test {
+    use std::fs::File;
+
+    use anyhow::Context;
     use ff_ext::GoldilocksExt2;
     use itertools::Itertools;
     use multilinear_extensions::mle::MultilinearExtension;
@@ -924,13 +927,19 @@ mod test {
         layers::{
             Layer,
             matrix_mul::{MatMul, OperandMatrix},
-            transformer::qkv::QKV,
+            transformer::{qkv::QKV, test::GPT2Output},
         },
         model::{
             Model,
             test::{prove_model, prove_quantized_model, quantize_model},
         },
         padding::pad_model,
+        parser::{
+            file_cache,
+            gguf::{FileTensorLoader, tests::GPT2_Q8_0_URL},
+            json::{self, test::TINY_GPT2_DEBUG_NAME},
+            llm::{LLMConfig, LLMModel},
+        },
         quantization::{self, Fieldizer},
         testing::random_field_vector,
     };
@@ -1437,11 +1446,75 @@ mod test {
     }
 
     #[test]
+    fn test_mha_with_real_values() -> anyhow::Result<()> {
+        // let model_weights_path = json::test::get_json_file(TINY_GPT2_NAME)?;
+        let debug_output_path = json::test::get_json_file(TINY_GPT2_DEBUG_NAME)?;
+        // let loader = json::FileTensorLoader::new_from_path(model_weights_path)?;
+        // let config = LLMConfig::from_json(&loader)?;
+        // let LLMModel::GPT2(llm_model) = config.model_json(&loader)?;
+        let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
+        let loader = FileTensorLoader::from_path(model_path)?;
+        let config = LLMConfig::from_content(&loader)?;
+        let model = config.model(&loader)?;
+        let LLMModel::GPT2(llm_model) = model;
+        let gpt2_output = serde_json::from_reader::<_, GPT2Output>(
+            File::open(debug_output_path.clone())
+                .context(format!("failed to open file {}", debug_output_path.clone()))?,
+        )?;
+
+        let input = Tensor::new(
+            vec![gpt2_output.input_ids.len(), 1].into(),
+            gpt2_output.input_ids.iter().map(|x| *x as f32).collect(),
+        );
+        let embedded = llm_model
+            .embeddings
+            .evaluate::<GoldilocksExt2>(&vec![&input], vec![])?;
+        let positionned = llm_model
+            .positional
+            .evaluate::<GoldilocksExt2>(&vec![embedded.outputs()[0]], vec![])?;
+
+        let input_shape = positionned.outputs()[0].get_shape();
+
+        let mut model =
+            Model::new_from_input_shapes(vec![input_shape.clone()], PaddingMode::NoPadding);
+
+        let qkv_node_id = model
+            .add_consecutive_layer(
+                Layer::QKV(QKV::new(
+                    llm_model.blocks[0].q.clone(),
+                    llm_model.blocks[0].q_bias.clone(),
+                    llm_model.blocks[0].k.clone(),
+                    llm_model.blocks[0].k_bias.clone(),
+                    llm_model.blocks[0].v.clone(),
+                    llm_model.blocks[0].v_bias.clone(),
+                    config.num_heads,
+                )?),
+                None,
+            )
+            .unwrap();
+
+        let mha = Mha::new(config.context_length, config.num_heads, config.head_dim())?;
+
+        let _mha_id = model
+            .add_consecutive_layer(Layer::Mha(mha), Some(qkv_node_id))
+            .unwrap();
+
+        model.route_output(None).unwrap();
+
+        let (quantized_model, inputs) =
+            quantize_model(model, vec![positionned.outputs()[0].clone()]).unwrap();
+
+        prove_quantized_model(quantized_model, inputs)?;
+
+        Ok(())
+    }
+
+    #[test]
     fn test_mha_padding() {
         let seq_len = 12;
         let num_heads = 5;
         let head_dim = 6;
-        let embedding_size = 11;
+        let embedding_size = 727;
         let hidden_size = num_heads * head_dim;
 
         let input_shape = Shape::new(vec![seq_len, embedding_size]);
