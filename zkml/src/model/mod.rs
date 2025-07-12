@@ -1232,7 +1232,13 @@ pub(crate) mod test {
         model: Model<f32>,
         float_inputs: Vec<Tensor<f32>>,
     ) -> anyhow::Result<(Model<Element>, Vec<Tensor<Element>>)> {
-        let (quantized_model, md) = InferenceObserver::new().quantize(model)?;
+        let (quantized_model, md) = InferenceObserver::new_with_representative_input(vec![
+            float_inputs
+                .iter()
+                .map(|input| input.get_data().to_vec())
+                .collect(),
+        ])
+        .quantize(model)?;
 
         // quantize input tensor
         let input_tensors = float_inputs

@@ -168,6 +168,12 @@ where
             .expect("No input shape found for activation layer?");
         // Set the model polys to be empty
         aux.model_polys = None;
+        aux.max_poly_len = aux
+            .last_output_shape
+            .iter()
+            .fold(aux.max_poly_len, |acc, shapes| {
+                acc.max(shapes.next_power_of_two().product())
+            });
         let info = match self {
             Activation::Relu(relu) => LayerCtx::Activation(ActivationCtx {
                 op: Activation::Relu(*relu),

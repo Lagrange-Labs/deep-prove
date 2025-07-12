@@ -11,7 +11,7 @@ use crate::{Element, Tensor, quantization};
 use anyhow::{Result, anyhow, ensure};
 use ff_ext::GoldilocksExt2;
 use itertools::Itertools;
-use statrs::statistics::{Data, Max, Min, OrderStatistics};
+use statrs::statistics::{Data, Max, Min};
 use tracing::{debug, info, warn};
 
 use super::ScalingFactor;
@@ -157,7 +157,7 @@ impl InferenceTracker {
 
     /// Returns the 0.05 and 0.95 quantiles of the distribution of the output values of the layer.
     pub(crate) fn distribution_info(&self, node_id: NodeId, output_index: usize) -> (f32, f32) {
-        let mut d: Data<Vec<f64>> = Data::new(
+        let d: Data<Vec<f64>> = Data::new(
             self.data
                 .get(&(node_id, output_index))
                 .unwrap_or_else(|| {
@@ -165,9 +165,9 @@ impl InferenceTracker {
                 })
                 .clone(),
         );
-        let min = d.percentile(5) as f32;
-        let max = d.percentile(95) as f32;
-        assert!(min <= max);
+        // let min = d.percentile(5) as f32;
+        // let max = d.percentile(95) as f32;
+        // assert!(min <= max);
         //(min, max)
         (d.min() as f32, d.max() as f32)
         // let mean = d.mean().unwrap();
