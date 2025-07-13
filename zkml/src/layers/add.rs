@@ -47,7 +47,7 @@ pub struct Add<N> {
 pub struct AddCtx {
     node_id: NodeId,
     quant_info: QuantInfo,
-    operand: Option<()>,
+    is_static_operand: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,10 +115,17 @@ impl Evaluate<Element> for Add<Element> {
         let Some(ref quant_info) = self.quant_info else {
             bail!("Add layer is not quantized");
         };
+        ensure!(inputs.len() >= 1, "Add layer expects at least 1 input");
         let left_tensor = inputs[0];
         let right_tensor = match self.operand {
             Some((ref op, _)) => op,
-            None => inputs[1],
+            None => {
+                ensure!(
+                    inputs.len() == 2,
+                    "Add layer expects 2 inputs if there is no operand"
+                );
+                inputs[1]
+            }
         };
         let left_scaled = left_tensor.scalar_mul(&(quant_info.left_scale()));
         let right_scaled = right_tensor.scalar_mul(&(quant_info.right_scale()));
@@ -132,18 +139,30 @@ impl<N> OpInfo for Add<N> {
     fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
         if let Some((_, og_shape)) = &self.operand {
             assert!(
+                input_shapes.len() == 1,
+                "Add layer expects 1 input if there is an operand"
+            );
+            assert!(
                 *og_shape == input_shapes[0],
                 "Add layer operand shape mismatch: {:?} vs {:?}",
                 og_shape,
                 &input_shapes[0]
             );
+        } else {
+            assert!(
+                input_shapes.len() == 2,
+                "Add layer expects 2 inputs if there is no operand"
+            );
+            assert!(
+                input_shapes[0] == input_shapes[1],
+                "Add layer input shapes mismatch: {:?} vs {:?}",
+                input_shapes[0],
+                input_shapes[1]
+            );
         }
         match padding_mode {
-            PaddingMode::NoPadding => input_shapes.to_vec(),
-            PaddingMode::Padding => input_shapes
-                .iter()
-                .map(|shape| shape.next_power_of_two())
-                .collect(),
+            PaddingMode::NoPadding => vec![input_shapes[0].clone()],
+            PaddingMode::Padding => vec![input_shapes[0].next_power_of_two()],
         }
     }
 
@@ -418,14 +437,14 @@ where
         };
         let mut ctx = AddCtx {
             quant_info: quant_info.clone(),
-            operand: None,
+            is_static_operand: false,
             node_id: id,
         };
         if let Some((ref op, _)) = self.operand {
             let mut model_polys = HashMap::new();
             model_polys.insert(OPERAND_POLY_ID.to_string(), op.get_data().to_vec());
             aux.model_polys = Some(model_polys);
-            ctx.operand = Some(());
+            ctx.is_static_operand = true;
         };
         Ok((LayerCtx::Add(ctx), aux))
     }
@@ -491,8 +510,14 @@ where
             .evaluate(&last_claim.point);
         let mut output_claims = vec![Claim::new(last_claim.point.clone(), left_eval)];
         let right_eval = match self.operand {
-            Some((ref op, _)) => {
-                let right_eval = op.evals_flat::<E>().into_mle().evaluate(&last_claim.point);
+            Some((_, _)) => {
+                // out = x1 * s1 + x2 * s2
+                // so x1 = (out - x2 * s2) / s1
+                let a: E = self.quant_info.as_ref().unwrap().left_scale().to_field();
+                let left_side: E = left_eval * a;
+                let right_side: E = last_claim.eval - left_side;
+                let right_eval =
+                    right_side / self.quant_info.as_ref().unwrap().right_scale().to_field();
                 let mut claims = HashMap::new();
                 claims.insert(
                     OPERAND_POLY_ID.to_string(),
@@ -558,7 +583,7 @@ where
             scaled_left + scaled_right == last_claim.eval,
             "Add layer verification failed"
         );
-        if let Some(()) = self.operand {
+        if self.is_static_operand {
             // in this case we need to verify the opening for the operand via PCS
             let mut claims = HashMap::new();
             claims.insert(
@@ -656,11 +681,11 @@ mod test {
 
     #[test]
     fn test_add_proving_with_operand() {
-        let input_shape = Shape::from(vec![2, 2]);
+        let input_shape = Shape::from(vec![3, 7]);
         for _ in 0..25 {
             let mut model =
                 Model::new_from_input_shapes(vec![input_shape.clone()], PaddingMode::NoPadding);
-            let operand = Tensor::<f32>::random(&vec![2, 2].into());
+            let operand = Tensor::<f32>::random(&input_shape);
             let add = Add::new_with(operand, input_shape.clone());
             let _ = model.add_consecutive_layer(Layer::Add(add), None).unwrap();
             model.route_output(None).unwrap();
