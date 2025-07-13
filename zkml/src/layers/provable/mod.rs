@@ -421,11 +421,7 @@ where
     /// For example, Embeddings use one hot encoding of the input before
     /// running the matmul protocol.
     /// By default, it simply evaluates the input against the input claim.
-    fn verify_input_claim(
-        &self,
-        inputs: &[Tensor<E>],
-        claims: &[&Claim<E>],
-    ) -> anyhow::Result<()> {
+    fn verify_input_claim(&self, inputs: &[Tensor<E>], claims: &[&Claim<E>]) -> anyhow::Result<()> {
         ensure!(
             inputs.len() == claims.len(),
             "number of input tensors and claims must be the same"
@@ -619,11 +615,7 @@ where
         }
     }
 
-    fn verify_input_claim(
-        &self,
-        inputs: &Vec<Tensor<E>>,
-        claims: &Vec<&Claim<E>>,
-    ) -> anyhow::Result<()> {
+    fn verify_input_claim(&self, inputs: &[Tensor<E>], claims: &[&Claim<E>]) -> anyhow::Result<()> {
         match self {
             LayerCtx::Dense(dense_ctx) => {
                 <DenseCtx<E> as VerifiableCtx<E, PCS>>::verify_input_claim(

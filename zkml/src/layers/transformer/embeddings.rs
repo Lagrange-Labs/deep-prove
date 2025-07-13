@@ -340,11 +340,7 @@ where
         Ok(vec![claims.remove(0)])
     }
 
-    fn verify_input_claim(
-        &self,
-        inputs: &Vec<Tensor<E>>,
-        claims: &Vec<&Claim<E>>,
-    ) -> anyhow::Result<()> {
+    fn verify_input_claim(&self, inputs: &[Tensor<E>], claims: &[&Claim<E>]) -> anyhow::Result<()> {
         // TODO verify efficiently the one hot encoding claim
         ensure!(inputs.len() == 1, "embeddings only support 1 input tensor");
         ensure!(claims.len() == 1, "embeddings only support 1 claim");
