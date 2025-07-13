@@ -2,13 +2,13 @@ use crate::{
     layers::provable::{Node, NodeId, QuantizeOp},
     model::{Model, ToIterator},
     quantization::metadata::{MetadataBuilder, ModelMetadata},
+    rng_from_env_or_random,
     tensor::Number,
 };
 use std::collections::HashMap;
 
 use crate::{Element, Tensor, quantization};
 use anyhow::{Result, anyhow, ensure};
-use ark_std::rand;
 use ff_ext::GoldilocksExt2;
 use itertools::Itertools;
 use statrs::statistics::{Data, Max, Min, OrderStatistics};
@@ -60,6 +60,7 @@ impl InferenceObserver {
 }
 
 const INPUT_TRACKING_ID: usize = 10_000;
+
 impl ScalingStrategy for InferenceObserver {
     type AuxData = InferenceTracker;
 
@@ -72,6 +73,7 @@ impl ScalingStrategy for InferenceObserver {
         let input_shapes = model.input_shapes();
         let input_not_padded_shapes = model.unpadded_input_shapes();
         let inputs = if self.inputs.is_empty() {
+            let mut rng = rng_from_env_or_random();
             warn!("No representative inputs provided, generating random ones");
             (0..10)
                 .map(|_| {
@@ -80,7 +82,7 @@ impl ScalingStrategy for InferenceObserver {
                         .map(|shape| {
                             let size = shape.product();
                             (0..size)
-                                .map(|_| <f32 as Number>::random(&mut rand::thread_rng()))
+                                .map(|_| <f32 as Number>::random(&mut rng))
                                 .collect_vec()
                         })
                         .collect_vec()

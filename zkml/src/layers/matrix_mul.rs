@@ -200,11 +200,10 @@ impl<T> MatMul<T> {
             );
         }
         // check that we don't have 2 weight matrix being multiplied
-        match (&left_matrix, &right_matrix) {
-            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) =>
-                Err(anyhow!("Pointless to have a layer with 2 constant matrices, just use the product as a parameter in 
-                another layer"))?,
-            _ => (), // all other configurations are allowed
+        if let (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) = (&left_matrix, &right_matrix)
+        {
+            Err(anyhow!("Pointless to have a layer with 2 constant matrices, just use the product as a parameter in 
+                another layer"))?
         }
         if let Some(bt) = bias.as_ref() {
             ensure!(bt.get_shape().len() == 1, "Bias must be a 1D tensor");
@@ -257,7 +256,7 @@ impl<T> MatMul<T> {
                     nrows,
                 );
                 mat.tensor
-                    .matmul(transposed_matrix.as_ref().unwrap_or(&right_matrix))
+                    .matmul(transposed_matrix.as_ref().unwrap_or(right_matrix))
             }
             (OperandMatrix::Input, OperandMatrix::Weigth(mat)) => {
                 let left_matrix = inputs
@@ -554,7 +553,7 @@ impl MatMul<f32> {
                     );
                     (
                         ScalingFactor::from_absolute_max(mat.tensor.max_abs_output(), None),
-                        input_scaling[0].clone(),
+                        input_scaling[0],
                     )
                 }
                 (OperandMatrix::Input, OperandMatrix::Weigth(mat)) => {
@@ -564,7 +563,7 @@ impl MatMul<f32> {
                         input_scaling.len(),
                     );
                     (
-                        input_scaling[0].clone(),
+                        input_scaling[0],
                         ScalingFactor::from_absolute_max(mat.tensor.max_abs_output(), None),
                     )
                 }
@@ -574,7 +573,7 @@ impl MatMul<f32> {
                         "Expected 2 input scaling factors for MatMul layer, found {}",
                         input_scaling.len(),
                     );
-                    (input_scaling[0].clone(), input_scaling[1].clone())
+                    (input_scaling[0], input_scaling[1])
                 }
                 (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => Err(anyhow!(
                     "Trying to quantize a layer with 2 constant matrices"
@@ -639,13 +638,13 @@ where
         step_data: &StepData<E, E>,
         prover: &mut Prover<E, T, PCS>,
     ) -> Result<Vec<Claim<E>>> {
-        Ok(self.prove_step(
+        self.prove_step(
             node_id,
             prover,
             last_claims[0],
             step_data.inputs.iter().collect(),
             step_data.outputs.outputs()[0],
-        )?)
+        )
     }
 }
 
@@ -939,9 +938,7 @@ impl MatMul<Element> {
         // there is only one product (i.e. quadratic sumcheck)
         let info = MatMulCtx {
             node_id: id,
-            matrix_poly_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&vec![vec![
-                num_vars, num_vars,
-            ]]),
+            matrix_poly_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![num_vars, num_vars]]),
             output_mle_num_vars: (nrows.ilog2() as usize, ncols.ilog2() as usize),
             left_matrix_shapes,
             right_matrix_shapes,
@@ -1036,7 +1033,7 @@ where
         verifier: &mut Verifier<E, T, PCS>,
         _shape_step: &crate::iop::context::ShapeStep,
     ) -> Result<Vec<Claim<E>>> {
-        Ok(self.verify_matmul(verifier, last_claims[0], proof)?)
+        self.verify_matmul(verifier, last_claims[0], proof)
     }
 }
 

@@ -1,1 +1,1 @@
-allowed-duplicate-crates = ["syn"]
+allowed-duplicate-crates = ["getrandom", "rand", "rand_core", "rand_chacha", "syn", "wasi"]

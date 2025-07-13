@@ -220,7 +220,7 @@ where
             requant_ids
                 .iter()
                 .map(|id| {
-                    let requant_node = self.nodes.get(&id).unwrap();
+                    let requant_node = self.nodes.get(id).unwrap();
                     format!(
                         "id: {:?}, inputs: {:?}, outputs: {:?}",
                         id, requant_node.inputs, requant_node.outputs
@@ -232,7 +232,7 @@ where
         // route inputs of the nodes using outputs of `input_node_id` to the newly inserted
         // requant node
         for requant_id in requant_ids.iter() {
-            let requant_node = self.nodes.get(&requant_id).ok_or(anyhow!(
+            let requant_node = self.nodes.get(requant_id).ok_or(anyhow!(
                 "Requant node {requant_id} just inserted not found in the model"
             ))?;
             for (i, wire) in requant_node.outputs.clone().iter().enumerate() {
@@ -562,11 +562,12 @@ pub(crate) mod test {
         },
         padding::{PaddingMode, pad_model},
         quantization::{self, InferenceObserver},
+        rng_from_env_or_random,
         tensor::{Number, Shape},
         testing::{Pcs, random_bool_vector, random_vector},
     };
     use anyhow::Result;
-    use ark_std::rand::{Rng, RngCore, thread_rng};
+    use ark_std::rand::{Rng, RngCore};
     use ff_ext::{ExtensionField, GoldilocksExt2};
     use itertools::Itertools;
     use multilinear_extensions::{
@@ -585,7 +586,7 @@ pub(crate) mod test {
 
     impl Model<Element> {
         pub fn random(num_dense_layers: usize) -> Result<(Self, Vec<Tensor<Element>>)> {
-            let mut rng = thread_rng();
+            let mut rng = rng_from_env_or_random();
             Self::random_with_rng(num_dense_layers, &mut rng)
         }
         /// Returns a random model with specified number of dense layers and a matching input.
@@ -665,7 +666,7 @@ pub(crate) mod test {
         /// Returns a model that only contains pooling and relu layers.
         /// The output [`Model`] will contain `num_layers` [`Maxpool2D`] layers and a [`Dense`] layer as well.
         pub fn random_pooling(num_layers: usize) -> Result<(Self, Vec<Tensor<Element>>)> {
-            let mut rng = thread_rng();
+            let mut rng = rng_from_env_or_random();
             // Since Maxpool reduces the size of the output based on the kernel size and the stride we need to ensure that
             // Our starting input size is large enough for the number of layers.
 

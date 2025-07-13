@@ -586,11 +586,11 @@ mod test {
         let single_input = Tensor::new(vec![1, 1].into(), vec![max_token as f32]);
         let model = llm_model
             .clone()
-            .to_provable_model(&config, Shape::from(single_input.get_shape()))?;
+            .into_provable_model(&config, Shape::from(single_input.get_shape()))?;
         model.describe();
         model.run_float(&[single_input.clone()])?;
 
-        let model = llm_model.to_provable_model(&config, Shape::from(input.get_shape()))?;
+        let model = llm_model.into_provable_model(&config, Shape::from(input.get_shape()))?;
         let output = model.run_float(&[input.clone()])?[0].clone();
         // since the expected output is only for one token, but our model generates logits for all tokens,
         // we take the last element of the model output

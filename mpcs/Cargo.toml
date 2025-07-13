@@ -68,3 +68,6 @@ name = "fft"
 [[bench]]
 harness = false
 name = "utils"
+
+[lints.clippy]
+type_complexity = "allow"

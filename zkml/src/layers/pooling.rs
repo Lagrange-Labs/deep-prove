@@ -793,11 +793,11 @@ pub fn maxpool2d_shape(input_shape: &Shape) -> Shape {
 }
 #[cfg(test)]
 mod tests {
-    use crate::{commit::compute_betas_eval, default_transcript};
+    use crate::{commit::compute_betas_eval, default_transcript, rng_from_env_or_random};
 
     use super::*;
     use crate::quantization::Fieldizer;
-    use ark_std::rand::{Rng, thread_rng};
+    use ark_std::rand::Rng;
     use ff_ext::{FromUniformBytes, GoldilocksExt2};
     use gkr::util::ceil_log2;
     use itertools::Itertools;
@@ -813,7 +813,7 @@ mod tests {
 
     #[test]
     fn test_max_pool_zerocheck() {
-        let mut rng = thread_rng();
+        let mut rng = rng_from_env_or_random();
         for _ in 0..50 {
             let random_shape = (0..4)
                 .map(|i| {
