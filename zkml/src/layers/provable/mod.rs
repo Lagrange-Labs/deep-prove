@@ -211,6 +211,7 @@ where
     /// Requires as inputs the contexts for all the nodes in the model
     /// and the set of claims for the input tensors of all the nodes of
     /// the model
+    #[allow(clippy::type_complexity)]
     pub(crate) fn input_claims<'a, I: Iterator<Item = (NodeId, &'a Self)>>(
         nodes: I,
         claims_by_node: &HashMap<NodeId, Vec<Claim<E>>>,
@@ -429,7 +430,7 @@ where
             inputs.len() == claims.len(),
             "number of input tensors and claims must be the same"
         );
-        for (i, (input, claim)) in inputs.into_iter().zip(claims).enumerate() {
+        for (i, (input, claim)) in inputs.iter().zip(claims).enumerate() {
             let computed = input.get_data().into_mle().evaluate(&claim.point);
             ensure!(computed == claim.eval, "input claim {:?} is incorrect", i);
         }

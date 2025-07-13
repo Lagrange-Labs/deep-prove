@@ -849,11 +849,7 @@ impl MatMul<Element> {
         Ok((output_claims, proof))
     }
 
-    pub(crate) fn ctx<E: ExtensionField>(
-        &self,
-        id: NodeId,
-        ctx_aux: &mut ContextAux,
-    ) -> Result<MatMulCtx<E>>
+    pub(crate) fn ctx<E>(&self, id: NodeId, ctx_aux: &mut ContextAux) -> Result<MatMulCtx<E>>
     where
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,

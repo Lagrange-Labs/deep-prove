@@ -80,7 +80,7 @@ impl<N: Number> OpInfo for Embeddings<N> {
         );
         let seq_len = input_shapes[0].dim(0);
         let shape = match padding_mode {
-            PaddingMode::NoPadding => Shape::new(vec![seq_len, self.emb_size].into()),
+            PaddingMode::NoPadding => Shape::new(vec![seq_len, self.emb_size]),
             PaddingMode::Padding => Shape::new(vec![
                 seq_len.next_power_of_two(),
                 self.emb_size.next_power_of_two(),

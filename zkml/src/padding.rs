@@ -300,7 +300,6 @@ pub(crate) fn pad_matmul(mut mat: MatMul<Element>, si: &mut ShapeInfo) -> Result
         }
         (OperandMatrix::Input, OperandMatrix::Weight(m)) => {
             let nrows = padded_input_shapes[0][1];
-            println!("PROVING: matmul padded left matrix ncols: {:?}", nrows);
             let ncols = pad_minimum(m.tensor.ncols_2d());
             m.tensor
                 .reshape_to_fit_inplace_2d(vec![nrows, ncols].into());

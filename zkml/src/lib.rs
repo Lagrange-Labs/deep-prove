@@ -6,7 +6,6 @@ use ark_std::rand::{self, SeedableRng, rngs::StdRng};
 use ff_ext::ExtensionField;
 use gkr::structs::PointAndEval;
 use itertools::Itertools;
-use multilinear_extensions::util::ceil_log2;
 use rayon::iter::ParallelIterator;
 use serde::{Deserialize, Serialize};
 use std::{env, str::FromStr};
