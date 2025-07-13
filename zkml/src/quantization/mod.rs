@@ -151,12 +151,12 @@ pub fn split_scale_into_multiplier(s: f32) -> (i32, f32) {
     let (shift, m) = ((-log_s.trunc()), 2.0f32.powf(log_s.fract()));
 
     assert!(
-        is_close(&[m * (2f32.powf(-shift as f32) as f32)], &[s]),
+        is_close(&[m * (2f32.powf(-shift))], &[s]),
         "m * 2^shift != s -> m: {}, s: {}, shift: {}, m * 2^shift: {}",
         m,
         s,
         shift,
-        m * (2f32.powf(-shift as f32) as f32)
+        m * 2f32.powf(-shift)
     );
     (shift as i32, m)
 }

@@ -419,8 +419,6 @@ impl Requant {
         let float_part = log_m.fract();
 
         let epsilon = 2.0f32.powf(float_part);
-        println!("REQUANT: int part: {}", log_m);
-        println!("REQUANT: epsilon {}", epsilon);
 
         // We want the part that gets shifted away to be a multiple of the quantisation bit length (that way we can use the same range table for each chunk)
         let next_multiple = (int_part + FIXED_POINT_SCALE).next_multiple_of(*quantization::BIT_LEN);

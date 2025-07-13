@@ -115,7 +115,7 @@ impl Evaluate<Element> for Add<Element> {
         let Some(ref quant_info) = self.quant_info else {
             bail!("Add layer is not quantized");
         };
-        ensure!(inputs.len() >= 1, "Add layer expects at least 1 input");
+        ensure!(!inputs.is_empty(), "Add layer expects at least 1 input");
         let left_tensor = inputs[0];
         let right_tensor = match self.operand {
             Some((ref op, _)) => op,
@@ -480,7 +480,7 @@ where
 {
     type Ctx = AddCtx;
 
-    fn prove<T: Transcript<E>>(
+    fn prove<T>(
         &self,
         node_id: NodeId,
         _ctx: &Self::Ctx,
