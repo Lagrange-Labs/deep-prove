@@ -423,8 +423,8 @@ where
     /// By default, it simply evaluates the input against the input claim.
     fn verify_input_claim(
         &self,
-        inputs: &Vec<Tensor<E>>,
-        claims: &Vec<&Claim<E>>,
+        inputs: &[Tensor<E>],
+        claims: &[&Claim<E>],
     ) -> anyhow::Result<()> {
         ensure!(
             inputs.len() == claims.len(),
