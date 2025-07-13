@@ -50,6 +50,9 @@ impl<E> Claim<E> {
     pub fn new(point: Vec<E>, eval: E) -> Self {
         Self { point, eval }
     }
+    pub fn mle_num_vars(&self) -> usize {
+        self.point.len()
+    }
 }
 
 impl<E: ExtensionField> From<PointAndEval<E>> for Claim<E> {
