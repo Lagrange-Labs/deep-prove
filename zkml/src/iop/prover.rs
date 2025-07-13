@@ -88,6 +88,9 @@ where
         node_id: NodeId,
         claims: HashMap<PolyId, Claim<E>>,
     ) -> anyhow::Result<()> {
+        if claims.is_empty() {
+            return Ok(());
+        }
         self.commit_prover
             .add_common_claims(&self.ctx.commitment_ctx, node_id, claims)
     }

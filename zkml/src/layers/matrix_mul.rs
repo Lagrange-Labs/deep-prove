@@ -496,7 +496,7 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    fn step_info(&self, id: NodeId, mut ctx_aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
+    fn step_info(&self, id: NodeId, ctx_aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         let (info, ctx_aux) = self.ctx(id, ctx_aux)?;
 
         // there is only one product (i.e. quadratic sumcheck)
@@ -791,7 +791,7 @@ impl MatMul<Element> {
         // the number of variables that the bias has and substract its eval from the last claim.
         // since output(r1,r2) = M1 * M2 + bias(r2)
         let init_split = last_claim.clone();
-        let (_, point_for_right) = Self::split_claim(&init_split, num_vars_2d);
+        let (point_for_left, point_for_right) = Self::split_claim(&init_split, num_vars_2d);
 
         if let Some(bias) = &self.bias {
             let bias_eval = bias.evals_flat::<E>().into_mle().evaluate(&point_for_right);
@@ -801,7 +801,7 @@ impl MatMul<Element> {
                 Claim::new(point_for_right.to_vec(), bias_eval),
             );
         }
-        let (point_for_left, point_for_right) = Self::split_claim(&last_claim, num_vars_2d);
+        // let (point_for_left, point_for_right) = Self::split_claim(&last_claim, num_vars_2d);
 
         // fix the variables for the left matrix; we need to fix the variables
         // corresponding to a row, so we must fix the HIGH variables
@@ -959,12 +959,12 @@ impl MatMul<Element> {
             model_polys.insert(MATRIX_POLY_ID.to_string(), evals);
             model_polys
         });
-        ctx_aux.model_polys = self.bias.as_ref().map(|bias| {
+        if let Some(bias) = self.bias.as_ref() {
             let bias_evals = bias.get_data().to_vec();
             let mut map = ctx_aux.model_polys.unwrap_or_default();
             map.insert(BIAS_POLY_ID.to_string(), bias_evals);
-            map
-        });
+            ctx_aux.model_polys = Some(map);
+        }
         Ok((info, ctx_aux))
     }
 }
