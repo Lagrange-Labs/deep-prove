@@ -10,7 +10,6 @@ use crate::{
 use anyhow::{Context, bail, ensure};
 use ff_ext::ExtensionField;
 use mpcs::PolynomialCommitmentScheme;
-use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use transcript::Transcript;
 
@@ -82,13 +81,10 @@ impl<N: Number> OpInfo for Embeddings<N> {
         let seq_len = input_shapes[0].dim(0);
         let shape = match padding_mode {
             PaddingMode::NoPadding => Shape::new(vec![seq_len, self.emb_size].into()),
-            PaddingMode::Padding => Shape::new(
-                vec![
-                    seq_len.next_power_of_two(),
-                    self.emb_size.next_power_of_two(),
-                ]
-                .into(),
-            )
+            PaddingMode::Padding => Shape::new(vec![
+                seq_len.next_power_of_two(),
+                self.emb_size.next_power_of_two(),
+            ])
             .next_power_of_two(),
         };
         vec![shape]
@@ -118,7 +114,7 @@ impl<N: Number> Evaluate<N> for Embeddings<N> {
     ) -> anyhow::Result<LayerOut<N, E>> {
         ensure!(
             inputs.iter().all(|x| {
-                let shape: Shape = x.get_shape().into();
+                let shape: Shape = x.get_shape();
                 shape.rank() == 1
             }),
             "embeddings only support 2d tensors with 1 value: {:?}",
@@ -294,7 +290,7 @@ where
         );
         let last_claim = last_claims[0];
         let one_hot = one_hot_encoding(
-            &step_data.inputs[0].get_data(),
+            step_data.inputs[0].get_data(),
             self.vocab_size,
             PaddingMode::Padding,
         );
@@ -357,7 +353,7 @@ where
         let vocab_nv = self.vocab_size.next_power_of_two().ilog2();
         let seq_len_nv = input.get_shape().dim(0).next_power_of_two().ilog2();
         ensure!(
-            vocab_nv + seq_len_nv ==  one_hot_claim.point.len() as u32,
+            vocab_nv + seq_len_nv == one_hot_claim.point.len() as u32,
             "vocab_nv: {vocab_nv}, seq_len_nv: {seq_len_nv}, one_hot_claim.point.len(): {}",
             one_hot_claim.point.len()
         );
