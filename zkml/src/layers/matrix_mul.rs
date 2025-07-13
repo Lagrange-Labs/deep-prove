@@ -304,7 +304,7 @@ impl<T> MatMul<T> {
                 bias.shape,
                 matmul.shape
             );
-            Ok(matmul.add_dim2(&bias))
+            Ok(matmul.add_dim2(bias))
         } else {
             Ok(matmul)
         }
@@ -793,7 +793,7 @@ impl MatMul<Element> {
         let (point_for_left, point_for_right) = Self::split_claim(&init_split, num_vars_2d);
 
         if let Some(bias) = &self.bias {
-            let bias_eval = bias.evals_flat::<E>().into_mle().evaluate(&point_for_right);
+            let bias_eval = bias.evals_flat::<E>().into_mle().evaluate(point_for_right);
             last_claim.eval -= bias_eval;
             common_claims.insert(
                 BIAS_POLY_ID.to_string(),
@@ -864,7 +864,7 @@ impl MatMul<Element> {
         let proof = MatMulProof {
             sumcheck: proof,
             individual_claims: state.get_mle_final_evaluations(),
-            bias_eval: common_claims.get(BIAS_POLY_ID).map(|c| c.eval.clone()),
+            bias_eval: common_claims.get(BIAS_POLY_ID).map(|c| c.eval),
         };
 
         prover
@@ -874,7 +874,7 @@ impl MatMul<Element> {
         Ok(output_claims)
     }
 
-    fn ctx<E: ExtensionField>(
+    fn ctx<E>(
         &self,
         id: NodeId,
         mut ctx_aux: ContextAux,
@@ -1064,7 +1064,7 @@ where
             // TODO: if we insert a point of wrong length, it should fail
             common_claims.insert(
                 BIAS_POLY_ID.to_string(),
-                Claim::new(point_for_right.to_vec(), bias_eval.clone()),
+                Claim::new(point_for_right.to_vec(), bias_eval),
             );
             last_claim.eval -= bias_eval;
         }
