@@ -166,6 +166,12 @@ where
             .expect("No input shape found for requant layer?");
         // Set the model polys to be empty
         aux.model_polys = None;
+        aux.max_poly_len = aux
+            .last_output_shape
+            .iter()
+            .fold(aux.max_poly_len, |acc, shapes| {
+                acc.max(shapes.next_power_of_two().product())
+            });
         Ok((
             LayerCtx::Requant(RequantCtx {
                 requant: *self,
@@ -434,7 +440,10 @@ impl Requant {
         let fixed_point_multiplier = (epsilon * (1u64 << fp_scale) as f32).round() as Element;
 
         // Assertion to check that we can perform requantisation, we need intermediate_bit_size + fp_scale <= 63
-        assert!(intermediate_bit_size + fp_scale <= 63);
+        assert!(
+            intermediate_bit_size + fp_scale <= 63,
+            "intermediate bit size: {intermediate_bit_size}, fp scale: {fp_scale}, int part: {int_part}",
+        );
         Requant {
             right_shift: int_part,
             fixed_point_multiplier,
