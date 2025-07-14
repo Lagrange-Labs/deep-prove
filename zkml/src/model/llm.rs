@@ -114,7 +114,7 @@ where
         let mut trace = InferenceTrace::default();
         // convert the input to the correct number type and add a dimension to make it 2d, because the embeddings layer expects a 2d tensor
         let mut tensor = Tensor::new(
-            vec![input.len(), 1].into(),
+            vec![input.len()].into(),
             input.into_iter().map(|t| t.as_number()).collect::<Vec<_>>(),
         );
         let max_window = self.max_context.unwrap_or(self.config.context_length);

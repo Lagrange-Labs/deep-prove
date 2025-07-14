@@ -106,17 +106,23 @@ impl QuantizeOp for Activation<f32> {
 
     fn quantize_op<S: crate::ScalingStrategy>(
         self,
-        _data: &S::AuxData,
-        _node_id: NodeId,
+        data: &S::AuxData,
+        node_id: NodeId,
         input_scaling: &[crate::ScalingFactor],
     ) -> anyhow::Result<QuantizeOutput<Self::QuantizedOp>> {
+        let num_outputs = self.num_outputs(input_scaling.len());
+        let output_scalings = S::scaling_factors_for_node(data, node_id, num_outputs);
+        ensure!(
+            output_scalings.len() == 1,
+            "Output scaling for convolution layer different from 1"
+        );
         let q_op = match self {
             Activation::Relu(_) => Activation::Relu(Relu),
             Activation::Gelu(g) => {
                 Activation::Gelu(g.quantize(input_scaling[0])?)
             }
         };
-        Ok(QuantizeOutput::new(q_op, input_scaling.to_vec()))
+        Ok(QuantizeOutput::new(q_op, output_scalings))
     }
 }
 
@@ -147,7 +153,11 @@ where
     E::BaseField: Serialize + DeserializeOwned,
 {
     fn step_info(&self, id: NodeId, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
-        aux.tables.insert(TableType::Relu);
+        match self {
+            Activation::Relu(_) => aux.tables.insert(TableType::Relu),
+            // TODO: if we want to save on memory, we can use a pointer to the vector instead
+            Activation::Gelu(gelu) => aux.tables.insert(TableType::GELU(gelu.quant_data.clone().unwrap())),
+        };
 
         // `try_fold` would not allow returning of `Err` values from here and would short-circuit
         // instead of looping over all values in the iterator
@@ -285,7 +295,7 @@ where
         let lookups = gen
             .new_lookups
             .get_mut(&self.table_type())
-            .ok_or(anyhow!("No table of type {:?} was expected", self.table_type()))?;
+            .ok_or(anyhow!("table of type {:?} not found in lookup data", self.table_type()))?;
         lookups.extend(merged_lookups);
 
         Ok(())
@@ -326,9 +336,9 @@ where
         verifier: &mut Verifier<E, T, PCS>,
         _shape_step: &ShapeStep,
     ) -> Result<Vec<Claim<E>>> {
-        let table_type = match self.op {
+        let table_type = match &self.op {
             Activation::Relu(_) => TableType::Relu,
-            Activation::Gelu(_) => TableType::GELU,
+            Activation::Gelu(g) => TableType::GELU(g.quant_data.clone().unwrap()),
         };
         let (constant_challenge, column_separation_challenge) = verifier
             .challenge_storage
@@ -351,7 +361,7 @@ impl<N> Activation<N> {
     fn table_type(&self) -> TableType {
         match self {
             Activation::Relu(_) => TableType::Relu,
-            Activation::Gelu(_) => TableType::GELU,
+            Activation::Gelu(g) => TableType::GELU(g.quant_data.clone().unwrap()),
         }
     }
     #[timed::timed_instrument(name = "Prover::prove_activation_step")]
@@ -367,9 +377,6 @@ impl<N> Activation<N> {
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
-        if let Activation::Gelu(_) = self {
-            unimplemented!("GELU not implemented for Element");
-        }
         // Should only be one prover_info for this step
         let logup_witnesses = prover.lookup_witness(node_id)?;
         if logup_witnesses.len() != 1 {
@@ -425,9 +432,9 @@ impl<N> Activation<N> {
 
 impl ActivationCtx {
     fn table_type(&self) -> TableType {
-        match self.op {
+        match &self.op {
             Activation::Relu(_) => TableType::Relu,
-            Activation::Gelu(_) => TableType::GELU,
+            Activation::Gelu(g) => TableType::GELU(g.quant_data.clone().unwrap()),
         }
     }
     pub(crate) fn verify_activation<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
@@ -525,17 +532,23 @@ pub struct GELU<N> {
     _n: PhantomData<N>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone,Debug, Serialize, Deserialize,PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GELUQuantData {
     /// The multiplier used to scale the input
     multiplier: Element,
     /// The minimum value of the input
-    min: Element,
+    pub(crate) min: Element,
     /// The maximum value of the input
-    max: Element,
+    pub(crate) max: Element,
     /// The lookup table - needed for setup mostly
     /// TODO: remove this field only recreate it at setup time
-    lut: Vec<Element>,
+    pub(crate) lut: Vec<Element>,
+}
+
+impl GELUQuantData {
+    pub fn size(&self) -> usize {
+        (self.max - self.min + 1) as usize
+    }
 }
 
 impl<N> Default for GELU<N> {
@@ -594,7 +607,7 @@ impl GELU<f32> {
         let table_min = -2i32.pow( 7 + ceil_log2(multiplier as usize) as u32);
         let table_max= 2i32.pow( 7 + ceil_log2(multiplier as usize) as u32);
         let table_size = table_max - table_min;
-        assert!(table_size >= 1 << 20, "Table size for GELU is too bigggg");
+        assert!(table_size <= 1 << 20, "Table size for GELU is too bigggg: {:?}", table_size.ilog2());
 
         let lut = (table_min..table_max).map(|i| {
             let float_input = i as f32 / GELU_SCALE_FACTOR as f32;
@@ -633,9 +646,29 @@ impl GELU<Element> {
 mod test {
     use ff_ext::GoldilocksExt2;
 
-    use crate::Element;
+    use crate::{layers::Layer, model::{test::prove_model, Model}, Element};
 
     use super::*;
+
+    #[test]
+    fn test_activation_gelu_proving() -> anyhow::Result<()> {
+
+        let input_shape = vec![3, 5].into();
+        let input = Tensor::<f32>::random(&input_shape);
+        let mut model = Model::new_from_input_shapes(vec![input_shape], PaddingMode::NoPadding);
+        model.add_consecutive_layer(Layer::Activation(Activation::Gelu(GELU::<f32>::new())), None)?;
+        model.route_output(None)?;
+        prove_model(model).unwrap();
+        Ok(())
+    }
+
+    #[test]
+    fn test_activation_gelu_quantize() -> anyhow::Result<()> {
+        let gelu = GELU::<f32>::new();
+        let input_scaling = ScalingFactor::from_scale(1.0, None);
+        let gelu_quantized = gelu.quantize(input_scaling)?;
+        Ok(())
+    }
 
     #[test]
     fn test_activation_relu_apply() {
