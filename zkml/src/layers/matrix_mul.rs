@@ -800,8 +800,6 @@ impl MatMul<Element> {
                 Claim::new(point_for_right.to_vec(), bias_eval),
             );
         }
-        // let (point_for_left, point_for_right) = Self::split_claim(&last_claim, num_vars_2d);
-
         // fix the variables for the left matrix; we need to fix the variables
         // corresponding to a row, so we must fix the HIGH variables
         left_mat_mle.fix_high_variables_in_place(point_for_left);
@@ -874,11 +872,7 @@ impl MatMul<Element> {
         Ok(output_claims)
     }
 
-    fn ctx<E>(
-        &self,
-        id: NodeId,
-        mut ctx_aux: ContextAux,
-    ) -> Result<(MatMulCtx<E>, ContextAux)>
+    fn ctx<E>(&self, id: NodeId, mut ctx_aux: ContextAux) -> Result<(MatMulCtx<E>, ContextAux)>
     where
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
