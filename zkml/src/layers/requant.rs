@@ -257,7 +257,7 @@ where
         let range_check_bit_size = *quantization::BIT_LEN;
         let range_mask: Element = (1 << range_check_bit_size) - 1;
 
-        // We need to calculate how many cunks we are splitting into, there should never be any remainder from this division.
+        // We need to calculate how many chunks we are splitting into, there should never be any remainder from this division.
         let no_chunks = shift / range_check_bit_size;
 
         let shifted_chunks = (0..no_chunks)
