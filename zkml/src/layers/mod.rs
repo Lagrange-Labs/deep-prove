@@ -30,7 +30,9 @@ use requant::RequantCtx;
 use transcript::Transcript;
 
 use crate::{
-    iop::context::{ContextAux, ShapeStep, TableCtx}, layers::{
+    Context, Element, ScalingStrategy,
+    iop::context::{ContextAux, ShapeStep, TableCtx},
+    layers::{
         activation::{Activation, ActivationProof},
         add::{Add, AddCtx, AddProof},
         concat_matmul::ConcatMatMul,
@@ -45,10 +47,15 @@ use crate::{
             logits::Logits,
             mha::MhaQK,
             positional::{Positional, PositionalCtx, PositionalProof},
-            qkv::{QKVCtx, QKVProof, QKV},
+            qkv::{QKV, QKVCtx, QKVProof},
             softmax::Softmax,
         },
-    }, lookup::context::LookupWitnessGen, model::StepData, padding::{PaddingMode, ShapeInfo}, quantization::ScalingFactor, tensor::{Number, Shape, Tensor}, Context, Element, ScalingStrategy
+    },
+    lookup::context::LookupWitnessGen,
+    model::StepData,
+    padding::{PaddingMode, ShapeInfo},
+    quantization::ScalingFactor,
+    tensor::{Number, Shape, Tensor},
 };
 use activation::ActivationCtx;
 use convolution::{ConvCtx, ConvProof, SchoolBookConv, SchoolBookConvCtx};
@@ -430,9 +437,7 @@ where
             Layer::Softmax(_softmax) => unimplemented!("Softmax proving layer not implemented"),
             Layer::Add(add) => add.step_info(id, aux),
             Layer::Logits(_logits) => unimplemented!("Logits proving layer not implemented"),
-            Layer::Positional(_positional) => {
-                unimplemented!("Positional proving layer not implemented")
-            }
+            Layer::Positional(positional) => positional.step_info(id, aux),
             Layer::Embeddings(_embeddings) => {
                 unimplemented!("Embeddings proving layer not implemented")
             }
@@ -465,7 +470,7 @@ impl PadOp for Layer<Element> {
             Layer::Softmax(_softmax) => unimplemented!("Softmax layer not implemented"),
             Layer::Add(add) => Layer::Add(add.pad_node(si)?),
             Layer::Logits(_logits) => unimplemented!("Logits layer not implemented"),
-            Layer::Positional(_positional) => unimplemented!("Positional layer not implemented"),
+            Layer::Positional(positional) => Layer::Positional(positional.pad_node(si)?),
             Layer::Embeddings(_embeddings) => unimplemented!("Embeddings layer not implemented"),
             Layer::MatMul(mat) => Layer::MatMul(mat.pad_node(si)?),
             Layer::SchoolBookConvolution(school_book_conv) => {
@@ -573,7 +578,7 @@ where
             Layer::Softmax(_softmax) => unimplemented!("Softmax layer not implemented"),
             Layer::Add(add) => add.gen_lookup_witness(id, gen, ctx, step_data),
             Layer::Logits(_logits) => unimplemented!("Logits layer not implemented"),
-            Layer::Positional(_positional) => unimplemented!("Positional layer not implemented"),
+            Layer::Positional(positional) => positional.gen_lookup_witness(id, gen, ctx, step_data),
             Layer::Embeddings(_embeddings) => unimplemented!("Embeddings layer not implemented"),
             Layer::SchoolBookConvolution(school_book_conv) => {
                 // check that the layer is not provable, so we don't need to call the method
@@ -662,8 +667,13 @@ impl QuantizeOp for Layer<f32> {
             Layer::Logits(_logits) => {
                 unimplemented!("Logits layer not implemented")
             }
-            Layer::Positional(_positional) => {
-                unimplemented!("Positional layer not implemented")
+            Layer::Positional(positional) => {
+                let output = positional.quantize_op::<S>(data, node_id, input_scaling)?;
+                QuantizeOutput::new(
+                    Layer::Positional(output.quantized_op),
+                    output.output_scalings,
+                )
+                .maybe_requants(output.requant_layer)
             }
             Layer::Embeddings(_embeddings) => {
                 unimplemented!("Embeddings layer not implemented")

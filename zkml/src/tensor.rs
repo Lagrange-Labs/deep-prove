@@ -1712,9 +1712,8 @@ impl PartialEq for Tensor<GoldilocksExt2> {
 }
 
 pub struct TensorSlice<'a, T> {
-    data: &'a[T],
+    data: &'a [T],
     shape: Shape,
-    og_shape: Shape, 
 }
 
 impl<'a, T> From<&'a Tensor<T>> for TensorSlice<'a, T> {
@@ -1722,7 +1721,6 @@ impl<'a, T> From<&'a Tensor<T>> for TensorSlice<'a, T> {
         Self {
             data: &value.data,
             shape: value.shape.clone(),
-            og_shape: value.og_shape.clone(),
         }
     }
 }
@@ -1739,14 +1737,13 @@ impl<'a, T> TensorSlice<'a, T> {
     pub(crate) fn slice_over_first_dim(&self, dim2_start: usize, dim2_end: usize) -> Self {
         let range = dim2_start * self.shape[1]..dim2_end * self.shape[1];
         let data = &self.data[range];
-        let mut new_shape = self.shape.clone(); 
+        let mut new_shape = self.shape.clone();
         new_shape[0] = dim2_end - dim2_start;
         Self {
             data: data,
             shape: new_shape.into(),
-            og_shape: vec![0].into(),
         }
-    } 
+    }
 }
 
 impl<T: Number> Tensor<T> {
@@ -1788,7 +1785,7 @@ impl<T: Number> Tensor<T> {
             shape: vec![end - start, self.shape[1], self.shape[2]].into(),
             og_shape: vec![0].into(),
         }
-    }  
+    }
 
     // slice the tensor on the second dimension
     // dim2_start inclusive

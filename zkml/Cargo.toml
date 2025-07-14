@@ -85,6 +85,7 @@ zstd = "0.13.3"
 
 [dev-dependencies]
 ndarray = "0.16.1"
+rstest = "0.25.0"
 
 [build-dependencies]
 # worker-related dependencies

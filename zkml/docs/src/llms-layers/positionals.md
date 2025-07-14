@@ -19,9 +19,11 @@ Despite the positional encoding layer is a simple matrix addition, which is triv
 The main idea to devise a protocol to bind a claim about matrix $P_{\le s}$ to an evaluation claim about matrix $P$ is to split matrix $P$ row-wise in different chunks such that one of these chunks is exactly $P_{\le s}$, and then prove the proper split of matrix $P$ in these chunks.
 
 To prove the proper split of a matrix in chunks, we rely on the following observation. Consider a matrix $M \in \mathbb{R}^{n \times m}$, where $n$ and $m$ are powers of 2. Assume to split the matrix in 2 chunks $M_1, M_2 \in \mathbb{R}^{\frac{n}{2} \times m}$, where $M_1$ is given by the first $\frac{n}{2}$ rows of $M$, and $M_2$ corresponds to the last $\frac{n}{2}$ rows of $M$. If we consider the MLEs of matrices $M_1, M_2$ and $M$, the following relantionship holds:
-$$
+\begin{equation}
+\small
 M(x, y) = \beta(0, x_1)M_1(x_o, y) + \beta(1, x_1)M_2(x_o, y) = (1-x_1)M_1(x_o, y) + x_1M_2(x_o, y)
-$$
+\tag{1}
+\end{equation}
 where $x_1$ is the variable referring to the most-significant bit of the rows in $M$ and $x_o$ are all the other variables related to the rows, i.e., $x = [x_1, x_o...]$. We can rely on this relationship to efficiently prove that $M_1$ and $M_2$ are the proper partition of $M$ as follows. 
 
 Consider an evaluation claim $y_M = M(r_x, r_y)$, for random points $r_x \in \mathbb{F}^{\log_2(n)}$, $r_y \in \mathbb{F}^{\log_2(m)}$ chosen by the verifier. Consider point $r_x$ to be split in point $r_1 \in \mathbb{F}$ and point $r_o \in \mathbb{F}^{\log_2(n)-1}$. The prover computes the evaluation claims $y_1 = M_1(r_o, r_y)$, $y_2 = M_2(r_o, r_y)$, and sends these claims to the verifier. By checking that $y_M = (1-r_1)y_1 + r_1y_2$, the verifier is convinced that $y_1$ and $y_2$ are evaluations claims of the matrices $M_1$ and $M_2$, which are a proper partition of $M$.
@@ -40,6 +42,8 @@ First of all, we consider both the input matrix $X$ and the positional encoding 
 
 The proving protocol starts from a claim $y_O = \hat{O}(r)$ about the output matrix $\hat{O}$, computed at a random point $r \in \mathbb{F}^{\log_2(\hat{s} \times \hat{e})}$ chosen by the verifier. The prover computes a claim $y_X = \hat{X}(r)$ and a claim $y_{P_s} = y_O - y_X$ about the matrix $\hat{P}_{\le \hat{s}} \in \mathbb{R}^{\hat{s} \times \hat{e}}$ given by the first $\hat{s}$ rows of matrix $\hat{P}$.
 
-The prover then derives a claim $y_P$ for matrix $\hat{P}$ hinging upon the proving protocol described above. The correctness of this claim against the committed matrix $\hat{P}$ is then proven with an opening proof of the polynomial commitment scheme employed to commit to $\hat{P}$.
+The prover then derives a claim $y_P$ for matrix $\hat{P}$ hinging upon the proving protocol described above. 
+The prover will thus need to evaluate about $\log_2(h)$ MLEs related to sub-matrices of the positional matrix $\hat{P}$; note that the overall work to evaluate these MLEs is comparable to evaluating the MLE for the entire matrix $\hat{P}$, as the sum of the size of all such MLEs is basically the same as the matrix $\hat{P}$, but these evaluations can be computed in parallel by the prover. The $\log_2(h)$ claims will be part of the proof data sent to the verifier, and will be employed to re-compute the claim $y_P$ using recursively the relationship described in Equation 1.
+The correctness of claim $y_P$ against the committed matrix $\hat{P}$ is then proven with an opening proof of the polynomial commitment scheme employed to commit to $\hat{P}$.
 
 The claim $y_X$ is then returned as the claim for the input of the layer, which is the output of the proving protocol for the positional encoding layer.

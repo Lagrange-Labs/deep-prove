@@ -73,10 +73,10 @@ impl<N: Number> Add<N> {
 
 impl Add<Element> {
     pub(crate) fn prove_step<
-        A: AsRef<Tensor<E>>, 
-        E: ExtensionField, 
-        T: Transcript<E>, 
-        PCS: PolynomialCommitmentScheme<E>
+        A: AsRef<Tensor<E>>,
+        E: ExtensionField,
+        T: Transcript<E>,
+        PCS: PolynomialCommitmentScheme<E>,
     >(
         &self,
         node_id: NodeId,
@@ -562,16 +562,10 @@ where
     where
         T: Transcript<E>,
     {
-        let (output_claims, proof) = self.prove_step(
-            node_id,
-            last_claims,
-            &step_data.inputs,
-            prover,
-        )?;
-        prover.push_proof(
-            node_id,
-            LayerProof::Add(proof),
-        );
+        let (output_claims, proof) =
+            self.prove_step(node_id, last_claims, &step_data.inputs, prover)?;
+
+        prover.push_proof(node_id, LayerProof::Add(proof));
         Ok(output_claims)
     }
 }

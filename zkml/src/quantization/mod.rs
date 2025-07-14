@@ -10,7 +10,8 @@ use std::env;
 use tracing::warn;
 
 use crate::{
-    tensor::{is_close, Number, Tensor, TensorSlice}, Element
+    Element,
+    tensor::{Number, Tensor, TensorSlice, is_close},
 };
 pub use metadata::ModelMetadata;
 pub(crate) use strategy::InferenceTracker;
@@ -248,7 +249,6 @@ where
         )
     }
 }
-
 
 pub fn max_range_from_weight<T: Number>(weight: &T, min_input: &T, max_input: &T) -> (T, T) {
     let min = if weight.is_negative() {
