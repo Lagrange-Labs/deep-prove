@@ -84,6 +84,22 @@ impl ScalingFactor {
         }
     }
 
+    /// Create a [`ScalingFactor`] from its constituent parts. Useful for operations like Softmax where its
+    /// important to preserve its structure as a probability distribution.
+    pub(crate) fn from_parts(
+        max: f32,
+        min: f32,
+        scale: f32,
+        quantized_domain: (Element, Element),
+    ) -> ScalingFactor {
+        Self {
+            max,
+            min,
+            scale,
+            quantized_domain,
+        }
+    }
+
     pub fn min(&self) -> f32 {
         self.min
     }
@@ -94,6 +110,10 @@ impl ScalingFactor {
 
     pub fn scale(&self) -> f32 {
         self.scale
+    }
+
+    pub fn domain(&self) -> (Element, Element) {
+        self.quantized_domain
     }
     /// M = S1 * S2 / S3
     pub fn m(&self, s2: &Self, s3: &Self) -> f32 {
@@ -149,22 +169,21 @@ impl Default for ScalingFactor {
 /// S2 in the formula S1 * S2 / S3.
 pub fn model_scaling_factor_from_tensor_and_bias(
     input: &ScalingFactor,
-    output: &ScalingFactor,
     main: &Tensor<f32>,
     bias: &Tensor<f32>,
 ) -> (ScalingFactor, ScalingFactor) {
     let max_weight = main.max_abs_output();
     let max_bias = bias.max_abs_output();
     let main_sf = ScalingFactor::from_absolute_max(max_weight.max(max_bias), None);
-    let bias_sf = bias_scaling_matmul(input, output);
+    let bias_sf = bias_scaling_matmul(input, &main_sf);
     (main_sf, bias_sf)
 }
 
-pub fn bias_scaling_matmul(input: &ScalingFactor, output: &ScalingFactor) -> ScalingFactor {
+pub fn bias_scaling_matmul(input: &ScalingFactor, model: &ScalingFactor) -> ScalingFactor {
     let min_quantized = -(1 << (2 * (*BIT_LEN) - 1)) + 1;
     let max_quantized = (1 << (2 * (*BIT_LEN) - 1)) - 1;
     ScalingFactor::from_scale(
-        input.scale() * output.scale(),
+        input.scale() * model.scale(),
         Some((min_quantized, max_quantized)),
     )
 }
