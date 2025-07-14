@@ -1331,7 +1331,8 @@ mod test {
         // sample input for the model, and compute expected output
         let input = vec![Tensor::random(&input_shape)];
 
-        let (quantized_model, quantized_input) = quantize_model(model.clone(), input).unwrap();
+        let (quantized_model, quantized_input) =
+            quantize_model(model.clone(), input, None).unwrap();
 
         let trace = quantized_model
             .run::<GoldilocksExt2>(&quantized_input)
@@ -1501,8 +1502,9 @@ mod test {
 
         model.route_output(None).unwrap();
 
+        let inputs = vec![positionned.outputs()[0].clone()];
         let (quantized_model, inputs) =
-            quantize_model(model, vec![positionned.outputs()[0].clone()]).unwrap();
+            quantize_model(model, inputs.clone(), Some(inputs)).unwrap();
 
         prove_quantized_model(quantized_model, inputs)?;
 
@@ -1539,7 +1541,7 @@ mod test {
 
         let inputs = vec![Tensor::random(&input_shape)];
 
-        let (quantized_model, inputs) = quantize_model(model, inputs).unwrap();
+        let (quantized_model, inputs) = quantize_model(model, inputs, None).unwrap();
 
         // run to get unpadded output
         let mut outputs = quantized_model
