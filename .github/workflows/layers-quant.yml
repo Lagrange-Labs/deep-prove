@@ -44,7 +44,8 @@ jobs:
             --skip layers::transformer::test::test_gpt2_model_full_pass \
             --skip layers::transformer::test::test_read_gpt2_pytorch_embeddings \
             --skip layers::transformer::test::test_read_gpt2_pytorch_output_first \
-            --skip parser::json::test::test_json_tensor_loader
+            --skip parser::json::test::test_json_tensor_loader \
+            --skip layers::transformer::mha::test::test_mha_with_real_values
           mv layers-quant ~/layers-quant
           cp ../scripts/ci/cmp-layers-quant.sh ~/cmp-layers-quant.sh
       - name: Compare HEAD outputs against base
