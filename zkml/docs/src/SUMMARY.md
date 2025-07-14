@@ -10,3 +10,4 @@
 - [LLMs](./LLMs.md)
     - [QKV Layer](./llms-layers/qkv.md)
     - [MHA Layer](./llms-layers/mha.md)
+    - [softmax](./softmax.md)

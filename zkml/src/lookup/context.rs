@@ -35,6 +35,8 @@ type LookupAndColumns<BaseField> = (Vec<Element>, (Vec<BaseField>, Vec<BaseField
 pub enum TableType {
     /// Table used for the Relu activation function
     Relu,
+    /// Table used for the GELU activation function
+    GELU,
     /// Table used for range checking (its size is determined by the quantisation bit size)
     Range,
     /// Table used for clamping values, the inner [`usize`] denotes the maximum bit length a value can be before clamping to use this table
@@ -103,6 +105,9 @@ impl TableType {
         column_separator: Element,
     ) -> (Vec<Element>, Vec<Vec<E::BaseField>>) {
         match self {
+            TableType::GELU => {
+                unimplemented!("GELU not implemented for Element");
+            }
             TableType::Relu => {
                 #[allow(clippy::type_complexity)]
                 let (comb, (col_one, col_two)): (
@@ -211,6 +216,7 @@ impl TableType {
     pub fn name(&self) -> String {
         match self {
             TableType::Relu => "Relu".to_string(),
+            TableType::GELU => "GELU".to_string(),
             TableType::Range => "Range".to_string(),
             TableType::Clamping(size) => format!("Clamping: {size}"),
             TableType::Softmax(table_data) => {
@@ -230,6 +236,9 @@ impl TableType {
         point: &[E],
     ) -> Result<Vec<E>, LogUpError> {
         match self {
+            TableType::GELU => {
+                unimplemented!("GELU not implemented for Element");
+            }
             TableType::Range => {
                 if point.len() != *quantization::BIT_LEN {
                     return Err(LogUpError::VerifierError(format!(
@@ -343,6 +352,7 @@ impl TableType {
 
     pub fn generate_challenge<E: ExtensionField, T: Transcript<E>>(&self, transcript: &mut T) -> E {
         match self {
+            TableType::GELU => transcript.get_and_append_challenge(b"GELU").elements,
             TableType::Relu => transcript.get_and_append_challenge(b"Relu").elements,
             TableType::Range | TableType::ErrorTable(..) => {
                 // Theres only one column for a range check so we don't need to generate a challenge
@@ -357,6 +367,7 @@ impl TableType {
     /// Gets the number of variables that the multiplicity polynomial will have for this table
     pub fn multiplicity_poly_vars(&self) -> usize {
         match self {
+            TableType::GELU => unimplemented!("GELU not implemented for Element"),
             TableType::Range | TableType::Relu => *quantization::BIT_LEN,
             TableType::Clamping(bits) => *bits,
             TableType::Softmax(table_data) => table_data.size(),
@@ -368,6 +379,7 @@ impl TableType {
     /// Function that returns any MLEs that have to be committed for this [`TableType`]
     pub fn committed_columns<E: ExtensionField>(&self) -> Option<DenseMultilinearExtension<E>> {
         match self {
+            TableType::GELU => unimplemented!("GELU not implemented for Element"),
             TableType::Softmax(table_data) => {
                 let table_size = table_data.full_table_size();
 

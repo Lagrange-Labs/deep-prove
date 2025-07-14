@@ -1,26 +1,18 @@
 use crate::{
-    Claim, Context, Element, Prover,
-    commit::same_poly,
-    iop::{
+    quantization,
+    commit::same_poly, iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
-    },
-    layers::{
-        LayerCtx, LayerProof,
-        provable::{QuantizeOp, QuantizeOutput},
-    },
-    lookup::{
-        context::{COLUMN_SEPARATOR, LookupWitnessGen, TableType},
+    }, layers::{
+        provable::{QuantizeOp, QuantizeOutput}, LayerCtx, LayerProof
+    }, lookup::{
+        context::{LookupWitnessGen, TableType, COLUMN_SEPARATOR},
         logup_gkr::{
             prover::batch_prove as logup_batch_prove, structs::LogUpProof,
             verifier::verify_logup_proof,
         },
         witness::LogUpWitness,
-    },
-    model::StepData,
-    padding::PaddingMode,
-    quantization::Fieldizer,
-    tensor::{Number, Shape},
+    }, model::StepData, padding::PaddingMode, quantization::Fieldizer, tensor::{Number, Shape}, Claim, Context, Element, Prover, ScalingFactor
 };
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
@@ -37,7 +29,9 @@ use super::provable::{
     Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, VerifiableCtx,
 };
 
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{anyhow, bail, ensure, Result};
+const GELU_SCALE_EXP: usize = 16;
+const GELU_SCALE_FACTOR: usize = 1 << GELU_SCALE_EXP;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Activation<N> {
@@ -118,7 +112,9 @@ impl QuantizeOp for Activation<f32> {
     ) -> anyhow::Result<QuantizeOutput<Self::QuantizedOp>> {
         let q_op = match self {
             Activation::Relu(_) => Activation::Relu(Relu),
-            Activation::Gelu(_) => Activation::Gelu(GELU::new()),
+            Activation::Gelu(g) => {
+                Activation::Gelu(g.quantize(input_scaling[0])?)
+            }
         };
         Ok(QuantizeOutput::new(q_op, input_scaling.to_vec()))
     }
@@ -135,7 +131,11 @@ impl Evaluate<Element> for Activation<Element> {
                 .iter()
                 .map(|input| relu.op(input))
                 .collect::<Vec<_>>(),
-            Activation::Gelu(_) => unimplemented!("GELU not implemented for Element"),
+            Activation::Gelu(g) => {
+                inputs.iter().map(|input| {
+                    input.try_map(|e| g.apply(&e)).unwrap()
+                }).collect::<Vec<_>>()
+            }
         };
         Ok(LayerOut::from_vec(outputs))
     }
@@ -180,9 +180,14 @@ where
                 node_id: id,
                 num_vars,
             }),
-            Activation::Gelu(_) => unimplemented!("GELU not implemented for Element"),
+            Activation::Relu(relu) => Activation::Relu(*relu),
+            Activation::Gelu(_) => Activation::Gelu(GELU::new()),
         };
-        Ok((info, aux))
+        Ok((LayerCtx::Activation(ActivationCtx {
+            op,
+            node_id: id,
+            num_vars,
+        }), aux))
     }
 }
 
@@ -273,14 +278,14 @@ where
                 commits,
                 column_evals,
                 2,
-                TableType::Relu,
+                self.table_type(),
             )],
         );
 
         let lookups = gen
             .new_lookups
-            .get_mut(&TableType::Relu)
-            .ok_or(anyhow!("No table of type Relu was expected"))?;
+            .get_mut(&self.table_type())
+            .ok_or(anyhow!("No table of type {:?} was expected", self.table_type()))?;
         lookups.extend(merged_lookups);
 
         Ok(())
@@ -321,9 +326,13 @@ where
         verifier: &mut Verifier<E, T, PCS>,
         _shape_step: &ShapeStep,
     ) -> Result<Vec<Claim<E>>> {
+        let table_type = match self.op {
+            Activation::Relu(_) => TableType::Relu,
+            Activation::Gelu(_) => TableType::GELU,
+        };
         let (constant_challenge, column_separation_challenge) = verifier
             .challenge_storage
-            .get_challenges_by_name(&TableType::Relu.name())
+            .get_challenges_by_name(&table_type.name())
             .ok_or(anyhow!(
                 "Couldn't get challenges for LookupType: {}",
                 TableType::Relu.name()
@@ -339,6 +348,12 @@ where
 }
 
 impl<N> Activation<N> {
+    fn table_type(&self) -> TableType {
+        match self {
+            Activation::Relu(_) => TableType::Relu,
+            Activation::Gelu(_) => TableType::GELU,
+        }
+    }
     #[timed::timed_instrument(name = "Prover::prove_activation_step")]
     pub(crate) fn prove_step<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
@@ -409,6 +424,12 @@ impl<N> Activation<N> {
 }
 
 impl ActivationCtx {
+    fn table_type(&self) -> TableType {
+        match self.op {
+            Activation::Relu(_) => TableType::Relu,
+            Activation::Gelu(_) => TableType::GELU,
+        }
+    }
     pub(crate) fn verify_activation<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         verifier: &mut Verifier<E, T, PCS>,
@@ -500,7 +521,21 @@ impl Relu {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GELU<N> {
+    quant_data: Option<GELUQuantData>,
     _n: PhantomData<N>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GELUQuantData {
+    /// The multiplier used to scale the input
+    multiplier: Element,
+    /// The minimum value of the input
+    min: Element,
+    /// The maximum value of the input
+    max: Element,
+    /// The lookup table - needed for setup mostly
+    /// TODO: remove this field only recreate it at setup time
+    lut: Vec<Element>,
 }
 
 impl<N> Default for GELU<N> {
@@ -511,7 +546,10 @@ impl<N> Default for GELU<N> {
 
 impl<N> GELU<N> {
     pub fn new() -> Self {
-        Self { _n: PhantomData }
+        Self {
+            quant_data: None,
+            _n: PhantomData,
+        }
     }
 }
 
@@ -527,17 +565,67 @@ impl Evaluate<f32> for GELU<f32> {
                 let d = t.get_data();
                 let gelued = d
                     .iter()
-                    .map(|&x| {
-                        let x_cubed = x * x * x;
-                        let inner_term =
-                            (2.0f32 / std::f32::consts::PI).sqrt() * (x + 0.044715 * x_cubed);
-                        0.5 * x * (1.0 + inner_term.tanh())
-                    })
+                    .map(gelu_float)
                     .collect::<Vec<_>>();
                 Tensor::new(t.get_shape(), gelued)
             })
             .collect();
         Ok(LayerOut::from_vec(output_tensors))
+    }
+}
+
+fn gelu_float(x: &f32) -> f32 {
+    let    x_cubed = x * x * x;
+    let inner_term = (2.0f32 / std::f32::consts::PI).sqrt() * (x + 0.044715 * x_cubed);
+    0.5 * x * (1.0 + inner_term.tanh())
+}
+impl GELU<f32> {
+    fn quantize(&self, input_scaling: ScalingFactor) -> anyhow::Result<GELU<Element>> {
+        // so we want sf * SCALING = multiplier
+        // then we construct the lookup table as  GELU(i / SCALING) * quantization::MAX for 
+        // all i in the range [-2^{7 + ceil_log2(multiplier)}, 2^{7 + ceil_log2(multiplier)}]
+        // This is because the input is already requantized, and we're multipliying the input
+        // by the multiplier during quantized inference such that the float input is scaled
+        // to that number of bits. So with inputs of 2^7 max, multiplied by multiplier then 
+        // the output range is 2^{7 + ceil_log2(multiplier)}
+        // During lookup, we basically scale down back to the original
+        // float value, apply GELU and multiply by 128 which is right now the output maximum range.
+        let multiplier = (GELU_SCALE_FACTOR as f32 * input_scaling.scale()).round() as Element;
+        let table_min = -2i32.pow( 7 + ceil_log2(multiplier as usize) as u32);
+        let table_max= 2i32.pow( 7 + ceil_log2(multiplier as usize) as u32);
+        let table_size = table_max - table_min;
+        assert!(table_size >= 1 << 20, "Table size for GELU is too bigggg");
+
+        let lut = (table_min..table_max).map(|i| {
+            let float_input = i as f32 / GELU_SCALE_FACTOR as f32;
+            let float_output = gelu_float(&float_input);
+            let lookup_output = (float_output * *quantization::MAX as f32).round() as Element;
+            lookup_output
+        }).collect::<Vec<Element>>();
+        let qd = GELUQuantData {
+            multiplier,
+            min: table_min as Element,
+            max: table_max as Element,
+            lut,
+        };
+        Ok(GELU {
+            quant_data: Some(qd),
+            _n: PhantomData,
+        })
+    }
+}
+
+impl GELU<Element> {
+    fn apply(&self, input: &Element) -> anyhow::Result<Element> {
+        let Some(ref quant_data) = self.quant_data else {
+            bail!("GELU not quantized");
+        };
+        let input = input * quant_data.multiplier;
+        ensure!(input >= quant_data.min && input <= quant_data.max, "Input out of range");
+        let float_input = input as f32 / GELU_SCALE_FACTOR as f32;
+        let float_output = gelu_float(&float_input);
+        let output = (float_output * *quantization::MAX as f32).round() as Element;
+        Ok(output)
     }
 }
 
