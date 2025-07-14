@@ -1,4 +1,6 @@
-use anyhow::ensure;
+use anyhow::{Result, anyhow, ensure};
+use ark_std::Zero;
+use multilinear_extensions::util::ceil_log2;
 use serde::{Deserialize, Serialize};
 use tracing::{trace, warn};
 
@@ -7,6 +9,7 @@ use crate::{
     layers::provable::{QuantizeOp, QuantizeOutput},
     padding::PaddingMode,
     parser::{gguf::FileTensorLoader, json, llm::LLMConfig},
+    quantization,
     tensor::{Number, Shape},
 };
 
@@ -17,17 +20,181 @@ use burn::{
     tensor::{Tensor as BTensor, TensorData},
 };
 
+/// The base 2 logarithm of the scale factor used in the inverse square root lookup tables
+pub(crate) const LOG_LAYERNORM_SCALE_FACTOR: usize = 16;
+/// The scale factor for our fixed point arithmetic
+pub(crate) const LAYERNORM_SCALE_FACTOR: usize = 1 << LOG_LAYERNORM_SCALE_FACTOR;
+/// The scale factor of the outputs of the inverse square root lookup tables lookup
+pub(crate) const LAYERNORM_OUTPUT_SCALE_FACTOR: usize = 1 << 8;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayerNorm<N> {
     pub gamma: Tensor<N>,
     pub beta: Tensor<N>,
     pub eps: f32,
+    pub quant_info: Option<QuantisedLayerNormData>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+/// This struct is used to store information used when evaluating the quantised version of [`LayerNorm`] on
+/// [`Element`]s.
+pub struct QuantisedLayerNormData {
+    /// The [`ScalingFactor`] of the inputs
+    input_scale_factor: ScalingFactor,
+    /// This is the multiplier we have to rescale the inputs with
+    multiplier: Element,
+    /// This stores the output column of the inverse square root lookup
+    lut: Vec<Element>,
+    /// The size of the dimension we average over
+    dim_size: usize,
+    /// This is the number of bits that get range checked
+    range_check_bits: usize,
+    /// The base 2 log of the value we have to multiply the most significant range check chunk by
+    top_chunk_scalar_log: usize,
 }
 
 impl<N: Number> LayerNorm<N> {
     pub fn new(gamma: Tensor<N>, beta: Tensor<N>, eps: f32) -> Self {
         assert_eq!(gamma.get_shape(), beta.get_shape());
-        Self { gamma, beta, eps }
+        Self {
+            gamma,
+            beta,
+            eps,
+            quant_info: None,
+        }
+    }
+
+    /// Returns the size of the dimension normalisation occurs over.
+    pub fn normalisation_dim_size(&self) -> usize {
+        self.gamma.shape[0]
+    }
+
+    /// Quantise the layer. To do this we want to have a common scale factor so that lookup tables can be reused, so we use the
+    /// constant [`LAYERNORM_SCALE_FACTOR`] as the input column scale factor. We need to work out how big the table needs to be to cover
+    /// all of our possible inputs.
+    ///
+    /// This method reutnrs the quantised [`LayerNorm`] as well as the `intermediate_bit_size` for the following requant layer.
+    pub fn quantise(
+        &self,
+        input_scaling: ScalingFactor,
+        model_scaling: ScalingFactor,
+    ) -> Result<(LayerNorm<Element>, usize)> {
+        // The input to the lookup table is `N*sum2 - sum1^{2}` where `sum2 = \sum xi^{2}` and `sum1 = \sum xi`.
+        // We use this value because the standard deviation can be calculated by `(N*sum2 - sum1^{2}).sqrt() / N`
+        // Since each `xi` is a value between `*quantisation::MIN` and `*quantisation::MAX` it has bit-size `*quantization::BIT_LEN - 1`.
+        // This means `sum1` has bit-size `ceil_log2(N) + *quantization::BIT_LEN - 1` and `sum2` has bit-size `2(*quantization::BIT_LEN - 1)`
+        // Then `sum1^{2}` has bit-size `2(ceil_log2(N) + *quantization::BIT_LEN - 1)` and `Nsum2` has bit_size `ceil_log2(N) + 2(*quantization::BIT_LEN - 1)`.
+        // Finally we have to multiply all of this by `multiplier = LAYERNORM_SCALE_FACTOR * input_scaling.scale() * input_scaling.scale()` so we have `ceil_log2(multiplier)`
+        // additional bits on top of this.
+
+        // Get the input scale
+        let input_scale = input_scaling.scale();
+        // Get the dim size (N)
+        let dim_size = self.normalisation_dim_size();
+        // We work out what we have to mutliply by so that everything is scaled to `LAYERNORM_SCALE_FACTOR` in quantised world
+        let multiplier =
+            (LAYERNORM_SCALE_FACTOR as f32 * input_scale * input_scale).round() as Element;
+        // Work out the number of variables the table requires, this is likely to be far too large to actually materialise as a table
+        let full_table_bit_size = 2 * (ceil_log2(dim_size) + *quantization::BIT_LEN - 1)
+            + ceil_log2(multiplier as usize)
+            + 1;
+        // To get around this we use the fact that we should only have roughly `2*(*quantization::BIT_LEN -1)` bits of precision i.e. only the most significant `2*(*quantization::BIT_LEN -1)`
+        // can actually be "trusted" the rest are essentially junk because they don't come from the actual inputs and are just guesses at the part that we have alread "rounded away" in quantisation.
+        // So the actual part we perform inverse square root on is size `2*(*quantization::BIT_LEN -1)` and then we rust need the discarded part to be range checked.
+        let range_checked_bits = full_table_bit_size - 2 * (*quantization::BIT_LEN - 1);
+
+        // The final chunk might be values with fewer than *quantization::BIT_LEN bits so we work out what we need to scale the value up by in order to use our standard range check table.
+        let remainder_bits = range_checked_bits % *quantization::BIT_LEN;
+        let top_chunk_scalar_log = if !remainder_bits.is_zero() {
+            *quantization::BIT_LEN - remainder_bits
+        } else {
+            0
+        };
+        // Calculate the lookup table
+        let table_max: Element = 1 << 2 * (*quantization::BIT_LEN - 1);
+        let table_min = -table_max;
+        // Because we don't use the same formula for the standard deviation as LayerNorm does in float we have to rescale `self.eps` in this case to be `N^2 * self.eps`
+        let rescaled_eps = (dim_size * dim_size) as f32 * self.eps;
+        let lut = (table_min..table_max)
+            .map(|val| {
+                // First we have to shift by `range_checked_bits`
+                let shifted_val = val << range_checked_bits;
+                // Now we convert back to float and perform the operation
+                let float_output = 1.0f32
+                    / ((shifted_val as f32 / LAYERNORM_SCALE_FACTOR as f32) + rescaled_eps).sqrt();
+                // Now we use the output scale factor to recover the element value
+                (float_output * LAYERNORM_OUTPUT_SCALE_FACTOR as f32).round() as Element
+            })
+            .collect::<Vec<Element>>();
+
+        let max_lut_value = lut.iter().map(|v| v.abs()).max().unwrap();
+        // The value is positive so we just convert to usize
+        let max_lut_value_bits = ceil_log2(max_lut_value as usize);
+
+        // Make the QuantisedLayerNormData
+        let quant_info = QuantisedLayerNormData {
+            input_scale_factor: input_scaling,
+            multiplier,
+            lut,
+            dim_size,
+            range_check_bits: range_checked_bits,
+            top_chunk_scalar_log,
+        };
+
+        let quant_gamma_data = self
+            .gamma
+            .get_data()
+            .iter()
+            .map(|v| {
+                let vf32 = v.to_f32()?;
+                Ok(model_scaling.quantize(&vf32))
+            })
+            .collect::<Result<Vec<Element>, anyhow::Error>>()?;
+
+        let quant_gamma = Tensor::<Element>::new(self.gamma.get_shape(), quant_gamma_data);
+        // Work out how to quantise the bias, it needs to have the same scale factor as the end product.
+        // This will be `input_scaling.scale() * model_scaling.scale() * 1.0f32 / LAYERNORM_OUTPUT_SCALE_FACTOR as f32`
+        let bias_scale = input_scale * model_scaling.scale() / LAYERNORM_OUTPUT_SCALE_FACTOR as f32;
+
+        let bias_max = self.beta.max_abs_output().to_f32()?;
+
+        let quant_bias_min = (-bias_max / bias_scale).round() as Element;
+        let quant_bias_max = (bias_max / bias_scale).round() as Element;
+
+        let bias_scaling = ScalingFactor::from_parts(
+            bias_max,
+            -bias_max,
+            bias_scale,
+            (quant_bias_min, quant_bias_max),
+        );
+        let quant_bias_data = self
+            .beta
+            .get_data()
+            .iter()
+            .map(|v| {
+                let vf32 = v.to_f32()?;
+                Ok(bias_scaling.quantize(&vf32))
+            })
+            .collect::<Result<Vec<Element>, anyhow::Error>>()?;
+
+        let quant_beta = Tensor::<Element>::new(self.beta.get_shape(), quant_bias_data);
+
+        // To calculate the intermediate bit size we have that the output is `self.gamma * (N * input - SUM input) * lookup_output + self.beta`
+        // So lets work out the left hand bit size
+        let lhs_bit_size =
+            2 * (*quantization::BIT_LEN - 1) + ceil_log2(dim_size) + 1 + max_lut_value_bits;
+
+        let intermediate_bit_size = lhs_bit_size.max(ceil_log2(quant_bias_max as usize)) + 1;
+
+        Ok((
+            LayerNorm::<Element> {
+                gamma: quant_gamma,
+                beta: quant_beta,
+                eps: self.eps,
+                quant_info: Some(quant_info),
+            },
+            intermediate_bit_size,
+        ))
     }
 }
 
@@ -137,10 +304,48 @@ impl Evaluate<f32> for LayerNorm<f32> {
 impl Evaluate<Element> for LayerNorm<Element> {
     fn evaluate<E: ff_ext::ExtensionField>(
         &self,
-        _inputs: &[&Tensor<Element>],
-        _unpadded_input_shapes: Vec<Shape>,
+        inputs: &[&Tensor<Element>],
+        unpadded_input_shapes: Vec<Shape>,
     ) -> anyhow::Result<LayerOut<Element, E>> {
-        unimplemented!()
+        // First we check to see if there is any quant_info, if not error
+        ensure!(
+            self.quant_info.is_some(),
+            "Cannot perform quantised LayerNorm evaluation if self.quant_info is None"
+        );
+        // Ensure we have a single input
+        ensure!(
+            inputs.len() == 1,
+            "LayerNorm should have a single input, had: {}",
+            inputs.len()
+        );
+        let input = inputs[0];
+
+        let QuantisedLayerNormData {
+            input_scale_factor,
+            multiplier,
+            lut,
+            dim_size,
+            range_check_bits,
+            top_chunk_scalar_log,
+        } = self.quant_info.as_ref().unwrap();
+
+        // So we need to take the input data and calculate `N * multiplier * SUM (xi * xi) - multiplier * (SUM xi) * (SUM xi)`
+        let final_dim = *input
+            .get_shape()
+            .last()
+            .ok_or(anyhow!("LayerNorm input didn't have a shape"))?;
+        let lookup_input_data = input
+            .get_data()
+            .chunks(final_dim)
+            .map(|chunk| {
+                let sum_squares = chunk.iter().map(|x| *x * *x).sum::<Element>();
+                let sum = chunk.iter().sum::<Element>();
+                *dim_size as Element * multiplier * sum_squares - multiplier * sum * sum
+            })
+            .collect::<Vec<Element>>();
+
+        // Now that we have the raw lookup input we split it into the part that gets shifted away and the part that gets passed to the inverse square root table
+        todo!()
     }
 }
 
@@ -185,10 +390,33 @@ mod tests {
         let gamma = Tensor::<f32>::new(vec![1024].into(), vec![1.0; 1024]);
         let beta = Tensor::<f32>::new(vec![1024].into(), vec![0.0; 1024]);
         let eps = 1e-5;
-        let layernorm = LayerNorm { gamma, beta, eps };
+        let layernorm = LayerNorm {
+            gamma,
+            beta,
+            eps,
+            quant_info: None,
+        };
         let input = Tensor::<f32>::new(vec![1, 1024].into(), vec![0.0; 1024]);
         let output = layernorm.evaluate::<E>(&[&input], vec![]).unwrap();
         assert_eq!(output.outputs[0].get_shape(), vec![1, 1024].into());
         assert_eq!(output.outputs[0].get_data(), vec![0.0; 1024]);
+    }
+
+    #[test]
+    fn test_quantise_layernorm() {
+        let gamma = Tensor::<f32>::random(&vec![1024].into());
+        let beta = Tensor::<f32>::random(&vec![1024].into());
+        let eps = 1e-5;
+        let layernorm = LayerNorm {
+            gamma,
+            beta,
+            eps,
+            quant_info: None,
+        };
+
+        let input_scaling = ScalingFactor::default();
+
+        let (quant_layernorm, intermediate_bit_size) =
+            layernorm.quantise(input_scaling, input_scaling).unwrap();
     }
 }
