@@ -374,6 +374,12 @@ pub struct Tensor<T> {
     og_shape: Shape,
 }
 
+impl<T> AsRef<Tensor<T>> for Tensor<T> {
+    fn as_ref(&self) -> &Tensor<T> {
+        self
+    }
+}
+
 impl Tensor<Element> {
     /// Returns the maximum size in bits possible if this tensor is treated as a matrix inside
     /// a matrix vector/matrix multiplication.
@@ -1702,6 +1708,41 @@ impl PartialEq for Tensor<Element> {
 impl PartialEq for Tensor<GoldilocksExt2> {
     fn eq(&self, other: &Self) -> bool {
         self.shape == other.shape && self.data == other.data
+    }
+}
+
+pub struct TensorSlice<'a, T> {
+    data: &'a [T],
+    shape: Shape,
+}
+
+impl<'a, T> From<&'a Tensor<T>> for TensorSlice<'a, T> {
+    fn from(value: &'a Tensor<T>) -> Self {
+        Self {
+            data: &value.data,
+            shape: value.shape.clone(),
+        }
+    }
+}
+
+impl<'a, T> TensorSlice<'a, T> {
+    pub(crate) fn get_shape(&self) -> Shape {
+        self.shape.clone()
+    }
+
+    pub(crate) fn get_data(&self) -> &[T] {
+        self.data
+    }
+
+    pub(crate) fn slice_over_first_dim(&self, dim2_start: usize, dim2_end: usize) -> Self {
+        let range = dim2_start * self.shape[1]..dim2_end * self.shape[1];
+        let data = &self.data[range];
+        let mut new_shape = self.shape.clone();
+        new_shape[0] = dim2_end - dim2_start;
+        Self {
+            data: data,
+            shape: new_shape.into(),
+        }
     }
 }
 

@@ -10832,6 +10832,7 @@ dependencies = [
  "rayon",
  "reqwest",
  "rmp-serde",
+ "rstest",
  "rust_tokenizers",
  "rustls",
  "serde",
