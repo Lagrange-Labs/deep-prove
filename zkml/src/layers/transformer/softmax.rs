@@ -53,7 +53,7 @@ pub(crate) const LOG_SCALE_FACTOR: usize = 24;
 /// The scale factor for our fixed point arithmetic
 pub(crate) const SCALE_FACTOR: usize = 1 << LOG_SCALE_FACTOR;
 /// The scale factor of the outputs of the `exp` lookup
-pub(crate) const OUTPUT_SCALE_FACTOR: usize = 1 << (LOG_SCALE_FACTOR - 1);
+pub(crate) const OUTPUT_SCALE_FACTOR: usize = 1 << 12;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 /// Stores data about the Softmax operation, which is used to map a tensor of values to a tensor of probability distributions.
@@ -114,10 +114,13 @@ where
 
 impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> SoftmaxProof<E, PCS> {
     pub(crate) fn get_lookup_data(&self) -> (Vec<E>, Vec<E>) {
-        let (nums, denoms): (Vec<Vec<E>>, Vec<Vec<E>>) =
-                    self.logup_proofs.iter().map(|p| p.fractional_outputs()).unzip();
+        let (nums, denoms): (Vec<Vec<E>>, Vec<Vec<E>>) = self
+            .logup_proofs
+            .iter()
+            .map(|p| p.fractional_outputs())
+            .unzip();
 
-                (nums.concat(), denoms.concat())
+        (nums.concat(), denoms.concat())
     }
 }
 
@@ -291,13 +294,18 @@ impl Softmax<Element> {
                 if i % second_dim == 0 {
                     -chunk[0] * self.scalar
                 } else {
+                    let max = *chunk.iter().take(i % second_dim + 1).max().unwrap();
                     let sum = chunk
                         .iter()
                         .take(i % second_dim + 1)
-                        .map(|x| (input_scale_factor.dequantize(x) / inv_float_temperature).exp())
+                        .map(|x| {
+                            (input_scale_factor.dequantize(&(x - max)) / inv_float_temperature)
+                                .exp()
+                        })
                         .sum::<f32>();
                     let log_sum = sum.ln();
                     -(SCALE_FACTOR as f32 * inv_float_temperature * log_sum).round() as Element
+                        - max * self.scalar
                 }
             })
             .collect::<Vec<Element>>();
@@ -366,11 +374,15 @@ impl Evaluate<f32> for Softmax<f32> {
             .get_data()
             .chunks(chunk_size)
             .flat_map(|vec| {
+                let max: f32 = *vec
+                    .iter()
+                    .max_by(|i, j| i.partial_cmp(j).unwrap_or(std::cmp::Ordering::Less))
+                    .unwrap();
                 let scaled = vec
                     .iter()
                     .map(|x| {
                         if *x != f32::NEG_INFINITY {
-                            self.scalar * x
+                            self.scalar * (x - max)
                         } else {
                             *x
                         }
@@ -718,16 +730,12 @@ impl Softmax<Element> {
                 compute_betas_eval(zero_table_point).into_mle().into();
 
             // Now add all the zero table polys to the sumcheck
-            let batch_challenge =
-                commits[3]
-                    .iter()
-                    .fold(batch_challenge * alpha, |chal_acc, (_, poly)| {
-                        vp.add_mle_list(
-                            vec![zero_table_beta.clone(), poly.clone().into()],
-                            chal_acc,
-                        );
-                        chal_acc * alpha
-                    });
+            let batch_challenge = commits[3]
+                .iter()
+                .fold(batch_challenge, |chal_acc, (_, poly)| {
+                    vp.add_mle_list(vec![zero_table_beta.clone(), poly.clone().into()], chal_acc);
+                    chal_acc * alpha
+                });
 
             // Finally we prove that the last claim is the product of all the zero table outputs and the exp output
             let mut layer_out_prod = commits[3]
@@ -950,6 +958,7 @@ impl Softmax<Element> {
             ..
         } = softmax_data;
         let num_vars = ceil_log2(exp_input.len());
+
         // We need to work out how many chunks to split the normalisation into to be range checked.
         let QuantisedSoftmaxData {
             error_bound,
@@ -1335,6 +1344,12 @@ where
 
             // There are no common commitments for this layer
             aux.model_polys = None;
+            aux.max_poly_len = aux
+                .last_output_shape
+                .iter()
+                .fold(aux.max_poly_len, |acc, shapes| {
+                    acc.max(shapes.next_power_of_two().product())
+                });
 
             // The output shape is the same as the input shape so we don't need to update it
             // return the LayerCtx and the updated ContextAux
@@ -1549,23 +1564,24 @@ where
         // Fianlly add the error check and the last claim, for this we need the output column of the exponential lookup
         let exp_output_claim = evaluations[1];
 
-        calc_subclaim += batch_challenge * error_beta_eval * two_mult * exp_output_claim;
         if !self.number_zero_chunks.is_zero() {
             // Need to add in the zero table lookup related values in this case
             let zero_table_beta_eval = eq_xy_eval(logup_claims[3].point(), &sumcheck_point);
 
-            let (new_calc_subclaim, batch_challenge) = evaluations[4..].iter().fold(
-                (calc_subclaim, batch_challenge * alpha),
+            let (new_calc_subclaim, batch_challenge) = evaluations[5..].iter().fold(
+                (calc_subclaim, batch_challenge),
                 |(subclaim_acc, bc), &claim| {
                     (subclaim_acc + zero_table_beta_eval * claim * bc, bc * alpha)
                 },
             );
+            let output_eval =
+                evaluations[6..].iter().step_by(2).copied().product::<E>() * exp_output_claim;
             calc_subclaim = new_calc_subclaim
                 + batch_challenge
-                    * evaluations[5..].iter().step_by(2).copied().product::<E>()
-                    * exp_output_claim
-                    * last_claim_beta_eval;
+                    * output_eval
+                    * (error_beta_eval * two_mult + alpha * last_claim_beta_eval);
         } else {
+            calc_subclaim += batch_challenge * error_beta_eval * two_mult * exp_output_claim;
             calc_subclaim += batch_challenge * alpha * last_claim_beta_eval * exp_output_claim;
         }
 
@@ -1584,11 +1600,11 @@ where
             evaluations[0] * two_to_the_16 + evaluations[3] * two_to_the_8 + evaluations[2];
 
         let mask_input_eval = if !self.number_zero_chunks.is_zero() {
-            let softmax_table_vars = ceil_log2(self.bkm as usize);
+            let softmax_table_vars = ceil_log2(self.bkm as usize >> 16);
             let zero_table_init_multiplier =
                 E::from_canonical_u64(1u64 << (16 + softmax_table_vars));
             let zero_table_size = E::from_canonical_u64(1u64 << self.zero_table_vars);
-            evaluations[4..]
+            evaluations[5..]
                 .iter()
                 .step_by(2)
                 .fold(

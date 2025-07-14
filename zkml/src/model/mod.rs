@@ -1227,12 +1227,24 @@ pub(crate) mod test {
     }
 
     // Quantize and run a model over the given input, if any; returns the quantized model and the
-    // quantized inputs
+    // quantized inputs; if `represantive_inputs` are provided, they are going to be employed to
+    // compute scaling factors for quantization, otherwise, random data will be employed
     pub(crate) fn quantize_model(
         model: Model<f32>,
         float_inputs: Vec<Tensor<f32>>,
+        representative_inputs: Option<Vec<Tensor<f32>>>,
     ) -> anyhow::Result<(Model<Element>, Vec<Tensor<Element>>)> {
-        let (quantized_model, md) = InferenceObserver::new().quantize(model)?;
+        let (quantized_model, md) = if let Some(repr_inputs) = representative_inputs {
+            InferenceObserver::new_with_representative_input(vec![
+                repr_inputs
+                    .iter()
+                    .map(|input| input.get_data().to_vec())
+                    .collect(),
+            ])
+        } else {
+            InferenceObserver::new()
+        }
+        .quantize(model)?;
 
         // quantize input tensor
         let input_tensors = float_inputs
@@ -1274,7 +1286,7 @@ pub(crate) mod test {
             .into_iter()
             .map(|shape| Tensor::random(&shape))
             .collect_vec();
-        let (quantized_model, quantized_inputs) = quantize_model(model, float_inputs)?;
+        let (quantized_model, quantized_inputs) = quantize_model(model, float_inputs, None)?;
         prove_quantized_model(quantized_model, quantized_inputs)
     }
 
