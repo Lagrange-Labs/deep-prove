@@ -9,3 +9,4 @@
 - [Commitments](./commitments.md)
 - [LLMs](./LLMs.md)
     - [QKV Layer](./llms-layers/qkv.md)
+    - [softmax](./softmax.md)
