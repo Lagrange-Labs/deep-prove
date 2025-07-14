@@ -244,10 +244,19 @@ impl<E: ExtensionField> ProveInfo<E> for Positional<Element> {
 }
 
 impl PadOp for Positional<Element> {
-    fn pad_node(self, _si: &mut ShapeInfo) -> anyhow::Result<Self>
+    fn pad_node(mut self, _si: &mut ShapeInfo) -> anyhow::Result<Self>
     where
         Self: Sized,
     {
+        match &mut self {
+            Positional::Learned(pos) => 
+                pos.positional_matrix = pos.positional_matrix.pad_next_power_of_two(),
+            Positional::Rope => (),
+        }
+
+        // no need to change `si` since the layer doesn't change the input shapes
+
+        
         Ok(self)
     }
 }
