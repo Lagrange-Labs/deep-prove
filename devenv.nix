@@ -5,10 +5,14 @@
 
   packages = [
     # General dev.
-    pkgs.git
+    pkgs.git pkgs.openssl
     # Rust
     pkgs.rustup pkgs.protobuf pkgs.openssl
   ];
+
+  env = {
+    OPENSSL_DEV = pkgs.openssl.dev;
+  };
 
   # https://devenv.sh/tasks/
   # tasks = {
