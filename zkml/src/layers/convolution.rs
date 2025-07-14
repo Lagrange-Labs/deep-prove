@@ -1776,7 +1776,7 @@ mod test {
         padded_dense.matrix = padded_dense.matrix.pad_matrix_to_ignore_garbage(
             &conv_input_shape,
             &conv_input_shape_padded,
-            &dense_shape_padded,
+            &dense_shape_padded.into(),
         );
         let padded_nrows = padded_dense.nrows();
         padded_dense.bias = padded_dense.bias.pad_1d(padded_nrows);
@@ -1911,7 +1911,7 @@ mod test {
         let fft_weight = weight.pad_matrix_to_ignore_garbage(
             &conv_shape_og,
             &conv_shape_pad,
-            &vec![new_rows, new_cols],
+            &vec![new_rows, new_cols].into(),
         );
         let fft_bias = bias.clone().pad_1d(new_rows);
         let fft_dense = Dense::new(fft_weight.clone(), fft_bias.clone());

@@ -243,8 +243,9 @@ impl Attention<f32> {
             self.k_bias,
             self.v,
             self.v_bias,
-        );
-        let mha = Mha::new(c.num_heads, c.head_dim())?;
+            c.num_heads,
+        )?;
+        let mha = Mha::new(c.context_length, c.num_heads, c.head_dim())?;
         let out = MatMul::new_constant(self.out, Some(self.out_bias))?;
         // input is [seq_len, emb_size]
         let last_node_id =
@@ -254,7 +255,7 @@ impl Attention<f32> {
         // then this output two tensors:
         // * first one is [num_heads, seq_len] (Q @ K^T - all heads concatenated)
         // * second one is [num_heads, seq_len, head_dim] (V)
-        let mha_id = model.add_consecutive_layer(Layer::MhaQK(mha), Some(last_node_id))?;
+        let mha_id = model.add_consecutive_layer(Layer::Mha(mha), Some(last_node_id))?;
 
         let last_node_id = model.add_consecutive_layer(Layer::MatMul(out), Some(mha_id))?;
         let last_node_id = model.add_node(Node::new(
