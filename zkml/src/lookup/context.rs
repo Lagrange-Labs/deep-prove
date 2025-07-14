@@ -15,28 +15,24 @@ use transcript::Transcript;
 
 use super::{logup_gkr::error::LogUpError, witness::LogUpWitness};
 use crate::{
-    Claim, Context, Element,
-    iop::ChallengeStorage,
-    layers::{
-        activation::Relu,
+    iop::ChallengeStorage, layers::{
+        activation::{Relu, GELUQuantData},
         provable::{NodeId, ProvableOp},
         transformer::softmax::{LOG_SCALE_FACTOR, OUTPUT_SCALE_FACTOR, SCALE_FACTOR},
-    },
-    model::{InferenceTrace, ToIterator},
-    quantization::{self, Fieldizer},
+    }, model::{InferenceTrace, ToIterator}, quantization::{self, Fieldizer}, Claim, Context, Element
 };
 use rayon::prelude::*;
 pub const TABLE_POLY_ID_OFFSET: usize = 666;
 
 type LookupAndColumns<BaseField> = (Vec<Element>, (Vec<BaseField>, Vec<BaseField>));
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 /// Enum used for establishing the different table types needed to prove non-linear functions in a model.
 pub enum TableType {
     /// Table used for the Relu activation function
     Relu,
     /// Table used for the GELU activation function
-    GELU,
+    GELU(GELUQuantData),
     /// Table used for range checking (its size is determined by the quantisation bit size)
     Range,
     /// Table used for clamping values, the inner [`usize`] denotes the maximum bit length a value can be before clamping to use this table
@@ -105,8 +101,19 @@ impl TableType {
         column_separator: Element,
     ) -> (Vec<Element>, Vec<Vec<E::BaseField>>) {
         match self {
-            TableType::GELU => {
-                unimplemented!("GELU not implemented for Element");
+            TableType::GELU(qd)=> {
+                let (comb, (col_one, col_two)): (
+                    Vec<Element>,
+                    (Vec<E::BaseField>, Vec<E::BaseField>),
+                ) = qd.lut.iter().enumerate().map(|(i, v)| {
+                    let i_field: E = (i as Element).to_field();
+                    let out_field: E = v.to_field();
+                    (
+                        i as Element + v * column_separator,
+                        (i_field.as_bases()[0], out_field.as_bases()[0]),
+                    )
+                }).unzip();
+                (comb, vec![col_one, col_two])
             }
             TableType::Relu => {
                 #[allow(clippy::type_complexity)]
@@ -216,7 +223,7 @@ impl TableType {
     pub fn name(&self) -> String {
         match self {
             TableType::Relu => "Relu".to_string(),
-            TableType::GELU => "GELU".to_string(),
+            TableType::GELU(_)=> "GELU".to_string(),
             TableType::Range => "Range".to_string(),
             TableType::Clamping(size) => format!("Clamping: {size}"),
             TableType::Softmax(table_data) => {
@@ -236,9 +243,6 @@ impl TableType {
         point: &[E],
     ) -> Result<Vec<E>, LogUpError> {
         match self {
-            TableType::GELU => {
-                unimplemented!("GELU not implemented for Element");
-            }
             TableType::Range => {
                 if point.len() != *quantization::BIT_LEN {
                     return Err(LogUpError::VerifierError(format!(
@@ -274,6 +278,21 @@ impl TableType {
                     },
                 );
                 Ok(vec![first_column, second_column])
+            }
+            TableType::GELU(qd)=> {
+                let size = qd.size();
+                if point.len() != size {
+                    return Err(LogUpError::VerifierError(format!(
+                        "Point was not the correct size to produce a softmax table evaluation, point size: {}, expected: {}",
+                        point.len(),
+                        size
+                    )));
+                }
+                Ok(vec![
+                    point.iter().enumerate().fold(E::ZERO, |acc, (index, p)| {
+                        acc + *p * E::from_canonical_u64(1u64 << index)
+                    }),
+                ])
             }
             TableType::Clamping(size) => {
                 if point.len() != *size {
@@ -352,7 +371,7 @@ impl TableType {
 
     pub fn generate_challenge<E: ExtensionField, T: Transcript<E>>(&self, transcript: &mut T) -> E {
         match self {
-            TableType::GELU => transcript.get_and_append_challenge(b"GELU").elements,
+            TableType::GELU(_) => transcript.get_and_append_challenge(b"GELU").elements,
             TableType::Relu => transcript.get_and_append_challenge(b"Relu").elements,
             TableType::Range | TableType::ErrorTable(..) => {
                 // Theres only one column for a range check so we don't need to generate a challenge
@@ -367,7 +386,7 @@ impl TableType {
     /// Gets the number of variables that the multiplicity polynomial will have for this table
     pub fn multiplicity_poly_vars(&self) -> usize {
         match self {
-            TableType::GELU => unimplemented!("GELU not implemented for Element"),
+            TableType::GELU(qd) => qd.size(),
             TableType::Range | TableType::Relu => *quantization::BIT_LEN,
             TableType::Clamping(bits) => *bits,
             TableType::Softmax(table_data) => table_data.size(),
@@ -379,7 +398,16 @@ impl TableType {
     /// Function that returns any MLEs that have to be committed for this [`TableType`]
     pub fn committed_columns<E: ExtensionField>(&self) -> Option<DenseMultilinearExtension<E>> {
         match self {
-            TableType::GELU => unimplemented!("GELU not implemented for Element"),
+            TableType::GELU(qd) => {
+                let out_column = qd.lut.iter().map(|elem| {
+                    let out_field: E = elem.to_field();
+                    out_field.as_bases()[0]
+                }).collect::<Vec<E::BaseField>>();
+                Some(DenseMultilinearExtension::<E>::from_evaluations_vec(
+                    qd.size(),
+                    out_column,
+                ))
+            }
             TableType::Softmax(table_data) => {
                 let table_size = table_data.full_table_size();
 
@@ -439,7 +467,7 @@ pub struct LookupContext {
 impl LookupContext {
     pub fn new(set: &BTreeSet<TableType>) -> LookupContext {
         LookupContext {
-            tables: set.iter().copied().collect(),
+            tables: set.iter().cloned().collect(),
         }
     }
 
@@ -461,7 +489,7 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> LookupWitnessGen<E, 
     pub fn new(lookup_ctx: &LookupContext) -> Self {
         let new_lookups = lookup_ctx
             .iter()
-            .map(|&table_type| (table_type, Vec::<Element>::new()))
+            .map(|table_type| (table_type.clone(), Vec::<Element>::new()))
             .collect::<BTreeMap<TableType, Vec<Element>>>();
         Self {
             new_lookups,
@@ -590,7 +618,7 @@ where
                 (commit, mle),
                 multiplicities,
                 column_evals,
-                *table_type,
+                table_type.clone(),
             ))
         })
         .collect::<Result<Vec<LogUpWitness<E, PCS>>, LogUpError>>()?;

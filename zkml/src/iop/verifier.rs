@@ -217,7 +217,7 @@ where
 
                 verify_table::<_, _, _>(
                     table_proof,
-                    *table_type,
+                    table_type.clone(),
                     &mut self.commit_verifier,
                     self.transcript,
                     constant_challenge,
@@ -337,7 +337,7 @@ where
             "If table poly claims isn't empty we should only have 1, got: {}",
             table_poly_claims.len()
         );
-        witness_verifier.add_table_claim(table_type, table_poly_claims[0].clone())?;
+        witness_verifier.add_table_claim(table_type.clone(), table_poly_claims[0].clone())?;
     }
 
     // Hard indexing is okay here because we checked above that at least one claim exists
