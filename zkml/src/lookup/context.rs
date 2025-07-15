@@ -102,6 +102,7 @@ impl TableType {
     ) -> (Vec<Element>, Vec<Vec<E::BaseField>>) {
         match self {
             TableType::GELU(qd)=> {
+                #[allow(clippy::type_complexity)]
                 let (comb, (col_one, col_two)): (
                     Vec<Element>,
                     (Vec<E::BaseField>, Vec<E::BaseField>),
@@ -288,11 +289,15 @@ impl TableType {
                         size
                     )));
                 }
-                Ok(vec![
-                    point.iter().enumerate().fold(E::ZERO, |acc, (index, p)| {
-                        acc + *p * E::from_canonical_u64(1u64 << index)
-                    }),
-                ])
+                let first_column = point.iter().enumerate().fold(E::ZERO, |acc, (index, p)| {
+                    acc + *p * E::from_canonical_u64(1u64 << index)
+                });
+                Ok(vec![first_column])
+                //Ok(vec![
+                //    point.iter().enumerate().fold(E::ZERO, |acc, (index, p)| {
+                //        acc + *p * E::from_canonical_u64(1u64 << index)
+                //    }),
+                //])
             }
             TableType::Clamping(size) => {
                 if point.len() != *size {
@@ -449,7 +454,7 @@ impl TableType {
     /// Method that takes all of the claims output by a logup table proof and outputs only those that need to be checked via commitment opening (excluding the multiplicity poly claim)
     pub fn table_claims<E: ExtensionField>(&self, claims: &[Claim<E>]) -> Vec<Claim<E>> {
         match self {
-            TableType::Softmax(..) | TableType::ErrorTable(..) => {
+            TableType::Softmax(..) | TableType::ErrorTable(..) | TableType::GELU(..) => {
                 // For Softmax and Error Table we just need the output column claim so the last of the slice
                 vec![claims.last().cloned().unwrap()]
             }

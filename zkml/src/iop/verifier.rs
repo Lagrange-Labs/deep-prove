@@ -251,6 +251,7 @@ where
         self.commit_verifier
             .verify(&ctx.commitment_ctx, &proof.commit, self.transcript)?;
 
+        let num_len = numerators.len();
         // 8. verify that the accumulated numerator is zero and accumulated denominator is non-zero
         let (final_num, final_denom) = numerators.into_iter().zip(denominators).fold(
             (E::ZERO, E::ONE),
@@ -261,8 +262,9 @@ where
 
         ensure!(
             final_num == E::ZERO,
-            "Final numerator was non-zero, got: {:?}",
-            final_num
+            "Final numerator was non-zero, got: {:?} - numerator.len(): {}",
+            final_num,
+            num_len
         );
         ensure!(
             final_denom != E::ZERO,

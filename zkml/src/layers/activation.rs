@@ -139,7 +139,9 @@ impl Evaluate<Element> for Activation<Element> {
                 .collect::<Vec<_>>(),
             Activation::Gelu(g) => {
                 inputs.iter().map(|input| {
-                    input.try_map(|e| g.apply(&e)).unwrap()
+                    let out = input.try_map(|e| g.apply(e)).unwrap();
+                    assert!(out.get_data().iter().all(|e| g.quant_data.as_ref().unwrap().lut.contains(e)));
+                    out
                 }).collect::<Vec<_>>()
             }
         };
@@ -147,7 +149,7 @@ impl Evaluate<Element> for Activation<Element> {
     }
 }
 
-impl<N, E> ProveInfo<E> for Activation<N>
+impl<E> ProveInfo<E> for Activation<Element>
 where
     E: ExtensionField + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
@@ -184,17 +186,12 @@ where
             .fold(aux.max_poly_len, |acc, shapes| {
                 acc.max(shapes.next_power_of_two().product())
             });
-        let info = match self {
-            Activation::Relu(relu) => LayerCtx::Activation(ActivationCtx {
-                op: Activation::Relu(*relu),
-                node_id: id,
-                num_vars,
-            }),
+        let act = match self {
             Activation::Relu(relu) => Activation::Relu(*relu),
-            Activation::Gelu(_) => Activation::Gelu(GELU::new()),
+            Activation::Gelu(g) => Activation::Gelu(g.clone()),
         };
         Ok((LayerCtx::Activation(ActivationCtx {
-            op,
+            op: act,
             node_id: id,
             num_vars,
         }), aux))
@@ -203,7 +200,7 @@ where
 
 impl<N> PadOp for Activation<N> {}
 
-impl<N, E, PCS> ProvableOp<E, PCS> for Activation<N>
+impl<E, PCS> ProvableOp<E, PCS> for Activation<Element>
 where
     E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
@@ -253,7 +250,15 @@ where
             .iter()
             .zip(step_data.outputs.outputs()[0].get_data().iter())
             .map(|(a, b)| {
-                let a_field: E = a.to_field();
+                let a_field : E = match self {
+                    Activation::Relu(_) => a.to_field(),
+                    Activation::Gelu(g) => {
+                        let scaled = a * g.quant_data.as_ref().unwrap().multiplier;
+                        println!("GEN LOOKUP: go from {:?} to {:?}", a, scaled);
+                        assert!(scaled >= g.quant_data.as_ref().unwrap().min && scaled <= g.quant_data.as_ref().unwrap().max);
+                        scaled.to_field()
+                    }
+                };
                 let b_field: E = b.to_field();
                 (
                     a + COLUMN_SEPARATOR * b,
@@ -482,7 +487,17 @@ impl ActivationCtx {
             })?;
 
         // 4. return the input claim for to be proven at subsequent step
-        Ok(verifier_claims.claims()[0].clone())
+        let input_claim = match &self.op {
+            Activation::Relu(_) => verifier_claims.claims()[0].clone(),
+            Activation::Gelu(g) => {
+                let claim = &verifier_claims.claims()[0];
+                let m: E = g.quant_data.as_ref().unwrap().multiplier.to_field();
+                let mi = m.inverse();
+                let eval = claim.eval * mi;
+                Claim::new(claim.point.clone(),eval)
+            }
+        };
+        Ok(input_claim)
     }
 }
 
@@ -547,7 +562,7 @@ pub struct GELUQuantData {
 
 impl GELUQuantData {
     pub fn size(&self) -> usize {
-        (self.max - self.min + 1) as usize
+        (self.max - self.min + 1).ilog2() as usize
     }
 }
 
@@ -612,8 +627,7 @@ impl GELU<f32> {
         let lut = (table_min..table_max).map(|i| {
             let float_input = i as f32 / GELU_SCALE_FACTOR as f32;
             let float_output = gelu_float(&float_input);
-            let lookup_output = (float_output * *quantization::MAX as f32).round() as Element;
-            lookup_output
+            (float_output * *quantization::MAX as f32).round() as Element
         }).collect::<Vec<Element>>();
         let qd = GELUQuantData {
             multiplier,
@@ -621,6 +635,9 @@ impl GELU<f32> {
             max: table_max as Element,
             lut,
         };
+        println!("GELU QUANTIZE: multiplier: {:?}", qd.multiplier);
+        println!("GELU QUANTIZE: min: {:?}", qd.min);
+        println!("GELU QUANTIZE: max: {:?}", qd.max);
         Ok(GELU {
             quant_data: Some(qd),
             _n: PhantomData,
@@ -633,9 +650,11 @@ impl GELU<Element> {
         let Some(ref quant_data) = self.quant_data else {
             bail!("GELU not quantized");
         };
-        let input = input * quant_data.multiplier;
-        ensure!(input >= quant_data.min && input <= quant_data.max, "Input out of range");
-        let float_input = input as f32 / GELU_SCALE_FACTOR as f32;
+        let scaled = input * quant_data.multiplier;
+        let within_range = quant_data.min <= scaled && scaled <= quant_data.max;
+        println!("GELU INFERENCE: go from {:?} to -> {:?} <= {:?} <= {:?} ? {:?}", input, quant_data.min, scaled, quant_data.max, within_range);
+        ensure!(within_range, "Input out of range");
+        let float_input = scaled as f32 / GELU_SCALE_FACTOR as f32;
         let float_output = gelu_float(&float_input);
         let output = (float_output * *quantization::MAX as f32).round() as Element;
         Ok(output)
