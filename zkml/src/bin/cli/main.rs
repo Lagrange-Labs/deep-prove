@@ -10,6 +10,7 @@ use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
 use tracing::info;
 use url::Url;
 use zkml::{
+    ModelType,
     middleware::{DeepProveRequest, DeepProveResponse, v1::Input},
     quantization::ScalingStrategyKind,
 };
@@ -93,10 +94,25 @@ async fn main() -> anyhow::Result<()> {
         Command::Submit { onnx, inputs } => {
             let input = Input::from_file(&inputs).context("loading input")?;
             let model_file = File::open(&onnx).await.context("opening model file")?;
-            let model_bytes = unsafe { Mmap::map(&model_file) }.context("loading model file")?;
-            let model = model_bytes.to_vec();
-            // TODO maybe validate here only?
-            // let (model, model_metadata) = parse_model(model_bytes).context("parsing ONNX file")?;
+            let model = unsafe { Mmap::map(&model_file) }
+                .context("loading model file")?
+                .to_vec();
+
+            let proto = {
+                use prost_tract_compat::Message;
+
+                tract_onnx::pb::ModelProto::decode(&*model).context("decoding ModelProto")?
+            };
+            let model_type =
+                onnx.extension()
+                    .and_then(|ext| match ext.to_ascii_lowercase().to_str() {
+                        Some("cnn") => Some(ModelType::CNN),
+                        Some("mlp") => Some(ModelType::MLP),
+                        _ => None,
+                    });
+            if let Some(model_type) = model_type {
+                model_type.validate_proto(&proto)?;
+            }
 
             // TODO Currently hard-coded in the ONNX loader. Adjust when choice is availabl
             let scaling_strategy = ScalingStrategyKind::AbsoluteMax;
