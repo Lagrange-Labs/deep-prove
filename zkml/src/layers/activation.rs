@@ -39,7 +39,7 @@ use super::provable::{
 };
 
 use anyhow::{Result, anyhow, bail, ensure};
-const GELU_SCALE_EXP: usize = 16;
+const GELU_SCALE_EXP: usize = 12;
 const GELU_SCALE_FACTOR: usize = 1 << GELU_SCALE_EXP;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -578,15 +578,8 @@ impl GELUQuantData {
         (self.max - self.min + 1).ilog2() as usize
     }
     /// Returns the input indexes of the table and the corresponding output values
-    pub fn table(&self) -> impl Iterator<Item = (Element, Element)> {
-        (self.min..=self.max).map(|i| {
-            let float_input = i as f32 / GELU_SCALE_FACTOR as f32;
-            let float_output = gelu_float(&float_input);
-            (
-                i,
-                (float_output * *quantization::MAX as f32).round() as Element,
-            )
-        })
+    pub fn table(&self) -> impl Iterator<Item = (Element, Element)>  + use<'_> {
+        (self.min..self.max).map(|i|  (i,self.table_output(i)))
     }
     /// NOTE: this requires the scaled input
     pub fn table_output(&self, input: Element) -> Element {
@@ -649,6 +642,7 @@ impl GELU<f32> {
         let table_min = -2i32.pow(7 + ceil_log2(multiplier as usize) as u32);
         let table_max = 2i32.pow(7 + ceil_log2(multiplier as usize) as u32);
         let table_size = table_max - table_min;
+        assert!((table_size as usize).is_power_of_two());
         assert!(
             table_size <= 1 << 20,
             "Table size for GELU is too bigggg: {:?}",
