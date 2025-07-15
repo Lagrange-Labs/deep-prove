@@ -12,6 +12,7 @@ use p3_field::{Field, FieldAlgebra};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::{debug, warn};
 use transcript::Transcript;
+use utils::Metrics;
 
 use super::{logup_gkr::error::LogUpError, witness::LogUpWitness};
 use crate::{
@@ -491,9 +492,10 @@ where
     }
 
     // Make the witness gen struct that stores relevant table lookup data
+    debug!("== Witness poly fields generation ==");
+    let metrics = Metrics::new();
     let mut witness_gen = LookupWitnessGen::<E, PCS>::new(&ctx.lookup);
 
-    debug!("Lookup witness generation: generating poly fields...");
     for (node_id, _) in ctx.steps_info.to_forward_iterator() {
         let step = trace
             .get_step(&node_id)
@@ -508,8 +510,13 @@ where
                 ))
             })?;
     }
+    debug!(
+        "== Witness poly fields generation metrics {} ==",
+        metrics.to_span()
+    );
 
-    debug!("Lookup witness generation: generating table multiplicities...");
+    debug!("== Witness table multiplicities generation ==");
+    let metrics = Metrics::new();
     // calculate the table multiplicities
     let table_witnesses = witness_gen
         .new_lookups
@@ -583,11 +590,16 @@ where
         })
         .collect::<Result<Vec<LogUpWitness<E, PCS>>, LogUpError>>()?;
 
-    debug!("Lookup witness generation: commit context generation...");
+    debug!(
+        "== Witness table multiplicities metrics {} ==",
+        metrics.to_span()
+    );
 
-    debug!("Lookup witness generation: challenge storage...");
+    debug!("== Challenge storage ==");
+    let metrics = Metrics::new();
     let challenge_storage =
         initialise_from_table_set::<E, T, _>(witness_gen.new_lookups.keys(), transcript);
+    debug!("== Challenge storage metrics {} ==", metrics.to_span());
 
     Ok(LookupWitness {
         challenge_storage,
