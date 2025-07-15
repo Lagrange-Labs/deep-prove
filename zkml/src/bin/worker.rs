@@ -375,7 +375,7 @@ async fn main() -> anyhow::Result<()> {
     #[cfg(feature = "s3")]
     let store = {
         let region = s3_region.context("gathering S3 config arguments")?;
-        let timeout = std::time::Duration::from_secs(s3_timeout_secs);
+        let timeout = std::time::Duration::from_secs(s3_timeout_secs.unwrap());
         let s3: store::AmazonS3 = store::AmazonS3Builder::new()
             .with_region(region)
             .with_bucket_name(s3_bucket.unwrap())
@@ -384,7 +384,7 @@ async fn main() -> anyhow::Result<()> {
             .with_endpoint(s3_endpoint.unwrap())
             .with_client_options(
                 store::ClientOptions::default()
-                    .with_timeout(s3_timeout)
+                    .with_timeout(timeout)
                     .with_allow_http(true),
             )
             .build()
