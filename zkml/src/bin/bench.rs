@@ -1,4 +1,11 @@
-use std::{fs::File, io::BufReader};
+use itertools::Either;
+use std::{
+    collections::HashMap,
+    fs::{File, OpenOptions},
+    io::BufReader,
+    path::Path,
+    time,
+};
 use timed_core::Output;
 #[cfg(feature = "blake")]
 use transcript::blake::BlakeTranscript;
@@ -244,13 +251,13 @@ fn read_model(args: &Args, inputs: &InputJSON) -> Result<(Model<Element>, ModelM
                     .map(|inp| vec![inp.clone()])
                     .collect(),
             );
-            FloatOnnxLoader::new_with_scaling_strategy(&args.onnx, strategy)
+            FloatOnnxLoader::new_with_scaling_strategy(Either::Right(&args.onnx), strategy)
                 .with_keep_float(true)
                 .build()
         }
         "maxabs" => {
             let strategy = AbsoluteMax::new();
-            FloatOnnxLoader::new_with_scaling_strategy(&args.onnx, strategy)
+            FloatOnnxLoader::new_with_scaling_strategy(Either::Right(&args.onnx), strategy)
                 .with_keep_float(true)
                 .build()
         }

@@ -18,13 +18,19 @@ pub struct Input {
     input_data: Vec<Vec<f32>>,
 }
 
-// TODO: this is a copypaste from `bench.rs`.
 impl Input {
     pub fn from_file<P: AsRef<Path>>(p: P) -> anyhow::Result<Self> {
         let inputs: Self = serde_json::from_reader(BufReader::new(
             std::fs::File::open(p.as_ref()).context("opening inputs file")?,
         ))
         .context("deserializing inputs")?;
+        inputs.validate()?;
+
+        Ok(inputs)
+    }
+
+    pub fn from_str<S: AsRef<str>>(s: S) -> anyhow::Result<Self> {
+        let inputs: Self = serde_json::from_str(s.as_ref()).context("deserializing inputs")?;
         inputs.validate()?;
 
         Ok(inputs)
