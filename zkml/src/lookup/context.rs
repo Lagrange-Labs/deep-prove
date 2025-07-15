@@ -106,7 +106,7 @@ impl TableType {
                 let (comb, (col_one, col_two)): (
                     Vec<Element>,
                     (Vec<E::BaseField>, Vec<E::BaseField>),
-                ) = qd.lut.iter().enumerate().map(|(i, v)| {
+                ) = (qd.min..=qd.max).zip(qd.lut.iter()).map(|(i, v)| {
                     let i_field: E = (i as Element).to_field();
                     let out_field: E = v.to_field();
                     (
@@ -239,6 +239,8 @@ impl TableType {
         }
     }
 
+    /// Called by the verifier to evaluate _some_ columns itself. If the verifier can't verify the table
+    /// efficiently, then it is done by regular PCS.
     pub fn evaluate_table_columns<E: ExtensionField>(
         &self,
         point: &[E],
@@ -293,11 +295,6 @@ impl TableType {
                     acc + *p * E::from_canonical_u64(1u64 << index)
                 });
                 Ok(vec![first_column])
-                //Ok(vec![
-                //    point.iter().enumerate().fold(E::ZERO, |acc, (index, p)| {
-                //        acc + *p * E::from_canonical_u64(1u64 << index)
-                //    }),
-                //])
             }
             TableType::Clamping(size) => {
                 if point.len() != *size {
