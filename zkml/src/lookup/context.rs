@@ -106,7 +106,8 @@ impl TableType {
                 let (comb, (col_one, col_two)): (
                     Vec<Element>,
                     (Vec<E::BaseField>, Vec<E::BaseField>),
-                ) = (qd.min..=qd.max).zip(qd.lut.iter()).map(|(i, v)| {
+                //) = (qd.min..=qd.max).zip(qd.lut.iter()).map(|(i, v)| {
+                ) = qd.table().map(|(i, v)| {
                     let i_field: E = (i as Element).to_field();
                     let out_field: E = v.to_field();
                     (
@@ -283,7 +284,7 @@ impl TableType {
                 Ok(vec![first_column, second_column])
             }
             TableType::GELU(qd)=> {
-                let size = qd.size();
+                let size = qd.table_size();
                 if point.len() != size {
                     return Err(LogUpError::VerifierError(format!(
                         "Point was not the correct size to produce a softmax table evaluation, point size: {}, expected: {}",
@@ -293,7 +294,7 @@ impl TableType {
                 }
                 let first_column = point.iter().enumerate().fold(E::ZERO, |acc, (index, p)| {
                     acc + *p * E::from_canonical_u64(1u64 << index)
-                });
+                }) - E::from_canonical_u64(1u64 << (size - 1));
                 Ok(vec![first_column])
             }
             TableType::Clamping(size) => {
@@ -388,7 +389,7 @@ impl TableType {
     /// Gets the number of variables that the multiplicity polynomial will have for this table
     pub fn multiplicity_poly_vars(&self) -> usize {
         match self {
-            TableType::GELU(qd) => qd.size(),
+            TableType::GELU(qd) => qd.table_size(),
             TableType::Range | TableType::Relu => *quantization::BIT_LEN,
             TableType::Clamping(bits) => *bits,
             TableType::Softmax(table_data) => table_data.size(),
@@ -401,12 +402,12 @@ impl TableType {
     pub fn committed_columns<E: ExtensionField>(&self) -> Option<DenseMultilinearExtension<E>> {
         match self {
             TableType::GELU(qd) => {
-                let out_column = qd.lut.iter().map(|elem| {
+                let out_column = qd.table().map(|(_,elem)| {
                     let out_field: E = elem.to_field();
                     out_field.as_bases()[0]
                 }).collect::<Vec<E::BaseField>>();
                 Some(DenseMultilinearExtension::<E>::from_evaluations_vec(
-                    qd.size(),
+                    qd.table_size(),
                     out_column,
                 ))
             }

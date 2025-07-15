@@ -140,7 +140,6 @@ impl Evaluate<Element> for Activation<Element> {
             Activation::Gelu(g) => {
                 inputs.iter().map(|input| {
                     let out = input.try_map(|e| g.apply(e)).unwrap();
-                    assert!(out.get_data().iter().all(|e| g.quant_data.as_ref().unwrap().lut.contains(e)));
                     out
                 }).collect::<Vec<_>>()
             }
@@ -250,13 +249,12 @@ where
             .iter()
             .zip(step_data.outputs.outputs()[0].get_data().iter())
             .map(|(a, b)| {
-                let a_field : E = match self {
-                    Activation::Relu(_) => a.to_field(),
+                let (a,a_field) : (Element,E) = match self {
+                    Activation::Relu(_) => (*a,a.to_field()),
                     Activation::Gelu(g) => {
                         let scaled = a * g.quant_data.as_ref().unwrap().multiplier;
-                        println!("GEN LOOKUP: go from {:?} to {:?}", a, scaled);
                         assert!(scaled >= g.quant_data.as_ref().unwrap().min && scaled <= g.quant_data.as_ref().unwrap().max);
-                        scaled.to_field()
+                        (scaled,scaled.to_field())
                     }
                 };
                 let b_field: E = b.to_field();
@@ -404,6 +402,15 @@ impl<N> Activation<N> {
         same_poly_prover.add_claim(last_claim.clone())?;
         // Activation proofs have two columns, input and output
         let input_claim = logup_proof.output_claims()[0].clone();
+        let input_claim = match &self {
+            Activation::Gelu(g) => {
+                let m: E = g.quant_data.as_ref().unwrap().multiplier.to_field();
+                let mi = m.inverse();
+                let eval = input_claim.eval * mi;
+                Claim::new(input_claim.point.clone(),eval)
+            }
+            _ => input_claim,
+        };
         let output_claim = logup_proof.output_claims()[1].clone();
 
         same_poly_prover.add_claim(output_claim)?;
@@ -436,12 +443,6 @@ impl<N> Activation<N> {
 }
 
 impl ActivationCtx {
-    fn table_type(&self) -> TableType {
-        match &self.op {
-            Activation::Relu(_) => TableType::Relu,
-            Activation::Gelu(g) => TableType::GELU(g.quant_data.clone().unwrap()),
-        }
-    }
     pub(crate) fn verify_activation<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         verifier: &mut Verifier<E, T, PCS>,
@@ -555,14 +556,25 @@ pub struct GELUQuantData {
     pub(crate) min: Element,
     /// The maximum value of the input
     pub(crate) max: Element,
-    /// The lookup table - needed for setup mostly
-    /// TODO: remove this field only recreate it at setup time
-    pub(crate) lut: Vec<Element>,
 }
 
 impl GELUQuantData {
-    pub fn size(&self) -> usize {
+    pub fn table_size(&self) -> usize {
         (self.max - self.min + 1).ilog2() as usize
+    }
+    /// Returns the input indexes of the table and the corresponding output values
+    pub fn table(&self) -> impl Iterator<Item = (Element, Element)> {
+        (self.min..=self.max).map(|i| {
+            let float_input = i as f32 / GELU_SCALE_FACTOR as f32;
+            let float_output = gelu_float(&float_input);
+            (i, (float_output * *quantization::MAX as f32).round() as Element)
+        })
+    }
+    /// NOTE: this requires the scaled input
+    pub fn table_output(&self, input: Element) -> Element {
+        let float_input = input as f32 / GELU_SCALE_FACTOR as f32;
+        let float_output = gelu_float(&float_input);
+        (float_output * *quantization::MAX as f32).round() as Element
     }
 }
 
@@ -623,21 +635,11 @@ impl GELU<f32> {
         let table_max= 2i32.pow( 7 + ceil_log2(multiplier as usize) as u32);
         let table_size = table_max - table_min;
         assert!(table_size <= 1 << 20, "Table size for GELU is too bigggg: {:?}", table_size.ilog2());
-
-        let lut = (table_min..table_max).map(|i| {
-            let float_input = i as f32 / GELU_SCALE_FACTOR as f32;
-            let float_output = gelu_float(&float_input);
-            (float_output * *quantization::MAX as f32).round() as Element
-        }).collect::<Vec<Element>>();
         let qd = GELUQuantData {
             multiplier,
             min: table_min as Element,
             max: table_max as Element,
-            lut,
         };
-        println!("GELU QUANTIZE: multiplier: {:?}", qd.multiplier);
-        println!("GELU QUANTIZE: min: {:?}", qd.min);
-        println!("GELU QUANTIZE: max: {:?}", qd.max);
         Ok(GELU {
             quant_data: Some(qd),
             _n: PhantomData,
@@ -652,12 +654,8 @@ impl GELU<Element> {
         };
         let scaled = input * quant_data.multiplier;
         let within_range = quant_data.min <= scaled && scaled <= quant_data.max;
-        println!("GELU INFERENCE: go from {:?} to -> {:?} <= {:?} <= {:?} ? {:?}", input, quant_data.min, scaled, quant_data.max, within_range);
         ensure!(within_range, "Input out of range");
-        let float_input = scaled as f32 / GELU_SCALE_FACTOR as f32;
-        let float_output = gelu_float(&float_input);
-        let output = (float_output * *quantization::MAX as f32).round() as Element;
-        Ok(output)
+        Ok(self.quant_data.as_ref().unwrap().table_output(scaled))
     }
 }
 
@@ -673,7 +671,6 @@ mod test {
     fn test_activation_gelu_proving() -> anyhow::Result<()> {
 
         let input_shape = vec![3, 5].into();
-        let input = Tensor::<f32>::random(&input_shape);
         let mut model = Model::new_from_input_shapes(vec![input_shape], PaddingMode::NoPadding);
         model.add_consecutive_layer(Layer::Activation(Activation::Gelu(GELU::<f32>::new())), None)?;
         model.route_output(None)?;
@@ -685,7 +682,7 @@ mod test {
     fn test_activation_gelu_quantize() -> anyhow::Result<()> {
         let gelu = GELU::<f32>::new();
         let input_scaling = ScalingFactor::from_scale(1.0, None);
-        let gelu_quantized = gelu.quantize(input_scaling)?;
+        _ = gelu.quantize(input_scaling)?;
         Ok(())
     }
 
