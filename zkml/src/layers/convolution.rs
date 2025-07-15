@@ -14,7 +14,7 @@ use crate::{
     Claim, Prover,
     commit::{compute_betas_eval, identity_eval},
     iop::{context::ContextAux, verifier::Verifier},
-    layers::LayerProof,
+    layers::{LayerProof, provable::ProvingData},
     quantization::{self, ScalingFactor},
     tensor::{ConvData, Number, get_root_of_unity},
 };
@@ -299,7 +299,7 @@ impl Evaluate<Element> for Convolution<Element> {
         let (output, proving_data) = self.op(input, &unpadded_input_shapes[0]);
         Ok(LayerOut {
             outputs: vec![output],
-            proving_data: Some(proving_data),
+            proving_data: ProvingData::Convolution(proving_data),
         })
     }
 }
@@ -628,7 +628,7 @@ where
             last_claims[0],
             step_data.outputs.outputs()[0],
             &step_data.unpadded_output_shapes[0],
-            step_data.outputs.proving_data.as_ref().unwrap(),
+            step_data.outputs.try_convdata().unwrap(),
             ctx,
             id,
         )?])
@@ -1776,7 +1776,7 @@ mod test {
         padded_dense.matrix = padded_dense.matrix.pad_matrix_to_ignore_garbage(
             &conv_input_shape,
             &conv_input_shape_padded,
-            &dense_shape_padded,
+            &dense_shape_padded.into(),
         );
         let padded_nrows = padded_dense.nrows();
         padded_dense.bias = padded_dense.bias.pad_1d(padded_nrows);
@@ -1911,7 +1911,7 @@ mod test {
         let fft_weight = weight.pad_matrix_to_ignore_garbage(
             &conv_shape_og,
             &conv_shape_pad,
-            &vec![new_rows, new_cols],
+            &vec![new_rows, new_cols].into(),
         );
         let fft_bias = bias.clone().pad_1d(new_rows);
         let fft_dense = Dense::new(fft_weight.clone(), fft_bias.clone());

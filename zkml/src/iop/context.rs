@@ -94,6 +94,8 @@ pub struct ContextAux {
     pub tables: BTreeSet<TableType>,
     pub last_output_shape: Vec<Shape>,
     pub model_polys: Option<HashMap<PolyId, Vec<Element>>>,
+    /// THis field is only used in macro layers like MHA
+    pub max_poly_len: usize,
 }
 
 impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> Context<E, PCS>
@@ -114,14 +116,17 @@ where
         } else {
             model.input_shapes.clone()
         };
+        let mut max_poly_len = input_shapes
+            .iter()
+            .fold(0usize, |acc, shapes| acc.max(shapes.product()));
+
         let mut ctx_aux = ContextAux {
             tables,
             last_output_shape: input_shapes.clone(),
             model_polys: None,
+            max_poly_len,
         };
-        let mut max_poly_len = input_shapes
-            .iter()
-            .fold(0usize, |acc, shapes| acc.max(shapes.product()));
+
         let mut model_polys = Vec::<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>::new();
         let mut step_infos = HashMap::new();
         let mut node_ids_in_order = BTreeSet::new();
@@ -210,10 +215,8 @@ where
                     ctx: info,
                 },
             );
-            max_poly_len = new_aux
-                .last_output_shape
-                .iter()
-                .fold(max_poly_len, |acc, shapes| acc.max(shapes.product()));
+            max_poly_len = max_poly_len.max(new_aux.max_poly_len);
+
             ctx_aux = new_aux;
             shapes.insert(id, ctx_aux.last_output_shape.clone());
         }
@@ -222,11 +225,13 @@ where
             let multiplicity_vars = table_type.multiplicity_poly_vars();
             max_poly_len = max_poly_len.max(1 << multiplicity_vars)
         });
-        debug!("Context : commitment generating ...");
-        let commitment_ctx = CommitmentContext::<E, PCS>::new(max_poly_len, model_polys)?;
-
         debug!("Context : lookup generation ...");
         let lookup_ctx = LookupContext::new(&ctx_aux.tables);
+
+        debug!("Context : commitment generating ...");
+        let commitment_ctx =
+            CommitmentContext::<E, PCS>::new(max_poly_len, model_polys, &lookup_ctx)?;
+
         Ok(Self {
             steps_info: ModelCtx {
                 nodes: step_infos,

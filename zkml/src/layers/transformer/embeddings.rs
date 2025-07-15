@@ -444,7 +444,7 @@ mod tests {
         let vocab_size: usize = 200;
         let emb_size: usize = 10;
         let indices = (0..seq_len)
-            .map(|_| thread_rng().gen_range(0..vocab_size) as Element)
+            .map(|_| thread_rng().gen_range(0..vocab_size) as f32)
             .collect::<Vec<_>>();
         let input_shape = Shape::from(vec![seq_len]);
         let input = Tensor::new(input_shape.clone(), indices.clone());
@@ -458,7 +458,9 @@ mod tests {
             .unwrap();
         model.route_output(None).unwrap();
         model.describe();
-        prove_model_with(model, Some(vec![input]))
+        prove_model_with(model, vec![input])?;
+
+        Ok(())
     }
 
     #[test]

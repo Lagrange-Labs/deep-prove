@@ -567,7 +567,7 @@ pub(crate) mod test {
         tensor::{Number, Shape},
         testing::{Pcs, random_bool_vector, random_vector},
     };
-    use anyhow::Result;
+    use anyhow::{Ok, Result};
     use ark_std::rand::{Rng, RngCore};
     use ff_ext::{ExtensionField, GoldilocksExt2};
     use itertools::Itertools;
@@ -1226,36 +1226,49 @@ pub(crate) mod test {
         let trace = model.run::<E>(&[input_tensor]).unwrap();
         assert_eq!(trace.steps.len(), 3);
     }
-    pub(crate) fn prove_model(model: Model<f32>) -> anyhow::Result<()> {
-        prove_model_with(model, None)
+
+    // Quantize and run a model over the given input, if any; returns the quantized model and the
+    // quantized inputs; if `represantive_inputs` are provided, they are going to be employed to
+    // compute scaling factors for quantization, otherwise, random data will be employed
+    pub(crate) fn quantize_model(
+        model: Model<f32>,
+        float_inputs: Vec<Tensor<f32>>,
+        representative_inputs: Option<Vec<Tensor<f32>>>,
+    ) -> anyhow::Result<(Model<Element>, Vec<Tensor<Element>>)> {
+        let (quantized_model, md) = if let Some(repr_inputs) = representative_inputs {
+            InferenceObserver::new_with_representative_input(vec![
+                repr_inputs
+                    .iter()
+                    .map(|input| input.get_data().to_vec())
+                    .collect(),
+            ])
+        } else {
+            InferenceObserver::new()
+        }
+        .quantize(model)?;
+
+        // quantize input tensor
+        let input_tensors = float_inputs
+            .into_iter()
+            .zip(&md.input)
+            .map(|(tensor, s)| tensor.quantize(s))
+            .collect_vec();
+
+        Ok((quantized_model, input_tensors))
     }
 
-    pub(crate) fn prove_model_with(
-        model: Model<f32>,
-        qinput: Option<Vec<Tensor<Element>>>,
-    ) -> anyhow::Result<()> {
-        let float_inputs = model
-            .input_shapes()
-            .into_iter()
-            .map(|shape| Tensor::random(&shape))
-            .collect_vec();
-        let (quantized_model, md) = InferenceObserver::new().quantize(model)?;
-        let model = pad_model(quantized_model)?;
+    pub(crate) fn prove_quantized_model(
+        model: Model<Element>,
+        inputs: Vec<Tensor<Element>>,
+    ) -> anyhow::Result<Vec<Tensor<Element>>> {
+        let model = pad_model(model)?;
 
         model.describe();
 
-        // quantize input tensor
-        let input_tensors = qinput.unwrap_or_else(|| {
-            float_inputs
-                .into_iter()
-                .zip(&md.input)
-                .map(|(tensor, s)| tensor.quantize(s))
-                .collect_vec()
-        });
-
-        let input_tensors = model.prepare_inputs(input_tensors).unwrap();
+        let input_tensors = model.prepare_inputs(inputs).unwrap();
 
         let trace = model.run(&input_tensors)?;
+        let outputs = trace.outputs()?.into_iter().cloned().collect();
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"model");
         let ctx = Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None)
             .expect("Unable to generate context");
@@ -1264,7 +1277,25 @@ pub(crate) mod test {
         let proof = prover.prove(trace).expect("unable to generate proof");
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"model");
-        verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript)
+        verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript)?;
+        Ok(outputs)
+    }
+
+    pub(crate) fn prove_model_with(
+        model: Model<f32>,
+        float_inputs: Vec<Tensor<f32>>,
+    ) -> anyhow::Result<Vec<Tensor<Element>>> {
+        let (quantized_model, quantized_inputs) = quantize_model(model, float_inputs, None)?;
+        prove_quantized_model(quantized_model, quantized_inputs)
+    }
+
+    pub(crate) fn prove_model(model: Model<f32>) -> anyhow::Result<Vec<Tensor<Element>>> {
+        let float_inputs = model
+            .input_shapes()
+            .into_iter()
+            .map(|shape| Tensor::random(&shape))
+            .collect_vec();
+        prove_model_with(model, float_inputs)
     }
 
     #[test]

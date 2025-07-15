@@ -199,7 +199,6 @@ where
         }
 
         // 5. Verify the lookup table proofs
-        let mut table_poly_id = proof.steps.len();
         proof
             .table_proofs
             .iter()
@@ -221,7 +220,6 @@ where
                     constant_challenge,
                     column_separation_challenge,
                 )?;
-                table_poly_id += 1;
 
                 Result::<(), anyhow::Error>::Ok(())
             })?;
@@ -332,15 +330,28 @@ where
             .ok_or(anyhow!("Claims was empty in table verification!"))?
             .clone(),
     )?;
+    // Add any table poly claims to the commitment verifier
+    let table_poly_claims = table_type.table_claims(poly_claims);
+
+    if !table_poly_claims.is_empty() {
+        // If the table poly claims aren't empty there should only be 1
+        ensure!(
+            table_poly_claims.len() == 1,
+            "If table poly claims isn't empty we should only have 1, got: {}",
+            table_poly_claims.len()
+        );
+        witness_verifier.add_table_claim(table_type, table_poly_claims[0].clone())?;
+    }
 
     // Hard indexing is okay here because we checked above that at least one claim exists
     let expected_claim_evals = table_type.evaluate_table_columns::<E>(&poly_claims[0].point)?;
 
     ensure!(
-        expected_claim_evals.len() == (poly_claims.len() - 1),
-        "Expected {} table column evaluation claims, got {}",
+        expected_claim_evals.len() == (poly_claims.len() - table_poly_claims.len() - 1),
+        "Expected {} table column evaluation claims, got {}, for table type: {}",
+        poly_claims.len() - table_poly_claims.len() - 1,
         expected_claim_evals.len(),
-        poly_claims.len() - 1
+        table_type.name(),
     );
     for (poly_claim, expected) in poly_claims[1..].iter().zip(expected_claim_evals.iter()) {
         ensure!(
