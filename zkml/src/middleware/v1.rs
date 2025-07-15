@@ -78,9 +78,6 @@ pub struct DeepProveRequest {
     /// An array of inputs to run proving for
     pub input: Input,
 
-    /// A hash of the model file
-    pub model_file_hash: String,
-
     /// Model scaling strategy
     pub scaling_strategy: ScalingStrategyKind,
 

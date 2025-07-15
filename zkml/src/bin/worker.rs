@@ -43,10 +43,14 @@ async fn run_model_v1(model: DeepProveRequestV1, mut store: impl Store) -> Resul
     let DeepProveRequestV1 {
         model,
         input,
-        model_file_hash,
         scaling_strategy,
         scaling_input_hash,
     } = model;
+
+    let model_file_hash = {
+        let hash = <sha2::Sha256 as sha2::Digest>::digest(&model);
+        format!("{hash:X}")
+    };
 
     let params_key = store::ParamsKey {
         model_file_hash: &model_file_hash,

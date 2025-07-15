@@ -94,10 +94,6 @@ async fn main() -> anyhow::Result<()> {
             let input = Input::from_file(&inputs).context("loading input")?;
             let model_file = File::open(&onnx).await.context("opening model file")?;
             let model_bytes = unsafe { Mmap::map(&model_file) }.context("loading model file")?;
-            let model_file_hash = {
-                let hash = <sha2::Sha256 as sha2::Digest>::digest(&model_bytes);
-                format!("{hash:X}")
-            };
             let model = model_bytes.to_vec();
             // TODO maybe validate here only?
             // let (model, model_metadata) = parse_model(model_bytes).context("parsing ONNX file")?;
@@ -113,7 +109,6 @@ async fn main() -> anyhow::Result<()> {
                         zkml::middleware::v1::DeepProveRequest {
                             model,
                             input,
-                            model_file_hash,
                             scaling_strategy,
                             scaling_input_hash,
                         },
