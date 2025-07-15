@@ -58,6 +58,7 @@ rayon.workspace = true
 reqwest = { version = "0.12.19", features = ["blocking"] }
 rmp-serde = { workspace = true }
 rust_tokenizers = "8.1.1"
+semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10.9"

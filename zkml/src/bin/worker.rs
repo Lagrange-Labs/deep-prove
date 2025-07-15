@@ -49,48 +49,53 @@ async fn run_model_v1(model: DeepProveRequestV1, mut store: impl Store) -> Resul
         scaling_input_hash,
     } = model;
 
-    let params_index = store::ParamsIndex {
+    let params_key = store::ParamsKey {
         model_file_hash: &model_file_hash,
     };
-    let model_index = store::ModelIndex {
+    let model_key = store::ModelKey {
         model_file_hash: &model_file_hash,
         scaling_strategy,
         scaling_input_hash: scaling_input_hash.as_deref(),
     };
 
-    let params = store.get_params(params_index).await?;
+    let params = store.get_params(params_key).await?;
     let is_stored_params = params.is_some();
 
     let store::ScaledModel {
         model,
         model_metadata,
     } = store
-        .get_or_init_model_with(model_index, move || {
-            // TODO parse_model in `spawn_blocking?`
-            // TODO error handling
-            let (model, model_metadata) = parse_model(&model).unwrap();
-            store::ScaledModel {
+        .get_or_init_model_with(model_key, async move || {
+            let (model, model_metadata) = tokio::task::spawn_blocking(move || parse_model(&model))
+                .await
+                .context("task to parse model")?
+                .context("parsing model")?;
+            Ok(store::ScaledModel {
                 model,
                 model_metadata,
-            }
+            })
         })
         .await?;
 
     let inputs = input.to_elements(&model_metadata);
 
     let mut failed_inputs = vec![];
-    // TODO `spawn_blocking?`
-    let ctx = Context::<F, Pcs<F>>::generate(
-        &model,
-        None,
-        params.map(|store::Params { prover, verifier }| (prover, verifier)),
-    )
-    .context("unable to generate context")?;
+    let (ctx, model) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let ctx = Context::<F, Pcs<F>>::generate(
+            &model,
+            None,
+            params.map(|store::Params { prover, verifier }| (prover, verifier)),
+        )?;
+        Ok((ctx, model))
+    })
+    .await
+    .context("task to generate context")?
+    .context("generating context")?;
 
     if !is_stored_params {
         store
             .insert_params(
-                params_index,
+                params_key,
                 store::Params {
                     prover: ctx.commitment_ctx.prover_params().clone(),
                     verifier: ctx.commitment_ctx.verifier_params().clone(),
@@ -99,35 +104,41 @@ async fn run_model_v1(model: DeepProveRequestV1, mut store: impl Store) -> Resul
             .await?;
     }
 
-    // TODO `spawn_blocking?`
-    let mut proofs = vec![];
-    for (i, input) in inputs.into_iter().enumerate() {
-        debug!("Running input #{i}");
-        let input_tensor = model
-            .load_input_flat(vec![input])
-            .context("failed to call load_input_flat on the model")?;
+    let proofs = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let mut proofs = vec![];
+        for (i, input) in inputs.into_iter().enumerate() {
+            debug!("Running input #{i}");
+            let input_tensor = model
+                .load_input_flat(vec![input])
+                .context("failed to call load_input_flat on the model")?;
 
-        let trace_result = model.run(&input_tensor);
-        // If model.run fails, print the error and continue to the next input
-        let trace = match trace_result {
-            Ok(trace) => trace,
-            Err(e) => {
-                error!(
-                    "[!] Error running inference for input {}/{}: {}",
-                    i + 1,
-                    0, // args.num_samples,
-                    e
-                );
-                failed_inputs.push(i);
-                continue; // Skip to the next input without writing to CSV
-            }
-        };
-        let mut prover_transcript = default_transcript();
-        let prover = Prover::<_, _, _>::new(&ctx, &mut prover_transcript);
-        let proof = prover.prove(trace).context("unable to generate proof")?;
+            let trace_result = model.run(&input_tensor);
+            // If model.run fails, print the error and continue to the next input
+            let trace = match trace_result {
+                Ok(trace) => trace,
+                Err(e) => {
+                    error!(
+                        "[!] Error running inference for input {}/{}: {}",
+                        i + 1,
+                        0, // args.num_samples,
+                        e
+                    );
+                    failed_inputs.push(i);
+                    continue; // Skip to the next input without writing to CSV
+                }
+            };
+            let mut prover_transcript = default_transcript();
+            let prover = Prover::<_, _, _>::new(&ctx, &mut prover_transcript);
+            let proof = prover
+                .prove(trace)
+                .with_context(|| "unable to generate proof for {i}. input")?;
 
-        proofs.push(proof);
-    }
+            proofs.push(proof);
+        }
+        Ok(proofs)
+    })
+    .await
+    .context("task to generate proofs")??;
 
     info!("Proving done.");
     Ok(proofs)

@@ -13,9 +13,10 @@ use crate::{
     quantization::{ModelMetadata, ScalingStrategyKind},
 };
 use anyhow::{Context, bail};
-use object_store::{ObjectStore, PutPayload, aws::AmazonS3, path::Path};
+use object_store::{GetOptions, ObjectStore, PutPayload, aws::AmazonS3, path::Path};
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     collections::HashMap,
     env,
     future::Future,
@@ -23,12 +24,12 @@ use std::{
 };
 
 #[derive(Debug, Clone, Copy)]
-pub struct ParamsIndex<'a> {
+pub struct ParamsKey<'a> {
     pub model_file_hash: &'a str,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct ModelIndex<'a> {
+pub struct ModelKey<'a> {
     pub model_file_hash: &'a str,
     pub scaling_strategy: ScalingStrategyKind,
     pub scaling_input_hash: Option<&'a str>,
@@ -50,36 +51,28 @@ pub struct ScaledModel {
 }
 
 pub trait Store {
-    /// Try to get the params from store. If not present, initialize the value with the given function, store it and return.
-    fn get_or_init_params_with<F>(
-        &mut self,
-        index: ParamsIndex<'_>,
-        init: F,
-    ) -> impl Future<Output = anyhow::Result<Params>> + Send
-    where
-        F: Fn() -> Params + Send + Sync;
-
     /// Try to get the params from store.
     fn get_params(
         &mut self,
-        index: ParamsIndex<'_>,
+        key: ParamsKey<'_>,
     ) -> impl Future<Output = anyhow::Result<Option<Params>>> + Send;
 
-    /// Try to get the params from store.
+    /// Store the params.
     fn insert_params(
         &mut self,
-        index: ParamsIndex<'_>,
+        key: ParamsKey<'_>,
         params: Params,
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
 
     /// Try to get the model from store. If not present, initialize the value with the given function, store it and return.
-    fn get_or_init_model_with<F>(
+    fn get_or_init_model_with<F, FR>(
         &mut self,
-        index: ModelIndex<'_>,
+        key: ModelKey<'_>,
         init: F,
     ) -> impl Future<Output = anyhow::Result<ScaledModel>> + Send
     where
-        F: Fn() -> ScaledModel + Send + Sync;
+        F: FnOnce() -> FR + Send,
+        FR: Future<Output = anyhow::Result<ScaledModel>> + Send;
 }
 
 /// AWS S3 store for prod.
@@ -87,52 +80,19 @@ pub trait Store {
 pub struct S3Store(#[from] AmazonS3);
 
 impl Store for S3Store {
-    fn get_or_init_params_with<F>(
-        &mut self,
-        index: ParamsIndex<'_>,
-        init: F,
-    ) -> impl Future<Output = anyhow::Result<Params>> + Send
-    where
-        F: Fn() -> Params + Send + Sync,
-    {
-        async move {
-            let key = params_key(index);
-            let S3Store(store) = self;
-            let location = Path::parse(&key)?;
-            match store.get(&location).await {
-                Ok(result) => {
-                    let bytes = result.bytes().await?;
-                    let value = serde_json::from_slice::<Params>(&bytes)
-                        .context("Decoding params value from S3")?;
-                    Ok(value)
-                }
-                Err(object_store::Error::NotFound { .. }) => {
-                    let value = init();
-                    let value_bytes: Vec<u8> = serde_json::to_vec(&value)
-                        .expect("Must be able to serialize params to store");
-                    store.put(&location, PutPayload::from(value_bytes)).await?;
-                    Ok(value)
-                }
-                Err(e) => {
-                    bail!(e);
-                }
-            }
-        }
-    }
-
     fn get_params(
         &mut self,
-        index: ParamsIndex<'_>,
+        key: ParamsKey<'_>,
     ) -> impl Future<Output = anyhow::Result<Option<Params>>> + Send {
         async move {
-            let key = params_key(index);
+            let key = params_key(key);
             let S3Store(store) = self;
             let location = Path::parse(&key)?;
             match store.get(&location).await {
                 Ok(result) => {
                     let bytes = result.bytes().await?;
                     let value = serde_json::from_slice::<Params>(&bytes)
-                        .context("Decoding params value from S3")?;
+                        .context("decoding params value from S3")?;
                     Ok(Some(value))
                 }
                 Err(object_store::Error::NotFound { .. }) => Ok(None),
@@ -145,44 +105,64 @@ impl Store for S3Store {
 
     fn insert_params(
         &mut self,
-        index: ParamsIndex<'_>,
+        key: ParamsKey<'_>,
         params: Params,
     ) -> impl Future<Output = anyhow::Result<()>> + Send {
         async move {
             let value_bytes: Vec<u8> =
-                serde_json::to_vec(&params).expect("Must be able to serialize params to store");
-            let key = params_key(index);
+                serde_json::to_vec(&params).context("serializing params to store")?;
+            let key = params_key(key);
             let S3Store(store) = self;
             let location = Path::parse(&key)?;
-            store.put(&location, PutPayload::from(value_bytes)).await?;
+            if store
+                .get_opts(
+                    &location,
+                    GetOptions {
+                        head: true,
+                        ..Default::default()
+                    },
+                )
+                .await
+                .is_ok()
+            {
+                bail!("trying to insert params with {key} that is already present")
+            }
+            store
+                .put(&location, PutPayload::from(value_bytes))
+                .await
+                .context("storing generated params in S3 store")?;
             Ok(())
         }
     }
 
-    fn get_or_init_model_with<F>(
+    fn get_or_init_model_with<F, FR>(
         &mut self,
-        index: ModelIndex<'_>,
+        key: ModelKey<'_>,
         init: F,
     ) -> impl Future<Output = anyhow::Result<ScaledModel>> + Send
     where
-        F: Fn() -> ScaledModel + Send + Sync,
+        F: FnOnce() -> FR + Send,
+        FR: Future<Output = anyhow::Result<ScaledModel>> + Send,
     {
         async move {
-            let key = model_key(index);
+            let key = model_key(key);
             let S3Store(store) = self;
             let location = Path::parse(&key)?;
             match store.get(&location).await {
                 Ok(result) => {
                     let bytes = result.bytes().await?;
                     let value = serde_json::from_slice::<ScaledModel>(&bytes)
-                        .context("Decoding scaled model value from S3")?;
+                        .context("decoding scaled model value from S3")?;
                     Ok(value)
                 }
                 Err(object_store::Error::NotFound { .. }) => {
-                    let value = init();
-                    let value_bytes: Vec<u8> = serde_json::to_vec(&value)
-                        .expect("Must be able to serialize scaled model to store");
-                    store.put(&location, PutPayload::from(value_bytes)).await?;
+                    let value = init().await?;
+                    let value_bytes: Vec<u8> =
+                        serde_json::to_vec(&value).context("serializing scaled model to store")?;
+                    store
+                        .put(&location, PutPayload::from(value_bytes))
+                        .await
+                        .context("storing generated params in S3 store")?;
                     Ok(value)
                 }
                 Err(e) => {
@@ -196,79 +176,59 @@ impl Store for S3Store {
 /// In-memory store for testing.
 #[derive(Clone, Default)]
 pub struct MemStore {
-    inner: Arc<Mutex<MemStoreInner>>,
+    pps: Arc<Mutex<HashMap<Key, Params>>>,
+    models: Arc<Mutex<HashMap<Key, ScaledModel>>>,
 }
 
 #[derive(Clone, Default)]
-pub struct MemStoreInner {
-    pps: HashMap<Key, Params>,
-    models: HashMap<Key, ScaledModel>,
-}
+pub struct MemStoreInner {}
 
 impl Store for MemStore {
-    fn get_or_init_params_with<F>(
-        &mut self,
-        index: ParamsIndex<'_>,
-        init: F,
-    ) -> impl Future<Output = anyhow::Result<Params>> + Send
-    where
-        F: Fn() -> Params + Send + Sync,
-    {
-        async move {
-            let key = params_key(index);
-            let mut guard = self.inner.lock().unwrap();
-            let value = match guard.pps.get(&key) {
-                Some(value) => value.clone(),
-                None => {
-                    let value = init();
-                    guard.pps.insert(key, value.clone());
-                    value
-                }
-            };
-            Ok(value)
-        }
-    }
-
     fn get_params(
         &mut self,
-        index: ParamsIndex<'_>,
+        key: ParamsKey<'_>,
     ) -> impl Future<Output = anyhow::Result<Option<Params>>> + Send {
         async move {
-            let key = params_key(index);
-            let guard = self.inner.lock().unwrap();
-            Ok(guard.pps.get(&key).cloned())
+            let key = params_key(key);
+            let guard = self.pps.lock().unwrap();
+            Ok(guard.get(&key).cloned())
         }
     }
 
     fn insert_params(
         &mut self,
-        index: ParamsIndex<'_>,
+        key: ParamsKey<'_>,
         params: Params,
     ) -> impl Future<Output = anyhow::Result<()>> + Send {
         async move {
-            let key = params_key(index);
-            let mut guard = self.inner.lock().unwrap();
-            guard.pps.insert(key, params);
+            let key = params_key(key);
+            let mut guard = self.pps.lock().unwrap();
+            guard.insert(key, params);
             Ok(())
         }
     }
 
-    fn get_or_init_model_with<F>(
+    fn get_or_init_model_with<F, FR>(
         &mut self,
-        index: ModelIndex<'_>,
+        key: ModelKey<'_>,
         init: F,
     ) -> impl Future<Output = anyhow::Result<ScaledModel>> + Send
     where
-        F: Fn() -> ScaledModel + Send + Sync,
+        F: FnOnce() -> FR + Send,
+        FR: Future<Output = anyhow::Result<ScaledModel>> + Send,
     {
         async move {
-            let key = model_key(index);
-            let mut guard = self.inner.lock().unwrap();
-            let value = match guard.models.get(&key) {
-                Some(value) => value.clone(),
+            let key = model_key(key);
+            let get_result = {
+                let guard = self.models.lock().unwrap();
+                guard.get(&key).cloned()
+            };
+            let value = match get_result {
+                Some(value) => value,
                 None => {
-                    let value = init();
-                    guard.models.insert(key, value.clone());
+                    let value = init().await?;
+                    let mut guard = self.models.lock().unwrap();
+                    guard.insert(key, value.clone());
                     value
                 }
             };
@@ -288,19 +248,22 @@ enum KeyKind {
 }
 
 /// A store key for parameters
-fn params_key(ParamsIndex { model_file_hash }: ParamsIndex<'_>) -> Key {
+fn params_key(ParamsKey { model_file_hash }: ParamsKey<'_>) -> Key {
     let prefix = KeyKind::Params.to_string();
     let prefix = prefix.as_str();
-    Path::from_iter([prefix, env!("CARGO_PKG_VERSION"), model_file_hash])
+    let pkg_major_version = semver::Version::parse(env!("CARGO_PKG_VERSION"))
+        .map(|version| Cow::from(version.major.to_string()))
+        .unwrap_or_else(|_| Cow::from("version-unknown"));
+    Path::from_iter([prefix, &pkg_major_version, model_file_hash])
 }
 
 /// A store key for a scaled model
 fn model_key(
-    ModelIndex {
+    ModelKey {
         model_file_hash,
         scaling_strategy,
         scaling_input_hash,
-    }: ModelIndex<'_>,
+    }: ModelKey<'_>,
 ) -> Key {
     let prefix = KeyKind::Model.to_string();
     let prefix = prefix.as_str();

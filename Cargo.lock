@@ -11087,6 +11087,7 @@ dependencies = [
  "rmp-serde",
  "rust_tokenizers",
  "rustls",
+ "semver 1.0.26",
  "serde",
  "serde_json",
  "sha2",
