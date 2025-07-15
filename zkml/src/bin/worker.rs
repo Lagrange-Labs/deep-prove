@@ -3,11 +3,10 @@ use std::{net::SocketAddr, str::FromStr};
 use alloy::signers::local::LocalSigner;
 use anyhow::{Context as _, Result};
 use axum::{Json, Router, routing::get};
-use clap::Parser;
+use clap::{ArgGroup, Parser};
 use ff_ext::GoldilocksExt2;
 use futures::{FutureExt, StreamExt};
 use mpcs::{Basefold, BasefoldRSParams, Hasher};
-use object_store::aws::AmazonS3;
 use reqwest::StatusCode;
 use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
 
@@ -27,7 +26,7 @@ use zkml::{
     },
     model::Model,
     quantization::{AbsoluteMax, ModelMetadata},
-    store::{self, AmazonS3Builder, Store},
+    store::{self, Store},
 };
 
 use crate::lagrange::WorkerToGwResponse;
@@ -120,7 +119,7 @@ async fn run_model_v1(model: DeepProveRequestV1, mut store: impl Store) -> Resul
                     error!(
                         "[!] Error running inference for input {}/{}: {}",
                         i + 1,
-                        0, // args.num_samples,
+                        0, // num_samples,
                         e
                     );
                     failed_inputs.push(i);
@@ -187,6 +186,7 @@ fn setup_logging(json: bool) {
 }
 
 #[derive(Parser)]
+#[cfg_attr(feature = "s3", command(group(ArgGroup::new("s3_store").multiple(true).args(&["s3_region", "s3_bucket", "s3_endpoint", "s3_access_key_id", "s3_secret_access_key"]))))]
 struct Args {
     #[arg(long, env, default_value = "http://localhost:10000")]
     gw_url: String,
@@ -211,6 +211,25 @@ struct Args {
     /// Should the logs be printed in json format or not
     #[arg(long, env)]
     json: bool,
+
+    #[arg(long, env, default_value = "us-east-2", requires_all = &["s3_store"])]
+    #[cfg(feature = "s3")]
+    s3_region: Option<String>,
+    #[arg(long, env, requires_all = &["s3_store"])]
+    #[cfg(feature = "s3")]
+    s3_bucket: Option<String>,
+    #[arg(long, env, requires_all = &["s3_store"])]
+    #[cfg(feature = "s3")]
+    s3_endpoint: Option<String>,
+    #[arg(long, env, default_value = "1000", requires_all = &["s3_store"])]
+    #[cfg(feature = "s3")]
+    s3_timeout_secs: Option<u64>,
+    #[arg(env, requires_all = &["s3_store"])]
+    #[cfg(feature = "s3")]
+    s3_access_key_id: Option<String>,
+    #[arg(env, requires_all = &["s3_store"])]
+    #[cfg(feature = "s3")]
+    s3_secret_access_key: Option<String>,
 }
 
 async fn process_message_from_gw(
@@ -271,36 +290,54 @@ async fn serve_health_check(addr: SocketAddr) -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let Args {
+        gw_url,
+        healthcheck_addr,
+        worker_class,
+        operator_name,
+        operator_priv_key,
+        max_message_size,
+        json,
+        #[cfg(feature = "s3")]
+        s3_region,
+        #[cfg(feature = "s3")]
+        s3_bucket,
+        #[cfg(feature = "s3")]
+        s3_endpoint,
+        #[cfg(feature = "s3")]
+        s3_timeout_secs,
+        #[cfg(feature = "s3")]
+        s3_access_key_id,
+        #[cfg(feature = "s3")]
+        s3_secret_access_key,
+    } = Args::parse();
 
-    setup_logging(args.json);
+    setup_logging(json);
 
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
-    let channel = tonic::transport::Channel::builder(args.gw_url.parse()?)
+    let channel = tonic::transport::Channel::builder(gw_url.parse()?)
         .tls_config(ClientTlsConfig::new().with_enabled_roots())?
         .connect()
         .await?;
 
     let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(1024);
 
-    let operator_name = args.operator_name;
-    let worker_priv_key = args.operator_priv_key;
-    let wallet = LocalSigner::from_str(&worker_priv_key)?;
+    let wallet = LocalSigner::from_str(&operator_priv_key)?;
 
     let claims = grpc_worker::auth::jwt::get_claims(
         operator_name.to_string(),
         env!("CARGO_PKG_VERSION").to_string(),
         "deep-prove-1".to_string(),
-        args.worker_class.clone(),
+        worker_class.clone(),
     )?;
 
     let token = grpc_worker::auth::jwt::JWTAuth::new(claims, &wallet)?.encode()?;
     let token: MetadataValue<_> = format!("Bearer {token}").parse()?;
 
-    let max_message_size = args.max_message_size * 1024 * 1024;
+    let max_message_size = max_message_size * 1024 * 1024;
     let mut client = lagrange::workers_service_client::WorkersServiceClient::with_interceptor(
         channel,
         move |mut req: tonic::Request<()>| {
@@ -317,7 +354,7 @@ async fn main() -> anyhow::Result<()> {
         .send(WorkerToGwRequest {
             request: Some(Request::WorkerReady(lagrange::WorkerReady {
                 version: env!("CARGO_PKG_VERSION").to_string(),
-                worker_class: args.worker_class,
+                worker_class,
             })),
         })
         .await?;
@@ -328,13 +365,35 @@ async fn main() -> anyhow::Result<()> {
 
     let mut inbound = response.into_inner();
 
-    let healthcheck_handler = tokio::spawn(serve_health_check(args.healthcheck_addr));
+    let healthcheck_handler = tokio::spawn(serve_health_check(healthcheck_addr));
     let mut healthcheck_handler = healthcheck_handler.fuse();
 
-    // TODO: config
-    let s3: AmazonS3 = AmazonS3Builder::new().build().context("AWS S3 bulder")?;
     #[cfg(feature = "s3")]
-    let store = store::S3Store::from(s3);
+    let store = {
+        let (((((region, bucket), endpoint), timeout_secs), access_key_id), secret_access_key) =
+            s3_region
+                .zip(s3_bucket)
+                .zip(s3_endpoint)
+                .zip(s3_timeout_secs)
+                .zip(s3_access_key_id)
+                .zip(s3_secret_access_key)
+                .context("gathering S3 config arguments")?;
+        let timeout = std::time::Duration::from_secs(timeout_secs);
+        let s3: store::AmazonS3 = store::AmazonS3Builder::new()
+            .with_region(region)
+            .with_bucket_name(bucket)
+            .with_access_key_id(access_key_id)
+            .with_secret_access_key(secret_access_key)
+            .with_endpoint(endpoint)
+            .with_client_options(
+                store::ClientOptions::default()
+                    .with_timeout(timeout)
+                    .with_allow_http(true),
+            )
+            .build()
+            .context("AWS S3 builder")?;
+        store::S3Store::from(s3)
+    };
     #[cfg(not(feature = "s3"))]
     let store = store::MemStore::default();
 

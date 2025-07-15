@@ -5,7 +5,10 @@
 use ff_ext::GoldilocksExt2;
 use mpcs::{Basefold, BasefoldRSParams, Hasher, PolynomialCommitmentScheme};
 #[doc(inline)]
-pub use object_store::{ClientOptions, aws::AmazonS3Builder};
+pub use object_store::{
+    ClientOptions,
+    aws::{AmazonS3, AmazonS3Builder},
+};
 
 use crate::{
     Element,
@@ -13,7 +16,7 @@ use crate::{
     quantization::{ModelMetadata, ScalingStrategyKind},
 };
 use anyhow::{Context, bail};
-use object_store::{GetOptions, ObjectStore, PutPayload, aws::AmazonS3, path::Path};
+use object_store::{GetOptions, ObjectStore, PutPayload, path::Path};
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
