@@ -1775,7 +1775,11 @@ impl<T: Number> Tensor<T> {
 
     pub fn try_map<F: Fn(&T) -> anyhow::Result<T>>(&self, f: F) -> anyhow::Result<Self> {
         Ok(Self {
-            data: self.data.iter().map(|x| f(x)).collect::<anyhow::Result<Vec<_>>>()?,
+            data: self
+                .data
+                .iter()
+                .map(f)
+                .collect::<anyhow::Result<Vec<_>>>()?,
             shape: self.shape.clone(),
             og_shape: self.og_shape.clone(),
         })

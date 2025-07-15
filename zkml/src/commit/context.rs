@@ -100,7 +100,7 @@ where
 
         let table_comms_map = lookup_ctx.iter().filter_map(|table_type| {
             table_type.committed_columns().and_then(|poly| {
-                let commit = PCS::commit(&prover_params, &poly).ok()?; 
+                let commit = PCS::commit(&prover_params, &poly).ok()?;
                 Some((table_type.clone(), (commit, poly)))
             })
         }).collect::<HashMap<TableType, (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>>();

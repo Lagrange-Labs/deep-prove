@@ -1,18 +1,27 @@
 use crate::{
-    quantization,
-    commit::same_poly, iop::{
+    Claim, Context, Element, Prover, ScalingFactor,
+    commit::same_poly,
+    iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
-    }, layers::{
-        provable::{QuantizeOp, QuantizeOutput}, LayerCtx, LayerProof
-    }, lookup::{
-        context::{LookupWitnessGen, TableType, COLUMN_SEPARATOR},
+    },
+    layers::{
+        LayerCtx, LayerProof,
+        provable::{QuantizeOp, QuantizeOutput},
+    },
+    lookup::{
+        context::{COLUMN_SEPARATOR, LookupWitnessGen, TableType},
         logup_gkr::{
             prover::batch_prove as logup_batch_prove, structs::LogUpProof,
             verifier::verify_logup_proof,
         },
         witness::LogUpWitness,
-    }, model::StepData, padding::PaddingMode, quantization::Fieldizer, tensor::{Number, Shape}, Claim, Context, Element, Prover, ScalingFactor
+    },
+    model::StepData,
+    padding::PaddingMode,
+    quantization,
+    quantization::Fieldizer,
+    tensor::{Number, Shape},
 };
 use ff_ext::ExtensionField;
 use gkr::util::ceil_log2;
@@ -29,7 +38,7 @@ use super::provable::{
     Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, VerifiableCtx,
 };
 
-use anyhow::{anyhow, bail, ensure, Result};
+use anyhow::{Result, anyhow, bail, ensure};
 const GELU_SCALE_EXP: usize = 16;
 const GELU_SCALE_FACTOR: usize = 1 << GELU_SCALE_EXP;
 
@@ -118,9 +127,7 @@ impl QuantizeOp for Activation<f32> {
         );
         let q_op = match self {
             Activation::Relu(_) => Activation::Relu(Relu),
-            Activation::Gelu(g) => {
-                Activation::Gelu(g.quantize(input_scaling[0])?)
-            }
+            Activation::Gelu(g) => Activation::Gelu(g.quantize(input_scaling[0])?),
         };
         Ok(QuantizeOutput::new(q_op, output_scalings))
     }
@@ -137,12 +144,12 @@ impl Evaluate<Element> for Activation<Element> {
                 .iter()
                 .map(|input| relu.op(input))
                 .collect::<Vec<_>>(),
-            Activation::Gelu(g) => {
-                inputs.iter().map(|input| {
-                    let out = input.try_map(|e| g.apply(e)).unwrap();
-                    out
-                }).collect::<Vec<_>>()
-            }
+            Activation::Gelu(g) => inputs
+                .iter()
+                .map(|input| {
+                    input.try_map(|e| g.apply(e))
+                })
+                .collect::<Result<Vec<_>>>()?,
         };
         Ok(LayerOut::from_vec(outputs))
     }
@@ -157,7 +164,9 @@ where
         match self {
             Activation::Relu(_) => aux.tables.insert(TableType::Relu),
             // TODO: if we want to save on memory, we can use a pointer to the vector instead
-            Activation::Gelu(gelu) => aux.tables.insert(TableType::GELU(gelu.quant_data.clone().unwrap())),
+            Activation::Gelu(gelu) => aux
+                .tables
+                .insert(TableType::GELU(gelu.quant_data.clone().unwrap())),
         };
 
         // `try_fold` would not allow returning of `Err` values from here and would short-circuit
@@ -189,11 +198,14 @@ where
             Activation::Relu(relu) => Activation::Relu(*relu),
             Activation::Gelu(g) => Activation::Gelu(g.clone()),
         };
-        Ok((LayerCtx::Activation(ActivationCtx {
-            op: act,
-            node_id: id,
-            num_vars,
-        }), aux))
+        Ok((
+            LayerCtx::Activation(ActivationCtx {
+                op: act,
+                node_id: id,
+                num_vars,
+            }),
+            aux,
+        ))
     }
 }
 
@@ -249,12 +261,15 @@ where
             .iter()
             .zip(step_data.outputs.outputs()[0].get_data().iter())
             .map(|(a, b)| {
-                let (a,a_field) : (Element,E) = match self {
-                    Activation::Relu(_) => (*a,a.to_field()),
+                let (a, a_field): (Element, E) = match self {
+                    Activation::Relu(_) => (*a, a.to_field()),
                     Activation::Gelu(g) => {
                         let scaled = a * g.quant_data.as_ref().unwrap().multiplier;
-                        assert!(scaled >= g.quant_data.as_ref().unwrap().min && scaled <= g.quant_data.as_ref().unwrap().max);
-                        (scaled,scaled.to_field())
+                        assert!(
+                            scaled >= g.quant_data.as_ref().unwrap().min
+                                && scaled <= g.quant_data.as_ref().unwrap().max
+                        );
+                        (scaled, scaled.to_field())
                     }
                 };
                 let b_field: E = b.to_field();
@@ -295,10 +310,10 @@ where
             )],
         );
 
-        let lookups = gen
-            .new_lookups
-            .get_mut(&self.table_type())
-            .ok_or(anyhow!("table of type {:?} not found in lookup data", self.table_type()))?;
+        let lookups = gen.new_lookups.get_mut(&self.table_type()).ok_or(anyhow!(
+            "table of type {:?} not found in lookup data",
+            self.table_type()
+        ))?;
         lookups.extend(merged_lookups);
 
         Ok(())
@@ -407,7 +422,7 @@ impl<N> Activation<N> {
                 let m: E = g.quant_data.as_ref().unwrap().multiplier.to_field();
                 let mi = m.inverse();
                 let eval = input_claim.eval * mi;
-                Claim::new(input_claim.point.clone(),eval)
+                Claim::new(input_claim.point.clone(), eval)
             }
             _ => input_claim,
         };
@@ -495,7 +510,7 @@ impl ActivationCtx {
                 let m: E = g.quant_data.as_ref().unwrap().multiplier.to_field();
                 let mi = m.inverse();
                 let eval = claim.eval * mi;
-                Claim::new(claim.point.clone(),eval)
+                Claim::new(claim.point.clone(), eval)
             }
         };
         Ok(input_claim)
@@ -548,7 +563,7 @@ pub struct GELU<N> {
     _n: PhantomData<N>,
 }
 
-#[derive(Clone,Debug, Serialize, Deserialize,PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GELUQuantData {
     /// The multiplier used to scale the input
     multiplier: Element,
@@ -567,7 +582,10 @@ impl GELUQuantData {
         (self.min..=self.max).map(|i| {
             let float_input = i as f32 / GELU_SCALE_FACTOR as f32;
             let float_output = gelu_float(&float_input);
-            (i, (float_output * *quantization::MAX as f32).round() as Element)
+            (
+                i,
+                (float_output * *quantization::MAX as f32).round() as Element,
+            )
         })
     }
     /// NOTE: this requires the scaled input
@@ -603,10 +621,7 @@ impl Evaluate<f32> for GELU<f32> {
             .par_iter()
             .map(|t| {
                 let d = t.get_data();
-                let gelued = d
-                    .iter()
-                    .map(gelu_float)
-                    .collect::<Vec<_>>();
+                let gelued = d.iter().map(gelu_float).collect::<Vec<_>>();
                 Tensor::new(t.get_shape(), gelued)
             })
             .collect();
@@ -615,26 +630,30 @@ impl Evaluate<f32> for GELU<f32> {
 }
 
 fn gelu_float(x: &f32) -> f32 {
-    let    x_cubed = x * x * x;
+    let x_cubed = x * x * x;
     let inner_term = (2.0f32 / std::f32::consts::PI).sqrt() * (x + 0.044715 * x_cubed);
     0.5 * x * (1.0 + inner_term.tanh())
 }
 impl GELU<f32> {
     fn quantize(&self, input_scaling: ScalingFactor) -> anyhow::Result<GELU<Element>> {
         // so we want sf * SCALING = multiplier
-        // then we construct the lookup table as  GELU(i / SCALING) * quantization::MAX for 
+        // then we construct the lookup table as  GELU(i / SCALING) * quantization::MAX for
         // all i in the range [-2^{7 + ceil_log2(multiplier)}, 2^{7 + ceil_log2(multiplier)}]
         // This is because the input is already requantized, and we're multipliying the input
         // by the multiplier during quantized inference such that the float input is scaled
-        // to that number of bits. So with inputs of 2^7 max, multiplied by multiplier then 
+        // to that number of bits. So with inputs of 2^7 max, multiplied by multiplier then
         // the output range is 2^{7 + ceil_log2(multiplier)}
         // During lookup, we basically scale down back to the original
         // float value, apply GELU and multiply by 128 which is right now the output maximum range.
         let multiplier = (GELU_SCALE_FACTOR as f32 * input_scaling.scale()).round() as Element;
-        let table_min = -2i32.pow( 7 + ceil_log2(multiplier as usize) as u32);
-        let table_max= 2i32.pow( 7 + ceil_log2(multiplier as usize) as u32);
+        let table_min = -2i32.pow(7 + ceil_log2(multiplier as usize) as u32);
+        let table_max = 2i32.pow(7 + ceil_log2(multiplier as usize) as u32);
         let table_size = table_max - table_min;
-        assert!(table_size <= 1 << 20, "Table size for GELU is too bigggg: {:?}", table_size.ilog2());
+        assert!(
+            table_size <= 1 << 20,
+            "Table size for GELU is too bigggg: {:?}",
+            table_size.ilog2()
+        );
         let qd = GELUQuantData {
             multiplier,
             min: table_min as Element,
@@ -663,16 +682,22 @@ impl GELU<Element> {
 mod test {
     use ff_ext::GoldilocksExt2;
 
-    use crate::{layers::Layer, model::{test::prove_model, Model}, Element};
+    use crate::{
+        Element,
+        layers::Layer,
+        model::{Model, test::prove_model},
+    };
 
     use super::*;
 
     #[test]
     fn test_activation_gelu_proving() -> anyhow::Result<()> {
-
         let input_shape = vec![3, 5].into();
         let mut model = Model::new_from_input_shapes(vec![input_shape], PaddingMode::NoPadding);
-        model.add_consecutive_layer(Layer::Activation(Activation::Gelu(GELU::<f32>::new())), None)?;
+        model.add_consecutive_layer(
+            Layer::Activation(Activation::Gelu(GELU::<f32>::new())),
+            None,
+        )?;
         model.route_output(None)?;
         prove_model(model).unwrap();
         Ok(())

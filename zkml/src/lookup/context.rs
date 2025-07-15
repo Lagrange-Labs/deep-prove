@@ -15,11 +15,15 @@ use transcript::Transcript;
 
 use super::{logup_gkr::error::LogUpError, witness::LogUpWitness};
 use crate::{
-    iop::ChallengeStorage, layers::{
-        activation::{Relu, GELUQuantData},
+    Claim, Context, Element,
+    iop::ChallengeStorage,
+    layers::{
+        activation::{GELUQuantData, Relu},
         provable::{NodeId, ProvableOp},
         transformer::softmax::{LOG_SCALE_FACTOR, OUTPUT_SCALE_FACTOR, SCALE_FACTOR},
-    }, model::{InferenceTrace, ToIterator}, quantization::{self, Fieldizer}, Claim, Context, Element
+    },
+    model::{InferenceTrace, ToIterator},
+    quantization::{self, Fieldizer},
 };
 use rayon::prelude::*;
 pub const TABLE_POLY_ID_OFFSET: usize = 666;
@@ -101,20 +105,23 @@ impl TableType {
         column_separator: Element,
     ) -> (Vec<Element>, Vec<Vec<E::BaseField>>) {
         match self {
-            TableType::GELU(qd)=> {
+            TableType::GELU(qd) => {
                 #[allow(clippy::type_complexity)]
                 let (comb, (col_one, col_two)): (
                     Vec<Element>,
                     (Vec<E::BaseField>, Vec<E::BaseField>),
-                //) = (qd.min..=qd.max).zip(qd.lut.iter()).map(|(i, v)| {
-                ) = qd.table().map(|(i, v)| {
-                    let i_field: E = (i as Element).to_field();
-                    let out_field: E = v.to_field();
-                    (
-                        i as Element + v * column_separator,
-                        (i_field.as_bases()[0], out_field.as_bases()[0]),
-                    )
-                }).unzip();
+                    //) = (qd.min..=qd.max).zip(qd.lut.iter()).map(|(i, v)| {
+                ) = qd
+                    .table()
+                    .map(|(i, v)| {
+                        let i_field: E = (i as Element).to_field();
+                        let out_field: E = v.to_field();
+                        (
+                            i as Element + v * column_separator,
+                            (i_field.as_bases()[0], out_field.as_bases()[0]),
+                        )
+                    })
+                    .unzip();
                 (comb, vec![col_one, col_two])
             }
             TableType::Relu => {
@@ -225,7 +232,7 @@ impl TableType {
     pub fn name(&self) -> String {
         match self {
             TableType::Relu => "Relu".to_string(),
-            TableType::GELU(_)=> "GELU".to_string(),
+            TableType::GELU(_) => "GELU".to_string(),
             TableType::Range => "Range".to_string(),
             TableType::Clamping(size) => format!("Clamping: {size}"),
             TableType::Softmax(table_data) => {
@@ -283,7 +290,7 @@ impl TableType {
                 );
                 Ok(vec![first_column, second_column])
             }
-            TableType::GELU(qd)=> {
+            TableType::GELU(qd) => {
                 let size = qd.table_size();
                 if point.len() != size {
                     return Err(LogUpError::VerifierError(format!(
@@ -402,10 +409,13 @@ impl TableType {
     pub fn committed_columns<E: ExtensionField>(&self) -> Option<DenseMultilinearExtension<E>> {
         match self {
             TableType::GELU(qd) => {
-                let out_column = qd.table().map(|(_,elem)| {
-                    let out_field: E = elem.to_field();
-                    out_field.as_bases()[0]
-                }).collect::<Vec<E::BaseField>>();
+                let out_column = qd
+                    .table()
+                    .map(|(_, elem)| {
+                        let out_field: E = elem.to_field();
+                        out_field.as_bases()[0]
+                    })
+                    .collect::<Vec<E::BaseField>>();
                 Some(DenseMultilinearExtension::<E>::from_evaluations_vec(
                     qd.table_size(),
                     out_column,
