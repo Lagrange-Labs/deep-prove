@@ -30,6 +30,7 @@ pub mod tensor;
 pub use tensor::Tensor;
 #[cfg(feature = "capture-layers-quant")]
 pub mod capture;
+pub mod store;
 #[cfg(test)]
 mod testing;
 
@@ -237,7 +238,8 @@ mod test {
             .build()?;
 
         println!("[+] Loaded onnx file");
-        let ctx = Context::<E, Pcs<E>>::generate(&model, None).expect("unable to generate context");
+        let ctx =
+            Context::<E, Pcs<E>>::generate(&model, None, None).expect("unable to generate context");
         println!("[+] Setup parameters");
 
         let shapes = model.input_shapes();

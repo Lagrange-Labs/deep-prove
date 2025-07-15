@@ -22,11 +22,13 @@ name = "deep-prove-cli"
 path = "src/bin/cli/main.rs"
 
 [features]
-default = []
+default = ["s3"]
 blake = ["mpcs/blake"]
 # Capture layers' quatization outputs for regression tests
 capture-layers-quant = []
 mem-track = ["utils/mem-track"]
+# Worker S3 storage
+s3 = []
 
 [dependencies]
 anyhow.workspace = true
@@ -49,12 +51,14 @@ memmap2 = { workspace = true }
 mpcs = { workspace = true }
 multilinear_extensions = { version = "0.1.0", path = "../multilinear_extensions", features = ["parallel"] }
 num-traits = { workspace = true }
+object_store = { workspace = true }
 once_cell = { workspace = true }
 poseidon = { version = "0.1.0", path = "../poseidon" }
 rayon.workspace = true
 reqwest = { version = "0.12.19", features = ["blocking"] }
 rmp-serde = { workspace = true }
 rust_tokenizers = "8.1.1"
+semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10.9"

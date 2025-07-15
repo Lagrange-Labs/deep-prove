@@ -1,7 +1,7 @@
 use crate::{
     Element,
     commit::context::{CommitmentContext, PolyId},
-    layers::provable::{NodeCtx, NodeId, OpInfo},
+    layers::provable::{Node, NodeCtx, NodeId, OpInfo},
     lookup::context::{LookupContext, TableType},
     model::{Model, ModelCtx, ToIterator},
     quantization::Fieldizer,
@@ -109,6 +109,10 @@ where
     pub fn generate(
         model: &Model<Element>,
         input_shapes: Option<Vec<Shape>>,
+        params: Option<(
+            <PCS as PolynomialCommitmentScheme<E>>::ProverParam,
+            <PCS as PolynomialCommitmentScheme<E>>::VerifierParam,
+        )>,
     ) -> anyhow::Result<Self> {
         let tables = BTreeSet::new();
         let input_shapes = if let Some(shape) = input_shapes {
@@ -127,113 +131,79 @@ where
             max_poly_len,
         };
 
-        let mut model_polys = Vec::<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>::new();
-        let mut step_infos = HashMap::new();
-        let mut shapes: HashMap<NodeId, Vec<Shape>> = HashMap::new();
-        debug!("Context : layer info generation ...");
-        for (id, node) in model.to_forward_iterator() {
-            trace!(
-                "Context : {}-th layer {}info generation ...",
-                id,
-                node.operation.describe()
-            );
-            println!(
-                "Generating context node with id {id}: {:?}",
-                node.describe()
-            );
-            // compute input shapes for this node
-            let node_input_shapes = node
-                .inputs
-                .iter()
-                .map(|edge| {
-                    Ok(if let Some(node_id) = &edge.node {
-                        let node_shapes = shapes.get(node_id).ok_or(anyhow!(
-                            "Node {} not found in set of previous shapes",
-                            node_id
-                        ))?;
-                        ensure!(
-                            edge.index < node_shapes.len(),
-                            "Input for node {} is coming from output {} of node {}, 
-                        but this node has only {} outputs",
-                            id,
-                            edge.index,
-                            node_id,
-                            node_shapes.len()
-                        );
-                        node_shapes[edge.index].clone()
-                    } else {
-                        // input node
-                        ensure!(
-                            edge.index < input_shapes.len(),
-                            "Input for node {} is the input {} of the model, 
-                        but the model has only {} inputs",
-                            id,
-                            edge.index,
-                            input_shapes.len()
-                        );
-                        input_shapes[edge.index].clone()
-                    })
-                })
-                .collect::<anyhow::Result<Vec<_>>>()?;
-            ctx_aux.last_output_shape = node_input_shapes;
-            let (info, mut new_aux) = node.step_info(id, ctx_aux)?;
-            // Retrieve any model polynomials that need to be committed
-            if new_aux.model_polys.is_some() {
-                model_polys.push((
-                    id,
-                    new_aux
-                        .model_polys
-                        .as_mut()
-                        .unwrap()
-                        .drain()
-                        .map(|(poly_id, evals)| {
-                            let num_vars = ceil_log2(evals.len());
-                            (
-                                poly_id,
-                                DenseMultilinearExtension::<E>::from_evaluations_vec(
-                                    num_vars,
-                                    evals
-                                        .iter()
-                                        .map(|v| {
-                                            let f: E = v.to_field();
-                                            f.as_bases()[0]
-                                        })
-                                        .collect::<Vec<E::BaseField>>(),
-                                ),
-                            )
-                        })
-                        .collect::<HashMap<PolyId, DenseMultilinearExtension<E>>>(),
-                ));
+        // If we already have params loaded from store, we only need to
+        // construct the commitment context from node shapes.
+        // Otherwise, we also need generate the params for which we need to find
+        // the largest polynomial.
+        let (step_infos, commitment_ctx, lookup) = match params {
+            Some((prover_params, verifier_params)) => {
+                let mut model_polys =
+                    Vec::<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>::new();
+                let mut step_infos = HashMap::new();
+                let mut shapes: HashMap<NodeId, Vec<Shape>> = HashMap::new();
+                debug!("Context : layer info generation ...");
+                for (id, node) in model.to_forward_iterator() {
+                    ctx_aux = compute_node_shape::<E>(
+                        ctx_aux,
+                        &mut model_polys,
+                        &mut step_infos,
+                        &mut shapes,
+                        &input_shapes,
+                        id,
+                        node,
+                    )?;
+                }
+
+                debug!("Context : lookup generation ...");
+                let lookup_ctx = LookupContext::new(&ctx_aux.tables);
+
+                debug!("Context : commitment generating ...");
+                let commitment_ctx = CommitmentContext::<E, PCS>::new_with_params(
+                    model_polys,
+                    &lookup_ctx,
+                    prover_params,
+                    verifier_params,
+                )?;
+                (step_infos, commitment_ctx, lookup_ctx)
             }
-            step_infos.insert(
-                id,
-                NodeCtx {
-                    inputs: node.inputs.clone(),
-                    outputs: node.outputs.clone(),
-                    ctx: info,
-                },
-            );
-            max_poly_len = max_poly_len.max(new_aux.max_poly_len);
+            None => {
+                let mut model_polys =
+                    Vec::<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>::new();
+                let mut step_infos = HashMap::new();
+                let mut shapes: HashMap<NodeId, Vec<Shape>> = HashMap::new();
+                debug!("Context : layer info generation ...");
+                for (id, node) in model.to_forward_iterator() {
+                    ctx_aux = compute_node_shape::<E>(
+                        ctx_aux,
+                        &mut model_polys,
+                        &mut step_infos,
+                        &mut shapes,
+                        &input_shapes,
+                        id,
+                        node,
+                    )?;
+                    max_poly_len = max_poly_len.max(ctx_aux.max_poly_len);
+                }
+                // Check to see if we use a lookup table alrger than any of the individual polynomials
+                ctx_aux.tables.iter().for_each(|table_type| {
+                    let multiplicity_vars = table_type.multiplicity_poly_vars();
+                    max_poly_len = max_poly_len.max(1 << multiplicity_vars)
+                });
 
-            ctx_aux = new_aux;
-            shapes.insert(id, ctx_aux.last_output_shape.clone());
-        }
-        // Check to see if we use a lookup table alrger than any of the individual polynomials
-        ctx_aux.tables.iter().for_each(|table_type| {
-            let multiplicity_vars = table_type.multiplicity_poly_vars();
-            max_poly_len = max_poly_len.max(1 << multiplicity_vars)
-        });
-        debug!("Context : lookup generation ...");
-        let lookup_ctx = LookupContext::new(&ctx_aux.tables);
+                debug!("Context : lookup generation ...");
+                let lookup_ctx = LookupContext::new(&ctx_aux.tables);
 
-        debug!("Context : commitment generating ...");
-        let commitment_ctx =
-            CommitmentContext::<E, PCS>::new(max_poly_len, model_polys, &lookup_ctx)?;
+                debug!("Context : commitment generating ...");
+                let commitment_ctx =
+                    CommitmentContext::<E, PCS>::new(max_poly_len, model_polys, &lookup_ctx)?;
+                (step_infos, commitment_ctx, lookup_ctx)
+            }
+        };
 
         Ok(Self {
             steps_info: ModelCtx { nodes: step_infos },
             commitment_ctx,
-            lookup: lookup_ctx,
+            lookup,
             unpadded_input_shapes: model.unpadded_input_shapes(),
         })
     }
@@ -242,4 +212,98 @@ where
         self.commitment_ctx.write_to_transcript(t)?;
         Ok(())
     }
+}
+
+fn compute_node_shape<E: ExtensionField>(
+    mut ctx_aux: ContextAux,
+    model_polys: &mut Vec<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>,
+    step_infos: &mut HashMap<NodeId, NodeCtx<E>>,
+    shapes: &mut HashMap<NodeId, Vec<Shape>>,
+    input_shapes: &[Shape],
+    id: usize,
+    node: &Node<Element>,
+) -> anyhow::Result<ContextAux> {
+    trace!(
+        "Context : {}-th layer {}info generation ...",
+        id,
+        node.operation.describe()
+    );
+    println!(
+        "Generating context node with id {id}: {:?}",
+        node.describe()
+    );
+    // compute input shapes for this node
+    let node_input_shapes = node
+        .inputs
+        .iter()
+        .map(|edge| {
+            Ok(if let Some(node_id) = &edge.node {
+                let node_shapes = shapes.get(node_id).ok_or(anyhow!(
+                    "Node {} not found in set of previous shapes",
+                    node_id
+                ))?;
+                ensure!(
+                    edge.index < node_shapes.len(),
+                    "Input for node {} is coming from output {} of node {}, 
+                        but this node has only {} outputs",
+                    id,
+                    edge.index,
+                    node_id,
+                    node_shapes.len()
+                );
+                node_shapes[edge.index].clone()
+            } else {
+                // input node
+                ensure!(
+                    edge.index < input_shapes.len(),
+                    "Input for node {} is the input {} of the model, 
+                        but the model has only {} inputs",
+                    id,
+                    edge.index,
+                    input_shapes.len()
+                );
+                input_shapes[edge.index].clone()
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    ctx_aux.last_output_shape = node_input_shapes;
+    let (info, mut new_aux) = node.step_info(id, ctx_aux)?;
+    // Retrieve any model polynomials that need to be committed
+    if new_aux.model_polys.is_some() {
+        model_polys.push((
+            id,
+            new_aux
+                .model_polys
+                .as_mut()
+                .unwrap()
+                .drain()
+                .map(|(poly_id, evals)| {
+                    let num_vars = ceil_log2(evals.len());
+                    (
+                        poly_id,
+                        DenseMultilinearExtension::<E>::from_evaluations_vec(
+                            num_vars,
+                            evals
+                                .iter()
+                                .map(|v| {
+                                    let f: E = v.to_field();
+                                    f.as_bases()[0]
+                                })
+                                .collect::<Vec<E::BaseField>>(),
+                        ),
+                    )
+                })
+                .collect::<HashMap<PolyId, DenseMultilinearExtension<E>>>(),
+        ));
+    }
+    step_infos.insert(
+        id,
+        NodeCtx {
+            inputs: node.inputs.clone(),
+            outputs: node.outputs.clone(),
+            ctx: info,
+        },
+    );
+    shapes.insert(id, new_aux.last_output_shape.clone());
+    Ok(new_aux)
 }

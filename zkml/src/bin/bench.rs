@@ -310,7 +310,9 @@ fn run(args: Args) -> anyhow::Result<()> {
     info!("[+] Quantized inputs with strategy: {}", args.quantization);
 
     let ctx = if !args.skip_proving {
-        Some(Context::<F, Pcs<F>>::generate(&model, None).expect("unable to generate context"))
+        Some(
+            Context::<F, Pcs<F>>::generate(&model, None, None).expect("unable to generate context"),
+        )
     } else {
         None
     };
