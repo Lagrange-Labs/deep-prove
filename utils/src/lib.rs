@@ -530,14 +530,11 @@ impl<W: Write> StreamingRecorder<Writer<W>> {
                 *s.entry(v).or_default() += 1;
                 s
             });
-        if let Some(duplicated) = counts.iter().filter(|(_key, value)| **value > 1).next() {
+        if let Some(duplicated) = counts.iter().find(|(_key, value)| **value > 1) {
             return Err(RecorderError::DuplicatedName(duplicated.0.to_string()));
         }
 
-        let mut writer: Writer<W> = WriterBuilder::new()
-            .flexible(false)
-            .from_writer(write)
-            .into();
+        let mut writer: Writer<W> = WriterBuilder::new().flexible(false).from_writer(write);
 
         // write the header out
         writer
