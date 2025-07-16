@@ -1,4 +1,4 @@
-use std::{io::BufReader, path::Path};
+use std::{io::BufReader, path::Path, str::FromStr};
 
 use anyhow::{Context, ensure};
 use ff_ext::GoldilocksExt2;
@@ -24,13 +24,6 @@ impl Input {
             std::fs::File::open(p.as_ref()).context("opening inputs file")?,
         ))
         .context("deserializing inputs")?;
-        inputs.validate()?;
-
-        Ok(inputs)
-    }
-
-    pub fn from_str<S: AsRef<str>>(s: S) -> anyhow::Result<Self> {
-        let inputs: Self = serde_json::from_str(s.as_ref()).context("deserializing inputs")?;
         inputs.validate()?;
 
         Ok(inputs)
@@ -79,6 +72,17 @@ impl Input {
             .into_iter()
             .map(|input| input.into_iter().map(|e| input_sf.quantize(&e)).collect())
             .collect()
+    }
+}
+
+impl FromStr for Input {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let inputs: Self = serde_json::from_str(s).context("deserializing inputs")?;
+        inputs.validate()?;
+
+        Ok(inputs)
     }
 }
 

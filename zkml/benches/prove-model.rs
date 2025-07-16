@@ -1,9 +1,8 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use ff_ext::GoldilocksExt2;
-use itertools::Either;
 use mpcs::{Basefold, BasefoldRSParams, Hasher};
 use zkml::{
-    Context, Element, FloatOnnxLoader, Prover, ScalingStrategy, default_transcript,
+    Context, Element, FloatOnnxLoader, Prover, default_transcript,
     middleware::v1::Input,
     model::Model,
     quantization::{AbsoluteMax, ModelMetadata},

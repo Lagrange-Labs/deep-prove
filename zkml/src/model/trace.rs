@@ -47,7 +47,7 @@ impl<'a, E: ExtensionField, N, D> Trace<'a, E, N, D> {
 
     /// Convert an inference trace computed over integers to a trace over field elements, which is
     /// needed to prove the inference
-    pub(crate) fn into_field(&self) -> ProvingTrace<'a, E, N>
+    pub(crate) fn as_fields(&self) -> ProvingTrace<'a, E, N>
     where
         D: Fieldizer<E>,
     {
@@ -58,7 +58,7 @@ impl<'a, E: ExtensionField, N, D> Trace<'a, E, N, D> {
             .iter()
             .map(|(id, step)| {
                 (
-                    id.clone(),
+                    *id,
                     InferenceStep {
                         op: step.op,
                         step_data: StepData {
