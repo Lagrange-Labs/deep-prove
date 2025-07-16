@@ -42,7 +42,6 @@ fn new_transcript() -> Transcript {
     }
     #[cfg(not(feature = "blake"))]
     {
-        println!("using basic transcript");
         default_transcript()
     }
 }

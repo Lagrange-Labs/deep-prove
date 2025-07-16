@@ -13,6 +13,7 @@ use crate::{
 };
 use anyhow::{Context, Error, Result, bail, ensure};
 use itertools::Either;
+use tracing::debug;
 use tract_onnx::{pb::ModelProto, prelude::*};
 
 /// Utility struct for loading a onnx model with float weights and producing a quantized model
@@ -77,7 +78,7 @@ impl<'a, S: ScalingStrategy> FloatOnnxLoader<'a, S> {
             model_type.validate_proto(&proto)?
         }
         let float_model = load_float_model(&proto)?;
-        println!("Input shape: {:?}", float_model.input_shapes());
+        debug!("Input shape: {:?}", float_model.input_shapes());
         let mut kept_float = None;
         if self.keep_float {
             kept_float = Some(float_model.clone());

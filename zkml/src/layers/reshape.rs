@@ -13,6 +13,7 @@ use crate::{
 use anyhow::ensure;
 use ff_ext::ExtensionField;
 use serde::{Deserialize, Serialize};
+use tracing::trace;
 
 use crate::{Tensor, tensor::Number};
 
@@ -114,7 +115,7 @@ impl Reshape {
                 .iter()
                 .map(|shape| {
                     let mut new_shape = shape.clone();
-                    println!(
+                    trace!(
                         "moving from shape {:?} by splice({:?},{:?})",
                         shape, subspace.to_remove, subspace.to_add
                     );

@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use super::{ChallengeStorage, Context, Proof, TableProof};
 use crate::{
     Claim, Element, VectorTranscript,
@@ -21,6 +19,8 @@ use crate::{
 };
 use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
+use std::collections::HashMap;
+use tracing::trace;
 
 use itertools::Itertools;
 use mpcs::PolynomialCommitmentScheme;
@@ -440,7 +440,7 @@ where
             } = trace
                 .get_step(&node_id)
                 .ok_or(anyhow!("Step in trace not found for node {}", node_id))?;
-            println!(
+            trace!(
                 "Proving node with id {node_id}: {:?}",
                 node_operation.describe()
             );

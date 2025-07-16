@@ -24,6 +24,7 @@ use multilinear_extensions::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
+use tracing::trace;
 use transcript::Transcript;
 
 use crate::{
@@ -229,9 +230,7 @@ impl MatrixPermutations {
             mat_result_shape = mat_result_shape.next_power_of_two()
         }
         if let Some(ref permute) = self.permute {
-            println!(
-                "ConcatMatMul: Permute: {permute:?} over resulting shape {mat_result_shape:?}",
-            );
+            trace!("ConcatMatMul: Permute: {permute:?} over resulting shape {mat_result_shape:?}",);
             mat_result_shape = mat_result_shape.permute(&permute.0);
         }
         vec![mat_result_shape]
@@ -251,7 +250,7 @@ impl MatrixPermutations {
 
     /// Split the point over which sum-check claims are evaluated in two components:
     /// - the first component refers to the concatenation dimension in the input tensors
-    /// - teh second components refers to the mat mul dimension in the input tensors
+    /// - the second components refers to the mat mul dimension in the input tensors
     fn split_sumcheck_point<'a, E: ExtensionField>(
         &self,
         point: &'a [E],
@@ -1058,7 +1057,7 @@ mod test {
 
         // we have also another input, which is going to be multiplied with the output of the first
         // concat matmul operation
-        let additional_input_shape = vec![21, 7, 45].into(); // concat dimension is 7, mul dimension is 45, 
+        let additional_input_shape = vec![21, 7, 45].into(); // concat dimension is 7, mul dimension is 45,
         // since the output shape of the previous concat matmul will be `[7, 17, 45]`
 
         let mut model = Model::new_from_input_shapes(
@@ -1084,7 +1083,7 @@ mod test {
             ConcatMatMul::expected_dimension_for_left_input(),
             InputMatrixDimensions::new(1, 2, 0),
             Permutation::new(vec![2, 0, 1]), /* we also permute the output tensor to have the concat dimension as
-                                              * the middel dimension */
+                                              * the middle dimension */
         );
 
         let _second_node_id = model
