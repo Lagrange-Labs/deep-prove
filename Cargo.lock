@@ -11058,6 +11058,7 @@ dependencies = [
  "candle-transformers",
  "clap",
  "code-timing-macros",
+ "criterion 0.6.0",
  "csv",
  "derive_builder",
  "derive_more 2.0.1",

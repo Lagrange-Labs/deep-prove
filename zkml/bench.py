@@ -158,6 +158,7 @@ def create_model(num_dense,
                 str(output_dir),
             ]
         case _:
+            script_path = Path("assets/scripts/CNN/cifar-cnn.py")
             cmd = [
                 "python",
                 str(script_path), "--export",

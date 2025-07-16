@@ -36,6 +36,13 @@ impl Input {
         Ok(inputs)
     }
 
+    pub fn from_reader<R: std::io::Read>(r: R) -> anyhow::Result<Self> {
+        let inputs: Self = serde_json::from_reader(r).context("deserializing inputs")?;
+        inputs.validate()?;
+
+        Ok(inputs)
+    }
+
     fn validate(&self) -> anyhow::Result<()> {
         ensure!(self.input_data.len() > 0);
         ensure!(
