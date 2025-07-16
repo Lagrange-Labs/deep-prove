@@ -94,7 +94,7 @@ where
 
     /// Runs take the _already_ tokenized input and run the model until the maximum sequence length is reached OR until a eos token is generated.
     /// The returned trace contains the _whole_ sequence.
-    pub fn run<E>(
+    pub fn run_inference<E>(
         &mut self,
         input: Vec<Token>,
         observer: impl Observer<N>,
@@ -114,7 +114,7 @@ where
         let mut trace = InferenceTrace::default();
         // convert the input to the correct number type and add a dimension to make it 2d, because the embeddings layer expects a 2d tensor
         let mut tensor = Tensor::new(
-            vec![input.len(), 1].into(),
+            vec![input.len()].into(),
             input.into_iter().map(|t| t.as_number()).collect::<Vec<_>>(),
         );
         let max_window = self.max_context.unwrap_or(self.config.context_length);
@@ -198,7 +198,7 @@ mod test {
         let detokenized = tokenizer.detokenize(&user_tokens);
         assert_eq!(detokenized, sentence);
         println!("user input in tokens: {:?}", user_tokens);
-        let trace = driver.run::<GoldilocksExt2>(
+        let trace = driver.run_inference::<GoldilocksExt2>(
             user_tokens,
             LLMTokenizerObserver {
                 input: sentence.to_string(),

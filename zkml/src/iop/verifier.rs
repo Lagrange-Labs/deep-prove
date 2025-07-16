@@ -217,7 +217,7 @@ where
 
                 verify_table::<_, _, _>(
                     table_proof,
-                    *table_type,
+                    table_type.clone(),
                     &mut self.commit_verifier,
                     self.transcript,
                     constant_challenge,
@@ -251,6 +251,7 @@ where
         self.commit_verifier
             .verify(&ctx.commitment_ctx, &proof.commit, self.transcript)?;
 
+        let num_len = numerators.len();
         // 8. verify that the accumulated numerator is zero and accumulated denominator is non-zero
         let (final_num, final_denom) = numerators.into_iter().zip(denominators).fold(
             (E::ZERO, E::ONE),
@@ -261,8 +262,9 @@ where
 
         ensure!(
             final_num == E::ZERO,
-            "Final numerator was non-zero, got: {:?}",
-            final_num
+            "Final numerator was non-zero, got: {:?} - numerator.len(): {}",
+            final_num,
+            num_len
         );
         ensure!(
             final_denom != E::ZERO,
@@ -337,7 +339,7 @@ where
             "If table poly claims isn't empty we should only have 1, got: {}",
             table_poly_claims.len()
         );
-        witness_verifier.add_table_claim(table_type, table_poly_claims[0].clone())?;
+        witness_verifier.add_table_claim(table_type.clone(), table_poly_claims[0].clone())?;
     }
 
     // Hard indexing is okay here because we checked above that at least one claim exists

@@ -92,7 +92,7 @@ where
     pub fn table_type(&self) -> TableType {
         match self {
             LogUpWitness::Lookup { table_type, .. } | LogUpWitness::Table { table_type, .. } => {
-                *table_type
+                table_type.clone()
             }
         }
     }
