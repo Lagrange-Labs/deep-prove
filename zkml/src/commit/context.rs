@@ -72,8 +72,9 @@ where
             })
             .next_power_of_two();
 
-        let param = PCS::setup(max_poly_size)?;
-        let (prover_params, verifier_params) = PCS::trim(param, max_poly_size)?;
+        let param = PCS::setup(max_poly_size).context("setting up params")?;
+        let (prover_params, verifier_params) =
+            PCS::trim(param, max_poly_size).context("trimming params")?;
 
         let model_comms_map = polys
             .into_par_iter()
@@ -81,7 +82,8 @@ where
                 let model_comms = polys_vec
                     .into_iter()
                     .map(|(id, poly)| {
-                        let commit = PCS::commit(&prover_params, &poly)?;
+                        let commit = PCS::commit(&prover_params, &poly)
+                            .with_context(|| format!("committing to polynomial {id}"))?;
                         Result::<(_, _), anyhow::Error>::Ok((id, (commit, poly)))
                     })
                     .collect::<Result<
@@ -90,13 +92,60 @@ where
                             (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>),
                         >,
                         _,
-                    >>()?;
+                    >>()
+                    .with_context(|| format!("collecting node {node_id} commitments"))?;
                 Result::<(NodeId, BTreeMap<PolyId, (_, _)>), anyhow::Error>::Ok((
                     node_id,
                     model_comms,
                 ))
             })
-            .collect::<Result<BTreeMap<NodeId, _>, _>>()?;
+            .collect::<Result<BTreeMap<NodeId, _>, _>>()
+            .context("collecting model commitments")?;
+
+        let table_comms_map = lookup_ctx.iter().filter_map(|table_type| {
+            table_type.committed_columns().and_then(|poly| {let commit = PCS::commit(&prover_params, &poly).ok()?; Some((*table_type, (commit, poly)))})
+        }).collect::<HashMap<TableType, (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>>();
+
+        Ok(CommitmentContext {
+            prover_params,
+            verifier_params,
+            model_comms_map,
+            table_comms_map,
+        })
+    }
+
+    /// Make a new [`CommitmentContext`] from known params
+    pub fn new_with_params(
+        polys: Vec<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>,
+        lookup_ctx: &LookupContext,
+        prover_params: PCS::ProverParam,
+        verifier_params: PCS::VerifierParam,
+    ) -> Result<CommitmentContext<E, PCS>> {
+        let model_comms_map = polys
+            .into_par_iter()
+            .map(|(node_id, polys_vec)| {
+                let model_comms = polys_vec
+                    .into_iter()
+                    .map(|(id, poly)| {
+                        let commit = PCS::commit(&prover_params, &poly)
+                            .with_context(|| format!("committing to polynomial {id}"))?;
+                        Result::<(_, _), anyhow::Error>::Ok((id, (commit, poly)))
+                    })
+                    .collect::<Result<
+                        BTreeMap<
+                            PolyId,
+                            (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>),
+                        >,
+                        _,
+                    >>()
+                    .with_context(|| format!("collecting node {node_id} commitments"))?;
+                Result::<(NodeId, BTreeMap<PolyId, (_, _)>), anyhow::Error>::Ok((
+                    node_id,
+                    model_comms,
+                ))
+            })
+            .collect::<Result<BTreeMap<NodeId, _>, _>>()
+            .context("collecting model commitments")?;
 
         let table_comms_map = lookup_ctx.iter().filter_map(|table_type| {
             table_type.committed_columns().and_then(|poly| {

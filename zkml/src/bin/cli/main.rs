@@ -10,10 +10,9 @@ use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
 use tracing::info;
 use url::Url;
 use zkml::{
-    Element, FloatOnnxLoader,
+    ModelType,
     middleware::{DeepProveRequest, DeepProveResponse, v1::Input},
-    model::Model,
-    quantization::{AbsoluteMax, ModelMetadata},
+    quantization::ScalingStrategyKind,
 };
 
 mod lagrange {
@@ -59,13 +58,6 @@ enum Command {
     Fetch {},
 }
 
-fn parse_model(bytes: Mmap) -> anyhow::Result<(Model<Element>, ModelMetadata)> {
-    let strategy = AbsoluteMax::new();
-    FloatOnnxLoader::from_bytes_with_scaling_strategy(bytes, strategy)
-        .with_keep_float(true)
-        .build()
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -102,15 +94,39 @@ async fn main() -> anyhow::Result<()> {
         Command::Submit { onnx, inputs } => {
             let input = Input::from_file(&inputs).context("loading input")?;
             let model_file = File::open(&onnx).await.context("opening model file")?;
-            let model_bytes = unsafe { Mmap::map(&model_file) }.context("loading model file")?;
-            let (model, model_metadata) = parse_model(model_bytes).context("parsing ONNX file")?;
+            let model = unsafe { Mmap::map(&model_file) }
+                .context("loading model file")?
+                .to_vec();
+
+            let proto = {
+                use prost_tract_compat::Message;
+
+                tract_onnx::pb::ModelProto::decode(&*model).context("decoding ModelProto")?
+            };
+            let model_type =
+                onnx.extension()
+                    .and_then(|ext| match ext.to_ascii_lowercase().to_str() {
+                        Some("cnn") => Some(ModelType::CNN),
+                        Some("mlp") => Some(ModelType::MLP),
+                        _ => None,
+                    });
+            if let Some(model_type) = model_type {
+                model_type.validate_proto(&proto)?;
+            }
+
+            // TODO Currently hard-coded in the ONNX loader. Adjust when choice is availabl
+            let scaling_strategy = ScalingStrategyKind::AbsoluteMax;
+            // TODO Currently hard-coded in the ONNX loader. Adjust when choice is availabl
+            let scaling_input_hash = None;
+
             let task = tonic::Request::new(lagrange::SubmitTaskRequest {
                 task_bytes: zstd::encode_all(
                     rmp_serde::to_vec(&DeepProveRequest::V1(
                         zkml::middleware::v1::DeepProveRequest {
                             model,
-                            model_metadata,
                             input,
+                            scaling_strategy,
+                            scaling_input_hash,
                         },
                     ))
                     .context("serializing inference request")?

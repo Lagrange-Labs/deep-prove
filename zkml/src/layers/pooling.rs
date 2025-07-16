@@ -832,7 +832,7 @@ mod tests {
                 .collect::<Shape>();
             let input_data_size = random_shape.product();
             let data = (0..input_data_size)
-                .map(|_| rng.gen_range(-128i128..128))
+                .map(|_| rng.gen_range(-128..128))
                 .collect::<Vec<Element>>();
             let input = Tensor::<Element>::new(random_shape, data);
 

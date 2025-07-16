@@ -1,11 +1,83 @@
 use std::{
+    borrow::Cow,
+    collections::BTreeMap,
     fmt::Display,
+    fs::{File, OpenOptions},
+    io::{self, Write},
+    ops::DerefMut,
+    path::Path,
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
+use anyhow::Context;
 use bytesize::ByteSize;
+use csv::{Writer, WriterBuilder};
 use memory_stats::{MemoryStats, memory_stats};
+use thiserror::Error;
 use thousands::Separable;
+use tracing::warn;
+
+type CsvStreamer = StreamingRecorder<Writer<File>>;
+static CSV_RECORDER: Mutex<Option<CsvStreamer>> = Mutex::new(None);
+
+pub fn init_csv_recorder<I, T, P>(additional_columns: I, file: P) -> anyhow::Result<()>
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<str>,
+    P: AsRef<Path>,
+{
+    let mut lock = CSV_RECORDER.lock().expect("Should not be poison");
+    if lock.is_some() {
+        warn!("CSV_RECORDER is already initialised");
+        return Ok(());
+    }
+
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file)
+        .context(format!("opening file {:?}", file.as_ref()))?;
+
+    *lock = Some(StreamingRecorder::csv_streaming(additional_columns, file)?);
+    Ok(())
+}
+
+/// Stream the metrics out.
+pub fn stream_metrics(name: impl AsRef<str>, metrics: &MetricsSpan) {
+    let mut lock = CSV_RECORDER.lock().expect("Should not be poison");
+    match lock.deref_mut() {
+        Some(stream) => {
+            match stream.stream_metrics(name, metrics) {
+                Ok(_) => {}
+                Err(err) => {
+                    warn!("Error while streaming via CSV_RECORDER. err: {err:?}");
+                }
+            };
+        }
+        None => warn!("CSV_RECORDER is not initialised"),
+    }
+}
+
+pub fn stream_data<K, V, I>(name: impl AsRef<str>, metrics: &MetricsSpan, data: I)
+where
+    K: AsRef<str>,
+    V: ToString,
+    I: IntoIterator<Item = (K, V)>,
+{
+    let mut lock = CSV_RECORDER.lock().expect("Should not be poison");
+    match lock.deref_mut() {
+        Some(stream) => {
+            match stream.stream_data(name, metrics, data) {
+                Ok(_) => {}
+                Err(err) => {
+                    warn!("Error while streaming via CSV_RECORDER. err: {err:?}");
+                }
+            };
+        }
+        None => warn!("CSV_RECORDER is not initialised"),
+    }
+}
 
 #[derive(Default)]
 struct AllocatorMetrics {
@@ -23,6 +95,17 @@ struct AllocatorMetrics {
     /// Note: The peak memory usage can be reset, this is used to measure
     /// the memore usage in a span of time.
     peak: usize,
+}
+
+impl AllocatorMetrics {
+    #[cfg(feature = "mem-track")]
+    fn with_peak_and_in_use(peak: usize, in_use: usize) -> Self {
+        AllocatorMetrics {
+            peak,
+            in_use,
+            ..Default::default()
+        }
+    }
 }
 
 /// Generates memory flame graphs for the period of time this object is alive.
@@ -66,11 +149,12 @@ mod track {
         alloc::System,
         env,
         fs::OpenOptions,
-        io::BufWriter,
+        io::{BufWriter, Write},
         sync::atomic::{AtomicBool, Ordering},
         thread,
     };
 
+    use flate2::{Compression, write::GzEncoder};
     use mem_track::{
         flame::{FlameAlloc, format_flame_graph},
         peak::global::GlobalPeakTracker,
@@ -142,29 +226,27 @@ mod track {
                 if let Ok(file) = OpenOptions::new()
                     .write(true)
                     .create_new(true)
-                    .open(format!("{file_prefix}_bytes_{i}.flame"))
+                    .open(format!("{file_prefix}_bytes_{i}.flame.gz"))
                 {
                     // Formatting the flame graph is an expensive operation, do it in parallel.
                     thread::scope(|s| {
                         let iterator = iterator.clone();
                         s.spawn(move || {
-                            let mut file = BufWriter::new(file);
+                            let mut file =
+                                BufWriter::new(GzEncoder::new(file, Compression::default()));
                             let _ = format_flame_graph(&mut file, iterator, |v| v.bytes_allocated);
-                            if let Ok(file) = file.into_inner() {
-                                let _ = file.sync_all();
-                            }
+                            let _ = file.flush();
                         });
 
                         if let Ok(file) = OpenOptions::new()
                             .write(true)
                             .create_new(true)
-                            .open(format!("{file_prefix}_calls_{i}.flame"))
+                            .open(format!("{file_prefix}_calls_{i}.flame.gz"))
                         {
-                            let mut file = BufWriter::new(file);
+                            let mut file =
+                                BufWriter::new(GzEncoder::new(file, Compression::default()));
                             let _ = format_flame_graph(&mut file, graph.iter(), |v| v.alloc_calls);
-                            if let Ok(file) = file.into_inner() {
-                                let _ = file.sync_all();
-                            }
+                            let _ = file.flush();
                         }
                     });
 
@@ -379,4 +461,186 @@ fn format_bytes_isize(f: &mut std::fmt::Formatter<'_>, v: isize) -> std::fmt::Re
     let prefix = if v.is_negative() { "-" } else { "" };
     let formatter = ByteSize::b(v.abs().try_into().expect("Should fit in a u64")).display();
     write!(f, "{prefix}{formatter}")
+}
+
+/// Collects profilling data.
+pub struct StreamingRecorder<W> {
+    /// The list of allowed column names.
+    ///
+    /// The data is streamed out, the column names must be known a prior.
+    column_names: Vec<String>,
+
+    /// The data is streamed to this writer.
+    writer: W,
+}
+
+#[derive(Debug, Error)]
+pub enum RecorderError<E> {
+    /// Record names must be unique, found a duplicate.
+    #[error("Found duplicate column name: {0}")]
+    DuplicatedName(String),
+
+    /// User tried to write to a unknown column name.
+    #[error("Unknown column during metrics streaming: {0}")]
+    UnkownName(String),
+
+    /// Error while writing the data..
+    #[error("Failed to write data, err: {0}")]
+    WriteErr(E),
+
+    /// Error while streaming the data.
+    #[error("Io error, err: {0}")]
+    IoErr(io::Error),
+}
+
+fn format_field<T: ToString>(v: Option<T>) -> Cow<'static, str> {
+    v.map(|v| v.to_string().into()).unwrap_or("".into())
+}
+
+impl<W: Write> StreamingRecorder<Writer<W>> {
+    const FIXED_COLUMNS: usize = 11;
+
+    /// Creates a new [StreamingRecorder] with the configured `additional_column` streaming data
+    /// csv data to the given [Write] sink.
+    pub fn csv_streaming<I, T>(
+        additional_columns: I,
+        write: W,
+    ) -> Result<Self, RecorderError<csv::Error>>
+    where
+        I: IntoIterator<Item = T>,
+        T: AsRef<str>,
+    {
+        // The column_names determines the order of the output, try to allocate the columns in
+        // a human friendly way.
+        //
+        // NOTE: Keep in sync with the order on the other methods
+        let mut column_names = vec!["name".to_string(), "elapsed".to_string()];
+        column_names.extend(
+            additional_columns
+                .into_iter()
+                .map(|s| s.as_ref().to_string()),
+        );
+        let additional_columns_count = column_names.len() - 2;
+        column_names.extend([
+            "in_use".to_string(),
+            "peak".to_string(),
+            "physical_mem".to_string(),
+            "virtual_mem".to_string(),
+            "physical_mem_diff".to_string(),
+            "virtual_mem_diff".to_string(),
+            "allocated".to_string(),
+            "deallocated".to_string(),
+            "alloc_calls".to_string(),
+        ]);
+
+        debug_assert!(Self::FIXED_COLUMNS + additional_columns_count == column_names.len());
+
+        let counts = column_names
+            .iter()
+            .fold(BTreeMap::<&String, u32>::new(), |mut s, v| {
+                *s.entry(v).or_default() += 1;
+                s
+            });
+        if let Some(duplicated) = counts.iter().find(|(_key, value)| **value > 1) {
+            return Err(RecorderError::DuplicatedName(duplicated.0.to_string()));
+        }
+
+        let mut writer: Writer<W> = WriterBuilder::new().flexible(false).from_writer(write);
+
+        // write the header out
+        writer
+            .write_record(&column_names)
+            .map_err(RecorderError::WriteErr)?;
+
+        Ok(Self {
+            column_names,
+            writer,
+        })
+    }
+
+    /// Stream the metrics out.
+    pub fn stream_metrics(
+        &mut self,
+        name: impl AsRef<str>,
+        metrics: &MetricsSpan,
+    ) -> Result<(), RecorderError<csv::Error>> {
+        // NOTE: Keep in sync with order in the constructor
+        let mut record: Vec<Cow<'_, str>> = Vec::with_capacity(self.column_names.len());
+
+        record.push(name.as_ref().into());
+        record.push(metrics.elapsed.as_millis().to_string().into());
+
+        let user_columns = self.column_names.len() - Self::FIXED_COLUMNS;
+        for _i in 0..user_columns {
+            record.push("".into());
+        }
+
+        record.push(format_field(metrics.physical_mem));
+        record.push(format_field(metrics.virtual_mem));
+        record.push(format_field(metrics.physical_mem_diff));
+        record.push(format_field(metrics.virtual_mem_diff));
+        record.push(format_field(metrics.allocated));
+        record.push(format_field(metrics.deallocated));
+        record.push(format_field(metrics.alloc_calls));
+        record.push(format_field(metrics.peak));
+        record.push(format_field(metrics.in_use));
+
+        self.writer
+            .write_record(record.iter().map(|v| v.as_bytes()))
+            .map_err(RecorderError::WriteErr)?;
+        self.writer.flush().map_err(RecorderError::IoErr)?;
+
+        Ok(())
+    }
+
+    /// Stream data out.
+    pub fn stream_data<K, V, I>(
+        &mut self,
+        name: impl AsRef<str>,
+        metrics: &MetricsSpan,
+        data: I,
+    ) -> Result<(), RecorderError<csv::Error>>
+    where
+        K: AsRef<str>,
+        V: ToString,
+        I: IntoIterator<Item = (K, V)>,
+    {
+        // NOTE: Keep in sync with order in the constructor
+        let mut record: Vec<Cow<'_, str>> = Vec::with_capacity(self.column_names.len());
+        record.push(name.as_ref().into());
+        record.push(metrics.elapsed.as_millis().to_string().into());
+
+        let new_length = self.column_names.len() - Self::FIXED_COLUMNS + 2;
+        record.resize_with(new_length, || "".into());
+
+        for (name, value) in data.into_iter() {
+            let pos = self
+                .column_names
+                .iter()
+                .position(|column_name| name.as_ref() == column_name)
+                .ok_or_else(|| RecorderError::UnkownName(name.as_ref().to_string()))?;
+
+            let storage = record
+                .get_mut(pos)
+                .expect("Position returned form a valid iterator above");
+            *storage = value.to_string().into();
+        }
+
+        record.push(format_field(metrics.physical_mem));
+        record.push(format_field(metrics.virtual_mem));
+        record.push(format_field(metrics.physical_mem_diff));
+        record.push(format_field(metrics.virtual_mem_diff));
+        record.push(format_field(metrics.allocated));
+        record.push(format_field(metrics.deallocated));
+        record.push(format_field(metrics.alloc_calls));
+        record.push(format_field(metrics.peak));
+        record.push(format_field(metrics.in_use));
+
+        self.writer
+            .write_record(record.iter().map(|v| v.as_bytes()))
+            .map_err(RecorderError::WriteErr)?;
+        self.writer.flush().map_err(RecorderError::IoErr)?;
+
+        Ok(())
+    }
 }

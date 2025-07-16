@@ -28,7 +28,7 @@ do
 
       base="layers-quant-base/$layer/$input"
       head="layers-quant/$layer/$input"
-      if [ -d "$base" ]; then
+      if [ -d "$head" ]; then
         # Compare output hashes
         if ! cmp --silent -- "$base/output_hash.txt" "$head/output_hash.txt"; then
           result=1

@@ -12,6 +12,7 @@ use p3_field::{Field, FieldAlgebra};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::{debug, warn};
 use transcript::Transcript;
+use utils::Metrics;
 
 use super::{logup_gkr::error::LogUpError, witness::LogUpWitness};
 use crate::{
@@ -87,11 +88,11 @@ impl SoftmaxTableData {
 
     pub(crate) fn table_output(&self, j: Element) -> Element {
         let float_temperature = self.float_temperature();
-        let base = 1i128 << (LOG_SCALE_FACTOR - 8);
+        let base: Element = 1 << (LOG_SCALE_FACTOR - 8);
         let bkm = self.bkm();
         let prod = base * j;
         if prod >= bkm {
-            0i128
+            0
         } else {
             let float_exp = (-prod as f32 / (SCALE_FACTOR as f32 * float_temperature)).exp();
             (float_exp * OUTPUT_SCALE_FACTOR as f32).round() as Element
@@ -153,13 +154,9 @@ impl TableType {
                 (element_out, vec![field])
             }
             TableType::Clamping(size) => {
-                let max = 1i128 << (size - 1);
-                let min = -max;
-                #[allow(clippy::type_complexity)]
-                let (comb, (col_one, col_two)): (
-                    Vec<Element>,
-                    (Vec<E::BaseField>, Vec<E::BaseField>),
-                ) = (min..max)
+                let max: Element = 1 << (size - 1);
+                let min: Element = -max;
+                let (comb, (col_one, col_two)): LookupAndColumns<E::BaseField> = (min..max)
                     .map(|i| {
                         let out = if i < *quantization::MIN {
                             *quantization::MIN
@@ -181,18 +178,18 @@ impl TableType {
             TableType::Softmax(table_data) => {
                 let table_size = table_data.full_table_size();
 
-                let (merged_lookup, (in_column, out_column)): LookupAndColumns<E::BaseField> =
-                    (0i128..table_size)
-                        .map(|j| {
-                            let out_elem = table_data.table_output(j);
-                            let in_field: E = j.to_field();
-                            let out_field: E = out_elem.to_field();
-                            (
-                                j + COLUMN_SEPARATOR * out_elem,
-                                (in_field.as_bases()[0], out_field.as_bases()[0]),
-                            )
-                        })
-                        .unzip();
+                let (merged_lookup, (in_column, out_column)): LookupAndColumns<E::BaseField> = (0
+                    ..table_size)
+                    .map(|j| {
+                        let out_elem = table_data.table_output(j);
+                        let in_field: E = j.to_field();
+                        let out_field: E = out_elem.to_field();
+                        (
+                            j + COLUMN_SEPARATOR * out_elem,
+                            (in_field.as_bases()[0], out_field.as_bases()[0]),
+                        )
+                    })
+                    .unzip();
                 (merged_lookup, vec![in_column, out_column])
             }
             TableType::ErrorTable(quant_one, allowable_error) => {
@@ -207,7 +204,7 @@ impl TableType {
                         let f: E = elem.to_field();
                         (elem, f.as_bases()[0])
                     })
-                    .chain(std::iter::repeat((0i128, E::BaseField::ZERO)))
+                    .chain(std::iter::repeat((0, E::BaseField::ZERO)))
                     .take(table_size)
                     .unzip();
                 (element_out, vec![field])
@@ -317,8 +314,8 @@ impl TableType {
                     acc + *p * E::from_canonical_u64(1u64 << index)
                 }) - E::from_canonical_u64(1u64 << (size - 1));
 
-                let max = 1i128 << (size - 1);
-                let min = -max;
+                let max: Element = 1 << (size - 1);
+                let min: Element = -max;
 
                 let second_col_eval = (min..max)
                     .map(|i| {
@@ -424,7 +421,7 @@ impl TableType {
             TableType::Softmax(table_data) => {
                 let table_size = table_data.full_table_size();
 
-                let out_column = (0i128..table_size)
+                let out_column = (0..table_size)
                     .map(|j| {
                         let out_elem = table_data.table_output(j);
                         let out_field: E = out_elem.to_field();
@@ -511,7 +508,7 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> LookupWitnessGen<E, 
     }
 }
 
-pub(crate) const COLUMN_SEPARATOR: Element = 1i128 << 32;
+pub(crate) const COLUMN_SEPARATOR: Element = 1 << 32;
 
 pub struct LookupWitness<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> {
     pub challenge_storage: ChallengeStorage<E>,
@@ -544,9 +541,10 @@ where
     }
 
     // Make the witness gen struct that stores relevant table lookup data
+    debug!("== Witness poly fields generation ==");
+    let metrics = Metrics::new();
     let mut witness_gen = LookupWitnessGen::<E, PCS>::new(&ctx.lookup);
 
-    debug!("Lookup witness generation: generating poly fields...");
     for (node_id, _) in ctx.steps_info.to_forward_iterator() {
         let step = trace
             .get_step(&node_id)
@@ -561,8 +559,13 @@ where
                 ))
             })?;
     }
+    debug!(
+        "== Witness poly fields generation metrics {} ==",
+        metrics.to_span()
+    );
 
-    debug!("Lookup witness generation: generating table multiplicities...");
+    debug!("== Witness table multiplicities generation ==");
+    let metrics = Metrics::new();
     // calculate the table multiplicities
     let table_witnesses = witness_gen
         .new_lookups
@@ -636,11 +639,16 @@ where
         })
         .collect::<Result<Vec<LogUpWitness<E, PCS>>, LogUpError>>()?;
 
-    debug!("Lookup witness generation: commit context generation...");
+    debug!(
+        "== Witness table multiplicities metrics {} ==",
+        metrics.to_span()
+    );
 
-    debug!("Lookup witness generation: challenge storage...");
+    debug!("== Challenge storage ==");
+    let metrics = Metrics::new();
     let challenge_storage =
         initialise_from_table_set::<E, T, _>(witness_gen.new_lookups.keys(), transcript);
+    debug!("== Challenge storage metrics {} ==", metrics.to_span());
 
     Ok(LookupWitness {
         challenge_storage,

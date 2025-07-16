@@ -223,8 +223,8 @@ where
         // We take the input, multiply by the fixed point multiplier and add the rounding constant. Then we split the resulting values into
         // parts that are either shifted away (these get range checked) or passed to the clamping table.
         let shift = self.shift();
-        let rounding_constant = 1i128 << (shift - 1);
-        let mask = (1i128 << shift) - 1;
+        let rounding_constant: Element = 1 << (shift - 1);
+        let mask: Element = (1 << shift) - 1;
         let (clamping, shifted): (Vec<Element>, Vec<Element>) = step_data.inputs[0]
             .get_data()
             .iter()
@@ -256,7 +256,7 @@ where
 
         // Now we split the shifted part into pieces that fit into the range table
         let range_check_bit_size = *quantization::BIT_LEN;
-        let range_mask = (1i128 << range_check_bit_size) - 1;
+        let range_mask: Element = (1 << range_check_bit_size) - 1;
 
         // We need to calculate how many cunks we are splitting into, there should never be any remainder from this division.
         let no_chunks = shift / range_check_bit_size;
@@ -472,12 +472,12 @@ impl Requant {
 
     /// Internal method that applies this op to an [`Element`]
     fn apply(&self, elem: &Element) -> Element {
-        let rounding = 1i128 << (self.shift() - 1);
+        let rounding: Element = 1 << (self.shift() - 1);
         let unclamped = (rounding + elem * self.fixed_point_multiplier) >> self.shift();
-        let sign = if unclamped.is_positive() || unclamped == 0i128 {
-            1i128
+        let sign: Element = if unclamped.is_positive() || unclamped == 0 {
+            1
         } else {
-            -1i128
+            -1
         };
 
         if unclamped.abs() >= *quantization::MAX {

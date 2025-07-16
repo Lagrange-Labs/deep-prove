@@ -787,8 +787,8 @@ pub(crate) mod test {
         let bias3: Tensor<Element> = Tensor::zeros(vec![shape3[0]].into());
 
         let trad_conv1: Tensor<Element> = Tensor::new(shape1.clone().into(), w1.clone());
-        let trad_conv2: Tensor<i128> = Tensor::new(shape2.clone().into(), w2.clone());
-        let trad_conv3: Tensor<i128> = Tensor::new(shape3.clone().into(), w3.clone());
+        let trad_conv2: Tensor<Element> = Tensor::new(shape2.clone().into(), w2.clone());
+        let trad_conv3: Tensor<Element> = Tensor::new(shape3.clone().into(), w3.clone());
 
         let input_shape = vec![1, 32, 32];
 
@@ -1022,7 +1022,7 @@ pub(crate) mod test {
         model.describe();
         let trace = model.run::<F>(&vec![input]).unwrap();
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
-        let ctx = Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None)
+        let ctx = Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None, None)
             .expect("Unable to generate context");
         let io = trace.to_verifier_io();
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
@@ -1061,7 +1061,8 @@ pub(crate) mod test {
 
         let trace = model.run::<F>(&input_tensor).unwrap();
         let mut tr = BasicTranscript::<F>::new(b"matmul");
-        let ctx = Context::<F, Pcs<F>>::generate(&model, None).expect("Unable to generate context");
+        let ctx =
+            Context::<F, Pcs<F>>::generate(&model, None, None).expect("Unable to generate context");
         let io = trace.to_verifier_io();
         let prover = Prover::new(&ctx, &mut tr);
         let proof = prover.prove(trace).expect("unable to generate proof");
@@ -1097,7 +1098,7 @@ pub(crate) mod test {
         model.describe();
         let trace = model.run::<F>(&vec![input]).unwrap();
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
-        let ctx = Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None)
+        let ctx = Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None, None)
             .expect("Unable to generate context");
         let io = trace.to_verifier_io();
 
@@ -1147,9 +1148,10 @@ pub(crate) mod test {
                         let trace = model.run::<F>(&vec![input]).unwrap();
                         let mut tr: BasicTranscript<GoldilocksExt2> =
                             BasicTranscript::new(b"m2vec");
-                        let ctx =
-                            Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None)
-                                .expect("Unable to generate context");
+                        let ctx = Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(
+                            &model, None, None,
+                        )
+                        .expect("Unable to generate context");
                         let io = trace.to_verifier_io();
                         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
                             Prover::new(&ctx, &mut tr);
@@ -1269,7 +1271,7 @@ pub(crate) mod test {
         let trace = model.run(&input_tensors)?;
         let outputs = trace.outputs()?.into_iter().cloned().collect();
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"model");
-        let ctx = Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None)
+        let ctx = Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None, None)
             .expect("Unable to generate context");
         let prover: Prover<'_, E, T, _> = Prover::new(&ctx, &mut tr);
         let io = trace.to_verifier_io();

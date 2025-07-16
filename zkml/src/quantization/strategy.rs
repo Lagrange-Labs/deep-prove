@@ -11,6 +11,7 @@ use crate::{Element, Tensor, quantization};
 use anyhow::{Result, anyhow, ensure};
 use ff_ext::GoldilocksExt2;
 use itertools::Itertools;
+use serde::{Deserialize, Serialize};
 use statrs::statistics::{Data, Max, Min};
 use tracing::{debug, info, warn};
 
@@ -34,6 +35,13 @@ pub trait ScalingStrategy: std::fmt::Debug {
     ) -> Vec<ScalingFactor>;
 
     fn name(&self) -> String;
+}
+
+/// Implementors of [`ScalingStrategy`]
+#[derive(Debug, Clone, Copy, derive_more::Display, Serialize, Deserialize)]
+pub enum ScalingStrategyKind {
+    InferenceObserver,
+    AbsoluteMax,
 }
 
 /// Quantization strategy that observes the inference of the model with different inputs and uses the
