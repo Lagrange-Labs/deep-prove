@@ -75,7 +75,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     let mut group = c.benchmark_group("run-models");
     group
         .sample_size(20)
-        .measurement_time(std::time::Duration::from_secs(17));
+        .measurement_time(std::time::Duration::from_secs(80));
 
     group.bench_function("mlp", |b| {
         b.iter(|| {
@@ -95,15 +95,17 @@ fn criterion_benchmark(c: &mut Criterion) {
             )
         })
     });
-    group.bench_function("covid", |b| {
-        b.iter(|| {
-            run_model(
-                include_bytes!("ref-files/covid/model.onnx"),
-                zstd::Decoder::new(&include_bytes!("ref-files/covid/input.json.zst")[..])
-                    .expect("failed to parse zstd"),
-            )
-        })
-    });
+
+    // NOTE: disabling covid model, as it is /very/ memory-intensive
+    // group.bench_function("covid", |b| {
+    //     b.iter(|| {
+    //         run_model(
+    //             include_bytes!("ref-files/covid/model.onnx"),
+    //             zstd::Decoder::new(&include_bytes!("ref-files/covid/input.json.zst")[..])
+    //                 .expect("failed to parse zstd"),
+    //         )
+    //     })
+    // });
 
     group.finish();
 }
