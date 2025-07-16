@@ -228,7 +228,7 @@ fn compute_node_shape<E: ExtensionField>(
         id,
         node.operation.describe()
     );
-    println!(
+    trace!(
         "Generating context node with id {id}: {:?}",
         node.describe()
     );

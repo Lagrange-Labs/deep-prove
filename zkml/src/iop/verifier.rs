@@ -15,10 +15,10 @@ use crate::{
 };
 use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
-
 use itertools::Itertools;
 use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
+use tracing::trace;
 
 use serde::{Serialize, de::DeserializeOwned};
 use transcript::Transcript;
@@ -180,8 +180,8 @@ where
             let shape_step = shape_steps
                 .get(&node_id)
                 .ok_or(anyhow!("Shape for node {node_id} not found"))?;
-            println!(
-                "VERIFIER: Verifying proof {} for node {node_id}",
+            trace!(
+                "Verifying proof {} for node {node_id}",
                 node_proof.variant_name(),
             );
             let claims_for_verify = step.claims_for_node(&claims_by_layer, &out_claims)?;
