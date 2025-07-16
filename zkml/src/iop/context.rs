@@ -233,9 +233,7 @@ where
             CommitmentContext::<E, PCS>::new(max_poly_len, model_polys, &lookup_ctx)?;
 
         Ok(Self {
-            steps_info: ModelCtx {
-                nodes: step_infos,
-            },
+            steps_info: ModelCtx { nodes: step_infos },
             commitment_ctx,
             lookup: lookup_ctx,
             unpadded_input_shapes: model.unpadded_input_shapes(),
