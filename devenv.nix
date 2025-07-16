@@ -59,14 +59,9 @@
     typos = {
       enable = true;
       settings = {
-        exclude = "*.nix";
         format = "brief";
-        ignored-words = [
-          "Ein"
-          "EinSum"
-          "Nd" # For NdArray
-        ];
         write = true;
+        configPath = "typos.toml";
       };
     };
   };

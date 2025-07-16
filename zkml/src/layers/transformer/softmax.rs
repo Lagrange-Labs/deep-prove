@@ -64,7 +64,7 @@ pub struct Softmax<N> {
     /// In the floating point case this is the factor we multiply by before exponentiating, when thought of as a Boltzmann distribution this is
     /// often referred to as the "Temperature".
     ///
-    /// For the quantised verison this is the factor we must rescale by in order to make use of the lookup table.
+    /// For the quantised version this is the factor we must rescale by in order to make use of the lookup table.
     pub scalar: N,
     /// This is the maximum size of dimension that we will normalise over. For example in an Attention layer this would be the maximum context size.
     max_size: usize,
@@ -173,8 +173,8 @@ impl<N: Number> Softmax<N> {
         // Now we work out how many bits it takes to represent this number (it will always be less than zero so we take an abs() first)
         let min_input_bits = ceil_log2(significant_min_input.unsigned_abs() as usize);
 
-        // Now we want to work out the value "bkm" such that anything with absoloute value greater than bkm should just be mapped to zero
-        // by the exponential. We will have K total tables, L of which are used for values that are so insignficant they get mapped to 1 and M of which
+        // Now we want to work out the value "bkm" such that anything with absolute value greater than bkm should just be mapped to zero
+        // by the exponential. We will have K total tables, L of which are used for values that are so insignificant they get mapped to 1 and M of which
         // contain values that are all greater than bkm. We aim to make K - M - L = 1 because results from testing tell us that this allows
         // us to make an exp table with 17 variables which isn't too large (as it gets reused across every softmax in something like Multiheaded attention).
         let base: Element = 1 << (LOG_SCALE_FACTOR - 8);
@@ -325,7 +325,7 @@ impl Softmax<Element> {
 }
 
 /// Calculates the error as an [`f32`] when applying softmax as described in zkLLM.
-/// This functions returns the error togeter with the value `bkm` such that anything smaller
+/// This functions returns the error together with the value `bkm` such that anything smaller
 /// than `bkm` should be mapped to zero.
 pub(crate) fn calc_softmax_error(
     bl: Element,
@@ -474,7 +474,7 @@ impl Evaluate<Element> for Softmax<Element> {
         // Check that we only have one input
         ensure!(
             inputs.len() == 1,
-            "Exepected a single input to quantised softmax, got: {}",
+            "Expected a single input to quantised softmax, got: {}",
             inputs.len()
         );
 
@@ -525,7 +525,7 @@ impl Evaluate<Element> for Softmax<Element> {
         let mut softmax_outputs: Vec<Element> = Vec::<Element>::new();
 
         for input_elem in masked_input.get_data().iter() {
-            // We take the absoloute value as this is guaranteed to be negative or zero
+            // We take the absolute value as this is guaranteed to be negative or zero
             let mut rescaled = input_elem.abs();
             low_range_check.push(rescaled & bit_mask);
             rescaled >>= 8;
@@ -669,7 +669,7 @@ impl Softmax<Element> {
         let two = E::from_canonical_u64(2u64);
         let two_inv = two.inverse();
         let two_mult = E::from_canonical_u64(1u64 << extra_vars);
-        // We chain 2^-1 in all the vairables that correspond to the row, that way in the sumcheck if we multiply by 2^extra_vars we end up with
+        // We chain 2^-1 in all the variables that correspond to the row, that way in the sumcheck if we multiply by 2^extra_vars we end up with
         // a polynomial that has evaluations equal to the sum of the rows of exp_output (which should all be within the allowable error of quantised one).
         let full_error_point = std::iter::repeat_n(two_inv, extra_vars)
             .chain(error_point.iter().copied())
@@ -709,7 +709,7 @@ impl Softmax<Element> {
                     (vp_acc, bc * alpha)
                 });
 
-        // Fianlly add the error check and the last claim, for this we need the output column of the exponential lookup
+        // Finally add the error check and the last claim, for this we need the output column of the exponential lookup
         let (_, exp_output) = commits[0]
             .last()
             .ok_or(anyhow!("Exponential lookup in Softmax had no commitments"))?;
@@ -1061,7 +1061,7 @@ impl Softmax<Element> {
         let shift_commit = ctx.commitment_ctx.commit(&shift_mle)?;
         // Add the looked up values to the generator so we can make multiplicity polys later
         let lookups = gen.new_lookups.get_mut(&TableType::Range).ok_or(anyhow!(
-            "No table of type Range was expected, error occured during Softmax step"
+            "No table of type Range was expected, error occurred during Softmax step"
         ))?;
         lookups.extend(merged_range_check);
 
@@ -1257,7 +1257,7 @@ impl QuantizeOp for Softmax<f32> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SoftmaxCtx {
     node_id: NodeId,
-    /// The absoloute value of the allowable error
+    /// The absolute value of the allowable error
     allowable_error: Element,
     /// The value that determines when we map to zero in the exp lookup
     bkm: Element,
@@ -1274,7 +1274,7 @@ pub struct SoftmaxCtx {
 }
 
 impl SoftmaxCtx {
-    /// Getter function to retrive the [`TableType`] for the Softmax table.
+    /// Getter function to retrieve the [`TableType`] for the Softmax table.
     pub(crate) fn softmax_table(&self) -> TableType {
         TableType::Softmax(SoftmaxTableData::new(
             self.temperature_bits,
@@ -1561,7 +1561,7 @@ where
             |(subclaim_acc, bc), &claim| (subclaim_acc + range_beta_eval * claim * bc, bc * alpha),
         );
 
-        // Fianlly add the error check and the last claim, for this we need the output column of the exponential lookup
+        // Finally add the error check and the last claim, for this we need the output column of the exponential lookup
         let exp_output_claim = evaluations[1];
 
         if !self.number_zero_chunks.is_zero() {
@@ -1718,7 +1718,7 @@ impl<N: Number> Default for AttentionMask<N> {
 
 impl<N: Number> AttentionMask<N> {
     /// Creates a new mask given the unpadded input shape and the value to use for `-inf`
-    pub fn new(unpadded_shape: &[usize], negtive_inf: N) -> Result<AttentionMask<N>> {
+    pub fn new(unpadded_shape: &[usize], negative_inf: N) -> Result<AttentionMask<N>> {
         // The input shape should have length either 2 or 3 and the final 2 dimensions should be equal
         let num_dims = unpadded_shape.len();
 
@@ -1751,12 +1751,12 @@ impl<N: Number> AttentionMask<N> {
         // Make the tril and bias tensor
         let tril = Tensor::<N>::tril(shape[2], shape[0], 0);
 
-        let bias = Tensor::<N>::tri(shape[2], shape[0], 0, N::default(), negtive_inf);
+        let bias = Tensor::<N>::tri(shape[2], shape[0], 0, N::default(), negative_inf);
 
         Ok(AttentionMask {
             tril,
             bias,
-            negative_infinity: negtive_inf,
+            negative_infinity: negative_inf,
         })
     }
 
@@ -1934,7 +1934,7 @@ mod tests {
 
                     let quant_dequant_diff = (float_q - f).abs();
 
-                    // Make sure we are always withing 1/100 th of the actual value
+                    // Make sure we are always within 1/100 th of the actual value
                     assert!(
                         quant_dequant_diff < 0.01,
                         "quant dequant diff was too large got: {}",
