@@ -9,6 +9,9 @@ readme.workspace = true
 repository.workspace = true
 version.workspace = true
 
+[package.metadata.cargo-machete]
+ignored = ["prost", "prost-types"]
+
 [features]
 default = ["s3"]
 blake = ["mpcs/blake"]
@@ -26,7 +29,6 @@ path = "src/bin/cli/main.rs"
 alloy = { version = "1.0.22", default-features = false }
 axum = { workspace = true }
 anyhow.workspace = true
-itertools.workspace = true
 mpcs.workspace = true
 zkml = { path = "../zkml" }
 tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "fs"] }

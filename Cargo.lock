@@ -2014,40 +2014,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "candle-nn"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1980d53280c8f9e2c6cbe1785855d7ff8010208b46e21252b978badf13ad69d"
-dependencies = [
- "candle-core 0.9.1",
- "half",
- "num-traits",
- "rayon",
- "safetensors 0.4.5",
- "serde",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "candle-transformers"
-version = "0.9.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "186cb80045dbe47e0b387ea6d3e906f02fb3056297080d9922984c90e90a72b0"
-dependencies = [
- "byteorder",
- "candle-core 0.9.1",
- "candle-nn",
- "fancy-regex",
- "num-traits",
- "rand 0.9.1",
- "rayon",
- "serde",
- "serde_json",
- "serde_plain",
- "tracing",
-]
-
-[[package]]
 name = "cassowary"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2218,18 +2184,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7caa3f9de89ddbe2c607f4101924c5abec803763ae9534e4f4d7d8f84aa81f0"
 dependencies = [
  "cc",
-]
-
-[[package]]
-name = "code-timing-macros"
-version = "0.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15cfadb008499abfb16146f2dfb71bfd272d324380a34d535a5a41d838be2911"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.104",
- "tracing",
 ]
 
 [[package]]
@@ -2994,7 +2948,6 @@ dependencies = [
  "ff_ext",
  "futures",
  "grpc-worker",
- "itertools 0.13.0",
  "memmap2",
  "miette",
  "mpcs",
@@ -3097,37 +3050,6 @@ checksum = "30542c1ad912e0e3d22a1935c290e12e8a29d704a420177a31faad4a601a0800"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.104",
-]
-
-[[package]]
-name = "derive_builder"
-version = "0.20.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "507dfb09ea8b7fa618fcf76e953f4f5e192547945816d5358edffe39f6f94947"
-dependencies = [
- "derive_builder_macro",
-]
-
-[[package]]
-name = "derive_builder_core"
-version = "0.20.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d5bcf7b024d6835cfb3d473887cd966994907effbe9227e8c8219824d06c4e8"
-dependencies = [
- "darling",
- "proc-macro2",
- "quote",
- "syn 2.0.104",
-]
-
-[[package]]
-name = "derive_builder_macro"
-version = "0.20.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab63b0e2bf4d5928aff72e83a7dace85d7bba5fe12dcc3c5a572d78caffd3f3c"
-dependencies = [
- "derive_builder_core",
  "syn 2.0.104",
 ]
 
@@ -8306,15 +8228,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_plain"
-version = "1.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ce1fc6db65a611022b23a0dec6975d63fb80a302cb3388835ff02c097258d50"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "serde_rusqlite"
 version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11097,53 +11010,37 @@ dependencies = [
 name = "zkml"
 version = "0.1.0"
 dependencies = [
- "alloy",
  "anyhow",
  "ark-std 0.5.0",
  "burn",
  "candle-core 0.9.1",
- "candle-transformers",
  "clap",
- "code-timing-macros",
  "criterion 0.6.0",
- "csv",
- "derive_builder",
  "derive_more 2.0.1",
  "ff_ext",
- "futures",
  "gguf-rs",
  "gkr",
  "hex",
  "itertools 0.13.0",
- "memmap2",
  "mpcs",
  "multilinear_extensions",
  "ndarray",
- "num-traits",
  "p3-field",
  "p3-goldilocks",
- "p3-poseidon2",
- "p3-symmetric",
  "poseidon",
  "prost 0.11.9",
  "prost 0.13.5",
- "prost-types",
- "prost-wkt-types",
  "rayon",
  "reqwest",
  "rmp-serde",
  "rust_tokenizers",
- "semver 1.0.26",
  "serde",
  "serde_json",
  "sha2",
- "simple-frontend",
  "statrs",
  "sumcheck",
- "thiserror 2.0.12",
  "timed",
  "timed-core",
- "tokio",
  "tracing",
  "tracing-subscriber",
  "tract-onnx",
