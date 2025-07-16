@@ -592,7 +592,7 @@ mod tests {
         info!("GENERATING Proof...");
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
             Prover::new(&ctx, &mut tr);
-        let proof = prover.prove(trace).expect("unable to generate proof");
+        let proof = prover.prove(&trace).expect("unable to generate proof");
         info!("GENERATING Proof DONE...");
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
@@ -638,7 +638,7 @@ mod tests {
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
             Prover::new(&ctx, &mut tr);
         let io = trace.to_verifier_io();
-        let proof = prover.prove(trace).expect("unable to generate proof");
+        let proof = prover.prove(&trace).expect("unable to generate proof");
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
         verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
