@@ -135,10 +135,7 @@ impl TableType {
             TableType::Clamping(size) => {
                 let max: Element = 1 << (size - 1);
                 let min: Element = -max;
-                let (comb, (col_one, col_two)): (
-                    Vec<Element>,
-                    (Vec<E::BaseField>, Vec<E::BaseField>),
-                ) = (min..max)
+                let (comb, (col_one, col_two)): LookupAndColumns<E::BaseField> = (min..max)
                     .map(|i| {
                         let out = if i < *quantization::MIN {
                             *quantization::MIN

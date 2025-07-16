@@ -196,9 +196,7 @@ impl<F: ExtensionField> Fieldizer<F> for Element {
     fn to_field(&self) -> F {
         if self.is_negative() {
             // Doing wrapped arithmetic : p-128 ... p-1 means negative number
-            F::from_canonical_u64(
-                <F::BaseField as SmallField>::MODULUS_U64 - self.unsigned_abs() as u64,
-            )
+            F::from_canonical_u64(<F::BaseField as SmallField>::MODULUS_U64 - self.unsigned_abs())
         } else {
             // for positive and zero, it's just the number
             F::from_canonical_u64(*self as u64)
@@ -222,7 +220,7 @@ impl<F: ExtensionField> IntoElement for F {
             e as Element
         } else {
             // That means he's a negative number - so take the diff with the modulus and recenter around 0
-            let diff = <F::BaseField as SmallField>::MODULUS_U64 - e as u64;
+            let diff = <F::BaseField as SmallField>::MODULUS_U64 - e;
             -(diff as Element)
         }
     }
