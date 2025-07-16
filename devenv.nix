@@ -7,7 +7,7 @@
     # General dev.
     pkgs.git
     # Rust
-    pkgs.rustup pkgs.protobuf
+    pkgs.rustup pkgs.protobuf pkgs.openssl
   ];
 
   # https://devenv.sh/tasks/
@@ -36,6 +36,10 @@
     torchvision
     tqdm
     '';
+  };
+
+  env = {
+    OPENSSL_DEV = pkgs.openssl.dev;
   };
 
   # https://devenv.sh/git-hooks/

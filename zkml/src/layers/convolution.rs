@@ -35,7 +35,7 @@ use multilinear_extensions::{
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
-use tracing::warn;
+use tracing::{info, warn};
 use transcript::Transcript;
 
 use super::{
@@ -722,16 +722,16 @@ impl Convolution<Element> {
         let conv_after_bias =
             Tensor::new(output.get_shape(), proving_data.output_as_element.clone());
         debug_assert!({
-            println!(
+            info!(
                 "PROVE: conv_after_bias.shape(): {:?}",
                 conv_after_bias.get_shape()
             );
-            println!(
+            info!(
                 "PROVE: conv_after_bias.data(): {:?}",
                 &conv_after_bias.get_data()[..30]
             );
-            println!("PROVE: unpadded_output_shape: {unpadded_output_shape:?}");
-            println!("PROVE: output.shape(): {:?}", output.get_shape());
+            info!("PROVE: unpadded_output_shape: {unpadded_output_shape:?}");
+            info!("PROVE: output.shape(): {:?}", output.get_shape());
             let cleared_out = conv_after_bias.flatten().mul(&clearing_tensor);
             let fielded: Tensor<E> = cleared_out.to_fields();
             fielded.get_data().to_vec() == output.get_data()
@@ -818,7 +818,7 @@ impl Convolution<Element> {
                 &info.ifft_aux.clone(),
                 &mut temp_t,
             );
-            println!("iFFT Sumcheck Correct");
+            info!("iFFT Sumcheck Correct");
             true
         });
 

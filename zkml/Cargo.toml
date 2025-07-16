@@ -104,3 +104,8 @@ miette = { version = "7.2", features = ["fancy"] }
 protox = { version = "0.7.1" }
 tonic-build = { version = "0.12.3" }
 tiktoken-rs = "0.7.0"
+
+[lints.clippy]
+print_stdout = "deny"
+print_stderr = "deny"
+dbg_macro = "deny"
