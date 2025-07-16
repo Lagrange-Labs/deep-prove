@@ -41,6 +41,7 @@ impl LLMConfig {
         let context_length = l.content.metadata[variant.context_length_key()].to_u32()? as usize;
         let norm_epsilon = l.content.metadata[variant.norm_epsilon_key()].to_f32()?;
         let num_block = l.content.metadata[variant.num_block_key()].to_u32()? as usize;
+        let vocab_size = l.content.metadata["tokenizer.ggml.vocab_size"].to_u32()? as usize;
         Ok(Self {
             hidden_size,
             embedding_size,
@@ -48,6 +49,7 @@ impl LLMConfig {
             context_length,
             norm_epsilon,
             num_block,
+            vocab_size,
             specific_config: variant,
         })
     }

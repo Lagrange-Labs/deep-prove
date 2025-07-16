@@ -5,27 +5,25 @@
 //! the maximum context length is reached. It will also be used to prepend a system model correctly.
 
 use anyhow::{Context, ensure};
+use quantization::strategy::InferenceObserver;
+use ark_std::rand::{thread_rng, Rng};
 use ff_ext::ExtensionField;
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::path::Path;
 use tracing::trace;
 
 use crate::{
-    Tensor,
-    layers::{Layer, provable::Evaluate},
-    model::{InferenceTrace, Model},
-    parser::{
+    layers::{provable::Evaluate, Layer}, model::{InferenceTrace, Model}, padding::pad_model, parser::{
         gguf, json,
         llm::{LLMConfig, Token},
-    },
-    tensor::{Number, Shape},
+    }, quantization::InferenceObserver, tensor::{Number, Shape}, Element, Tensor
 };
 
 pub trait Observer<N: Number> {
     fn observe<E: ExtensionField>(&self, step: usize, trace: &InferenceTrace<'_, E, N>);
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone,Serialize, Deserialize)]
 pub struct Driver<N: Number> {
     model: Model<N>,
     config: LLMConfig,
@@ -33,7 +31,8 @@ pub struct Driver<N: Number> {
 }
 
 impl Driver<f32> {
-    pub fn load_model<S: AsRef<Path>>(path: S) -> anyhow::Result<Self> {
+    /// Loads a model from a gguf or json external file. It returns the raw model in float precision.
+    pub fn load_external_model<S: AsRef<Path>>(path: S) -> anyhow::Result<Self> {
         // detect the type of the model info, either json or gguf depending on the file extension
         let (config, llm_model) = match path
             .as_ref()
@@ -67,13 +66,31 @@ impl Driver<f32> {
         // even though the llm runtime doesn't care about the model input shape, which is designed for "static" input shapes, we still
         // need to provide one.
         let init_user_shape = Shape::from(vec![1]);
-        let model = llm_model.into_provable_model(&config, init_user_shape)?;
+        let model = llm_model.into_runnable_model(&config, init_user_shape)?;
         Ok(Self {
             model,
             config,
             max_context: None,
         })
     }
+
+    /// Transform the model into a provable llm model with quantization and padding done.
+    /// The result can be serialized and deserialized at will to serve inference+proving for this model.
+    pub fn into_provable_llm(self) -> anyhow::Result<Driver<Element>> {
+        let numel = self.config.context_length;
+        let max_range = self.config.vocab_size;
+        let n_inputs = 10;
+        let repr_shape = Shape::from(vec![self.config.context_length, 1]);
+        let representative_inputs = (0..n_inputs).map(|i| (0..numel).map(|_| thread_rng().gen_range(0..max_range) as f32).collect::<Vec<Element>>()).collect::<Vec<_>>();
+        let (quantized_model, md) = InferenceObserver::new_with_representative_input(vec![representative_inputs]).quantize(self.model)?;
+        let model = pad_model(quantized_model)?;
+        Ok(Driver {
+            model,
+            config: self.config,
+            max_context: self.max_context,
+        })
+    }
+
 }
 
 impl<N: Number> Driver<N>
@@ -104,39 +121,47 @@ where
         E::BaseField: Serialize + DeserializeOwned,
     {
         let eos_token: N = self.config.specific_config.eos_token().as_number();
-        let mut seq_len = input.len();
-        let user_len = seq_len;
+        let mut unpadded_seq_len = input.len();
+        let user_len = unpadded_seq_len;
         // -1 because we at least want to generate ONE token
         ensure!(
-            seq_len < self.config.context_length - 1,
+            unpadded_seq_len < self.config.context_length - 1,
             "Input sequence length must be less than the context length"
         );
         let mut trace = InferenceTrace::default();
         // convert the input to the correct number type and add a dimension to make it 2d, because the embeddings layer expects a 2d tensor
-        let mut tensor = Tensor::new(
+        let tensor = Tensor::new(
             vec![input.len(), 1].into(),
             input.into_iter().map(|t| t.as_number()).collect::<Vec<_>>(),
         );
+        // This means we're padding the input to the right size (e.g. next power of two)
+        let mut tensor = self.model.prepare_inputs(vec![tensor])?.pop().unwrap();
         let max_window = self.max_context.unwrap_or(self.config.context_length);
-        while seq_len < max_window {
+        while unpadded_seq_len < max_window {
             trace = self
                 .model
                 .run::<E>(&[tensor.clone()])
-                .context(format!("running the {} iteration loop", seq_len - user_len))?;
+                .context(format!("running the {} iteration loop", unpadded_seq_len - user_len))?;
             let output = trace.output.last().unwrap();
-            let last_token = output.slice_last_dim().last().unwrap();
-            ensure!(last_token.len() == 1, "Last token must be a single token");
-            let last_token = last_token[0];
-            if last_token == eos_token {
+            // We take the last token before the padding
+            let last_token = output.get_data().get(unpadded_seq_len-1).expect("last token must exist");
+            if *last_token == eos_token {
                 break;
             }
             // NOTE: For now, since we are NOT using any caching for the inference, we DON'T need to concat the inferences on top of each other
             // input = input.concat(last_token);
             // We simply need to take the _last_ inference trace that would contain _everything_
-            seq_len += 1;
-            tensor.concat(Tensor::new(vec![1, 1].into(), vec![last_token]));
-            debug_assert_eq!(tensor.get_shape()[0], seq_len);
-            observer.observe(seq_len - user_len, &trace);
+            unpadded_seq_len += 1;
+            if tensor.get_shape().numel() <= unpadded_seq_len {
+                tensor.concat(Tensor::new(vec![1, 1].into(), vec![*last_token]));
+            } else {
+                // here we need to insert the new token after the user input and newly generated tokens, but
+                // BEFORE the padding.
+                tensor.data.insert(unpadded_seq_len, *last_token);
+                tensor.shape = tensor.shape.concat(&Shape::from(vec![1,1]));
+            }
+            debug_assert_eq!(tensor.get_shape()[0], unpadded_seq_len);
+            observer.observe(unpadded_seq_len - user_len, &trace);
         }
         Ok(trace)
     }
@@ -189,7 +214,7 @@ mod test {
     #[test]
     fn test_llm_driver() -> anyhow::Result<()> {
         let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
-        let mut driver = Driver::load_model(&model_path)?.with_max_context(10);
+        let mut driver = Driver::load_external_model(&model_path)?.with_max_context(10);
         let sentence = "The sky is";
 
         // Best to load the tokenizer from the gguf file if it's available.

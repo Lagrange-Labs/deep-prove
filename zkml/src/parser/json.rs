@@ -23,6 +23,9 @@ impl LLMConfig {
         let num_blocks = l.metadata_to_u32("num_hidden_layers")? as usize;
         let context_length = l.metadata_to_u32("max_seq_len")? as usize;
         let norm_epsilon = l.metadata_to_f32("norm_epsilon")?;
+        // TODO: fix that, currently it's only used for debugging purposes the JSON format
+        // and it doesn't export the vocab size.
+        let vocab_size = 3;
         Ok(Self {
             embedding_size,
             hidden_size,
@@ -30,6 +33,7 @@ impl LLMConfig {
             num_block: num_blocks,
             context_length,
             norm_epsilon,
+            vocab_size,
             specific_config: variant,
         })
     }
