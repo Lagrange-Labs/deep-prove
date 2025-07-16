@@ -237,7 +237,7 @@ where
             // we assume the inputs are given in the same order as the claims, "flattened"
             let (inputs, claims): (Vec<_>, Vec<_>) = try_unzip(claims.into_iter()
                 .map(|(index, claim)| {
-                    ensure!(index < num_inputs, 
+                    ensure!(index < num_inputs,
                         "Processing claim associated to input {index}, but there are only {num_inputs} inputs",
                     );
                     Ok((

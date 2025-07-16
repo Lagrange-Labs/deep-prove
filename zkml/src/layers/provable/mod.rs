@@ -3,7 +3,10 @@ use ff_ext::ExtensionField;
 use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{collections::{BTreeSet, HashMap}, fmt::Debug};
+use std::{
+    collections::{BTreeSet, HashMap},
+    fmt::Debug,
+};
 use transcript::Transcript;
 
 use crate::{
@@ -275,7 +278,8 @@ where
             "No input claims found for the set of nodes provided"
         );
         ensure!(
-            *input_edges.first().unwrap() == 0 && *input_edges.last().unwrap() == input_edges.len() - 1,
+            *input_edges.first().unwrap() == 0
+                && *input_edges.last().unwrap() == input_edges.len() - 1,
             "Not all input claims were found"
         );
         Ok(claims)
@@ -453,7 +457,11 @@ where
     /// For example, Embeddings use one hot encoding of the input before
     /// running the matmul protocol.
     /// By default, it simply evaluates the input against the input claim.
-    fn verify_input_claim<A: AsRef<Tensor<E>>>(&self, inputs: &[A], claims: &[&Claim<E>]) -> anyhow::Result<()> {
+    fn verify_input_claim<A: AsRef<Tensor<E>>>(
+        &self,
+        inputs: &[A],
+        claims: &[&Claim<E>],
+    ) -> anyhow::Result<()> {
         ensure!(
             inputs.len() == claims.len(),
             "number of input tensors and claims must be the same"
@@ -716,7 +724,11 @@ where
         }
     }
 
-    fn verify_input_claim<A: AsRef<Tensor<E>>>(&self, inputs: &[A], claims: &[&Claim<E>]) -> anyhow::Result<()> {
+    fn verify_input_claim<A: AsRef<Tensor<E>>>(
+        &self,
+        inputs: &[A],
+        claims: &[&Claim<E>],
+    ) -> anyhow::Result<()> {
         match self {
             LayerCtx::Dense(dense_ctx) => {
                 verify_input_claim::<E, PCS, _, _>(dense_ctx, inputs, claims)
@@ -724,7 +736,9 @@ where
             LayerCtx::Convolution(conv_ctx) => {
                 verify_input_claim::<E, PCS, _, _>(conv_ctx, inputs, claims)
             }
-            LayerCtx::MatMul(mat_ctx) => verify_input_claim::<E, PCS, _, A>(mat_ctx, inputs, claims),
+            LayerCtx::MatMul(mat_ctx) => {
+                verify_input_claim::<E, PCS, _, A>(mat_ctx, inputs, claims)
+            }
             LayerCtx::QKV(qkv_ctx) => verify_input_claim::<E, PCS, _, A>(qkv_ctx, inputs, claims),
             LayerCtx::Mha(ctx) => verify_input_claim::<E, PCS, _, A>(ctx, inputs, claims),
             LayerCtx::ConcatMatMul(ctx) => verify_input_claim::<E, PCS, _, A>(ctx, inputs, claims),
@@ -741,14 +755,16 @@ where
                 verify_input_claim::<E, PCS, _, _>(&NonProvableVerifierCtx(ctx), inputs, claims)
             }
             LayerCtx::Requant(requant_ctx) => {
-                verify_input_claim::<E, PCS, _,_ >(requant_ctx, inputs, claims)
+                verify_input_claim::<E, PCS, _, _>(requant_ctx, inputs, claims)
             }
             LayerCtx::Pooling(pooling_ctx) => {
                 verify_input_claim::<E, PCS, _, _>(pooling_ctx, inputs, claims)
             }
-            LayerCtx::Flatten => {
-                verify_input_claim::<E, PCS, _, _>(&NonProvableVerifierCtx(&Flatten), inputs, claims)
-            }
+            LayerCtx::Flatten => verify_input_claim::<E, PCS, _, _>(
+                &NonProvableVerifierCtx(&Flatten),
+                inputs,
+                claims,
+            ),
             LayerCtx::SchoolBookConvolution(_) | LayerCtx::Table(_) => unreachable!(),
         }
     }

@@ -97,7 +97,7 @@ pub trait ToNodeSet<'a, E: NodeEdges> {
     fn to_node_set(self) -> HashMap<NodeId, &'a E>;
 }
 
-struct HashMapNodeSet<'a, E>(&'a HashMap<NodeId, E>); 
+struct HashMapNodeSet<'a, E>(&'a HashMap<NodeId, E>);
 
 impl<'a, E: NodeEdges> ToNodeSet<'a, E> for HashMapNodeSet<'a, E> {
     fn to_node_set(self) -> HashMap<NodeId, &'a E> {
@@ -105,7 +105,7 @@ impl<'a, E: NodeEdges> ToNodeSet<'a, E> for HashMapNodeSet<'a, E> {
     }
 }
 
-struct BTreeMapNodeSet<'a, E>(&'a BTreeMap<NodeId, E>); 
+struct BTreeMapNodeSet<'a, E>(&'a BTreeMap<NodeId, E>);
 
 impl<'a, E: NodeEdges> ToNodeSet<'a, E> for BTreeMapNodeSet<'a, E> {
     fn to_node_set(self) -> HashMap<NodeId, &'a E> {
@@ -116,7 +116,7 @@ impl<'a, E: NodeEdges> ToNodeSet<'a, E> for BTreeMapNodeSet<'a, E> {
 /// Structure employed to implemented forward and backward iterators
 pub struct NodeIterator<'a, E: NodeEdges, const FORWARD: bool> {
     pub(crate) unvisited_nodes: BTreeSet<NodeId>, /* Use BTreeSet to make the iterator deterministic */
-    pub(crate) nodes: HashMap<NodeId, &'a E>
+    pub(crate) nodes: HashMap<NodeId, &'a E>,
 }
 
 /// Structure employed to implement forward and backward iterators that

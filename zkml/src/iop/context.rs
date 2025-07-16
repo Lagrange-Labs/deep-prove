@@ -201,9 +201,7 @@ where
         };
 
         Ok(Self {
-            steps_info: ModelCtx {
-                nodes: step_infos,
-            },
+            steps_info: ModelCtx { nodes: step_infos },
             commitment_ctx,
             lookup,
             unpadded_input_shapes: model.unpadded_input_shapes(),

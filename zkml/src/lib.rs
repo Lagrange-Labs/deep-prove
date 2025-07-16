@@ -2,6 +2,7 @@
 #![feature(iter_next_chunk)]
 #![feature(exact_size_is_empty)]
 
+use anyhow::ensure;
 use ark_std::rand::{self, SeedableRng, rngs::StdRng};
 use ff_ext::ExtensionField;
 use gkr::structs::PointAndEval;
@@ -187,6 +188,24 @@ pub fn argmax_slice<N: Number>(v: &[N]) -> Option<usize> {
             })
             .0,
     )
+}
+// Convert `x` to its big-endian bit representation, padding with zero bits up to `num_bits`.
+// Returns an error if `x` requires more bits that `num_bits` to be represented, or if `x` is
+// negative
+pub(crate) fn to_be_bits(x: Element, num_bits: usize) -> anyhow::Result<Vec<Element>> {
+    ensure!(
+        !x.is_negative(),
+        "Input element to be converted to big-endian bits must be >= 0"
+    );
+    let x_bits = x.checked_ilog2().map(|bits| bits + 1).unwrap_or(0);
+    ensure!(x_bits as usize <= num_bits);
+    Ok((0..num_bits)
+        .rev()
+        .map(|i| {
+            let mask = 1 << i;
+            (x & Element::from(mask)) >> i
+        })
+        .collect())
 }
 
 pub trait NextPowerOfTwo {
