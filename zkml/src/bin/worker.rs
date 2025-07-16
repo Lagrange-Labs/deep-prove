@@ -1,11 +1,12 @@
-use std::{net::SocketAddr, str::FromStr};
+use std::{net::SocketAddr, path::PathBuf, str::FromStr};
 
 use alloy::signers::local::LocalSigner;
 use anyhow::{Context as _, Result};
 use axum::{Json, Router, routing::get};
-use clap::{ArgGroup, Parser};
+use clap::{ArgGroup, Parser, Subcommand};
 use ff_ext::GoldilocksExt2;
 use futures::{FutureExt, StreamExt};
+use memmap2::Mmap;
 use mpcs::{Basefold, BasefoldRSParams, Hasher};
 use reqwest::StatusCode;
 use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
@@ -16,17 +17,17 @@ use tracing::{debug, error, info};
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt::format::FmtSpan};
 
 use zkml::{
-    Context, Element, FloatOnnxLoader, Prover, default_transcript,
+    Context, Element, FloatOnnxLoader, ModelType, Prover, default_transcript,
     middleware::{
         DeepProveRequest, DeepProveResponse,
         v1::{
             DeepProveRequest as DeepProveRequestV1, DeepProveResponse as DeepProveResponseV1,
-            Proof as ProofV1,
+            Input, Proof as ProofV1,
         },
     },
     model::Model,
-    quantization::{AbsoluteMax, ModelMetadata},
-    store::{self, Store},
+    quantization::{AbsoluteMax, ModelMetadata, ScalingStrategyKind},
+    store::{self, MemStore, Store},
 };
 
 use crate::lagrange::WorkerToGwResponse;
@@ -190,50 +191,69 @@ fn setup_logging(json: bool) {
 }
 
 #[derive(Parser)]
-#[cfg_attr(feature = "s3", command(group(ArgGroup::new("s3_store").multiple(true).args(&["s3_region", "s3_bucket", "s3_endpoint", "s3_access_key_id", "s3_secret_access_key"]))))]
 struct Args {
-    #[arg(long, env, default_value = "http://localhost:10000")]
-    gw_url: String,
+    #[command(subcommand)]
+    run_mode: RunMode,
+}
 
-    /// An address of the `/health` probe.
-    #[arg(long, env, default_value = "127.0.0.1:8080")]
-    healthcheck_addr: SocketAddr,
+#[derive(Subcommand)]
+enum RunMode {
+    /// Connect to a LPN gateway to receive inference tasks
+    #[cfg_attr(feature = "s3", command(group(ArgGroup::new("s3_store").multiple(true).args(&["s3_region", "s3_bucket", "s3_endpoint", "s3_access_key_id", "s3_secret_access_key"]))))]
+    Remote {
+        #[arg(long, env, default_value = "http://localhost:10000")]
+        gw_url: String,
 
-    #[arg(long, env, default_value = "deep-prove-1")]
-    worker_class: String,
+        /// An address of the `/health` probe.
+        #[arg(long, env, default_value = "127.0.0.1:8080")]
+        healthcheck_addr: SocketAddr,
 
-    #[arg(long, env, default_value = "Lagrange Labs")]
-    operator_name: String,
+        #[arg(long, env, default_value = "deep-prove-1")]
+        worker_class: String,
 
-    #[arg(long, env)]
-    operator_priv_key: String,
+        #[arg(long, env, default_value = "Lagrange Labs")]
+        operator_name: String,
 
-    /// Max message size passed through gRPC (in MBytes)
-    #[arg(long, env, default_value = "100")]
-    max_message_size: usize,
+        #[arg(long, env)]
+        operator_priv_key: String,
 
-    /// Should the logs be printed in json format or not
-    #[arg(long, env)]
-    json: bool,
+        /// Max message size passed through gRPC (in MBytes)
+        #[arg(long, env, default_value = "100")]
+        max_message_size: usize,
 
-    #[arg(long, env, default_value = "us-east-2", requires_all = &["s3_store"])]
-    #[cfg(feature = "s3")]
-    s3_region: Option<String>,
-    #[arg(long, env, requires_all = &["s3_store"])]
-    #[cfg(feature = "s3")]
-    s3_bucket: Option<String>,
-    #[arg(long, env, requires_all = &["s3_store"])]
-    #[cfg(feature = "s3")]
-    s3_endpoint: Option<String>,
-    #[arg(long, env, default_value = "1000", requires_all = &["s3_store"])]
-    #[cfg(feature = "s3")]
-    s3_timeout_secs: Option<u64>,
-    #[arg(env, requires_all = &["s3_store"])]
-    #[cfg(feature = "s3")]
-    s3_access_key_id: Option<String>,
-    #[arg(env, requires_all = &["s3_store"])]
-    #[cfg(feature = "s3")]
-    s3_secret_access_key: Option<String>,
+        /// Should the logs be printed in json format or not
+        #[arg(long, env)]
+        json: bool,
+
+        #[arg(long, env, default_value = "us-east-2", requires_all = &["s3_store"])]
+        #[cfg(feature = "s3")]
+        s3_region: Option<String>,
+        #[arg(long, env, requires_all = &["s3_store"])]
+        #[cfg(feature = "s3")]
+        s3_bucket: Option<String>,
+        #[arg(long, env, requires_all = &["s3_store"])]
+        #[cfg(feature = "s3")]
+        s3_endpoint: Option<String>,
+        #[arg(long, env, default_value = "1000", requires_all = &["s3_store"])]
+        #[cfg(feature = "s3")]
+        s3_timeout_secs: Option<u64>,
+        #[arg(env, requires_all = &["s3_store"])]
+        #[cfg(feature = "s3")]
+        s3_access_key_id: Option<String>,
+        #[arg(env, requires_all = &["s3_store"])]
+        #[cfg(feature = "s3")]
+        s3_secret_access_key: Option<String>,
+    },
+    /// Prove inference on local files
+    Local {
+        /// The model to prove inference on
+        #[arg(short = 'm', long)]
+        onnx: PathBuf,
+
+        /// The inputs to prove inference for
+        #[arg(short = 'i', long)]
+        inputs: PathBuf,
+    },
 }
 
 async fn process_message_from_gw(
@@ -292,9 +312,8 @@ async fn serve_health_check(addr: SocketAddr) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let Args {
+async fn run_against_gw(args: RunMode) -> anyhow::Result<()> {
+    let RunMode::Remote {
         gw_url,
         healthcheck_addr,
         worker_class,
@@ -314,8 +333,10 @@ async fn main() -> anyhow::Result<()> {
         s3_access_key_id,
         #[cfg(feature = "s3")]
         s3_secret_access_key,
-    } = Args::parse();
-
+    } = args
+    else {
+        unreachable!()
+    };
     setup_logging(json);
 
     rustls::crypto::ring::default_provider()
@@ -420,4 +441,56 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+async fn run_locally(args: RunMode) -> anyhow::Result<()> {
+    let RunMode::Local { onnx, inputs } = args else {
+        unreachable!()
+    };
+
+    setup_logging(false);
+
+    let input = Input::from_file(&inputs).context("loading input")?;
+    let model_file = std::fs::File::open(&onnx).context("opening model file")?;
+    let model = unsafe { Mmap::map(&model_file) }
+        .context("loading model file")?
+        .to_vec();
+
+    let proto = {
+        use prost_tract_compat::Message;
+        tract_onnx::pb::ModelProto::decode(&*model).context("decoding ModelProto")?
+    };
+    let model_type = onnx
+        .extension()
+        .and_then(|ext| match ext.to_ascii_lowercase().to_str() {
+            Some("cnn") => Some(ModelType::CNN),
+            Some("mlp") => Some(ModelType::MLP),
+            _ => None,
+        });
+    if let Some(model_type) = model_type {
+        model_type.validate_proto(&proto)?;
+    }
+
+    let scaling_strategy = ScalingStrategyKind::AbsoluteMax;
+    let scaling_input_hash = None;
+
+    let request = DeepProveRequestV1 {
+        model,
+        input,
+        scaling_strategy,
+        scaling_input_hash,
+    };
+    let proofs = run_model_v1(request, MemStore::default()).await?;
+    info!("Successfully generated {} proofs", proofs.len());
+
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let args = Args::parse();
+    match args.run_mode {
+        remote_args @ RunMode::Remote { .. } => run_against_gw(remote_args).await,
+        local_args @ RunMode::Local { .. } => run_locally(local_args).await,
+    }
 }
