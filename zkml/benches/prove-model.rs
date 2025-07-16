@@ -86,6 +86,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             )
         })
     });
+
     group.bench_function("cnn", |b| {
         b.iter(|| {
             run_model(
@@ -110,5 +111,7 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.finish();
 }
 
+// NOTE: XXX: when running, limit RAYON_NUM_THREADS to e.g. 2 to avoid high
+// concurrency resulting in measure noise.
 criterion_group!(benches, criterion_benchmark);
 criterion_main!(benches);
