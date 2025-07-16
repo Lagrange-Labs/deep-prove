@@ -24,12 +24,10 @@ fn new_transcript() -> Transcript {
     #[cfg(feature = "blake")]
     {
         use transcript::blake::BlakeTranscript;
-        println!("using blake transcript");
         BlakeTranscript::new(b"bench")
     }
     #[cfg(not(feature = "blake"))]
     {
-        println!("using basic transcript");
         default_transcript()
     }
 }
@@ -74,7 +72,12 @@ fn run_model<T: std::io::Read>(model_data: &[u8], inputs: T) {
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
-    c.bench_function("mlp", |b| {
+    let mut group = c.benchmark_group("run-models");
+    group
+        .sample_size(20)
+        .measurement_time(std::time::Duration::from_secs(17));
+
+    group.bench_function("mlp", |b| {
         b.iter(|| {
             run_model(
                 include_bytes!("ref-files/mlp/model.onnx"),
@@ -83,7 +86,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             )
         })
     });
-    c.bench_function("cnn", |b| {
+    group.bench_function("cnn", |b| {
         b.iter(|| {
             run_model(
                 include_bytes!("ref-files/cnn/model.onnx"),
@@ -92,7 +95,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             )
         })
     });
-    c.bench_function("covid", |b| {
+    group.bench_function("covid", |b| {
         b.iter(|| {
             run_model(
                 include_bytes!("ref-files/covid/model.onnx"),
@@ -101,6 +104,8 @@ fn criterion_benchmark(c: &mut Criterion) {
             )
         })
     });
+
+    group.finish();
 }
 
 criterion_group!(benches, criterion_benchmark);
