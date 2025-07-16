@@ -1159,7 +1159,6 @@ where
 
         result.data.par_iter_mut().enumerate().for_each(|(i, res)| {
             *res = (0..n)
-                .into_par_iter()
                 .map(|j| self.data[i * n + j] * vector.data[j])
                 .sum::<T>();
         });
