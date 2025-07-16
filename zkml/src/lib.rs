@@ -21,7 +21,6 @@ pub use iop::{
 pub use quantization::{ScalingFactor, ScalingStrategy};
 pub mod layers;
 pub mod lookup;
-pub mod middleware;
 pub mod model;
 pub mod padding;
 mod parser;
@@ -30,7 +29,7 @@ pub mod tensor;
 pub use tensor::Tensor;
 #[cfg(feature = "capture-layers-quant")]
 pub mod capture;
-pub mod store;
+pub mod inputs;
 #[cfg(test)]
 mod testing;
 

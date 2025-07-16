@@ -1,9 +1,9 @@
 use criterion::{Criterion, criterion_group, criterion_main};
+use deep_prove::v1::Input;
 use ff_ext::GoldilocksExt2;
 use mpcs::{Basefold, BasefoldRSParams, Hasher};
 use zkml::{
     Context, Element, FloatOnnxLoader, Prover, default_transcript,
-    middleware::v1::Input,
     model::Model,
     quantization::{AbsoluteMax, ModelMetadata},
     verify,

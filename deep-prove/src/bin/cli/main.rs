@@ -3,17 +3,14 @@ use std::{path::PathBuf, str::FromStr};
 use alloy::signers::local::LocalSigner;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
+use deep_prove::middleware::{DeepProveRequest, DeepProveResponse, v1::Input};
 use lagrange::ProofChannelResponse;
 use memmap2::Mmap;
 use tokio::fs::File;
 use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
 use tracing::info;
 use url::Url;
-use zkml::{
-    ModelType,
-    middleware::{DeepProveRequest, DeepProveResponse, v1::Input},
-    quantization::ScalingStrategyKind,
-};
+use zkml::{ModelType, quantization::ScalingStrategyKind};
 
 mod lagrange {
     tonic::include_proto!("lagrange");
@@ -122,7 +119,7 @@ async fn main() -> anyhow::Result<()> {
             let task = tonic::Request::new(lagrange::SubmitTaskRequest {
                 task_bytes: zstd::encode_all(
                     rmp_serde::to_vec(&DeepProveRequest::V1(
-                        zkml::middleware::v1::DeepProveRequest {
+                        deep_prove::middleware::v1::DeepProveRequest {
                             model,
                             input,
                             scaling_strategy,

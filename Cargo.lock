@@ -2983,6 +2983,49 @@ dependencies = [
 ]
 
 [[package]]
+name = "deep-prove"
+version = "0.1.0"
+dependencies = [
+ "alloy",
+ "anyhow",
+ "axum 0.8.4",
+ "clap",
+ "derive_more 2.0.1",
+ "ff_ext",
+ "futures",
+ "grpc-worker",
+ "itertools 0.13.0",
+ "memmap2",
+ "miette",
+ "mpcs",
+ "object_store",
+ "prost 0.11.9",
+ "prost 0.13.5",
+ "prost-types",
+ "prost-wkt-types",
+ "protox",
+ "reqwest",
+ "rmp-serde",
+ "rustls",
+ "semver 1.0.26",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tiktoken-rs",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+ "tonic-build",
+ "tracing",
+ "tracing-subscriber",
+ "tract-onnx",
+ "url",
+ "uuid 1.17.0",
+ "zkml",
+ "zstd 0.13.3",
+]
+
+[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7473,9 +7516,9 @@ checksum = "03251193000f4bd3b042892be858ee50e8b3719f2b08e5833ac4353724632430"
 
 [[package]]
 name = "redact"
-version = "0.1.10"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0020ec469b096d56edb1ed0f0f141d957863302170f8d9c4bfda1a12969e5969"
+checksum = "dcecefd225c2fb69914585a7a6f8878929feb316a7ecb61c07d79e361d46d8ac"
 
 [[package]]
 name = "redox_syscall"
@@ -11057,7 +11100,6 @@ dependencies = [
  "alloy",
  "anyhow",
  "ark-std 0.5.0",
- "axum 0.8.4",
  "burn",
  "candle-core 0.9.1",
  "candle-transformers",
@@ -11071,17 +11113,13 @@ dependencies = [
  "futures",
  "gguf-rs",
  "gkr",
- "grpc-worker",
  "hex",
  "itertools 0.13.0",
  "memmap2",
- "miette",
  "mpcs",
  "multilinear_extensions",
  "ndarray",
  "num-traits",
- "object_store",
- "once_cell",
  "p3-field",
  "p3-goldilocks",
  "p3-poseidon2",
@@ -11091,12 +11129,10 @@ dependencies = [
  "prost 0.13.5",
  "prost-types",
  "prost-wkt-types",
- "protox",
  "rayon",
  "reqwest",
  "rmp-serde",
  "rust_tokenizers",
- "rustls",
  "semver 1.0.26",
  "serde",
  "serde_json",
@@ -11105,20 +11141,14 @@ dependencies = [
  "statrs",
  "sumcheck",
  "thiserror 2.0.12",
- "tiktoken-rs",
  "timed",
  "timed-core",
  "tokio",
- "tokio-stream",
- "tonic",
- "tonic-build",
  "tracing",
  "tracing-subscriber",
  "tract-onnx",
  "transcript",
- "url",
  "utils",
- "uuid 1.17.0",
  "zstd 0.13.3",
 ]
 

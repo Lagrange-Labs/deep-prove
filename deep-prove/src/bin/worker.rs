@@ -1,23 +1,8 @@
-use std::{net::SocketAddr, path::PathBuf, str::FromStr};
-
 use alloy::signers::local::LocalSigner;
 use anyhow::{Context as _, Result};
 use axum::{Json, Router, routing::get};
 use clap::{ArgGroup, Parser, Subcommand};
-use ff_ext::GoldilocksExt2;
-use futures::{FutureExt, StreamExt};
-use memmap2::Mmap;
-use mpcs::{Basefold, BasefoldRSParams, Hasher};
-use reqwest::StatusCode;
-use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
-
-use lagrange::{WorkerToGwRequest, worker_to_gw_request::Request};
-use tracing::{debug, error, info};
-
-use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt::format::FmtSpan};
-
-use zkml::{
-    Context, Element, FloatOnnxLoader, ModelType, Prover, default_transcript,
+use deep_prove::{
     middleware::{
         DeepProveRequest, DeepProveResponse,
         v1::{
@@ -25,9 +10,22 @@ use zkml::{
             Input, Proof as ProofV1,
         },
     },
+    store::{self, MemStore, Store},
+};
+use ff_ext::GoldilocksExt2;
+use futures::{FutureExt, StreamExt};
+use lagrange::{WorkerToGwRequest, worker_to_gw_request::Request};
+use memmap2::Mmap;
+use mpcs::{Basefold, BasefoldRSParams, Hasher};
+use reqwest::StatusCode;
+use std::{net::SocketAddr, path::PathBuf, str::FromStr};
+use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
+use tracing::{debug, error, info};
+use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt::format::FmtSpan};
+use zkml::{
+    Context, Element, FloatOnnxLoader, ModelType, Prover, default_transcript,
     model::Model,
     quantization::{AbsoluteMax, ModelMetadata, ScalingStrategyKind},
-    store::{self, MemStore, Store},
 };
 
 use crate::lagrange::WorkerToGwResponse;

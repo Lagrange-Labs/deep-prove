@@ -1,0 +1,75 @@
+[package]
+categories.workspace = true
+edition.workspace = true
+keywords.workspace = true
+license.workspace = true
+name = "deep-prove"
+description = "Client stack for the ZKML library"
+readme.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[features]
+default = ["s3"]
+blake = ["mpcs/blake"]
+s3 = []
+
+[[bin]]
+name = "deep-prove-worker"
+path = "src/bin/worker.rs"
+
+[[bin]]
+name = "deep-prove-cli"
+path = "src/bin/cli/main.rs"
+
+[dependencies]
+alloy = { version = "1.0.22", default-features = false }
+axum = { workspace = true }
+anyhow.workspace = true
+itertools.workspace = true
+mpcs.workspace = true
+zkml = { path = "../zkml" }
+tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "fs"] }
+tracing.workspace = true
+ff_ext = { version = "0.1.0", path = "../ff_ext" }
+reqwest = { version = "0.12.19", features = ["blocking"] }
+rmp-serde = { workspace = true }
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tract-onnx = { workspace = true }
+tracing-subscriber = { workspace = true, features = [
+    "env-filter",
+    "fmt",
+    "json",
+] }
+sha2 = "0.10.9"
+futures = { version = "0.3.30" }
+tonic = { version = "0.12.3", features = [
+    "transport",
+    "tls",
+    "tls-roots",
+    "tls-webpki-roots",
+    "gzip",
+] }
+prost = { version = "0.13.3" }
+prost-tract-compat = { package = "prost", version = "0.11.9" }
+prost-types = { version = "0.13.3" }
+prost-wkt-types = { version = "0.6.0" }
+rustls = { version = "0.23.16", features = ["ring"] }
+tokio-stream = { version = "0.1.17" }
+grpc-worker = { git = "https://github.com/Lagrange-Labs/grpc-worker-rs", branch = "main" }
+url = "2.5.4"
+uuid = "1.17.0"
+zstd = "0.13.3"
+clap = { workspace = true, features = ["derive", "env"] }
+memmap2.workspace = true
+object_store.workspace = true
+derive_more = { workspace = true, features = ["from"] }
+
+[build-dependencies]
+# worker-related dependencies
+miette = { version = "7.2", features = ["fancy"] }
+protox = { version = "0.7.1" }
+tonic-build = { version = "0.12.3" }
+tiktoken-rs = "0.7.0"

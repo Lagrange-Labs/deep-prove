@@ -10,6 +10,7 @@ members = [
   "simple-frontend",
   "gkr",
   "zkml",
+  "deep-prove",
   "utils",
 ]
 resolver = "2"
