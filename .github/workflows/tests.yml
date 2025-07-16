@@ -84,7 +84,7 @@ jobs:
     name: Run Clippy
     needs: changes
     runs-on: ubuntu-latest
-    if: needs.changes.outputs.zkml_src == 'true'
+    if: ${{ needs.changes.outputs.zkml_src != '[]' }}
     steps:
       - uses: actions/checkout@v4
         with:
