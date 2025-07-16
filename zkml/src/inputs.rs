@@ -1,16 +1,12 @@
-use std::{io::BufReader, path::Path, str::FromStr};
+use std::{io::BufReader, path::Path};
 
 use anyhow::{Context, ensure};
-use ff_ext::GoldilocksExt2;
-use mpcs::{Basefold, BasefoldRSParams, Hasher};
 use serde::{Deserialize, Serialize};
 
-use crate::quantization::{QUANTIZATION_RANGE, ScalingStrategyKind};
-
-use super::{Element, ModelMetadata, ProofG};
-
-/// A type of the proof for the `v1` of the protocol
-pub type Proof = ProofG<GoldilocksExt2, Basefold<GoldilocksExt2, BasefoldRSParams<Hasher>>>;
+use crate::{
+    Element,
+    quantization::{ModelMetadata, QUANTIZATION_RANGE},
+};
 
 /// Inputs to the model
 #[derive(Clone, Serialize, Deserialize)]
@@ -36,7 +32,7 @@ impl Input {
         Ok(inputs)
     }
 
-    fn validate(&self) -> anyhow::Result<()> {
+    pub fn validate(&self) -> anyhow::Result<()> {
         ensure!(self.input_data.len() > 0);
         ensure!(
             self.input_data
@@ -75,7 +71,7 @@ impl Input {
     }
 }
 
-impl FromStr for Input {
+impl std::str::FromStr for Input {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -84,26 +80,4 @@ impl FromStr for Input {
 
         Ok(inputs)
     }
-}
-
-/// The `v1` proving request
-#[derive(Serialize, Deserialize)]
-pub struct DeepProveRequest {
-    /// The model
-    pub model: Vec<u8>,
-
-    /// An array of inputs to run proving for
-    pub input: Input,
-
-    /// Model scaling strategy
-    pub scaling_strategy: ScalingStrategyKind,
-
-    /// A hash of model scaling strategy input, if any
-    pub scaling_input_hash: Option<String>,
-}
-
-/// The `v1` proofs that have been computed by the worker
-#[derive(Serialize, Deserialize)]
-pub struct DeepProveResponse {
-    pub proofs: Vec<Proof>,
 }

@@ -269,19 +269,19 @@ pub fn load_float_model(model: &ModelProto) -> Result<Model<f32>> {
 pub mod file_cache {
     use anyhow::{Context as _, anyhow, bail};
     use hex;
-    use once_cell::sync::Lazy;
     use reqwest;
     use sha2::{Digest, Sha256};
     use std::{
         fs::{self, File},
         io::{ErrorKind, Write},
         path::{Path, PathBuf},
+        sync::LazyLock,
         thread,
         time::Duration,
     };
 
     // Directory to store cached files.
-    static CACHE_DIR: Lazy<PathBuf> = Lazy::new(|| {
+    static CACHE_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
         let dir = PathBuf::from("target").join("test_assets_cache");
         if !dir.exists() {
             fs::create_dir_all(&dir).expect("Failed to create cache directory for test assets");

@@ -4,9 +4,8 @@ mod strategy;
 use derive_more::From;
 use ff_ext::{ExtensionField, SmallField};
 use itertools::Itertools;
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::env;
+use std::{env, sync::LazyLock};
 use tracing::warn;
 
 use crate::{
@@ -18,7 +17,7 @@ pub(crate) use strategy::InferenceTracker;
 pub use strategy::{AbsoluteMax, InferenceObserver, ScalingStrategy, ScalingStrategyKind};
 
 // Get BIT_LEN from environment variable or use default value
-pub static BIT_LEN: Lazy<usize> = Lazy::new(|| {
+pub static BIT_LEN: LazyLock<usize> = LazyLock::new(|| {
     env::var("ZKML_BIT_LEN")
         .ok()
         .and_then(|val| val.parse::<usize>().ok())
@@ -26,10 +25,10 @@ pub static BIT_LEN: Lazy<usize> = Lazy::new(|| {
 });
 
 /// symmetric quantization range
-pub static MIN: Lazy<Element> = Lazy::new(|| -(1 << (*BIT_LEN - 1)) + 1);
-pub static MAX: Lazy<Element> = Lazy::new(|| (1 << (*BIT_LEN - 1)) - 1);
-pub static RANGE: Lazy<Element> = Lazy::new(|| *MAX - *MIN);
-pub static ZERO: Lazy<Element> = Lazy::new(|| 0);
+pub static MIN: LazyLock<Element> = LazyLock::new(|| -(1 << (*BIT_LEN - 1)) + 1);
+pub static MAX: LazyLock<Element> = LazyLock::new(|| (1 << (*BIT_LEN - 1)) - 1);
+pub static RANGE: LazyLock<Element> = LazyLock::new(|| *MAX - *MIN);
+pub static ZERO: LazyLock<Element> = LazyLock::new(|| 0);
 pub const MIN_FLOAT: f32 = -1.0;
 pub const MAX_FLOAT: f32 = 1.0;
 pub const QUANTIZATION_RANGE: std::ops::RangeInclusive<f32> = MIN_FLOAT..=MAX_FLOAT;

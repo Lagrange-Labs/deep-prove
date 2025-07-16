@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y git protobuf-compiler libssl-dev pkg-co
 WORKDIR /deep-prove-worker
 COPY . .
 
-RUN cargo install --locked --path zkml --bin deep-prove-worker
+RUN cargo install --locked --path deep-prove --bin deep-prove-worker
 
 
 
