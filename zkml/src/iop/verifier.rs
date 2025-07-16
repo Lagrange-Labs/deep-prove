@@ -232,16 +232,19 @@ where
         let input_claims =
             NodeCtx::input_claims(ctx.steps_info.to_forward_iterator(), &claims_by_layer)?;
         // 6. input verification: evaluating the input at the random evaluation point from the sumcheck
-        let mut inputs_iter = io.input.into_iter();
+        let num_inputs = io.input.len();
         for (node_id, claims) in input_claims.into_iter() {
             // we assume the inputs are given in the same order as the claims, "flattened"
-            let inputs = (0..claims.len())
-                .map(|_| {
-                    inputs_iter
-                        .next()
-                        .ok_or(anyhow!("Not enough inputs for node {node_id}"))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let (inputs, claims): (Vec<_>, Vec<_>) = try_unzip(claims.into_iter()
+                .map(|(index, claim)| {
+                    ensure!(index < num_inputs, 
+                        "Processing claim associated to input {index}, but there are only {num_inputs} inputs",
+                    );
+                    Ok((
+                        &io.input[index],
+                        claim,
+                    ))
+                }))?;
             let node_ctx = ctx
                 .steps_info
                 .nodes
@@ -249,7 +252,7 @@ where
                 .ok_or(anyhow!("Node {node_id} not found"))?;
             <LayerCtx<E> as VerifiableCtx<E, PCS>>::verify_input_claim(
                 &node_ctx.ctx,
-                &inputs,
+                inputs.as_slice(),
                 &claims,
             )?;
         }
