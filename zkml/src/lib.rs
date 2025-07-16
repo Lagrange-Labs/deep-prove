@@ -258,7 +258,7 @@ mod test {
         let mut prover_transcript = default_transcript();
         let prover = Prover::<_, _, _>::new(&ctx, &mut prover_transcript);
         println!("[+] Run prover");
-        let proof = prover.prove(trace).expect("unable to generate proof");
+        let proof = prover.prove(&trace).expect("unable to generate proof");
 
         let mut verifier_transcript = default_transcript();
         verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).expect("invalid proof");

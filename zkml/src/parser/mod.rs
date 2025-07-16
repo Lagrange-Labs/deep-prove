@@ -52,14 +52,17 @@ impl<'a, S: ScalingStrategy> FloatOnnxLoader<'a, S> {
             keep_float: false,
         }
     }
+
     pub fn with_scaling_strategy(mut self, scaling_strategy: S) -> Self {
         self.scaling_strategy = scaling_strategy;
         self
     }
+
     pub fn with_model_type(mut self, model_type: ModelType) -> Self {
         self.model_type = Some(model_type);
         self
     }
+
     pub fn with_keep_float(mut self, keep_float: bool) -> Self {
         self.keep_float = keep_float;
         self
@@ -580,7 +583,7 @@ mod tests {
         info!("GENERATING Proof...");
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
             Prover::new(&ctx, &mut tr);
-        let proof = prover.prove(trace).expect("unable to generate proof");
+        let proof = prover.prove(&trace).expect("unable to generate proof");
         info!("GENERATING Proof DONE...");
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
@@ -626,7 +629,7 @@ mod tests {
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
             Prover::new(&ctx, &mut tr);
         let io = trace.to_verifier_io();
-        let proof = prover.prove(trace).expect("unable to generate proof");
+        let proof = prover.prove(&trace).expect("unable to generate proof");
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
         verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).unwrap();

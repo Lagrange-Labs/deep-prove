@@ -721,11 +721,9 @@ fn tdim_to_usize(tdim: &TDim) -> anyhow::Result<usize> {
 
 #[cfg(test)]
 mod tests {
-
+    use super::*;
     use anyhow::Ok;
     use ff_ext::GoldilocksExt2;
-
-    use super::*;
 
     #[test]
     fn test_parser_load_conv() {

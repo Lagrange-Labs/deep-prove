@@ -37,7 +37,6 @@ fn new_transcript() -> Transcript {
     #[cfg(feature = "blake")]
     {
         use transcript::blake::BlakeTranscript;
-        println!("using blake transcript");
         BlakeTranscript::new(b"bench")
     }
     #[cfg(not(feature = "blake"))]
@@ -394,8 +393,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         let io = trace.to_verifier_io();
         let mut prover_transcript = new_transcript();
         let prover = Prover::<_, _, _>::new(ctx.as_ref().unwrap(), &mut prover_transcript);
-
-        let proof = prover.prove(trace).expect("unable to generate proof");
+        let proof = prover.prove(&trace).expect("unable to generate proof");
 
         // Serialize proof using MessagePack and calculate size in KB
         let proof_bytes = to_vec_named(&proof)?;

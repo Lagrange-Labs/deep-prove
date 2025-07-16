@@ -114,9 +114,9 @@ async fn main() -> anyhow::Result<()> {
                 model_type.validate_proto(&proto)?;
             }
 
-            // TODO Currently hard-coded in the ONNX loader. Adjust when choice is availabl
+            // TODO Currently hard-coded in the ONNX loader. Adjust when choice is available
             let scaling_strategy = ScalingStrategyKind::AbsoluteMax;
-            // TODO Currently hard-coded in the ONNX loader. Adjust when choice is availabl
+            // TODO Currently hard-coded in the ONNX loader. Adjust when choice is available
             let scaling_input_hash = None;
 
             let task = tonic::Request::new(lagrange::SubmitTaskRequest {

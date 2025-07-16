@@ -1,4 +1,4 @@
-use std::{io::BufReader, path::Path};
+use std::{io::BufReader, path::Path, str::FromStr};
 
 use anyhow::{Context, ensure};
 use ff_ext::GoldilocksExt2;
@@ -18,13 +18,19 @@ pub struct Input {
     input_data: Vec<Vec<f32>>,
 }
 
-// TODO: this is a copypaste from `bench.rs`.
 impl Input {
     pub fn from_file<P: AsRef<Path>>(p: P) -> anyhow::Result<Self> {
         let inputs: Self = serde_json::from_reader(BufReader::new(
             std::fs::File::open(p.as_ref()).context("opening inputs file")?,
         ))
         .context("deserializing inputs")?;
+        inputs.validate()?;
+
+        Ok(inputs)
+    }
+
+    pub fn from_reader<R: std::io::Read>(r: R) -> anyhow::Result<Self> {
+        let inputs: Self = serde_json::from_reader(r).context("deserializing inputs")?;
         inputs.validate()?;
 
         Ok(inputs)
@@ -66,6 +72,17 @@ impl Input {
             .into_iter()
             .map(|input| input.into_iter().map(|e| input_sf.quantize(&e)).collect())
             .collect()
+    }
+}
+
+impl FromStr for Input {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let inputs: Self = serde_json::from_str(s).context("deserializing inputs")?;
+        inputs.validate()?;
+
+        Ok(inputs)
     }
 }
 

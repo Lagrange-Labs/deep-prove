@@ -134,7 +134,7 @@ async fn run_model_v1(model: DeepProveRequestV1, mut store: impl Store) -> Resul
             let mut prover_transcript = default_transcript();
             let prover = Prover::<_, _, _>::new(&ctx, &mut prover_transcript);
             let proof = prover
-                .prove(trace)
+                .prove(&trace)
                 .with_context(|| "unable to generate proof for {i}. input")?;
 
             proofs.push(proof);
