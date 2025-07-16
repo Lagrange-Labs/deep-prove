@@ -2432,7 +2432,7 @@ mod test {
         // Here we test the generic padding
         let tensor_b = Tensor::<Element>::new(shape_b.into(), vec![1, 1, 1, 17]);
 
-        let tensor_c = tensor_a.generic_pad_next_power_of_two(17i128);
+        let tensor_c = tensor_a.generic_pad_next_power_of_two(17);
         assert_eq!(tensor_b, tensor_c);
     }
 
@@ -2899,8 +2899,8 @@ mod test {
 
         for i in 0..num_columns {
             for j in 0..num_columns {
-                let x_i = to_be_bits::<NUM_BITS>(Element::from(i as u64));
-                let y_i = to_be_bits::<NUM_BITS>(Element::from(j as u64));
+                let x_i = to_be_bits::<NUM_BITS>(Element::from(i as u32));
+                let y_i = to_be_bits::<NUM_BITS>(Element::from(j as u32));
                 let cmp = eval_lteq_poly(&y_i, &x_i);
                 assert_eq!(
                     zeroifier.get_2d(i, j),

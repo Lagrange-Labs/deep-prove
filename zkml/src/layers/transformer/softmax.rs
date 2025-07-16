@@ -177,7 +177,7 @@ impl<N: Number> Softmax<N> {
         // by the exponential. We will have K total tables, L of which are used for values that are so insignficant they get mapped to 1 and M of which
         // contain values that are all greater than bkm. We aim to make K - M - L = 1 because results from testing tell us that this allows
         // us to make an exp table with 17 variables which isn't too large (as it gets reused across every softmax in something like Multiheaded attention).
-        let base = 1i128 << (LOG_SCALE_FACTOR - 8);
+        let base: Element = 1 << (LOG_SCALE_FACTOR - 8);
         let (float_error, bkm_float) = calc_softmax_error(
             base,
             self.max_size as f32,
@@ -206,13 +206,13 @@ impl<N: Number> Softmax<N> {
             (0usize, 0usize)
         };
 
-        let table_size = 1i128 << softmax_table_size;
+        let table_size: Element = 1 << softmax_table_size;
         // Make the exp lookup table
-        let lut = (0i128..table_size)
+        let lut = (0..table_size)
             .map(|j| {
                 let prod = base * j;
                 if prod >= bkm {
-                    0i128
+                    0
                 } else {
                     let float_exp =
                         (-prod as f32 / (SCALE_FACTOR as f32 * inv_float_temperature)).exp();
@@ -328,7 +328,7 @@ impl Softmax<Element> {
 /// This functions returns the error togeter with the value `bkm` such that anything smaller
 /// than `bkm` should be mapped to zero.
 pub(crate) fn calc_softmax_error(
-    bl: i128,
+    bl: Element,
     max_context_size: f32,
     output_sf: f32,
     input_sf: f32,
@@ -511,7 +511,7 @@ impl Evaluate<Element> for Softmax<Element> {
 
         // We use the mask to extract 8-bit chunks of the input, these are the smallest fractional bits
         // and so we can assume that they get mapped to 1 under `exp`
-        let bit_mask = 255i128;
+        let bit_mask: Element = 255;
         let softmax_table_vars = ceil_log2(*bkm as usize >> 16);
         let softmax_table_mask: Element = (1 << softmax_table_vars) - 1;
         let zero_table_mask: Element = (1 << *zero_table_vars) - 1;
@@ -1244,7 +1244,7 @@ impl QuantizeOp for Softmax<f32> {
             1.0f32,
             0.0f32,
             1.0f32 / OUTPUT_SCALE_FACTOR as f32,
-            (0i128, OUTPUT_SCALE_FACTOR as Element),
+            (0, OUTPUT_SCALE_FACTOR as Element),
         );
         Ok(QuantizeOutput::<Softmax<Element>> {
             quantized_op: quantised_op,
@@ -1894,7 +1894,7 @@ mod tests {
             // (already at bit size 14 before this due to multiplication of two 8 bit quant integers)
             let qk_scaling = ScalingFactor::from_scale(
                 q_scaling.scale() * k_scaling.scale(),
-                Some((-1i128 << 24, 1i128 << 24)),
+                Some((-1 << 24, 1 << 24)),
             );
 
             let test_q_quant = test_q.clone().quantize(&q_scaling);

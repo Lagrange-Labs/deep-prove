@@ -37,7 +37,9 @@ itertools = "0.13"
 plonky2 = "1.1"
 p3-challenger = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
 p3-field = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
-p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb", features = ["nightly-features"] }
+p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb", features = [
+  "nightly-features",
+] }
 p3-poseidon = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
 p3-mds = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
 p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }

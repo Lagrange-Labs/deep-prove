@@ -1108,9 +1108,9 @@ mod test {
         for i in 0..num_columns {
             for j in 0..num_columns {
                 for h in 0..num_heads {
-                    let x_i = to_be_bits::<NUM_BITS>(Element::from(i as u64));
-                    let y_i = to_be_bits::<NUM_BITS>(Element::from(j as u64));
-                    let h_i = to_be_bits::<NUM_HEADS_BITS>(Element::from(h as u64));
+                    let x_i = to_be_bits::<NUM_BITS>(Element::from(i as u32));
+                    let y_i = to_be_bits::<NUM_BITS>(Element::from(j as u32));
+                    let h_i = to_be_bits::<NUM_HEADS_BITS>(Element::from(h as u32));
                     // check that the zeroifier matrix is equivalent to the lteq function
                     let cmp = eval_lteq_poly(&y_i, &x_i);
                     assert_eq!(
@@ -1203,9 +1203,9 @@ mod test {
         for i in 0..num_columns {
             for j in 0..num_columns {
                 for h in 0..num_heads {
-                    let x_i = to_be_bits::<NUM_BITS>(Element::from(i as u64));
-                    let y_i = to_be_bits::<NUM_BITS>(Element::from(j as u64));
-                    let h_i = to_be_bits::<NUM_HEADS_BITS>(Element::from(h as u64));
+                    let x_i = to_be_bits::<NUM_BITS>(Element::from(i as u32));
+                    let y_i = to_be_bits::<NUM_BITS>(Element::from(j as u32));
+                    let h_i = to_be_bits::<NUM_HEADS_BITS>(Element::from(h as u32));
                     // check that the zeroifier matrix is equivalent to the gt function with output being minus_infinity
                     let cmp = eval_gt_poly(&y_i, &x_i, minus_infinity);
                     assert_eq!(
@@ -1222,7 +1222,7 @@ mod test {
                         .rev()
                         .chain(x_i.into_iter().rev())
                         .chain(h_i.into_iter().rev())
-                        .map(|bit| GoldilocksExt2::from_v(bit as u64))
+                        .map(|bit| bit.to_field())
                         .collect_vec();
                     let eval = mle.evaluate(&point);
                     println!("{cmp} {} {}", cmp as u64, u64::MAX - 2);

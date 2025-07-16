@@ -787,8 +787,8 @@ pub(crate) mod test {
         let bias3: Tensor<Element> = Tensor::zeros(vec![shape3[0]].into());
 
         let trad_conv1: Tensor<Element> = Tensor::new(shape1.clone().into(), w1.clone());
-        let trad_conv2: Tensor<i128> = Tensor::new(shape2.clone().into(), w2.clone());
-        let trad_conv3: Tensor<i128> = Tensor::new(shape3.clone().into(), w3.clone());
+        let trad_conv2: Tensor<Element> = Tensor::new(shape2.clone().into(), w2.clone());
+        let trad_conv3: Tensor<Element> = Tensor::new(shape3.clone().into(), w3.clone());
 
         let input_shape = vec![1, 32, 32];
 
