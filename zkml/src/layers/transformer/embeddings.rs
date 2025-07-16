@@ -161,7 +161,7 @@ impl PadOp for Embeddings<Element> {
             "embeddings only support 1 input tensor"
         );
         // we need to give the shapes that the one hot encoding will have
-        let mut shape_data = si.shapes.remove(0);
+        let shape_data = &mut si.shapes[0];
         ensure!(
             shape_data.input_shape_og.rank() == 1,
             "embeddings only support 1d tensors"
@@ -176,7 +176,6 @@ impl PadOp for Embeddings<Element> {
             self.vocab_size,
             PaddingMode::Padding,
         );
-        si.shapes.push(shape_data);
         let r = self.mat.pad_node(si).map(|mat| Self { mat, ..self })?;
         Ok(r)
     }
@@ -340,13 +339,14 @@ where
         Ok(vec![claims.remove(0)])
     }
 
-    fn verify_input_claim(&self, inputs: &[Tensor<E>], claims: &[&Claim<E>]) -> anyhow::Result<()> {
+    fn verify_input_claim<A: AsRef<Tensor<E>>>(&self, inputs: &[A], claims: &[&Claim<E>]) -> anyhow::Result<()> {
         // TODO verify efficiently the one hot encoding claim
         ensure!(inputs.len() == 1, "embeddings only support 1 input tensor");
         ensure!(claims.len() == 1, "embeddings only support 1 claim");
-        let input = &inputs[0];
+        let input = inputs[0].as_ref();
         let one_hot_claim = &claims[0];
         let vocab_nv = self.vocab_size.next_power_of_two().ilog2();
+        println!("Input shape: {:?}", input.get_shape());
         let seq_len_nv = input.get_shape().dim(0).next_power_of_two().ilog2();
         ensure!(
             vocab_nv + seq_len_nv == one_hot_claim.point.len() as u32,
@@ -469,7 +469,7 @@ mod tests {
         let indices_elem: Vec<Element> = (0..seq_len).map(|i| i as Element).collect::<Vec<_>>();
         let indices: Tensor<GoldilocksExt2> =
             Tensor::<Element>::new(vec![5].into(), indices_elem.clone()).to_fields();
-        let vocab_size = 5;
+        let vocab_size = 6;
         let emb_size = 10;
         let one_hot = one_hot_encoding(&indices.get_data(), vocab_size, PaddingMode::NoPadding);
         let expected_shape: Shape = vec![indices.get_shape().numel(), vocab_size].into();
@@ -483,11 +483,6 @@ mod tests {
                 GoldilocksExt2::ZERO,
                 GoldilocksExt2::ZERO,
                 GoldilocksExt2::ZERO,
-                GoldilocksExt2::ONE,
-                GoldilocksExt2::ZERO,
-                GoldilocksExt2::ZERO,
-                GoldilocksExt2::ZERO,
-                GoldilocksExt2::ZERO,
                 GoldilocksExt2::ZERO,
                 GoldilocksExt2::ONE,
                 GoldilocksExt2::ZERO,
@@ -495,19 +490,30 @@ mod tests {
                 GoldilocksExt2::ZERO,
                 GoldilocksExt2::ZERO,
                 GoldilocksExt2::ZERO,
+                GoldilocksExt2::ZERO,
                 GoldilocksExt2::ONE,
                 GoldilocksExt2::ZERO,
                 GoldilocksExt2::ZERO,
                 GoldilocksExt2::ZERO,
                 GoldilocksExt2::ZERO,
                 GoldilocksExt2::ZERO,
-                GoldilocksExt2::ONE
+                GoldilocksExt2::ZERO,
+                GoldilocksExt2::ONE,
+                GoldilocksExt2::ZERO,
+                GoldilocksExt2::ZERO,
+                GoldilocksExt2::ZERO,
+                GoldilocksExt2::ZERO,
+                GoldilocksExt2::ZERO,
+                GoldilocksExt2::ZERO,
+                GoldilocksExt2::ONE,
+                GoldilocksExt2::ZERO,
             ]
         );
 
-        let emb = Tensor::<Element>::random(&vec![5, 10].into());
+        
+        let emb = Tensor::<Element>::random(&vec![vocab_size, 10].into());
         let embeddings = Embeddings::new(emb.clone())?;
-        let input = Tensor::new(vec![vocab_size].into(), indices_elem.clone());
+        let input = Tensor::new(vec![seq_len].into(), indices_elem.clone());
         let out = embeddings
             .evaluate::<GoldilocksExt2>(&[&input], vec![vec![indices_elem.len(), 1].into()])?;
         let expected_shape = Shape::new(vec![seq_len, emb_size]);
@@ -517,6 +523,11 @@ mod tests {
             onehot_result.get_data(),
             out.outputs()[0].to_fields().get_data()
         );
+        
+        let padded_tensor = indices.pad_next_power_of_two();
+        let one_hot = one_hot_encoding(&padded_tensor.get_data(), vocab_size, PaddingMode::Padding);
+        println!("One-hot: {:?}", one_hot);
+
         Ok(())
     }
 

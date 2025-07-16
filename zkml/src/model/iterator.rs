@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use ff_ext::ExtensionField;
 use serde::{Serialize, de::DeserializeOwned};
@@ -48,15 +48,15 @@ where
 {
     fn to_forward_iterator<'a>(&'a self) -> ModelCtxForwardIterator<'a, E> {
         NodeIterator {
-            unvisited_nodes: self.node_ids.clone(),
-            nodes: &self.nodes,
+            unvisited_nodes: self.nodes.keys().cloned().collect(),
+            nodes: BTreeMapNodeSet(&self.nodes).to_node_set(),
         }
     }
 
     fn to_backward_iterator<'a>(&'a self) -> ModelCtxBackwardIterator<'a, E> {
         NodeIterator {
-            unvisited_nodes: self.node_ids.clone(),
-            nodes: &self.nodes,
+            unvisited_nodes: self.nodes.keys().cloned().collect(),
+            nodes: BTreeMapNodeSet(&self.nodes).to_node_set(),
         }
     }
 }
@@ -65,14 +65,14 @@ impl<N> ToIterator<Node<N>> for Model<N> {
     fn to_forward_iterator<'a>(&'a self) -> ModelForwardIterator<'a, N> {
         NodeIterator {
             unvisited_nodes: self.nodes.keys().cloned().collect(),
-            nodes: &self.nodes,
+            nodes: HashMapNodeSet(&self.nodes).to_node_set(),
         }
     }
 
     fn to_backward_iterator<'a>(&'a self) -> ModelBackwardIterator<'a, N> {
         NodeIterator {
             unvisited_nodes: self.nodes.keys().cloned().collect(),
-            nodes: &self.nodes,
+            nodes: HashMapNodeSet(&self.nodes).to_node_set(),
         }
     }
 }
@@ -93,10 +93,30 @@ pub type ModelCtxForwardIterator<'a, E> = NodeIterator<'a, NodeCtx<E>, true>;
 /// Backward iterator for the proving contexts of nodes in a model
 pub type ModelCtxBackwardIterator<'a, E> = NodeIterator<'a, NodeCtx<E>, false>;
 
+pub trait ToNodeSet<'a, E: NodeEdges> {
+    fn to_node_set(self) -> HashMap<NodeId, &'a E>;
+}
+
+struct HashMapNodeSet<'a, E>(&'a HashMap<NodeId, E>); 
+
+impl<'a, E: NodeEdges> ToNodeSet<'a, E> for HashMapNodeSet<'a, E> {
+    fn to_node_set(self) -> HashMap<NodeId, &'a E> {
+        self.0.iter().map(|(node_id, e)| (*node_id, e)).collect()
+    }
+}
+
+struct BTreeMapNodeSet<'a, E>(&'a BTreeMap<NodeId, E>); 
+
+impl<'a, E: NodeEdges> ToNodeSet<'a, E> for BTreeMapNodeSet<'a, E> {
+    fn to_node_set(self) -> HashMap<NodeId, &'a E> {
+        self.0.iter().map(|(node_id, e)| (*node_id, e)).collect()
+    }
+}
+
 /// Structure employed to implemented forward and backward iterators
 pub struct NodeIterator<'a, E: NodeEdges, const FORWARD: bool> {
     pub(crate) unvisited_nodes: BTreeSet<NodeId>, /* Use BTreeSet to make the iterator deterministic */
-    pub(crate) nodes: &'a HashMap<NodeId, E>,
+    pub(crate) nodes: HashMap<NodeId, &'a E>
 }
 
 /// Structure employed to implement forward and backward iterators that
@@ -131,7 +151,7 @@ impl<'a, E: NodeEdges, const FORWARD: bool> Iterator for NodeIterator<'a, E, FOR
 
     fn next(&mut self) -> Option<Self::Item> {
         let node = self.unvisited_nodes.iter().find_map(|node_id| {
-            let node = self.nodes.get(node_id).unwrap(); // safe to unwrap since this should contain only nodes in the model
+            let node = *self.nodes.get(node_id).unwrap(); // safe to unwrap since this should contain only nodes in the model
             let is_node_next = if FORWARD {
                 node.inputs().iter().all(|edge| {
                     edge.node.is_none()

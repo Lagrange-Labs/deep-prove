@@ -12,7 +12,7 @@ use ff_ext::ExtensionField;
 use mpcs::{BasefoldCommitment, PolynomialCommitmentScheme};
 use multilinear_extensions::{mle::DenseMultilinearExtension, util::ceil_log2};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use tracing::{debug, trace};
 use transcript::Transcript;
 
@@ -128,7 +128,7 @@ where
         };
 
         let mut model_polys = Vec::<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>::new();
-        let mut step_infos = HashMap::new();
+        let mut step_infos = BTreeMap::new();
         let mut node_ids_in_order = BTreeSet::new();
         let mut shapes: HashMap<NodeId, Vec<Shape>> = HashMap::new();
         debug!("Context : layer info generation ...");
@@ -235,7 +235,6 @@ where
         Ok(Self {
             steps_info: ModelCtx {
                 nodes: step_infos,
-                node_ids: node_ids_in_order,
             },
             commitment_ctx,
             lookup: lookup_ctx,
