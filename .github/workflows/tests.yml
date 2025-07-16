@@ -11,14 +11,34 @@ on:
   pull_request:
 
 jobs:
+  changes:
+    name: Check for changes in zkML sources
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+      contents: read
+    outputs:
+      zkml_src: ${{ steps.filter.outputs.zkml_src }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            zkml_src:
+              - 'zkml/**'
+              - '.github/workflows/tests.yml'
+
   test:
+    name: Run zkML Rust tests
+    needs: changes
+    if: needs.changes.outputs.zkml_src == 'true'
     runs-on: ['hostname:hetzner-dedicated-6']
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: "recursive"
-          
-      - uses: actions/setup-python@v4
+
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10.13'
 
@@ -35,8 +55,8 @@ jobs:
 
       - name: Set Environment Variables for Rust tests
         run: |
-          echo "DEEPPROVE_CI=true" >> $GITHUB_ENV
-          echo "DEEPPROVE_ASSET_DIR=${{ github.workspace }}/zkml/assets/scripts/llms/" >> $GITHUB_ENV
+          echo "DEEPPROVE_CI=true" >> "$GITHUB_ENV"
+          echo "DEEPPROVE_ASSET_DIR=${{ github.workspace }}/zkml/assets/scripts/llms/" >> "$GITHUB_ENV"
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
 
@@ -46,8 +66,10 @@ jobs:
           RUSTFLAGS: "-W warnings"
 
   formatting:
-    name: cargo fmt
+    name: Validate code formatting
+    needs: changes
     runs-on: ubuntu-latest
+    if: needs.changes.outputs.zkml_src == 'true'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -59,18 +81,20 @@ jobs:
       - run: cargo fmt --all
 
   lint:
-    name: cargo lint
+    name: Run Clippy
+    needs: changes
     runs-on: ubuntu-latest
+    if: needs.changes.outputs.zkml_src == 'true'
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: "recursive"
-      # Ensure rustfmt is installed and setup problem matcher
 
       - name: Install protoc via apt
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: clippy 
+          components: clippy
+
       - run: cargo clippy --all -- -D warnings
