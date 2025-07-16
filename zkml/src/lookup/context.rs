@@ -42,7 +42,7 @@ pub enum TableType {
     Clamping(usize),
     /// Table type used for computing Softmax, see the [`SoftmaxTableData`] struct for more info.
     Softmax(SoftmaxTableData),
-    /// Table used for checking the normalisation error in Softmax operations, the first inner [`Element`] is `1` quantised by the scale factor, the second inner [`Element`] is the absoloute value of the allowable error
+    /// Table used for checking the normalisation error in Softmax operations, the first inner [`Element`] is `1` quantised by the scale factor, the second inner [`Element`] is the absolute value of the allowable error
     ErrorTable(Element, Element),
     /// Table use to check if a value is zero or not, returns 1 if the value is zero and zero otherwise, the [`usize`] indicates how many variables the table has.
     ZeroTable(usize),
