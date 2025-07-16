@@ -46,6 +46,3 @@ unsafe = []
 # [[bench]]
 # harness = false
 # name = "keccak256"
-
-[lints.rust]
-mismatched_lifetime_syntaxes = "allow"

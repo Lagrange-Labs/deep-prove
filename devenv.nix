@@ -52,7 +52,10 @@
     actionlint.enable = true;
     check-merge-conflicts.enable = true;
     ripsecrets.enable = true;
-    # rustfmt.enable = true;
+    rustfmt = {
+      enable = true;
+      settings.color = "auto";
+    };
     flake8 = {
       enable = true;
       settings.extendIgnore = [ "E501" ];
