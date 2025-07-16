@@ -146,9 +146,7 @@ impl Evaluate<Element> for Activation<Element> {
                 .collect::<Vec<_>>(),
             Activation::Gelu(g) => inputs
                 .iter()
-                .map(|input| {
-                    input.try_map(|e| g.apply(e))
-                })
+                .map(|input| input.try_map(|e| g.apply(e)))
                 .collect::<Result<Vec<_>>>()?,
         };
         Ok(LayerOut::from_vec(outputs))
@@ -578,8 +576,8 @@ impl GELUQuantData {
         (self.max - self.min + 1).ilog2() as usize
     }
     /// Returns the input indexes of the table and the corresponding output values
-    pub fn table(&self) -> impl Iterator<Item = (Element, Element)>  + use<'_> {
-        (self.min..self.max).map(|i|  (i,self.table_output(i)))
+    pub fn table(&self) -> impl Iterator<Item = (Element, Element)> + use<'_> {
+        (self.min..self.max).map(|i| (i, self.table_output(i)))
     }
     /// NOTE: this requires the scaled input
     pub fn table_output(&self, input: Element) -> Element {

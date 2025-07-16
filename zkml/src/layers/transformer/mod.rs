@@ -453,7 +453,7 @@ pub(crate) mod test {
                 .context(format!("failed to open file {}", debug_output_path.clone()))?,
         )?;
         let input = Tensor::new(
-            vec![gpt2_output.input_ids.len(), 1].into(),
+            vec![gpt2_output.input_ids.len()].into(),
             gpt2_output.input_ids.iter().map(|x| *x as f32).collect(),
         );
         let embedded = llm_model
@@ -534,12 +534,12 @@ pub(crate) mod test {
         let input = Tensor::new(
             // setup 1 as last dimension since embeddings iterate over last dimension
             // or call unsqueeze
-            vec![gpt2_output.input_ids.len(), 1].into(),
+            vec![gpt2_output.input_ids.len()].into(),
             gpt2_output.input_ids.iter().map(|x| *x as f32).collect(),
         );
         // also test on a single random token
         let max_token = thread_rng().gen_range(0..llm_model.embeddings.emb.get_shape()[0]);
-        let single_input = Tensor::new(vec![1, 1].into(), vec![max_token as f32]);
+        let single_input = Tensor::new(vec![1].into(), vec![max_token as f32]);
         let model = llm_model
             .clone()
             .into_provable_model(&config, Shape::from(single_input.get_shape()))?;

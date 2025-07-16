@@ -1464,7 +1464,7 @@ mod test {
         )?;
 
         let input = Tensor::new(
-            vec![gpt2_output.input_ids.len(), 1].into(),
+            vec![gpt2_output.input_ids.len()].into(),
             gpt2_output.input_ids.iter().map(|x| *x as f32).collect(),
         );
         let embedded = llm_model

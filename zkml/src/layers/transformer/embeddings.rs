@@ -53,9 +53,9 @@ impl<N: Number> Evaluate<N> for Embeddings<N> {
         ensure!(
             inputs.iter().all(|x| {
                 let shape: Shape = x.get_shape();
-                shape.rank() == 2 && shape.dim(1) == 1
+                shape.rank() == 1
             }),
-            "embeddings only support 2d tensors with 1 value: {:?}",
+            "embeddings only support 1d tensors: {:?}",
             inputs.iter().map(|x| x.get_shape()).collect::<Vec<_>>()
         );
         ensure!(inputs.len() == 1, "embeddings only support 1 input tensor");
@@ -65,9 +65,10 @@ impl<N: Number> Evaluate<N> for Embeddings<N> {
         let emb_size = self.emb.get_shape()[1];
         let emb_data = self.emb.get_data();
         let emb = x
-            .slice_last_dim()
+            .get_data()
+            .iter()
             .flat_map(|v| {
-                let idx = v[0].to_usize();
+                let idx = v.to_usize();
                 assert!(
                     idx < vocab_size,
                     "idx {idx} out of bounds for vocab size {vocab_size}"
@@ -127,7 +128,7 @@ mod tests {
             .into_iter()
             .map(|x| Element::from(x as Element))
             .collect::<Vec<_>>();
-        let x = Tensor::new(vec![seq_len, 1].into(), input_data.clone());
+        let x = Tensor::new(vec![seq_len].into(), input_data.clone());
         let out = embeddings.evaluate::<GoldilocksExt2>(&[&x], vec![vec![seq_len].into()])?;
         assert_eq!(out.outputs()[0].get_shape(), vec![seq_len, emb_size].into());
         // for each input index, check that the embedding vector is the correct one
