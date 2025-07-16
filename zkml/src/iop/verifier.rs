@@ -1,17 +1,9 @@
 use std::collections::HashMap;
 
 use crate::{
-    Claim, VectorTranscript,
-    commit::context::{CommitmentVerifier, PolyId},
-    iop::{ChallengeStorage, context::ShapeStep},
-    layers::{
-        LayerProof,
-        provable::{NodeCtx, NodeId, OpInfo, VerifiableCtx},
-    },
-    lookup::{context::TableType, logup_gkr::verifier::verify_logup_proof},
-    model::ToIterator,
-    tensor::Tensor,
-    try_unzip,
+    commit::context::{CommitmentVerifier, PolyId}, iop::{context::ShapeStep, ChallengeStorage}, layers::{
+        provable::{NodeCtx, NodeId, OpInfo, VerifiableCtx}, LayerProof
+    }, lookup::{context::TableType, logup_gkr::verifier::verify_logup_proof}, model::ToIterator, tensor::Tensor, try_unzip, Claim, Element, VectorTranscript
 };
 use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
@@ -36,6 +28,15 @@ pub struct IO<E> {
 impl<E> IO<E> {
     pub fn new(input: Vec<Tensor<E>>, output: Vec<Tensor<E>>) -> Self {
         Self { input, output }
+    }
+}
+
+impl<E: ExtensionField> IO<E> {
+    pub fn to_element(self) -> IO<Element> {
+        IO {
+            input: self.input.into_iter().map(|t| t.map(|e| e.to_canonical_u64_vec()[0] as Element)).collect(),
+            output: self.output.into_iter().map(|t| t.get_data().into_iter().map(|e| e.to_canonical_u64_vec()[0] as Element).collect()).collect(),
+        }
     }
 }
 

@@ -4,8 +4,12 @@
 //! The main usage of a driver for now is to run the LLM forward loop until a specific token or
 //! the maximum context length is reached. It will also be used to prepend a system model correctly.
 
-use anyhow::{Context, ensure};
-use quantization::strategy::InferenceObserver;
+use anyhow::{Context as CC, ensure};
+use transcript::BasicTranscript;
+use crate::quantization::ScalingStrategy;
+use mpcs::PolynomialCommitmentScheme;
+use crate::{verify, Context, Proof, Prover, IO};
+use crate::quantization::InferenceObserver;
 use ark_std::rand::{thread_rng, Rng};
 use ff_ext::ExtensionField;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -16,7 +20,7 @@ use crate::{
     layers::{provable::Evaluate, Layer}, model::{InferenceTrace, Model}, padding::pad_model, parser::{
         gguf, json,
         llm::{LLMConfig, Token},
-    }, quantization::InferenceObserver, tensor::{Number, Shape}, Element, Tensor
+    }, tensor::{Number, Shape}, Element, Tensor
 };
 
 pub trait Observer<N: Number> {
@@ -81,7 +85,7 @@ impl Driver<f32> {
         let max_range = self.config.vocab_size;
         let n_inputs = 10;
         let repr_shape = Shape::from(vec![self.config.context_length, 1]);
-        let representative_inputs = (0..n_inputs).map(|i| (0..numel).map(|_| thread_rng().gen_range(0..max_range) as f32).collect::<Vec<Element>>()).collect::<Vec<_>>();
+        let representative_inputs = (0..n_inputs).map(|i| (0..numel).map(|_| thread_rng().gen_range(0..max_range) as f32).collect::<Vec<f32>>()).collect::<Vec<_>>();
         let (quantized_model, md) = InferenceObserver::new_with_representative_input(vec![representative_inputs]).quantize(self.model)?;
         let model = pad_model(quantized_model)?;
         Ok(Driver {
@@ -90,7 +94,6 @@ impl Driver<f32> {
             max_context: self.max_context,
         })
     }
-
 }
 
 impl<N: Number> Driver<N>
@@ -130,14 +133,14 @@ where
         );
         let mut trace = InferenceTrace::default();
         // convert the input to the correct number type and add a dimension to make it 2d, because the embeddings layer expects a 2d tensor
-        let tensor = Tensor::new(
+        let mut tensor = Tensor::new(
             vec![input.len(), 1].into(),
             input.into_iter().map(|t| t.as_number()).collect::<Vec<_>>(),
         );
         // This means we're padding the input to the right size (e.g. next power of two)
-        let mut tensor = self.model.prepare_inputs(vec![tensor])?.pop().unwrap();
         let max_window = self.max_context.unwrap_or(self.config.context_length);
         while unpadded_seq_len < max_window {
+            tensor = self.model.prepare_inputs(vec![tensor])?.pop().unwrap();
             trace = self
                 .model
                 .run::<E>(&[tensor.clone()])
@@ -163,7 +166,33 @@ where
             debug_assert_eq!(tensor.get_shape()[0], unpadded_seq_len);
             observer.observe(unpadded_seq_len - user_len, &trace);
         }
-        Ok(trace)
+        // TODO: fix the clone here - required because we need to change the shape of the model at each iteration
+        // and the `run()` method returns a trace that holds a reference to the model, thereby violating Rust safety rules
+        Ok(trace.clone())
+    }
+}
+
+impl Driver<Element> {
+    pub fn context<E, PCS>(&self) -> anyhow::Result<Context<E, PCS>>
+    where
+        E: ExtensionField + Serialize + DeserializeOwned,
+        E::BaseField: Serialize + DeserializeOwned,
+        PCS: PolynomialCommitmentScheme<E>,
+    {
+        Context::<E, PCS>::generate(&self.model, None, None)
+    }
+    pub fn prove<E, PCS>(&self,ctx: Context<E,PCS>, trace: InferenceTrace<'_, E, Element>) -> anyhow::Result<(Proof<E,PCS>,IO<E>)>
+    where
+        E: ExtensionField + Serialize + DeserializeOwned,
+        E::BaseField: Serialize + DeserializeOwned,
+        PCS: PolynomialCommitmentScheme<E>,
+    {
+        let mut tr: BasicTranscript<E> = BasicTranscript::new(b"model");
+        let prover: Prover<'_, E, _, _> = Prover::new(&ctx, &mut tr);
+        let io = trace.to_verifier_io();
+        let proof = prover.prove(trace).expect("unable to generate proof");
+        let transcript = BasicTranscript::<E>::new(b"model");
+        Ok((proof,io))
     }
 }
 
@@ -202,14 +231,37 @@ pub trait LLMTokenizer {
 
 #[cfg(test)]
 mod test {
-    use crate::parser::{
+    use crate::{parser::{
         file_cache,
         gguf::tests::GPT2_Q8_0_URL,
         llm::{Token, TokenizerData},
-    };
+    }, testing::Pcs};
 
     use super::*;
     use ff_ext::GoldilocksExt2;
+
+    #[test]
+    fn test_llm_driver_prove() -> anyhow::Result<()> {
+        let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
+        let driver = Driver::load_external_model(&model_path)?.with_max_context(10);
+        let sentence = "The sky is";
+        let tokenizer = TokenizerData::load_tokenizer_from_gguf(&model_path)?;
+        let user_tokens = tokenizer.tokenize(sentence);
+        let mut driver = driver.into_provable_llm()?;
+        let ctx = driver.context::<GoldilocksExt2, Pcs<GoldilocksExt2>>()?;
+        let trace = driver.run::<GoldilocksExt2>(
+            user_tokens,
+            LLMTokenizerObserver {
+                input: sentence.to_string(),
+                tokenizer,
+            },
+        )?;
+        let (proof, io) = driver.prove(ctx, trace)?;
+        let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
+            BasicTranscript::new(b"model");
+        verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript)?;
+        Ok(())
+    }
 
     #[test]
     fn test_llm_driver() -> anyhow::Result<()> {

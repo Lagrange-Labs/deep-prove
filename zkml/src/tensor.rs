@@ -1768,14 +1768,7 @@ impl<T: Number> Tensor<T> {
     pub fn min_value(&self) -> T {
         self.data.iter().fold(T::MAX, |min, x| min.cmp_min(x))
     }
-    pub fn random_in_range(shape: &Shape, min: usize, max: usize) -> Self {
-        let data = (0..shape.numel()).map(|_| T::from_usize(thread_rng().gen_range(min..max)) ).collect();
-        Self {
-            data,
-            shape: shape.clone(),
-            og_shape: vec![0].into(),
-        }
-    }
+    
     #[cfg(test)]
     pub fn random(shape: &Shape) -> Self {
         Self::random_seed(shape, Some(crate::seed_from_env_or_rng()))
