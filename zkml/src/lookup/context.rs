@@ -21,13 +21,34 @@ use crate::{
     layers::{
         activation::{GELUQuantData, Relu},
         provable::{NodeId, ProvableOp},
-        transformer::softmax::{LOG_SCALE_FACTOR, OUTPUT_SCALE_FACTOR, SCALE_FACTOR},
+        transformer::{
+            layernorm::{LAYERNORM_OUTPUT_SCALE_FACTOR, LAYERNORM_SCALE_FACTOR},
+            softmax::{LOG_SCALE_FACTOR, OUTPUT_SCALE_FACTOR, SCALE_FACTOR},
+        },
     },
     model::{InferenceTrace, ToIterator},
     quantization::{self, Fieldizer},
 };
 use rayon::prelude::*;
 pub const TABLE_POLY_ID_OFFSET: usize = 666;
+
+pub(crate) type CommsAndEvals<PCS, E> = (
+    Vec<(
+        <PCS as PolynomialCommitmentScheme<E>>::CommitmentWithWitness,
+        DenseMultilinearExtension<E>,
+    )>,
+    Vec<Vec<<E as ExtensionField>::BaseField>>,
+);
+
+pub(crate) type CommsAndProofs<PCS, E> = (
+    Vec<
+        Vec<(
+            <PCS as PolynomialCommitmentScheme<E>>::CommitmentWithWitness,
+            DenseMultilinearExtension<E>,
+        )>,
+    >,
+    Vec<crate::lookup::logup_gkr::structs::LogUpProof<E>>,
+);
 
 type LookupAndColumns<BaseField> = (Vec<Element>, (Vec<BaseField>, Vec<BaseField>));
 
@@ -48,6 +69,8 @@ pub enum TableType {
     ErrorTable(Element, Element),
     /// Table use to check if a value is zero or not, returns 1 if the value is zero and zero otherwise, the [`usize`] indicates how many variables the table has.
     ZeroTable(usize),
+    /// Table used to calculate inverse square root, the provided [`u32`] is the result of calling [`f32::to_bits`] on the normalisation factor epsilon. The [`usize`] is the number of bits that have been shifted away.
+    InverseSQRT(u32, usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -223,6 +246,31 @@ impl TableType {
                     .unzip();
                 (merged_lookup, vec![in_column, out_column])
             }
+            TableType::InverseSQRT(epsu32, range_checked_bits) => {
+                let epsilon = f32::from_bits(*epsu32);
+                let table_max: Element = 1 << 2 * (*quantization::BIT_LEN - 1);
+                let table_min = -table_max;
+                let (merged_lookup, (in_column, out_column)): LookupAndColumns<E::BaseField> =
+                    (table_min..table_max)
+                        .map(|i| {
+                            // First we have to shift by `range_checked_bits`
+                            let shifted_val = i << range_checked_bits;
+                            // Now we convert back to float and perform the operation
+                            let float_output = 1.0f32
+                                / ((shifted_val as f32 / LAYERNORM_SCALE_FACTOR as f32) + epsilon)
+                                    .sqrt();
+                            // Now we use the output scale factor to recover the element value
+                            let out = (float_output * LAYERNORM_OUTPUT_SCALE_FACTOR as f32).round()
+                                as Element;
+
+                            let merged_val = i + COLUMN_SEPARATOR * out;
+                            let i_field: E = i.to_field();
+                            let out_field: E = out.to_field();
+                            (merged_val, (i_field.as_bases()[0], out_field.as_bases()[0]))
+                        })
+                        .unzip();
+                (merged_lookup, vec![in_column, out_column])
+            }
         }
     }
 
@@ -241,6 +289,10 @@ impl TableType {
                 )
             }
             TableType::ZeroTable(bit_size) => format!("Zero: {bit_size}"),
+            TableType::InverseSQRT(epsbits, shift) => format!(
+                "InverseSQRT - normalisation: {}, shift: {shift}",
+                f32::from_bits(*epsbits)
+            ),
         }
     }
 
@@ -373,6 +425,22 @@ impl TableType {
                 );
                 Ok(vec![in_column_eval, out_column_eval])
             }
+            TableType::InverseSQRT(..) => {
+                if point.len() != 2 * (*quantization::BIT_LEN - 1) + 1 {
+                    return Err(LogUpError::VerifierError(format!(
+                        "Point was not the correct size to produce an InverseSQRT table evaluation, point size: {}, expected: {}",
+                        point.len(),
+                        2 * (*quantization::BIT_LEN - 1) + 1
+                    )));
+                }
+
+                let first_column =
+                    point.iter().enumerate().fold(E::ZERO, |acc, (index, p)| {
+                        acc + *p * E::from_canonical_u64(1u64 << index)
+                    }) - E::from_canonical_u64(1u64 << 2 * (*quantization::BIT_LEN - 1));
+
+                Ok(vec![first_column])
+            }
         }
     }
 
@@ -387,6 +455,9 @@ impl TableType {
             TableType::Clamping(_) => transcript.get_and_append_challenge(b"Clamping").elements,
             TableType::Softmax(..) => transcript.get_and_append_challenge(b"Softmax").elements,
             TableType::ZeroTable(..) => transcript.get_and_append_challenge(b"Zero").elements,
+            TableType::InverseSQRT(..) => {
+                transcript.get_and_append_challenge(b"InverseSQRT").elements
+            }
         }
     }
 
@@ -399,6 +470,7 @@ impl TableType {
             TableType::Softmax(table_data) => table_data.size(),
             TableType::ErrorTable(_, allowable_error) => ceil_log2(2 * *allowable_error as usize),
             TableType::ZeroTable(bits) => *bits,
+            TableType::InverseSQRT(..) => 2 * (*quantization::BIT_LEN - 1) + 1,
         }
     }
 
@@ -452,6 +524,31 @@ impl TableType {
                     num_vars, column,
                 ))
             }
+            TableType::InverseSQRT(epsu32, range_checked_bits) => {
+                let epsilon = f32::from_bits(*epsu32);
+                let table_max: Element = 1 << 2 * (*quantization::BIT_LEN - 1);
+                let table_min = -table_max;
+                let column = (table_min..table_max)
+                    .map(|i| {
+                        // First we have to shift by `range_checked_bits`
+                        let shifted_val = i << range_checked_bits;
+                        // Now we convert back to float and perform the operation
+                        let float_output = 1.0f32
+                            / ((shifted_val as f32 / LAYERNORM_SCALE_FACTOR as f32) + epsilon)
+                                .sqrt();
+                        // Now we use the output scale factor to recover the element value
+                        let out = (float_output * LAYERNORM_OUTPUT_SCALE_FACTOR as f32).round()
+                            as Element;
+                        let out_field: E = out.to_field();
+                        out_field.as_bases()[0]
+                    })
+                    .collect::<Vec<E::BaseField>>();
+                let num_vars = 2 * (*quantization::BIT_LEN - 1) + 1;
+                Some(DenseMultilinearExtension::<E>::from_evaluations_vec(
+                    num_vars, column,
+                ))
+            }
+
             _ => None,
         }
     }
@@ -459,8 +556,11 @@ impl TableType {
     /// Method that takes all of the claims output by a logup table proof and outputs only those that need to be checked via commitment opening (excluding the multiplicity poly claim)
     pub fn table_claims<E: ExtensionField>(&self, claims: &[Claim<E>]) -> Vec<Claim<E>> {
         match self {
-            TableType::Softmax(..) | TableType::ErrorTable(..) | TableType::GELU(..) => {
-                // For Softmax and Error Table we just need the output column claim so the last of the slice
+            TableType::Softmax(..)
+            | TableType::ErrorTable(..)
+            | TableType::InverseSQRT(..)
+            | TableType::GELU(..) => {
+                // For Softmax, InverSQRT and Error Table we just need the output column claim so the last of the slice
                 vec![claims.last().cloned().unwrap()]
             }
 
