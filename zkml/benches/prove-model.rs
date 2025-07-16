@@ -80,8 +80,8 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.bench_function("mlp", |b| {
         b.iter(|| {
             run_model(
-                include_bytes!("ref-files/mlp/model.onnx"),
-                zstd::Decoder::new(&include_bytes!("ref-files/mlp/input.json.zst")[..])
+                include_bytes!("../assets/scripts/MLP/mlp-iris-01.onnx"),
+                zstd::Decoder::new(&include_bytes!("../assets/scripts/MLP/input.json.zst")[..])
                     .expect("failed to parse zstd"),
             )
         })
@@ -89,8 +89,8 @@ fn criterion_benchmark(c: &mut Criterion) {
     group.bench_function("cnn", |b| {
         b.iter(|| {
             run_model(
-                include_bytes!("ref-files/cnn/model.onnx"),
-                zstd::Decoder::new(&include_bytes!("ref-files/cnn/input.json.zst")[..])
+                include_bytes!("../assets/scripts/CNN/cnn-cifar-01.onnx"),
+                zstd::Decoder::new(&include_bytes!("../assets/scripts/CNN/input.json.zst")[..])
                     .expect("failed to parse zstd"),
             )
         })
@@ -100,8 +100,8 @@ fn criterion_benchmark(c: &mut Criterion) {
     // group.bench_function("covid", |b| {
     //     b.iter(|| {
     //         run_model(
-    //             include_bytes!("ref-files/covid/model.onnx"),
-    //             zstd::Decoder::new(&include_bytes!("ref-files/covid/input.json.zst")[..])
+    //             include_bytes!("../assets/scripts/covid/cnn-covid.onnx"),
+    //             zstd::Decoder::new(&include_bytes!("../assets/scripts/covid/input.json.zst")[..])
     //                 .expect("failed to parse zstd"),
     //         )
     //     })
