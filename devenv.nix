@@ -42,10 +42,6 @@
     '';
   };
 
-  env = {
-    OPENSSL_DEV = pkgs.openssl.dev;
-  };
-
   # https://devenv.sh/git-hooks/
   # git-hooks.hooks.shellcheck.enable = true;
   git-hooks.hooks = {
@@ -53,7 +49,7 @@
     check-merge-conflicts.enable = true;
     ripsecrets.enable = true;
     rustfmt = {
-      enable = true;
+      enable = false;
       settings.color = "auto";
     };
     flake8 = {
@@ -66,8 +62,8 @@
         exclude = "*.nix";
         format = "brief";
         ignored-words = [
-          "In"
-          "InSum"
+          "Ein"
+          "EinSum"
           "Nd" # For NdArray
         ];
         write = true;

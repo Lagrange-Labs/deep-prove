@@ -8,12 +8,10 @@ use crate::{
     },
     model::Model,
     padding::PaddingMode,
-    parser::read_model,
     tensor::Shape,
 };
 use anyhow::{Context, Result, bail, ensure};
-use itertools::Either;
-use std::{collections::HashMap, iter::Peekable, path::Path};
+use std::{collections::HashMap, iter::Peekable};
 use tracing::debug;
 use tract_onnx::{
     pb::ModelProto,
@@ -68,66 +66,6 @@ fn from_path(path: &str) -> Result<Model<f32>> {
 fn from_inference_model(model: InferenceModel) -> Result<Model<f32>> {
     let model = {
         let pmodel = model.into_typed()?.into_decluttered()?;
-        // so far we dont support batching
-        let mut values = SymbolValues::default();
-        let symbol = pmodel.sym("batch_size");
-        values.set(&symbol, 1);
-        pmodel.concretize_dims(&values)?
-    };
-
-    let plan = SimplePlan::new(model)?;
-    let onnx_model = plan.model();
-    let inference_order = plan.order_without_consts();
-    let input_node = onnx_model.node(inference_order[0]);
-    let input_source = downcast_to::<TypedSource>(input_node)?;
-    debug!("onnx input_source: {:?}", input_source.fact.shape.to_tvec());
-    let mut input_shape = input_source
-        .fact
-        .shape
-        .to_tvec()
-        .into_iter()
-        .map(|x| tdim_to_usize(&x))
-        .collect::<Result<Shape, _>>()?;
-    // remove batch dimension if it's 1 as we dont support batching yet
-    if input_shape[0] == 1 {
-        input_shape.remove(0);
-    }
-
-    let mut pmodel = Model::new_from_input_shapes(vec![input_shape], PaddingMode::NoPadding);
-    let mut it = inference_order[1..].iter().peekable();
-    let mut first_node = true;
-    let mut last_node_id = 0;
-    let parser = ParserFactory::init();
-    while let Some((id, zkml_node)) = parser
-        .parse_node(onnx_model, &mut it, first_node)
-        .transpose()?
-    {
-        let desc = zkml_node.operation.describe();
-        pmodel
-            .add_node_with_id(id, zkml_node)
-            .context(format!("adding node {desc}:"))?;
-        first_node = false;
-        last_node_id = id;
-    }
-    let outputs = onnx_model
-        .output_outlets()?
-        .iter()
-        .map(|outlet| Edge::new(outlet.node, outlet.slot))
-        .collect::<Vec<_>>();
-    assert!(
-        outputs
-            .iter()
-            .any(|edge| edge.node.unwrap() == last_node_id)
-    );
-    pmodel.route_output(Some(outputs))?;
-    Ok(pmodel)
-}
-
-pub fn from_data_source<P: AsRef<Path> + Sized>(
-    data_src: Either<Vec<u8>, P>,
-) -> Result<Model<f32>> {
-    let model = {
-        let pmodel = read_model(&data_src)?.into_typed()?.into_decluttered()?;
         // so far we dont support batching
         let mut values = SymbolValues::default();
         let symbol = pmodel.sym("batch_size");
@@ -789,8 +727,7 @@ mod tests {
 
     #[test]
     fn test_parser_load_conv() {
-        let model =
-            from_data_source(Either::Right("assets/scripts/CNN/cnn-cifar-01.onnx")).unwrap();
+        let model = from_path("assets/scripts/CNN/cnn-cifar-01.onnx").unwrap();
         let input_shape = model.input_shapes()[0].clone();
 
         let input_tensor = crate::tensor::Tensor::random(&input_shape);

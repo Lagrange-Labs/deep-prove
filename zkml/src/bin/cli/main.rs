@@ -3,7 +3,6 @@ use std::{path::PathBuf, str::FromStr};
 use alloy::signers::local::LocalSigner;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use itertools::Either;
 use lagrange::ProofChannelResponse;
 use memmap2::Mmap;
 use tokio::fs::File;
@@ -57,13 +56,6 @@ enum Command {
 
     /// Fetch the generated proofs, if any.
     Fetch {},
-}
-
-fn parse_model<P: AsRef<Path>>(p: P) -> anyhow::Result<(Model<Element>, ModelMetadata)> {
-    let strategy = AbsoluteMax::new();
-    FloatOnnxLoader::new_with_scaling_strategy(Either::Right(p), strategy)
-        .with_keep_float(true)
-        .build()
 }
 
 #[tokio::main]
@@ -122,9 +114,9 @@ async fn main() -> anyhow::Result<()> {
                 model_type.validate_proto(&proto)?;
             }
 
-            // TODO Currently hard-coded in the ONNX loader. Adjust when choice is availabl
+            // TODO Currently hard-coded in the ONNX loader. Adjust when choice is available
             let scaling_strategy = ScalingStrategyKind::AbsoluteMax;
-            // TODO Currently hard-coded in the ONNX loader. Adjust when choice is availabl
+            // TODO Currently hard-coded in the ONNX loader. Adjust when choice is available
             let scaling_input_hash = None;
 
             let task = tonic::Request::new(lagrange::SubmitTaskRequest {

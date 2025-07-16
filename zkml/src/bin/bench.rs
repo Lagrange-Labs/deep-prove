@@ -1,11 +1,4 @@
-use itertools::Either;
-use std::{
-    collections::HashMap,
-    fs::{File, OpenOptions},
-    io::BufReader,
-    path::Path,
-    time,
-};
+use std::{fs::File, io::BufReader};
 use timed_core::Output;
 #[cfg(feature = "blake")]
 use transcript::blake::BlakeTranscript;
@@ -44,7 +37,6 @@ fn new_transcript() -> Transcript {
     #[cfg(feature = "blake")]
     {
         use transcript::blake::BlakeTranscript;
-        println!("using blake transcript");
         BlakeTranscript::new(b"bench")
     }
     #[cfg(not(feature = "blake"))]
@@ -251,13 +243,13 @@ fn read_model(args: &Args, inputs: &InputJSON) -> Result<(Model<Element>, ModelM
                     .map(|inp| vec![inp.clone()])
                     .collect(),
             );
-            FloatOnnxLoader::new_with_scaling_strategy(Either::Right(&args.onnx), strategy)
+            FloatOnnxLoader::new_with_scaling_strategy(&args.onnx, strategy)
                 .with_keep_float(true)
                 .build()
         }
         "maxabs" => {
             let strategy = AbsoluteMax::new();
-            FloatOnnxLoader::new_with_scaling_strategy(Either::Right(&args.onnx), strategy)
+            FloatOnnxLoader::new_with_scaling_strategy(&args.onnx, strategy)
                 .with_keep_float(true)
                 .build()
         }
@@ -401,10 +393,7 @@ fn run(args: Args) -> anyhow::Result<()> {
         let io = trace.to_verifier_io();
         let mut prover_transcript = new_transcript();
         let prover = Prover::<_, _, _>::new(ctx.as_ref().unwrap(), &mut prover_transcript);
-
-        let proof = bencher.r(CSV_PROVING, move || {
-            prover.prove(&trace).expect("unable to generate proof")
-        });
+        let proof = prover.prove(&trace).expect("unable to generate proof");
 
         // Serialize proof using MessagePack and calculate size in KB
         let proof_bytes = to_vec_named(&proof)?;

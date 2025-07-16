@@ -3,7 +3,7 @@ use ff_ext::GoldilocksExt2;
 use itertools::Either;
 use mpcs::{Basefold, BasefoldRSParams, Hasher};
 use zkml::{
-    Context, Element, FloatOnnxLoader, Prover, default_transcript,
+    Context, Element, FloatOnnxLoader, Prover, ScalingStrategy, default_transcript,
     middleware::v1::Input,
     model::Model,
     quantization::{AbsoluteMax, ModelMetadata},
@@ -36,13 +36,9 @@ fn new_transcript() -> Transcript {
 }
 
 fn parse_model(model_data: &[u8]) -> anyhow::Result<(Model<Element>, ModelMetadata)> {
-    let strategy = AbsoluteMax::new();
-    FloatOnnxLoader::new_with_scaling_strategy(
-        Either::<Vec<u8>, std::path::PathBuf>::Left(model_data.to_vec()),
-        strategy,
-    )
-    .with_keep_float(true)
-    .build()
+    FloatOnnxLoader::from_bytes_with_scaling_strategy(model_data, AbsoluteMax::new())
+        .with_keep_float(true)
+        .build()
 }
 
 fn run_model<T: std::io::Read>(model_data: &[u8], inputs: T) {
@@ -50,8 +46,9 @@ fn run_model<T: std::io::Read>(model_data: &[u8], inputs: T) {
     let (model, md) = parse_model(model_data).expect("failed to parse model");
     let inputs = run_inputs.to_elements(&md);
 
-    let ctx =
-        Some(Context::<F, Pcs<F>>::generate(&model, None).expect("unable to generate context"));
+    let ctx = Some(
+        Context::<F, Pcs<F>>::generate(&model, None, None).expect("unable to generate context"),
+    );
 
     for (i, input) in inputs.into_iter().enumerate() {
         let input_tensor = model

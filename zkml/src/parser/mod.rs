@@ -3,14 +3,11 @@ pub mod json;
 pub mod llm;
 pub mod onnx;
 
-use std::path::Path;
-
 use crate::{
     Element,
     layers::{convolution::conv2d_shape, pooling::maxpool2d_shape},
     model::Model,
     padding::pad_model,
-    parser::onnx::from_data_source,
     quantization::{AbsoluteMax, ModelMetadata, ScalingStrategy},
     tensor::Shape,
 };
@@ -34,7 +31,7 @@ pub type DefaultFloatOnnxLoader<'a> = FloatOnnxLoader<'a, AbsoluteMax>;
 
 impl DefaultFloatOnnxLoader<'_> {
     pub fn new(model_path: &str) -> Self {
-        Self::new_with_scaling_strategy(Either::Right(model_path.to_string()), AbsoluteMax::new())
+        Self::new_with_scaling_strategy(model_path, AbsoluteMax::new())
     }
 }
 
@@ -56,22 +53,16 @@ impl<'a, S: ScalingStrategy> FloatOnnxLoader<'a, S> {
         }
     }
 
-    pub fn new_with_scaling_strategy(model_data: Either<Vec<u8>, P>, scaling_strategy: S) -> Self {
-        Self {
-            model_data,
-            scaling_strategy,
-            model_type: None,
-            keep_float: false,
-        }
-    }
     pub fn with_scaling_strategy(mut self, scaling_strategy: S) -> Self {
         self.scaling_strategy = scaling_strategy;
         self
     }
+
     pub fn with_model_type(mut self, model_type: ModelType) -> Self {
         self.model_type = Some(model_type);
         self
     }
+
     pub fn with_keep_float(mut self, keep_float: bool) -> Self {
         self.keep_float = keep_float;
         self
