@@ -196,6 +196,7 @@ struct Args {
     run_mode: RunMode,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum RunMode {
     /// Connect to a LPN gateway to receive inference tasks
