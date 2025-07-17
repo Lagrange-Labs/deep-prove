@@ -906,7 +906,9 @@ where
         assert!(other.shape.len() == 1, "Tensor is not a vector");
         assert!(
             self.shape[1] == other.shape[0],
-            "Shape mismatch for addition."
+            "Shape mismatch for addition2: {:?} != {:?}",
+            self.shape,
+            other.shape
         );
         let data = self
             .data
