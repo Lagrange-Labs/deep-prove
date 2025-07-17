@@ -9,7 +9,7 @@ mod tests {
     use ff_ext::{ExtensionField, FromUniformBytes, GoldilocksExt2};
     use itertools::izip;
     use multilinear_extensions::mle::{DenseMultilinearExtension, MultilinearExtension};
-    use p3_field::FieldAlgebra;
+    use p3_field::{FieldAlgebra, FieldExtensionAlgebra};
     use p3_goldilocks::Goldilocks;
 
     use crate::{
@@ -104,6 +104,57 @@ mod tests {
                     );
                     assert_eq!(claim.eval, mle.evaluate(&claim.point))
                 });
+        }
+    }
+
+    #[test]
+    fn test_logup_product() {
+        for n in 5..15 {
+            let column = (1..=1 << n)
+                .into_iter()
+                .map(|elem| {
+                    let f: GoldilocksExt2 = elem.to_field();
+                    f.as_bases()[0]
+                })
+                .collect::<Vec<Goldilocks>>();
+
+            let lookup_input = LogUpInput::<GoldilocksExt2>::new_product(column.clone()).unwrap();
+
+            let mut prover_transcript = default_transcript::<GoldilocksExt2>();
+            let now = std::time::Instant::now();
+            let proof = batch_prove(&lookup_input, &mut prover_transcript).unwrap();
+            println!("Elapsed time proving: {:?}", now.elapsed());
+
+            let mut verifier_transcript = default_transcript::<GoldilocksExt2>();
+            let claims = verify_logup_proof(
+                &proof,
+                1,
+                GoldilocksExt2::ZERO,
+                GoldilocksExt2::ZERO,
+                &mut verifier_transcript,
+            )
+            .unwrap();
+
+            let claim = claims.claims()[0].clone();
+
+            let eval = GoldilocksExt2::ONE
+                + claim
+                    .point
+                    .iter()
+                    .enumerate()
+                    .fold(GoldilocksExt2::ZERO, |acc, (index, p)| {
+                        acc + *p * GoldilocksExt2::from_canonical_u64(1u64 << index)
+                    });
+
+            assert_eq!(claim.eval, eval);
+
+            let prod = claims.numerators()[0];
+            let expected_prod = column
+                .iter()
+                .map(|val| GoldilocksExt2::from_base(*val))
+                .product::<GoldilocksExt2>();
+
+            assert_eq!(prod, expected_prod);
         }
     }
 }

@@ -26,7 +26,12 @@ pub enum LogUpLayer<E: ExtensionField> {
     },
     /// This is the first layer of the GKR protocol when proving a fractional sumcheck for a set of lookups.
     /// The numerators will all be `-1` on this layer so we only store the denominator which is the merged lookups.
-    InitialLookup { denominator: Vec<E> },
+    InitialLookup {
+        denominator: Vec<E>,
+    },
+    Product {
+        product: Vec<E>,
+    },
 }
 
 impl<E: ExtensionField> LogUpLayer<E> {
@@ -37,6 +42,7 @@ impl<E: ExtensionField> LogUpLayer<E> {
             LogUpLayer::Generic { denominator, .. }
             | LogUpLayer::InitialTable { denominator, .. }
             | LogUpLayer::InitialLookup { denominator } => ceil_log2(denominator.len() >> 1),
+            LogUpLayer::Product { product } => ceil_log2(product.len() >> 1),
         }
     }
 
@@ -96,6 +102,18 @@ impl<E: ExtensionField> LogUpLayer<E> {
                     denominator: next_denominator,
                 })
             }
+            LogUpLayer::Product { product } => {
+                let (prod1, prod2) = product.split_at(half_layer_size);
+                let new_product = prod1
+                    .iter()
+                    .zip(prod2.iter())
+                    .map(|(&p1, &p2)| p1 * p2)
+                    .collect::<Vec<E>>();
+
+                Some(LogUpLayer::Product {
+                    product: new_product,
+                })
+            }
         }
     }
 
@@ -112,6 +130,7 @@ impl<E: ExtensionField> LogUpLayer<E> {
                 numerator[0] * denominator[1] + numerator[1] * denominator[0],
                 denominator[0] * denominator[1],
             )),
+            (LogUpLayer::Product { product }, true) => Some((product[0] * product[1], E::ZERO)),
             _ => None,
         }
     }
@@ -128,6 +147,7 @@ impl<E: ExtensionField> LogUpLayer<E> {
                 denominator,
             } => [numerator.as_slice(), denominator.as_slice()].concat(),
             LogUpLayer::InitialLookup { denominator } => denominator.to_vec(),
+            LogUpLayer::Product { product } => product.to_vec(),
         }
     }
 
@@ -176,6 +196,17 @@ impl<E: ExtensionField> LogUpLayer<E> {
 
                 vec![denom_low_mle, denom_high_mle]
             }
+            LogUpLayer::Product { product } => {
+                let (prod_low, prod_high) = product.split_at(half_layer_size);
+                let prod_low_mle = Arc::new(
+                    DenseMultilinearExtension::<E>::from_evaluations_ext_slice(num_vars, prod_low),
+                );
+                let prod_high_mle = Arc::new(
+                    DenseMultilinearExtension::<E>::from_evaluations_ext_slice(num_vars, prod_high),
+                );
+
+                vec![prod_low_mle, prod_high_mle]
+            }
         }
     }
 }
@@ -193,6 +224,13 @@ impl<E: ExtensionField> LogUpCircuit<E> {
         let layers = std::iter::successors(Some(initial_layer), |layer| layer.next_layer())
             .collect::<Vec<LogUpLayer<E>>>();
         LogUpCircuit { layers }
+    }
+
+    pub fn new_product_circuit(evals: &[E::BaseField]) -> LogUpCircuit<E> {
+        let initial_layer = LogUpLayer::<E>::Product {
+            product: evals.iter().map(|v| E::from_base(*v)).collect::<Vec<E>>(),
+        };
+        LogUpCircuit::<E>::new(initial_layer)
     }
 
     /// Crates a new [`LogUpCircuit`] for a lookup variant, the inputs to this function are:

@@ -41,14 +41,21 @@ pub fn verify_logup_proof<E: ExtensionField, T: Transcript<E>>(
             .circuit_outputs()
             .iter()
             .fold((E::ZERO, E::ONE), |(acc, alpha_comb), e| {
-                // we have four evals and we batch them as alpha * (batching_challenge * (e[1] - e[0]) + e[0] + lambda * (batching_challenge * (e[3] - e[2]) + e[2]) )
-                (
-                    acc + alpha_comb
-                        * (batching_challenge * (e[1] - e[0])
-                            + e[0]
-                            + lambda * (batching_challenge * (e[3] - e[2]) + e[2])),
-                    alpha_comb * alpha,
-                )
+                if e.len() == 4 {
+                    // we have four evals and we batch them as alpha * (batching_challenge * (e[1] - e[0]) + e[0] + lambda * (batching_challenge * (e[3] - e[2]) + e[2]) )
+                    (
+                        acc + alpha_comb
+                            * (batching_challenge * (e[1] - e[0])
+                                + e[0]
+                                + lambda * (batching_challenge * (e[3] - e[2]) + e[2])),
+                        alpha_comb * alpha,
+                    )
+                } else {
+                    (
+                        acc + alpha_comb * (batching_challenge * (e[1] - e[0]) + e[0]),
+                        alpha_comb * alpha,
+                    )
+                }
             });
     // The initial sumcheck point is just the batching challenge
     let mut sumcheck_point: Vec<E> = vec![batching_challenge];
@@ -78,57 +85,87 @@ pub fn verify_logup_proof<E: ExtensionField, T: Transcript<E>>(
         // Now we take the round evals and check their consistency with the sumcheck claim
         let evals_per_instance = round_evaluations.len() / num_instances;
 
-        current_claim = if evals_per_instance == 4 {
-            let (next_claim, _, sumcheck_claim, _) = round_evaluations.chunks(4).fold(
-                (E::ZERO, E::ONE, E::ZERO, E::ONE),
-                |(acc_next_claim, next_alpha_comb, acc_sumcheck_claim, prev_alpha), e| {
-                    let next_claim_term = acc_next_claim
-                        + next_alpha_comb
-                            * (batching_challenge * (e[2] - e[0])
-                                + e[0]
-                                + next_lambda * (batching_challenge * (e[1] - e[3]) + e[3]));
+        current_claim = match proof.proof_type() {
+            ProofType::Lookup | ProofType::Table => {
+                if evals_per_instance == 4 {
+                    let (next_claim, _, sumcheck_claim, _) = round_evaluations.chunks(4).fold(
+                        (E::ZERO, E::ONE, E::ZERO, E::ONE),
+                        |(acc_next_claim, next_alpha_comb, acc_sumcheck_claim, prev_alpha), e| {
+                            let next_claim_term = acc_next_claim
+                                + next_alpha_comb
+                                    * (batching_challenge * (e[2] - e[0])
+                                        + e[0]
+                                        + next_lambda
+                                            * (batching_challenge * (e[1] - e[3]) + e[3]));
 
-                    let sumcheck_claim_term = acc_sumcheck_claim
-                        + prev_alpha
-                            * (eq_eval * (e[0] * e[1] + e[2] * e[3] + lambda * e[3] * e[1]));
-                    (
-                        next_claim_term,
-                        next_alpha_comb * next_alpha,
-                        sumcheck_claim_term,
-                        prev_alpha * alpha,
-                    )
-                },
-            );
-            if sumcheck_claim != sumcheck_subclaim.expected_evaluation {
-                return Err(LogUpError::VerifierError(format!(
-                    "Calculated sumcheck claim: {:?} does not equal this rounds sumcheck output claim: {:?} at round: {}",
-                    sumcheck_claim, sumcheck_subclaim.expected_evaluation, i
-                )));
+                            let sumcheck_claim_term = acc_sumcheck_claim
+                                + prev_alpha
+                                    * (eq_eval
+                                        * (e[0] * e[1] + e[2] * e[3] + lambda * e[3] * e[1]));
+                            (
+                                next_claim_term,
+                                next_alpha_comb * next_alpha,
+                                sumcheck_claim_term,
+                                prev_alpha * alpha,
+                            )
+                        },
+                    );
+                    if sumcheck_claim != sumcheck_subclaim.expected_evaluation {
+                        return Err(LogUpError::VerifierError(format!(
+                            "Calculated sumcheck claim: {:?} does not equal this rounds sumcheck output claim: {:?} at round: {}",
+                            sumcheck_claim, sumcheck_subclaim.expected_evaluation, i
+                        )));
+                    }
+                    next_claim
+                } else {
+                    let (next_claim, _, sumcheck_claim, _) = round_evaluations.chunks(2).fold(
+                        (E::ZERO, E::ONE, E::ZERO, E::ONE),
+                        |(acc_next_claim, alpha_comb, acc_sumcheck_claim, prev_alpha), e| {
+                            let next_claim_term = acc_next_claim
+                                + alpha_comb * (batching_challenge * (e[0] - e[1]) + e[1]);
+                            let sumcheck_claim_term = acc_sumcheck_claim
+                                + prev_alpha * eq_eval * (-e[1] - e[0] + lambda * e[0] * e[1]);
+                            (
+                                next_claim_term,
+                                alpha_comb * next_alpha,
+                                sumcheck_claim_term,
+                                prev_alpha * alpha,
+                            )
+                        },
+                    );
+                    if sumcheck_claim != sumcheck_subclaim.expected_evaluation {
+                        return Err(LogUpError::VerifierError(format!(
+                            "Calculated sumcheck claim: {:?} does not equal this rounds sumcheck output claim: {:?} at round: {}",
+                            sumcheck_claim, sumcheck_subclaim.expected_evaluation, i
+                        )));
+                    }
+                    next_claim
+                }
             }
-            next_claim
-        } else {
-            let (next_claim, _, sumcheck_claim, _) = round_evaluations.chunks(2).fold(
-                (E::ZERO, E::ONE, E::ZERO, E::ONE),
-                |(acc_next_claim, alpha_comb, acc_sumcheck_claim, prev_alpha), e| {
-                    let next_claim_term =
-                        acc_next_claim + alpha_comb * (batching_challenge * (e[0] - e[1]) + e[1]);
-                    let sumcheck_claim_term = acc_sumcheck_claim
-                        + prev_alpha * eq_eval * (-e[1] - e[0] + lambda * e[0] * e[1]);
-                    (
-                        next_claim_term,
-                        alpha_comb * next_alpha,
-                        sumcheck_claim_term,
-                        prev_alpha * alpha,
-                    )
-                },
-            );
-            if sumcheck_claim != sumcheck_subclaim.expected_evaluation {
-                return Err(LogUpError::VerifierError(format!(
-                    "Calculated sumcheck claim: {:?} does not equal this rounds sumcheck output claim: {:?} at round: {}",
-                    sumcheck_claim, sumcheck_subclaim.expected_evaluation, i
-                )));
+            ProofType::Product => {
+                let (next_claim, _, sumcheck_claim, _) = round_evaluations.chunks(2).fold(
+                    (E::ZERO, E::ONE, E::ZERO, E::ONE),
+                    |(acc_next_claim, alpha_comb, acc_sumcheck_claim, prev_alpha), e| {
+                        let next_claim_term = acc_next_claim
+                            + alpha_comb * (batching_challenge * (e[1] - e[0]) + e[0]);
+                        let sumcheck_claim_term =
+                            acc_sumcheck_claim + prev_alpha * eq_eval * e[1] * e[0];
+                        (
+                            next_claim_term,
+                            alpha_comb * next_alpha,
+                            sumcheck_claim_term,
+                            prev_alpha * alpha,
+                        )
+                    },
+                );
+                if sumcheck_claim != sumcheck_subclaim.expected_evaluation {
+                    return Err(LogUpError::VerifierError(format!(
+                        "Calculated sumcheck claim: {:?} does not equal this rounds sumcheck output claim: {:?} at round: {}",
+                        sumcheck_claim, sumcheck_subclaim.expected_evaluation, i
+                    )));
+                }
+                next_claim
             }
-            next_claim
         };
 
         alpha = next_alpha;
@@ -207,5 +244,6 @@ fn calculate_final_eval<E: ExtensionField>(
 
             proof.output_claims()[0].eval + lambda * columns_eval
         }
+        ProofType::Product => proof.output_claims()[0].eval,
     }
 }

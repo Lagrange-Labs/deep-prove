@@ -66,14 +66,21 @@ pub fn batch_prove<E: ExtensionField, T: Transcript<E>>(
         circuit_outputs
             .iter()
             .fold((E::ZERO, E::ONE), |(acc, alpha_comb), e| {
-                // we have four evals and we batch them as alpha * (batching_challenge * (e[1] - e[0]) + e[0] + lambda * (batching_challenge * (e[3] - e[2]) + e[2]) )
-                (
-                    acc + alpha_comb
-                        * (batching_challenge * (e[1] - e[0])
-                            + e[0]
-                            + lambda * (batching_challenge * (e[3] - e[2]) + e[2])),
-                    alpha_comb * alpha,
-                )
+                if e.len() == 4 {
+                    // we have four evals and we batch them as alpha * (batching_challenge * (e[1] - e[0]) + e[0] + lambda * (batching_challenge * (e[3] - e[2]) + e[2]) )
+                    (
+                        acc + alpha_comb
+                            * (batching_challenge * (e[1] - e[0])
+                                + e[0]
+                                + lambda * (batching_challenge * (e[3] - e[2]) + e[2])),
+                        alpha_comb * alpha,
+                    )
+                } else {
+                    (
+                        acc + alpha_comb * (batching_challenge * (e[1] - e[0]) + e[0]),
+                        alpha_comb * alpha,
+                    )
+                }
             });
 
     // The initial sumcheck point is just the batching challenge
@@ -113,13 +120,19 @@ pub fn batch_prove<E: ExtensionField, T: Transcript<E>>(
                     vec![eq_poly.clone(), mles[2].clone(), mles[3].clone()],
                     current_alpha * lambda,
                 );
-            } else {
+            } else if let LogUpLayer::InitialLookup { .. } = layer {
                 // Here we are in the initial lookup case so we have no numerator polynomials (all the numerator values are -1)
                 vp.add_mle_list(vec![eq_poly.clone(), mles[1].clone()], -current_alpha);
                 vp.add_mle_list(vec![eq_poly.clone(), mles[0].clone()], -current_alpha);
                 vp.add_mle_list(
                     vec![eq_poly.clone(), mles[0].clone(), mles[1].clone()],
                     current_alpha * lambda,
+                );
+            } else {
+                // Here we are in the product case
+                vp.add_mle_list(
+                    vec![eq_poly.clone(), mles[0].clone(), mles[1].clone()],
+                    current_alpha,
                 );
             }
             current_alpha *= alpha;
@@ -151,18 +164,33 @@ pub fn batch_prove<E: ExtensionField, T: Transcript<E>>(
 
         // This step works out the initial claim for the next round of the protocol
         current_claim = if current_layer_vars != total_layers {
-            evals
-                .chunks(4)
-                .fold((E::ZERO, E::ONE), |(acc, alpha_comb), e| {
-                    (
-                        acc + alpha_comb
-                            * (batching_challenge * (e[2] - e[0])
-                                + e[0]
-                                + lambda * (batching_challenge * (e[1] - e[3]) + e[3])),
-                        alpha_comb * alpha,
-                    )
-                })
-                .0
+            match input {
+                LogUpInput::Lookup { .. } | LogUpInput::Table { .. } => {
+                    evals
+                        .chunks(4)
+                        .fold((E::ZERO, E::ONE), |(acc, alpha_comb), e| {
+                            (
+                                acc + alpha_comb
+                                    * (batching_challenge * (e[2] - e[0])
+                                        + e[0]
+                                        + lambda * (batching_challenge * (e[1] - e[3]) + e[3])),
+                                alpha_comb * alpha,
+                            )
+                        })
+                        .0
+                }
+                LogUpInput::Product { .. } => {
+                    evals
+                        .chunks(2)
+                        .fold((E::ZERO, E::ONE), |(acc, alpha_comb), e| {
+                            (
+                                acc + alpha_comb * (batching_challenge * (e[1] - e[0]) + e[0]),
+                                alpha_comb * alpha,
+                            )
+                        })
+                        .0
+                }
+            }
         } else {
             final_round_claim(input, evals, batching_challenge, alpha, lambda)
         };
@@ -186,6 +214,7 @@ pub fn batch_prove<E: ExtensionField, T: Transcript<E>>(
     let proof_type = match input {
         LogUpInput::Lookup { .. } => ProofType::Lookup,
         LogUpInput::Table { .. } => ProofType::Table,
+        LogUpInput::Product { .. } => ProofType::Product,
     };
 
     Ok(LogUpProof::<E> {
@@ -206,7 +235,7 @@ fn final_round_claim<E: ExtensionField>(
     lambda: E,
 ) -> E {
     match input {
-        LogUpInput::Lookup { .. } => {
+        LogUpInput::Lookup { .. } | LogUpInput::Product { .. } => {
             // In this case there is only one polynomial per instance, the denominator, so we batch together its low and high parts
             evals
                 .chunks(2)
