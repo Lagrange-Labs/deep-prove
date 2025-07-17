@@ -39,13 +39,13 @@ pub struct ModelKey<'a> {
 type F = GoldilocksExt2;
 type Pcs = Basefold<F, BasefoldRSParams<Hasher>>;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Params {
     pub prover: <Pcs as PolynomialCommitmentScheme<F>>::ProverParam,
     pub verifier: <Pcs as PolynomialCommitmentScheme<F>>::VerifierParam,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ScaledModel {
     pub model: Model<Element>,
     pub model_metadata: ModelMetadata,
@@ -77,7 +77,7 @@ pub trait Store {
 }
 
 /// AWS S3 store for prod.
-#[derive(Debug, Clone, derive_more::From)]
+#[derive(Clone, derive_more::From)]
 pub struct S3Store(#[from] AmazonS3);
 
 impl Store for S3Store {
@@ -175,13 +175,13 @@ impl Store for S3Store {
 }
 
 /// In-memory store for testing.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct MemStore {
     pps: Arc<Mutex<HashMap<Key, Params>>>,
     models: Arc<Mutex<HashMap<Key, ScaledModel>>>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct MemStoreInner {}
 
 impl Store for MemStore {
