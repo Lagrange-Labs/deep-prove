@@ -70,7 +70,7 @@ jobs:
           components: clippy
 
       - name: Restore Rust cache
-        uses: Swatinem/rust-cache@v2.8
+        uses: Swatinem/rust-cache@v2
         with:
           # The prefix cache key, this can be changed to start a new cache manually.
           # default: "v0-rust"
