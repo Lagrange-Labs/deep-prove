@@ -20,7 +20,7 @@ path = "src/bin/bench.rs"
 default = []
 blake = ["mpcs/blake"]
 # Capture layers' quatization outputs for regression tests
-capture-layers-quant = []
+capture-layers-quant = ["dep:sha2"]
 mem-track = ["utils/mem-track"]
 
 [dependencies]
@@ -43,6 +43,7 @@ poseidon = { version = "0.1.0", path = "../poseidon" }
 rayon.workspace = true
 rmp-serde = { workspace = true }
 rust_tokenizers = "8.1.1"
+sha2 = { version = "0.10.9", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 statrs = { workspace = true }
@@ -66,9 +67,10 @@ prost-tract-compat = { package = "prost", version = "0.11.9" }
 [dev-dependencies]
 ndarray = "0.16.1"
 criterion = { "version" = "0.6", features = ["html_reports"] }
-zstd = "0.13"
 reqwest = { version = "0.12.19", features = ["blocking"] }
 sha2 = "0.10.9"
+tempfile.workspace = true
+zstd = "0.13"
 
 [[bench]]
 name = "prove-model"

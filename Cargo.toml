@@ -84,6 +84,7 @@ simple-frontend = { path = "simple-frontend" }
 statrs = "0.18.0"
 sumcheck_macro = { path = "sumcheck_macro" }
 syn = "2.0"
+tempfile = "3"
 thiserror = "2.0.12"
 tiny-keccak = "2.0"
 tracing-flame = "0.2.0"
