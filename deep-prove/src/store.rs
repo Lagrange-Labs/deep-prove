@@ -1,7 +1,7 @@
 //! PPs and scaled models KV storage.
-
 #![allow(clippy::manual_async_fn)]
 
+use anyhow::{Context, bail};
 use ff_ext::GoldilocksExt2;
 use mpcs::{Basefold, BasefoldRSParams, Hasher, PolynomialCommitmentScheme};
 #[doc(inline)]
@@ -9,13 +9,6 @@ pub use object_store::{
     ClientOptions,
     aws::{AmazonS3, AmazonS3Builder},
 };
-
-use crate::{
-    Element,
-    model::Model,
-    quantization::{ModelMetadata, ScalingStrategyKind},
-};
-use anyhow::{Context, bail};
 use object_store::{GetOptions, ObjectStore, PutPayload, path::Path};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -24,6 +17,11 @@ use std::{
     env,
     future::Future,
     sync::{Arc, Mutex},
+};
+use zkml::{
+    Element,
+    model::Model,
+    quantization::{ModelMetadata, ScalingStrategyKind},
 };
 
 #[derive(Debug, Clone, Copy)]

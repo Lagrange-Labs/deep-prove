@@ -1086,7 +1086,7 @@ where
             .collect::<Vec<_>>();
 
         // Then move the data to its new position. Data is moved from back to the front to
-        // prevent overwritting.
+        // prevent overwriting.
         let mut original = original_shape.product();
         loop {
             original -= 1;
@@ -1159,7 +1159,6 @@ where
 
         result.data.par_iter_mut().enumerate().for_each(|(i, res)| {
             *res = (0..n)
-                .into_par_iter()
                 .map(|j| self.data[i * n + j] * vector.data[j])
                 .sum::<T>();
         });
@@ -1722,7 +1721,7 @@ impl PartialEq for Tensor<GoldilocksExt2> {
 }
 
 impl<T: Default + Clone + Copy> Tensor<T> {
-    /// Permute a tensor, chaning its shape according to the `order` specified as input.
+    /// Permute a tensor, changing its shape according to the `order` specified as input.
     /// The `i`-th entry in the `order` vector specifies which dimension of the original
     /// tensor should become the `i`-th dimension of the output tensor.
     /// For instance, given an input tensor with shape `[7, 14, 23]` and `order = [2, 0, 1]`,
@@ -2059,7 +2058,7 @@ impl Shape {
         self.0[0]
     }
     // Compute the bitsize of the output of the matrix multiplication of a tensor with shape `self`
-    // with another matrix with a compatbile shape. It requires the optional inputs to specify the range
+    // with another matrix with a compatible shape. It requires the optional inputs to specify the range
     // of the quantized values in `self` and in the other matrix being multiplied with `self`
     pub fn matmul_output_bitsize(
         &self,
@@ -2442,7 +2441,7 @@ mod test {
         // Here we test the generic padding
         let tensor_b = Tensor::<Element>::new(shape_b.into(), vec![1, 1, 1, 17]);
 
-        let tensor_c = tensor_a.generic_pad_next_power_of_two(17i128);
+        let tensor_c = tensor_a.generic_pad_next_power_of_two(17);
         assert_eq!(tensor_b, tensor_c);
     }
 
@@ -2909,8 +2908,8 @@ mod test {
 
         for i in 0..num_columns {
             for j in 0..num_columns {
-                let x_i = to_be_bits::<NUM_BITS>(Element::from(i as u64));
-                let y_i = to_be_bits::<NUM_BITS>(Element::from(j as u64));
+                let x_i = to_be_bits::<NUM_BITS>(Element::from(i as u32));
+                let y_i = to_be_bits::<NUM_BITS>(Element::from(j as u32));
                 let cmp = eval_lteq_poly(&y_i, &x_i);
                 assert_eq!(
                     zeroifier.get_2d(i, j),

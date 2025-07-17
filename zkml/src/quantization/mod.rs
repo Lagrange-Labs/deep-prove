@@ -4,9 +4,8 @@ mod strategy;
 use derive_more::From;
 use ff_ext::{ExtensionField, SmallField};
 use itertools::Itertools;
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::env;
+use std::{env, sync::LazyLock};
 use tracing::warn;
 
 use crate::{
@@ -18,7 +17,7 @@ pub(crate) use strategy::InferenceTracker;
 pub use strategy::{AbsoluteMax, InferenceObserver, ScalingStrategy, ScalingStrategyKind};
 
 // Get BIT_LEN from environment variable or use default value
-pub static BIT_LEN: Lazy<usize> = Lazy::new(|| {
+pub static BIT_LEN: LazyLock<usize> = LazyLock::new(|| {
     env::var("ZKML_BIT_LEN")
         .ok()
         .and_then(|val| val.parse::<usize>().ok())
@@ -26,10 +25,10 @@ pub static BIT_LEN: Lazy<usize> = Lazy::new(|| {
 });
 
 /// symmetric quantization range
-pub static MIN: Lazy<Element> = Lazy::new(|| -(1 << (*BIT_LEN - 1)) + 1);
-pub static MAX: Lazy<Element> = Lazy::new(|| (1 << (*BIT_LEN - 1)) - 1);
-pub static RANGE: Lazy<Element> = Lazy::new(|| *MAX - *MIN);
-pub static ZERO: Lazy<Element> = Lazy::new(|| 0);
+pub static MIN: LazyLock<Element> = LazyLock::new(|| -(1 << (*BIT_LEN - 1)) + 1);
+pub static MAX: LazyLock<Element> = LazyLock::new(|| (1 << (*BIT_LEN - 1)) - 1);
+pub static RANGE: LazyLock<Element> = LazyLock::new(|| *MAX - *MIN);
+pub static ZERO: LazyLock<Element> = LazyLock::new(|| 0);
 pub const MIN_FLOAT: f32 = -1.0;
 pub const MAX_FLOAT: f32 = 1.0;
 pub const QUANTIZATION_RANGE: std::ops::RangeInclusive<f32> = MIN_FLOAT..=MAX_FLOAT;
@@ -196,9 +195,7 @@ impl<F: ExtensionField> Fieldizer<F> for Element {
     fn to_field(&self) -> F {
         if self.is_negative() {
             // Doing wrapped arithmetic : p-128 ... p-1 means negative number
-            F::from_canonical_u64(
-                <F::BaseField as SmallField>::MODULUS_U64 - self.unsigned_abs() as u64,
-            )
+            F::from_canonical_u64(<F::BaseField as SmallField>::MODULUS_U64 - self.unsigned_abs())
         } else {
             // for positive and zero, it's just the number
             F::from_canonical_u64(*self as u64)
@@ -211,18 +208,18 @@ pub(crate) trait IntoElement {
 
 impl<F: ExtensionField> IntoElement for F {
     fn to_element(&self) -> Element {
-        let e = self.to_canonical_u64_vec()[0] as Element;
+        let e = self.to_canonical_u64_vec()[0];
         let modulus_half = <F::BaseField as SmallField>::MODULUS_U64 >> 1;
         // That means he's a positive number
         if *self == F::ZERO {
             0
         // we dont assume any bounds on the field elements, requant might happen at a later stage
         // so we assume the worst case
-        } else if e <= modulus_half as Element {
-            e
+        } else if e <= modulus_half {
+            e as Element
         } else {
             // That means he's a negative number - so take the diff with the modulus and recenter around 0
-            let diff = <F::BaseField as SmallField>::MODULUS_U64 - e as u64;
+            let diff = <F::BaseField as SmallField>::MODULUS_U64 - e;
             -(diff as Element)
         }
     }

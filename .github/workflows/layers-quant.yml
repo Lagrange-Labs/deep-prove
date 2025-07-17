@@ -12,16 +12,27 @@ jobs:
           rm -r ~/layers-quant-base 2> /dev/null || true
       - name: Set RNG seed
         run: |
-          seed=$(date +%s)
-          echo "RNG seed: $seed"
-          echo "RNG_SEED=$seed" >> $GITHUB_ENV
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: nightly-2025-05-22
+          seed="$(date +%s)"
+          echo RNG seed: "$seed"
+          echo RNG_SEED="$seed" >> "$GITHUB_ENV"
       - name: Checkout base
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.base_ref || 'main' }}
+          ref: ${{ github.base_ref || 'master' }}
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly-2025-05-22
+          cache: false
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # The prefix cache key, this can be changed to start a new cache manually.
+          # default: "v0-rust"
+          shared-key: "v1-rust-dp"
+          # If `true` the workspace crates will be cached.
+          # Useful if the workspace contains libraries that are only updated sporadically.
+          # default: "false"
+          cache-workspace-crates: true
       - name: Capture layers outputs on base
         run: |
           cd zkml
@@ -31,7 +42,7 @@ jobs:
             --skip layers::transformer::test::test_read_gpt2_pytorch_embeddings \
             --skip layers::transformer::test::test_read_gpt2_pytorch_output_first \
             --skip parser::json::test::test_json_tensor_loader \
-            --skip layers::transformer::mha::test::test_mha_with_real_values 
+            --skip layers::transformer::mha::test::test_mha_with_real_values
           mv layers-quant ~/layers-quant-base
       - name: Checkout HEAD
         uses: actions/checkout@v4

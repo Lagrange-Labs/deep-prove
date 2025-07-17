@@ -787,8 +787,8 @@ pub(crate) mod test {
         let bias3: Tensor<Element> = Tensor::zeros(vec![shape3[0]].into());
 
         let trad_conv1: Tensor<Element> = Tensor::new(shape1.clone().into(), w1.clone());
-        let trad_conv2: Tensor<i128> = Tensor::new(shape2.clone().into(), w2.clone());
-        let trad_conv3: Tensor<i128> = Tensor::new(shape3.clone().into(), w3.clone());
+        let trad_conv2: Tensor<Element> = Tensor::new(shape2.clone().into(), w2.clone());
+        let trad_conv3: Tensor<Element> = Tensor::new(shape3.clone().into(), w3.clone());
 
         let input_shape = vec![1, 32, 32];
 
@@ -942,7 +942,7 @@ pub(crate) mod test {
     fn test_model_sequential() {
         let (model, input) = Model::random(1).unwrap();
         model.describe();
-        let trace = model.run::<F>(&input).unwrap().into_field();
+        let trace = model.run::<F>(&input).unwrap().as_fields();
         let dense_layers = model
             .to_unstable_iterator()
             .flat_map(|(id, l)| match l.operation {
@@ -1027,7 +1027,7 @@ pub(crate) mod test {
         let io = trace.to_verifier_io();
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
             Prover::new(&ctx, &mut tr);
-        let proof = prover.prove(trace).expect("unable to generate proof");
+        let proof = prover.prove(&trace).expect("unable to generate proof");
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
         verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
@@ -1065,7 +1065,7 @@ pub(crate) mod test {
             Context::<F, Pcs<F>>::generate(&model, None, None).expect("Unable to generate context");
         let io = trace.to_verifier_io();
         let prover = Prover::new(&ctx, &mut tr);
-        let proof = prover.prove(trace).expect("unable to generate proof");
+        let proof = prover.prove(&trace).expect("unable to generate proof");
         let mut verifier_transcript = BasicTranscript::<F>::new(b"matmul");
         verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
     }
@@ -1104,7 +1104,7 @@ pub(crate) mod test {
 
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
             Prover::new(&ctx, &mut tr);
-        let proof = prover.prove(trace).expect("unable to generate proof");
+        let proof = prover.prove(&trace).expect("unable to generate proof");
 
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
@@ -1155,7 +1155,7 @@ pub(crate) mod test {
                         let io = trace.to_verifier_io();
                         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
                             Prover::new(&ctx, &mut tr);
-                        let proof = prover.prove(trace).expect("unable to generate proof");
+                        let proof = prover.prove(&trace).expect("unable to generate proof");
                         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
                             BasicTranscript::new(b"m2vec");
                         verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
@@ -1275,7 +1275,7 @@ pub(crate) mod test {
             .expect("Unable to generate context");
         let prover: Prover<'_, E, T, _> = Prover::new(&ctx, &mut tr);
         let io = trace.to_verifier_io();
-        let proof = prover.prove(trace).expect("unable to generate proof");
+        let proof = prover.prove(&trace).expect("unable to generate proof");
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"model");
         verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript)?;

@@ -39,6 +39,7 @@ do
         fi
       else
         echo "Input \"$layer/$input\" is no longer present"
+        result=1
       fi
     done
   else
