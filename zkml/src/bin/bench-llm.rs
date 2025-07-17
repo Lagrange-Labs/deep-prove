@@ -1,18 +1,19 @@
 use anyhow::bail;
-use zkml::model::llm::{LLMContext, LLMTokenizer};
+use clap::Parser;
 use csv::WriterBuilder;
-use mpcs::{Basefold, BasefoldRSParams, Hasher};
-use zkml::model::llm::LLMTokenizerObserver;
-use std::path::PathBuf;
-use std::{path::Path, time};
-use std::collections::HashMap;
 use ff_ext::GoldilocksExt2;
+use mpcs::{Basefold, BasefoldRSParams, Hasher};
+use std::{
+    collections::HashMap,
+    fs::OpenOptions,
+    path::{Path, PathBuf},
+    time,
+};
 use timed_core::Output;
 use tracing_subscriber::EnvFilter;
-use std::fs::OpenOptions;
-use clap::Parser;
 use zkml::{
-    parser::{file_cache,llm::TokenizerData},
+    model::llm::{LLMContext, LLMTokenizer, LLMTokenizerObserver},
+    parser::{file_cache, llm::TokenizerData},
 };
 
 type F = GoldilocksExt2;
@@ -28,7 +29,7 @@ struct LLMArgs {
     /// max context length (in tokens)
     #[arg(short, long, default_value_t = 1024)]
     max_context: usize,
-    /// number of samples to process 
+    /// number of samples to process
     #[arg(short, long, default_value_t = 30)]
     num_samples: usize,
 
@@ -70,36 +71,49 @@ fn main() -> anyhow::Result<()> {
         PathBuf::from(args.gguf.clone())
     };
 
-    let (driver,tokenizer) = match args.model.as_str() {
+    let (driver, tokenizer) = match args.model.as_str() {
         "gpt2" => {
-            let driver = Driver::load_external_model(&model_path)?.with_max_context(args.max_context);
+            let driver =
+                Driver::load_external_model(&model_path)?.with_max_context(args.max_context);
             let tokenizer = TokenizerData::load_tokenizer_from_gguf(&model_path)?;
-            (driver,tokenizer)
+            (driver, tokenizer)
         }
-        _ => bail!("Model {:?} not supported",args.model),
+        _ => bail!("Model {:?} not supported", args.model),
     };
 
-    let mut bencher = CSVBencher::from_headers(vec![HEADER_MODEL, HEADER_MAX_CONTEXT, HEADER_NUM_SAMPLES, HEADER_MIN_USER_LEN, HEADER_ACCURACY,HEADER_MODEL_QUANT]);
+    let mut bencher = CSVBencher::from_headers(vec![
+        HEADER_MODEL,
+        HEADER_MAX_CONTEXT,
+        HEADER_NUM_SAMPLES,
+        HEADER_MIN_USER_LEN,
+        HEADER_ACCURACY,
+        HEADER_MODEL_QUANT,
+    ]);
     let driver = bencher.r(HEADER_MODEL_QUANT, || driver.into_provable_llm())?;
     let ctx: LLMContext<F, Pcs<F>> = bencher.r(HEADER_CONTEXT_TIME, || driver.context())?;
 
-    bencher.set(HEADER_MODEL,  args.model);
-    bencher.set(HEADER_MAX_CONTEXT,  args.max_context);
-    bencher.set(HEADER_NUM_SAMPLES,  args.num_samples);
-    bencher.set(HEADER_MIN_USER_LEN, args.min_user_len);    
+    bencher.set(HEADER_MODEL, args.model);
+    bencher.set(HEADER_MAX_CONTEXT, args.max_context);
+    bencher.set(HEADER_NUM_SAMPLES, args.num_samples);
+    bencher.set(HEADER_MIN_USER_LEN, args.min_user_len);
 
     for _ in 0..args.num_samples {
         let user_tokens = driver.random_sequence(args.min_user_len);
         let sentence = tokenizer.detokenize(&user_tokens);
         let trace = bencher.r(HEADER_INFERENCE_TIME, || {
-            driver.run::<GoldilocksExt2>(user_tokens.clone(),Some(LLMTokenizerObserver {
-                input: sentence.to_string(),
-                tokenizer: &tokenizer,
-            }))
+            driver.run::<GoldilocksExt2>(
+                user_tokens.clone(),
+                Some(LLMTokenizerObserver {
+                    input: sentence.to_string(),
+                    tokenizer: &tokenizer,
+                }),
+            )
         })?;
 
         let proof = bencher.r(HEADER_PROOF_TIME, || driver.prove(&ctx, trace))?;
-        bencher.r(HEADER_VERIFY_TIME, || ctx.verify(proof, user_tokens).expect("invalid proof"));
+        bencher.r(HEADER_VERIFY_TIME, || {
+            ctx.verify(proof, user_tokens).expect("invalid proof")
+        });
         bencher.flush(&args.output)?;
     }
 

@@ -4,33 +4,40 @@
 //! The main usage of a driver for now is to run the LLM forward loop until a specific token or
 //! the maximum context length is reached. It will also be used to prepend a system model correctly.
 
+use crate::{
+    Context, IO, Proof, Prover,
+    quantization::{InferenceObserver, ScalingStrategy},
+    verify,
+};
 use anyhow::{Context as CC, ensure};
-use transcript::BasicTranscript;
-use crate::quantization::ScalingStrategy;
-use mpcs::PolynomialCommitmentScheme;
-use crate::{verify, Context, Proof, Prover, IO};
-use crate::quantization::InferenceObserver;
-use ark_std::rand::{thread_rng, Rng};
+use ark_std::rand::{Rng, thread_rng};
 use ff_ext::ExtensionField;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use mpcs::PolynomialCommitmentScheme;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::Path;
 use tracing::trace;
+use transcript::BasicTranscript;
 
 use crate::{
-    layers::{provable::Evaluate, Layer}, model::{InferenceTrace, Model}, padding::pad_model, parser::{
+    Element, Tensor,
+    layers::{Layer, provable::Evaluate},
+    model::{InferenceTrace, Model},
+    padding::pad_model,
+    parser::{
         gguf, json,
         llm::{LLMConfig, Token},
-    }, tensor::{Number, Shape}, Element, Tensor
+    },
+    tensor::{Number, Shape},
 };
 
 pub trait Observer<N: Number> {
     fn observe<E: ExtensionField>(&self, step: usize, trace: &InferenceTrace<'_, E, N>);
 }
 
-/// The main struct responsible for generating the trace and the proof related 
-/// to LLM proving. This requires a wrapper on top of the model to drive the 
+/// The main struct responsible for generating the trace and the proof related
+/// to LLM proving. This requires a wrapper on top of the model to drive the
 /// auto regressive loop correctly.
-#[derive(Debug, Clone,Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Driver<N: Number> {
     model: Model<N>,
     config: LLMConfig,
@@ -38,26 +45,26 @@ pub struct Driver<N: Number> {
 }
 
 /// The main struct responsible for verifying the proof related to the LLM proving.
-#[derive(Debug, Clone,Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
-pub struct LLMContext<E,PCS> 
+pub struct LLMContext<E, PCS>
 where
     E: ExtensionField + Serialize + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
     PCS: PolynomialCommitmentScheme<E>,
 {
-    pub ctx: Context<E,PCS>,
+    pub ctx: Context<E, PCS>,
     pub config: LLMConfig,
 }
-#[derive(Clone,Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
-pub struct LLMProof<E,PCS> 
+pub struct LLMProof<E, PCS>
 where
     E: ExtensionField + Serialize + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
     PCS: PolynomialCommitmentScheme<E>,
 {
-    pub proof: Proof<E,PCS>,
+    pub proof: Proof<E, PCS>,
     /// Note the IO contains the _full_ input, e.g. the user input + the generated tokens
     pub io: IO<E>,
 }
@@ -111,8 +118,17 @@ impl Driver<f32> {
     pub fn into_provable_llm(self) -> anyhow::Result<Driver<Element>> {
         let numel = self.config.context_length;
         let n_inputs = 10;
-        let representative_inputs = (0..n_inputs).map(|_| self.random_sequence(numel).into_iter().map(|t| t.as_number()).collect::<Vec<_>>()).collect::<Vec<_>>();
-        let (quantized_model, _md) = InferenceObserver::new_with_representative_input(vec![representative_inputs]).quantize(self.model)?;
+        let representative_inputs = (0..n_inputs)
+            .map(|_| {
+                self.random_sequence(numel)
+                    .into_iter()
+                    .map(|t| t.as_number())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let (quantized_model, _md) =
+            InferenceObserver::new_with_representative_input(vec![representative_inputs])
+                .quantize(self.model)?;
         let model = pad_model(quantized_model)?;
         Ok(Driver {
             model,
@@ -140,7 +156,9 @@ where
 
     pub fn random_sequence(&self, len: usize) -> Vec<Token> {
         let mut rng = thread_rng();
-        (0..len).map(|_| Token::from(rng.gen_range(0..self.config.vocab_size))).collect()
+        (0..len)
+            .map(|_| Token::from(rng.gen_range(0..self.config.vocab_size)))
+            .collect()
     }
 
     /// Runs take the _already_ tokenized input and run the model until the maximum sequence length is reached OR until a eos token is generated.
@@ -162,23 +180,30 @@ where
             unpadded_seq_len < self.config.context_length - 1,
             "Input sequence length must be less than the context length"
         );
-        ensure!(input.iter().all(|t| t.0 < self.config.vocab_size), "Input tokens must be less than the vocabulary size");
+        ensure!(
+            input.iter().all(|t| t.0 < self.config.vocab_size),
+            "Input tokens must be less than the vocabulary size"
+        );
         let mut trace = InferenceTrace::default();
         // convert the input to the correct number type and add a dimension to make it 2d, because the embeddings layer expects a 2d tensor
         let mut tensor = Tensor::new(
             vec![input.len(), 1].into(),
             input.into_iter().map(|t| t.as_number()).collect::<Vec<_>>(),
-        ).pad_next_power_of_two();
+        )
+        .pad_next_power_of_two();
         // This means we're padding the input to the right size (e.g. next power of two)
         let max_window = self.max_context.unwrap_or(self.config.context_length);
         while unpadded_seq_len < max_window {
-            trace = self
-                .model
-                .run::<E>(&[tensor.clone()])
-                .context(format!("running the {} iteration loop", unpadded_seq_len - user_len))?;
+            trace = self.model.run::<E>(&[tensor.clone()]).context(format!(
+                "running the {} iteration loop",
+                unpadded_seq_len - user_len
+            ))?;
             let output = trace.output.last().unwrap();
             // We take the last token before the padding
-            let last_token = output.get_data().get(unpadded_seq_len-1).expect("last token must exist");
+            let last_token = output
+                .get_data()
+                .get(unpadded_seq_len - 1)
+                .expect("last token must exist");
             if *last_token == eos_token {
                 break;
             }
@@ -192,11 +217,11 @@ where
                 // here we need to insert the new token after the user input and newly generated tokens, but
                 // BEFORE the padding.
                 tensor.data.insert(unpadded_seq_len, *last_token);
-                tensor.shape = tensor.shape.concat(&Shape::from(vec![1,1]));
+                tensor.shape = tensor.shape.concat(&Shape::from(vec![1, 1]));
             }
             tensor = tensor.pad_next_power_of_two();
             debug_assert_eq!(tensor.get_shape()[0], unpadded_seq_len);
-            if let Some(ref obs) = observer {  
+            if let Some(ref obs) = observer {
                 obs.observe(unpadded_seq_len - user_len, &trace);
             }
         }
@@ -219,7 +244,11 @@ impl Driver<Element> {
             config: self.config.clone(),
         })
     }
-    pub fn prove<E, PCS>(&self,ctx: &LLMContext<E,PCS>, trace: InferenceTrace<'_, E, Element>) -> anyhow::Result<LLMProof<E,PCS>>
+    pub fn prove<E, PCS>(
+        &self,
+        ctx: &LLMContext<E, PCS>,
+        trace: InferenceTrace<'_, E, Element>,
+    ) -> anyhow::Result<LLMProof<E, PCS>>
     where
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
@@ -229,10 +258,7 @@ impl Driver<Element> {
         let prover: Prover<'_, E, _, _> = Prover::new(&ctx.ctx, &mut tr);
         let io = trace.to_verifier_io();
         let proof = prover.prove(trace).expect("unable to generate proof");
-        Ok(LLMProof {
-            proof,
-            io,
-        })
+        Ok(LLMProof { proof, io })
     }
 }
 
@@ -242,7 +268,7 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     PCS: PolynomialCommitmentScheme<E>,
 {
-    pub fn verify(&self, proof: LLMProof<E,PCS>, user_input: Vec<Token>) -> anyhow::Result<()>
+    pub fn verify(&self, proof: LLMProof<E, PCS>, user_input: Vec<Token>) -> anyhow::Result<()>
     where
         E: ExtensionField + Serialize + DeserializeOwned + Number,
         E::BaseField: Serialize + DeserializeOwned,
@@ -259,13 +285,20 @@ where
         let seq_len = user_input.len();
         let max_len = prover_output.get_shape().numel();
         #[allow(clippy::needless_range_loop)]
-        for i in 0..max_len-1{
+        for i in 0..max_len - 1 {
             if i < seq_len {
                 // we check that the input given by the user is the same as the input given by the prover to the model
-                ensure!(prover_input.get_data()[i] == user_input[i].as_number::<E>(), "input token at index {} is not the same as the proof", i);
+                ensure!(
+                    prover_input.get_data()[i] == user_input[i].as_number::<E>(),
+                    "input token at index {} is not the same as the proof",
+                    i
+                );
             } else {
                 // we check the next input token is the one generated by this "row" of the input
-                ensure!(prover_input.get_data()[i+1] == prover_output.get_data()[i], "next input token is not the one generated by this row");
+                ensure!(
+                    prover_input.get_data()[i + 1] == prover_output.get_data()[i],
+                    "next input token is not the one generated by this row"
+                );
             }
         }
         Ok(())
@@ -307,11 +340,14 @@ pub trait LLMTokenizer {
 
 #[cfg(test)]
 mod test {
-    use crate::{parser::{
-        file_cache,
-        gguf::tests::GPT2_Q8_0_URL,
-        llm::{Token, TokenizerData},
-    }, testing::Pcs};
+    use crate::{
+        parser::{
+            file_cache,
+            gguf::tests::GPT2_Q8_0_URL,
+            llm::{Token, TokenizerData},
+        },
+        testing::Pcs,
+    };
 
     use super::*;
     use ff_ext::GoldilocksExt2;

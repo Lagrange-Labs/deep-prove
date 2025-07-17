@@ -67,7 +67,7 @@ impl Token {
 }
 
 /// Intermediary struct to hold the config of the model.
-#[derive(Debug, Clone,  Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LLMConfig {
     /// The size of an embedding vector (each token gets translated to an embedding vector of this size)
     pub embedding_size: usize,

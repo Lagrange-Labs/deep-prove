@@ -5,7 +5,7 @@ use crate::{
     quantization::{self, MAX_FLOAT, MIN_FLOAT},
 };
 use anyhow::{bail, ensure};
-use ark_std::rand::{Rng};
+use ark_std::rand::Rng;
 use ff_ext::{ExtensionField, GoldilocksExt2};
 use itertools::Itertools;
 use mpcs::util::plonky2_util::log2_ceil;
@@ -1769,8 +1769,6 @@ impl<T: Number> Tensor<T> {
         self.data.iter().fold(T::MAX, |min, x| min.cmp_min(x))
     }
 
-    
-    
     #[cfg(test)]
     pub fn random(shape: &Shape) -> Self {
         Self::random_seed(shape, Some(crate::seed_from_env_or_rng()))
@@ -1831,7 +1829,7 @@ impl<T> Tensor<T> {
         let (it, _) = self.slice_on_dim(self.shape.len() - 2);
         it
     }
-    pub fn map_data<O,F: Fn(&T) -> O>(&self, f: F) -> Tensor<O> {
+    pub fn map_data<O, F: Fn(&T) -> O>(&self, f: F) -> Tensor<O> {
         Tensor {
             data: self.data.iter().map(f).collect(),
             shape: self.shape.clone(),
@@ -1892,7 +1890,6 @@ impl<T> Tensor<T> {
         *self.shape.get_mut(0).unwrap() += added_higher;
         self.data.extend(other.data);
     }
-
 
     /// Stack all the tensors in the iterator into a single tensor using `concat()`
     /// Note this naively increase the highest dimension. If you wish to stack along a new higher dimension,

@@ -1,9 +1,17 @@
 use std::collections::HashMap;
 
 use crate::{
-    commit::context::{CommitmentVerifier, PolyId}, iop::{context::ShapeStep, ChallengeStorage}, layers::{
-        provable::{NodeCtx, NodeId, OpInfo, VerifiableCtx}, LayerProof
-    }, lookup::{context::TableType, logup_gkr::verifier::verify_logup_proof}, model::ToIterator, tensor::Tensor, try_unzip, Claim, Element, VectorTranscript
+    Claim, Element, VectorTranscript,
+    commit::context::{CommitmentVerifier, PolyId},
+    iop::{ChallengeStorage, context::ShapeStep},
+    layers::{
+        LayerProof,
+        provable::{NodeCtx, NodeId, OpInfo, VerifiableCtx},
+    },
+    lookup::{context::TableType, logup_gkr::verifier::verify_logup_proof},
+    model::ToIterator,
+    tensor::Tensor,
+    try_unzip,
 };
 use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
@@ -12,13 +20,13 @@ use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 use tracing::trace;
 
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use transcript::Transcript;
 
 use super::{Context, Proof, TableProof};
 
 /// What the verifier must have besides the proof
-#[derive(Clone,Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct IO<E> {
     /// Input of the inference given to the model
     pub input: Vec<Tensor<E>>,
@@ -35,8 +43,16 @@ impl<E> IO<E> {
 impl<E: ExtensionField> IO<E> {
     pub fn to_element(self) -> IO<Element> {
         IO {
-            input: self.input.into_iter().map(|t| t.map_data(|e| e.to_canonical_u64_vec()[0] as Element)).collect(),
-            output: self.output.into_iter().map(|t| t.map_data(|e| e.to_canonical_u64_vec()[0] as Element)).collect(),
+            input: self
+                .input
+                .into_iter()
+                .map(|t| t.map_data(|e| e.to_canonical_u64_vec()[0] as Element))
+                .collect(),
+            output: self
+                .output
+                .into_iter()
+                .map(|t| t.map_data(|e| e.to_canonical_u64_vec()[0] as Element))
+                .collect(),
         }
     }
 }
