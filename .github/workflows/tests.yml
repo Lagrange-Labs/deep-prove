@@ -20,6 +20,9 @@ jobs:
     outputs:
       zkml_src: ${{ steps.filter.outputs.zkml_src }}
     steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
       - uses: dorny/paths-filter@v3
         id: filter
         with:
