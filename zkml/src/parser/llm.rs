@@ -306,7 +306,6 @@ impl TokenizerData {
         }
     }
 
-    #[cfg(test)]
     pub fn load_tokenizer_from_gguf(
         path: impl AsRef<std::path::Path>,
     ) -> anyhow::Result<impl LLMTokenizer> {
@@ -317,7 +316,6 @@ impl TokenizerData {
         Ok(tokenizer)
     }
 
-    #[cfg(test)]
     pub fn into_tokenizer(self) -> impl LLMTokenizer {
         use std::io::Write;
 

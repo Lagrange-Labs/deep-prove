@@ -10989,6 +10989,7 @@ dependencies = [
  "candle-core 0.9.1",
  "clap",
  "criterion 0.6.0",
+ "csv",
  "derive_more 2.0.1",
  "ff_ext",
  "gguf-rs",
@@ -11019,6 +11020,7 @@ dependencies = [
  "tracing-subscriber",
  "tract-onnx",
  "transcript",
+ "url",
  "utils",
  "zstd 0.13.3",
 ]

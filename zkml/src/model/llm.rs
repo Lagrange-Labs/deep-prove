@@ -115,7 +115,7 @@ impl Driver<f32> {
 
     /// Transform the model into a provable llm model with quantization and padding done.
     /// The result can be serialized and deserialized at will to serve inference+proving for this model.
-    pub fn into_provable_llm(self) -> anyhow::Result<Driver<Element>> {
+    pub fn into_provable_llm(mut self) -> anyhow::Result<Driver<Element>> {
         let numel = self.config.context_length;
         let n_inputs = 10;
         let representative_inputs = (0..n_inputs)
@@ -126,10 +126,15 @@ impl Driver<f32> {
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
+        self.model.unpadded_input_shapes = vec![Shape::from(vec![numel, 1])];
+        self.model.input_shapes = vec![Shape::from(vec![numel, 1]).next_power_of_two()];
+        println!("MODEL PRE QUANTIZE");
         let (quantized_model, _md) =
             InferenceObserver::new_with_representative_input(vec![representative_inputs])
                 .quantize(self.model)?;
+            println!("MODEL QUANTIZED");
         let model = pad_model(quantized_model)?;
+        println!("MODEL PADDED");
         Ok(Driver {
             model,
             config: self.config,
@@ -193,6 +198,7 @@ where
         .pad_next_power_of_two();
         // This means we're padding the input to the right size (e.g. next power of two)
         let max_window = self.max_context.unwrap_or(self.config.context_length);
+        println!("LLM INFERENCE: begin tensor shape: {:?}", tensor.get_shape());
         while unpadded_seq_len < max_window {
             trace = self.model.run::<E>(&[tensor.clone()]).context(format!(
                 "running the {} iteration loop",
@@ -216,11 +222,11 @@ where
             } else {
                 // here we need to insert the new token after the user input and newly generated tokens, but
                 // BEFORE the padding.
+                // TODO: breach of API here - tensor should do it 
                 tensor.data.insert(unpadded_seq_len, *last_token);
-                tensor.shape = tensor.shape.concat(&Shape::from(vec![1, 1]));
+                tensor.shape.set_dim(0, tensor.shape.dim(0) + 1);
             }
             tensor = tensor.pad_next_power_of_two();
-            debug_assert_eq!(tensor.get_shape()[0], unpadded_seq_len);
             if let Some(ref obs) = observer {
                 obs.observe(unpadded_seq_len - user_len, &trace);
             }
@@ -257,7 +263,7 @@ impl Driver<Element> {
         let mut tr: BasicTranscript<E> = BasicTranscript::new(b"model");
         let prover: Prover<'_, E, _, _> = Prover::new(&ctx.ctx, &mut tr);
         let io = trace.to_verifier_io();
-        let proof = prover.prove(trace).expect("unable to generate proof");
+        let proof = prover.prove(&trace).expect("unable to generate proof");
         Ok(LLMProof { proof, io })
     }
 }
@@ -374,7 +380,7 @@ mod test {
     }
 
     #[test]
-    fn test_llm_driver() -> anyhow::Result<()> {
+    fn test_llm_driver_inference() -> anyhow::Result<()> {
         let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
         let driver = Driver::load_external_model(&model_path)?.with_max_context(10);
         let sentence = "The sky is";

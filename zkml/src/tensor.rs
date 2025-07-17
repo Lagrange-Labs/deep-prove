@@ -1979,6 +1979,23 @@ impl Shape {
         self.0[index]
     }
 
+    /// Sets the value of a given dimension.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index` is larger than this shape size.
+    ///
+    /// ```
+    /// # use zkml::tensor::Shape;
+    /// let mut shape = Shape::new(vec![3, 5]);
+    /// shape.set_dim(1, 10);
+    /// assert_eq!(shape.dim(1), 10);
+    /// ```
+    pub fn set_dim(&mut self, index: usize, value: usize) {
+        assert!(index < self.0.len(), "Index out of bounds");
+        self.0[index] = value;
+    }
+
     /// Adds an extra dimension with size `1` to [Shape].
     ///
     /// # Panics

@@ -24,7 +24,7 @@ path = "src/bin/bench-llm.rs"
 blake = ["mpcs/blake"]
 default = []
 # Capture layers' quatization outputs for regression tests
-capture-layers-quant = ["dep:sha2"]
+capture-layers-quant = []
 mem-track = ["utils/mem-track"]
 
 [dependencies]
@@ -53,7 +53,7 @@ rmp-serde = { workspace = true }
 rust_tokenizers = "8.1.1"
 serde.workspace = true
 serde_json.workspace = true
-sha2 = { version = "0.10.9", optional = true }
+sha2 = { version = "0.10.9"}
 statrs = { workspace = true }
 sumcheck = { version = "0.1.0", path = "../sumcheck" }
 timed = { workspace = true }
@@ -67,14 +67,15 @@ tracing-subscriber = { workspace = true, features = [
 tract-onnx = { workspace = true }
 transcript = { version = "0.1.0", path = "../transcript" }
 utils = { path = "../utils" }
+reqwest = { version = "0.12.19", features = ["blocking"] }
+tempfile.workspace = true
+csv.workspace = true
+url = "2.5.4"
 
 
 [dev-dependencies]
 criterion = { "version" = "0.6", features = ["html_reports"] }
 ndarray = "0.16.1"
-reqwest = { version = "0.12.19", features = ["blocking"] }
-sha2 = "0.10.9"
-tempfile.workspace = true
 zstd = "0.13"
 
 [[bench]]
