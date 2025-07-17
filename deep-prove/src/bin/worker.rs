@@ -60,7 +60,7 @@ async fn run_model_v1(model: DeepProveRequestV1, mut store: impl Store) -> Resul
         scaling_input_hash: scaling_input_hash.as_deref(),
     };
 
-    let params = store.get_params(params_key).await?;
+    let params = store.get_params(params_key).await.context("fetching PPs")?;
     let is_stored_params = params.is_some();
 
     let store::ScaledModel {
@@ -70,14 +70,15 @@ async fn run_model_v1(model: DeepProveRequestV1, mut store: impl Store) -> Resul
         .get_or_init_model_with(model_key, async move || {
             let (model, model_metadata) = tokio::task::spawn_blocking(move || parse_model(&model))
                 .await
-                .context("task to parse model")?
+                .context("running parsing model task")?
                 .context("parsing model")?;
             Ok(store::ScaledModel {
                 model,
                 model_metadata,
             })
         })
-        .await?;
+        .await
+        .context("initializing model")?;
 
     let inputs = input.to_elements(&model_metadata);
 
@@ -87,11 +88,12 @@ async fn run_model_v1(model: DeepProveRequestV1, mut store: impl Store) -> Resul
             &model,
             None,
             params.map(|store::Params { prover, verifier }| (prover, verifier)),
-        )?;
+        )
+        .context("generating model")?;
         Ok((ctx, model))
     })
     .await
-    .context("task to generate context")?
+    .context("running context generation task")?
     .context("generating context")?;
 
     if !is_stored_params {
@@ -103,7 +105,8 @@ async fn run_model_v1(model: DeepProveRequestV1, mut store: impl Store) -> Resul
                     verifier: ctx.commitment_ctx.verifier_params().clone(),
                 },
             )
-            .await?;
+            .await
+            .context("storing PPs")?;
     }
 
     let proofs = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
@@ -112,7 +115,7 @@ async fn run_model_v1(model: DeepProveRequestV1, mut store: impl Store) -> Resul
             debug!("Running input #{i}");
             let input_tensor = model
                 .load_input_flat(vec![input])
-                .context("failed to call load_input_flat on the model")?;
+                .context("loading flat inputs")?;
 
             let trace_result = model.run(&input_tensor);
             // If model.run fails, print the error and continue to the next input
@@ -133,14 +136,15 @@ async fn run_model_v1(model: DeepProveRequestV1, mut store: impl Store) -> Resul
             let prover = Prover::<_, _, _>::new(&ctx, &mut prover_transcript);
             let proof = prover
                 .prove(&trace)
-                .with_context(|| "unable to generate proof for {i}. input")?;
+                .with_context(|| "unable to generate proof for {i}th input")?;
 
             proofs.push(proof);
         }
         Ok(proofs)
     })
     .await
-    .context("task to generate proofs")??;
+    .context("generating proof")?
+    .context("running proof generation task")?;
 
     info!("Proving done.");
     Ok(proofs)
@@ -262,9 +266,10 @@ async fn process_message_from_gw(
 ) -> anyhow::Result<()> {
     let task: DeepProveRequest = rmp_serde::from_slice(
         zstd::decode_all(msg.task.as_slice())
-            .context("decompressing payload")?
+            .context("decompressing task payload")?
             .as_slice(),
-    )?;
+    )
+    .context("deserializing task")?;
 
     let result = match task {
         DeepProveRequest::V1(deep_prove_request_v1) => {
@@ -293,7 +298,8 @@ async fn process_message_from_gw(
         .send(WorkerToGwRequest {
             request: Some(reply),
         })
-        .await?;
+        .await
+        .context("sending response to gateway")?;
 
     Ok(())
 }
@@ -342,21 +348,25 @@ async fn run_against_gw(args: RunMode) -> anyhow::Result<()> {
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
-    let channel = tonic::transport::Channel::builder(gw_url.parse()?)
-        .tls_config(ClientTlsConfig::new().with_enabled_roots())?
-        .connect()
-        .await?;
+    let channel =
+        tonic::transport::Channel::builder(gw_url.parse().context("parsing gateway URL")?)
+            .tls_config(ClientTlsConfig::new().with_enabled_roots())
+            .context("setting up TLS configuration")?
+            .connect()
+            .await?;
 
     let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(1024);
 
-    let wallet = LocalSigner::from_str(&operator_priv_key)?;
+    let wallet =
+        LocalSigner::from_str(&operator_priv_key).context("parsing operator private key")?;
 
     let claims = grpc_worker::auth::jwt::get_claims(
         operator_name.to_string(),
         env!("CARGO_PKG_VERSION").to_string(),
         "deep-prove-1".to_string(),
         worker_class.clone(),
-    )?;
+    )
+    .context("generating gRPC token claims")?;
 
     let token = grpc_worker::auth::jwt::JWTAuth::new(claims, &wallet)?.encode()?;
     let token: MetadataValue<_> = format!("Bearer {token}").parse()?;
@@ -452,7 +462,7 @@ async fn run_locally(args: RunMode) -> anyhow::Result<()> {
     let input = Input::from_file(&inputs).context("loading input")?;
     let model_file = std::fs::File::open(&onnx).context("opening model file")?;
     let model = unsafe { Mmap::map(&model_file) }
-        .context("loading model file")?
+        .context("mmap-ing model file")?
         .to_vec();
 
     let proto = {
