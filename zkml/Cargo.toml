@@ -66,9 +66,10 @@ prost-tract-compat = { package = "prost", version = "0.11.9" }
 [dev-dependencies]
 ndarray = "0.16.1"
 criterion = { "version" = "0.6", features = ["html_reports"] }
-zstd = "0.13"
 reqwest = { version = "0.12.19", features = ["blocking"] }
 sha2 = "0.10.9"
+tempfile.workspace = true
+zstd = "0.13"
 
 [[bench]]
 name = "prove-model"

@@ -16,14 +16,13 @@ use crate::{
     },
     model::Model,
     padding::PaddingMode,
-    parser::gguf,
     tensor::{Number, Shape},
 };
 use rust_tokenizers::{
     tokenizer::{Gpt2Tokenizer, Tokenizer as RT},
     vocab::Vocab,
 };
-use std::{collections::HashMap, env, fs, path::Path, process};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, derive_more::From, derive_more::Into)]
 pub struct Token(usize);
@@ -299,19 +298,20 @@ impl TokenizerData {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn load_tokenizer_from_gguf(path: impl AsRef<Path>) -> anyhow::Result<impl LLMTokenizer> {
+        use parser::gguf;
+
         let loader = gguf::FileTensorLoader::from_path(path)?;
         let tokenizer = TokenizerData::from_loader(&loader)?.into_tokenizer();
         Ok(tokenizer)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn into_tokenizer(self) -> impl LLMTokenizer {
-        let temp_dir = env::temp_dir();
-        let pid = process::id();
-        let vocab_path = temp_dir.join(format!("vocab-{pid}.json"));
-        let merges_path = temp_dir.join(format!("merges-{pid}.txt"));
+        let temp_dir = tempfile::tempdir().unwrap();
+        let vocab_path = temp_dir.path().join("vocab.json");
+        let merges_path = temp_dir.path().join("merges.txt");
 
         // Prepare vocab.json content
         let values: HashMap<String, i64> = self
@@ -333,10 +333,6 @@ impl TokenizerData {
             false,
         )
         .unwrap();
-
-        // Clean up
-        fs::remove_file(vocab_path).ok();
-        fs::remove_file(merges_path).ok();
 
         tokenizer
     }
