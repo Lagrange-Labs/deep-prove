@@ -299,8 +299,10 @@ impl TokenizerData {
     }
 
     #[cfg(test)]
-    pub fn load_tokenizer_from_gguf(path: impl AsRef<Path>) -> anyhow::Result<impl LLMTokenizer> {
-        use parser::gguf;
+    pub fn load_tokenizer_from_gguf(
+        path: impl AsRef<std::path::Path>,
+    ) -> anyhow::Result<impl LLMTokenizer> {
+        use crate::parser::gguf;
 
         let loader = gguf::FileTensorLoader::from_path(path)?;
         let tokenizer = TokenizerData::from_loader(&loader)?.into_tokenizer();
@@ -309,6 +311,8 @@ impl TokenizerData {
 
     #[cfg(test)]
     pub fn into_tokenizer(self) -> impl LLMTokenizer {
+        use std::fs;
+
         let temp_dir = tempfile::tempdir().unwrap();
         let vocab_path = temp_dir.path().join("vocab.json");
         let merges_path = temp_dir.path().join("merges.txt");
