@@ -262,7 +262,6 @@ pub fn load_float_model(model: &ModelProto) -> Result<Model<f32>> {
 }
 
 // Module for caching downloaded files
-#[cfg(test)]
 pub mod file_cache {
     use anyhow::{Context as _, anyhow, bail};
     use hex;

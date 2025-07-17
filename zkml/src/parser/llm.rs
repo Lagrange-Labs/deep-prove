@@ -27,7 +27,7 @@ use rust_tokenizers::{
 use std::{collections::HashMap, env, fs, path::Path, process};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, derive_more::From, derive_more::Into)]
-pub struct Token(usize);
+pub struct Token(pub(crate) usize);
 
 // i64 is the type used by token_to_i
 impl From<i64> for Token {
@@ -106,6 +106,11 @@ impl LLMVariant {
     pub fn eos_token(&self) -> Token {
         match self {
             Self::GPT2 => 50256usize.into(),
+        }
+    }
+    pub fn vocab_size(&self) -> usize {
+        match self {
+            Self::GPT2 => 50257,
         }
     }
 }

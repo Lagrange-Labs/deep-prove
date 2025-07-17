@@ -5,7 +5,7 @@ use crate::{
     quantization::{self, MAX_FLOAT, MIN_FLOAT},
 };
 use anyhow::{bail, ensure};
-use ark_std::rand::{thread_rng, Rng};
+use ark_std::rand::{Rng};
 use ff_ext::{ExtensionField, GoldilocksExt2};
 use itertools::Itertools;
 use mpcs::util::plonky2_util::log2_ceil;
@@ -1768,6 +1768,8 @@ impl<T: Number> Tensor<T> {
     pub fn min_value(&self) -> T {
         self.data.iter().fold(T::MAX, |min, x| min.cmp_min(x))
     }
+
+    
     
     #[cfg(test)]
     pub fn random(shape: &Shape) -> Self {
@@ -1828,6 +1830,13 @@ impl<T> Tensor<T> {
     pub fn slice_last_dim(&self) -> impl Iterator<Item = &[T]> {
         let (it, _) = self.slice_on_dim(self.shape.len() - 2);
         it
+    }
+    pub fn map_data<O,F: Fn(&T) -> O>(&self, f: F) -> Tensor<O> {
+        Tensor {
+            data: self.data.iter().map(f).collect(),
+            shape: self.shape.clone(),
+            og_shape: self.og_shape.clone(),
+        }
     }
 
     /// Returns an iterator of slices whose length corresponds to the subspace

@@ -11,7 +11,11 @@ version.workspace = true
 
 [[bin]]
 name = "bench"
-path = "src/bin/bench.rs"
+path = "src/bin/bench-cnn.rs"
+
+[[bin]]
+name = "bench-llm"
+path = "src/bin/bench-llm.rs"
 
 [[bin]]
 name = "deep-prove-worker"

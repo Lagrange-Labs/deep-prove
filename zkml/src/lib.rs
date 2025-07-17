@@ -24,7 +24,7 @@ pub mod lookup;
 pub mod middleware;
 pub mod model;
 pub mod padding;
-mod parser;
+pub mod parser;
 pub use parser::{FloatOnnxLoader, ModelType};
 pub mod tensor;
 pub use tensor::Tensor;
