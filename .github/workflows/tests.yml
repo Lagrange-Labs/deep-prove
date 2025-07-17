@@ -74,7 +74,7 @@ jobs:
         with:
           # The prefix cache key, this can be changed to start a new cache manually.
           # default: "v0-rust"
-          prefix-key: "v0-rust"
+          prefix-key: "v1-rust-dp"
           # The cargo workspaces and target directory configuration.
           # These entries are separated by newlines and have the form
           # `$workspace -> $target`. The `$target` part is treated as a directory
