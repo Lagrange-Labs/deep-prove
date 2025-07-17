@@ -7,7 +7,6 @@ COPY . .
 RUN cargo install --locked --path deep-prove --bin deep-prove-worker
 
 
-
 # Create the actual final image
 FROM docker.io/library/ubuntu:22.04
 
