@@ -10,7 +10,7 @@ use deep_prove::{
             Input, Proof as ProofV1,
         },
     },
-    store::{self, MemStore, Store},
+    store::{self, MemStore, S3Store, Store},
 };
 use ff_ext::GoldilocksExt2;
 use futures::{FutureExt, StreamExt};
@@ -20,7 +20,7 @@ use mpcs::{Basefold, BasefoldRSParams, Hasher};
 use reqwest::StatusCode;
 use std::{net::SocketAddr, path::PathBuf, str::FromStr};
 use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt::format::FmtSpan};
 use zkml::{
     Context, Element, FloatOnnxLoader, ModelType, Prover, default_transcript,
@@ -202,7 +202,7 @@ struct Args {
 #[derive(Subcommand)]
 enum RunMode {
     /// Connect to a LPN gateway to receive inference tasks
-    #[cfg_attr(feature = "s3", command(group(clap::ArgGroup::new("s3_store").multiple(true).args(&["s3_region", "s3_bucket", "s3_endpoint", "s3_access_key_id", "s3_secret_access_key"]))))]
+    #[command(group(clap::ArgGroup::new("s3_store").multiple(true).args(&["s3_region", "s3_bucket", "s3_endpoint", "s3_access_key_id", "s3_secret_access_key"])))]
     Remote {
         #[arg(long, env, default_value = "http://localhost:10000")]
         gw_url: String,
@@ -228,23 +228,20 @@ enum RunMode {
         #[arg(long, env)]
         json: bool,
 
+        #[arg(long, env)]
+        use_s3: bool,
+
         #[arg(long, env, default_value = "us-east-2", requires_all = &["s3_store"])]
-        #[cfg(feature = "s3")]
         s3_region: Option<String>,
         #[arg(long, env, requires_all = &["s3_store"])]
-        #[cfg(feature = "s3")]
         s3_bucket: Option<String>,
         #[arg(long, env, requires_all = &["s3_store"])]
-        #[cfg(feature = "s3")]
         s3_endpoint: Option<String>,
         #[arg(long, env, default_value = "1000", requires_all = &["s3_store"])]
-        #[cfg(feature = "s3")]
         s3_timeout_secs: Option<u64>,
         #[arg(env, requires_all = &["s3_store"])]
-        #[cfg(feature = "s3")]
         s3_access_key_id: Option<String>,
         #[arg(env, requires_all = &["s3_store"])]
-        #[cfg(feature = "s3")]
         s3_secret_access_key: Option<String>,
     },
     /// Prove inference on local files
@@ -262,7 +259,7 @@ enum RunMode {
 async fn process_message_from_gw(
     msg: WorkerToGwResponse,
     outbound_tx: &tokio::sync::mpsc::Sender<WorkerToGwRequest>,
-    store: impl Store,
+    store: StoreKind,
 ) -> anyhow::Result<()> {
     let task: DeepProveRequest = rmp_serde::from_slice(
         zstd::decode_all(msg.task.as_slice())
@@ -272,9 +269,10 @@ async fn process_message_from_gw(
     .context("deserializing task")?;
 
     let result = match task {
-        DeepProveRequest::V1(deep_prove_request_v1) => {
-            run_model_v1(deep_prove_request_v1, store).await
-        }
+        DeepProveRequest::V1(deep_prove_request_v1) => match store {
+            StoreKind::S3(store) => run_model_v1(deep_prove_request_v1, store).await,
+            StoreKind::Mem(store) => run_model_v1(deep_prove_request_v1, store).await,
+        },
     };
 
     let reply = match result {
@@ -326,23 +324,24 @@ async fn run_against_gw(args: RunMode) -> anyhow::Result<()> {
         operator_priv_key,
         max_message_size,
         json,
-        #[cfg(feature = "s3")]
+        use_s3,
         s3_region,
-        #[cfg(feature = "s3")]
         s3_bucket,
-        #[cfg(feature = "s3")]
         s3_endpoint,
-        #[cfg(feature = "s3")]
         s3_timeout_secs,
-        #[cfg(feature = "s3")]
         s3_access_key_id,
-        #[cfg(feature = "s3")]
         s3_secret_access_key,
     } = args
     else {
         unreachable!()
     };
     setup_logging(json);
+
+    if use_s3 {
+        info!("Running with S3 store");
+    } else {
+        warn!("Running with in-memory store. Run with `--use-s3` flag to use S3 instead");
+    }
 
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -402,8 +401,7 @@ async fn run_against_gw(args: RunMode) -> anyhow::Result<()> {
     let healthcheck_handler = tokio::spawn(serve_health_check(healthcheck_addr));
     let mut healthcheck_handler = healthcheck_handler.fuse();
 
-    #[cfg(feature = "s3")]
-    let store = {
+    let store = if use_s3 {
         let region = s3_region.context("gathering S3 config arguments")?;
         let timeout = std::time::Duration::from_secs(s3_timeout_secs.unwrap());
         let s3: store::AmazonS3 = store::AmazonS3Builder::new()
@@ -419,10 +417,10 @@ async fn run_against_gw(args: RunMode) -> anyhow::Result<()> {
             )
             .build()
             .context("AWS S3 builder")?;
-        store::S3Store::from(s3)
+        StoreKind::S3(S3Store::from(s3))
+    } else {
+        StoreKind::Mem(MemStore::default())
     };
-    #[cfg(not(feature = "s3"))]
-    let store = store::MemStore::default();
 
     loop {
         info!("Waiting for message...");
@@ -502,4 +500,10 @@ async fn main() -> anyhow::Result<()> {
         remote_args @ RunMode::Remote { .. } => run_against_gw(remote_args).await,
         local_args @ RunMode::Local { .. } => run_locally(local_args).await,
     }
+}
+
+#[derive(Debug, Clone)]
+enum StoreKind {
+    S3(S3Store),
+    Mem(MemStore),
 }
