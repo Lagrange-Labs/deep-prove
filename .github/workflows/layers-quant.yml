@@ -19,6 +19,7 @@ jobs:
         with:
           toolchain: nightly-2025-05-22
           cache-shared-key: "v0-dp-tests"
+          cache-workspaces: "true"
       - name: Checkout base
         uses: actions/checkout@v4
         with:

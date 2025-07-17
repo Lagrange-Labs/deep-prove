@@ -71,7 +71,6 @@ jobs:
           components: clippy
           cache-shared-key: "v0-dp-tests"
           cache-workspaces: "true"
-          cache-workspace-crates: "true"
 
       - name: Run cargo test
         run: cargo test
