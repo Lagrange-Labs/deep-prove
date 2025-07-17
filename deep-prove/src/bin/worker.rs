@@ -228,9 +228,6 @@ enum RunMode {
         #[arg(long, env)]
         json: bool,
 
-        #[arg(long, env)]
-        use_s3: bool,
-
         #[arg(long, env, default_value = "us-east-2", requires_all = &["s3_store"])]
         s3_region: Option<String>,
         #[arg(long, env, requires_all = &["s3_store"])]
@@ -324,7 +321,6 @@ async fn run_against_gw(args: RunMode) -> anyhow::Result<()> {
         operator_priv_key,
         max_message_size,
         json,
-        use_s3,
         s3_region,
         s3_bucket,
         s3_endpoint,
@@ -336,12 +332,6 @@ async fn run_against_gw(args: RunMode) -> anyhow::Result<()> {
         unreachable!()
     };
     setup_logging(json);
-
-    if use_s3 {
-        info!("Running with S3 store");
-    } else {
-        warn!("Running with in-memory store. Run with `--use-s3` flag to use S3 instead");
-    }
 
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -401,7 +391,8 @@ async fn run_against_gw(args: RunMode) -> anyhow::Result<()> {
     let healthcheck_handler = tokio::spawn(serve_health_check(healthcheck_addr));
     let mut healthcheck_handler = healthcheck_handler.fuse();
 
-    let store = if use_s3 {
+    let store = if s3_region.is_some() {
+        info!("Running with S3 store");
         let region = s3_region.context("gathering S3 config arguments")?;
         let timeout = std::time::Duration::from_secs(s3_timeout_secs.unwrap());
         let s3: store::AmazonS3 = store::AmazonS3Builder::new()
@@ -419,6 +410,7 @@ async fn run_against_gw(args: RunMode) -> anyhow::Result<()> {
             .context("AWS S3 builder")?;
         StoreKind::S3(S3Store::from(s3))
     } else {
+        warn!("Running with in-memory store. Specify S3 args to use S3 instead");
         StoreKind::Mem(MemStore::default())
     };
 
