@@ -1,7 +1,7 @@
 use alloy::signers::local::LocalSigner;
 use anyhow::{Context as _, Result};
 use axum::{Json, Router, routing::get};
-use clap::{ArgGroup, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use deep_prove::{
     middleware::{
         DeepProveRequest, DeepProveResponse,
@@ -202,7 +202,7 @@ struct Args {
 #[derive(Subcommand)]
 enum RunMode {
     /// Connect to a LPN gateway to receive inference tasks
-    #[cfg_attr(feature = "s3", command(group(ArgGroup::new("s3_store").multiple(true).args(&["s3_region", "s3_bucket", "s3_endpoint", "s3_access_key_id", "s3_secret_access_key"]))))]
+    #[cfg_attr(feature = "s3", command(group(clap::ArgGroup::new("s3_store").multiple(true).args(&["s3_region", "s3_bucket", "s3_endpoint", "s3_access_key_id", "s3_secret_access_key"]))))]
     Remote {
         #[arg(long, env, default_value = "http://localhost:10000")]
         gw_url: String,
