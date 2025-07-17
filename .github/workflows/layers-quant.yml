@@ -15,13 +15,24 @@ jobs:
           seed="$(date +%s)"
           echo RNG seed: "$seed"
           echo RNG_SEED="$seed" >> "$GITHUB_ENV"
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: nightly-2025-05-22
       - name: Checkout base
         uses: actions/checkout@v4
         with:
           ref: ${{ github.base_ref || 'master' }}
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly-2025-05-22
+          cache: false
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # The prefix cache key, this can be changed to start a new cache manually.
+          # default: "v0-rust"
+          shared-key: "v1-rust-dp"
+          # If `true` the workspace crates will be cached.
+          # Useful if the workspace contains libraries that are only updated sporadically.
+          # default: "false"
+          cache-workspace-crates: true
       - name: Capture layers outputs on base
         run: |
           cd zkml

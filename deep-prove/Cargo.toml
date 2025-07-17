@@ -13,8 +13,8 @@ version.workspace = true
 ignored = ["prost", "prost-types"]
 
 [features]
-default = []
 blake = ["mpcs/blake"]
+default = []
 s3 = []
 
 [[bin]]
@@ -27,47 +27,47 @@ path = "src/bin/cli/main.rs"
 
 [dependencies]
 alloy = { version = "1.0.22", default-features = false }
-axum = { workspace = true }
 anyhow.workspace = true
-mpcs.workspace = true
-zkml = { path = "../zkml" }
-tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "fs"] }
-tracing.workspace = true
+axum = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+derive_more = { workspace = true, features = ["from"] }
 ff_ext = { version = "0.1.0", path = "../ff_ext" }
-reqwest = { version = "0.12.19", features = ["blocking"] }
-rmp-serde = { workspace = true }
-semver.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-tract-onnx = { workspace = true }
-tracing-subscriber = { workspace = true, features = [
-    "env-filter",
-    "fmt",
-    "json",
-] }
-sha2 = "0.10.9"
 futures = { version = "0.3.30" }
-tonic = { version = "0.12.3", features = [
-    "transport",
-    "tls",
-    "tls-roots",
-    "tls-webpki-roots",
-    "gzip",
-] }
+grpc-worker = { git = "https://github.com/Lagrange-Labs/grpc-worker-rs", branch = "main" }
+memmap2.workspace = true
+mpcs.workspace = true
+object_store.workspace = true
 prost = { version = "0.13.3" }
 prost-tract-compat = { package = "prost", version = "0.11.9" }
 prost-types = { version = "0.13.3" }
 prost-wkt-types = { version = "0.6.0" }
+reqwest = { version = "0.12.19", features = ["blocking"] }
+rmp-serde = { workspace = true }
 rustls = { version = "0.23.16", features = ["ring"] }
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10.9"
+tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "fs"] }
 tokio-stream = { version = "0.1.17" }
-grpc-worker = { git = "https://github.com/Lagrange-Labs/grpc-worker-rs", branch = "main" }
+tonic = { version = "0.12.3", features = [
+  "transport",
+  "tls",
+  "tls-roots",
+  "tls-webpki-roots",
+  "gzip",
+] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = [
+  "env-filter",
+  "fmt",
+  "json",
+] }
+tract-onnx = { workspace = true }
 url = "2.5.4"
 uuid = "1.17.0"
+zkml = { path = "../zkml" }
 zstd = "0.13.3"
-clap = { workspace = true, features = ["derive", "env"] }
-memmap2.workspace = true
-object_store.workspace = true
-derive_more = { workspace = true, features = ["from"] }
 
 [build-dependencies]
 # worker-related dependencies
