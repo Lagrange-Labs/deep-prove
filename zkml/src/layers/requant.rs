@@ -207,10 +207,9 @@ where
     fn gen_lookup_witness(
         &self,
         id: NodeId,
-        gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> Result<()> {
+    ) -> Result<LookupWitnessGen<E, PCS>> {
         ensure!(
             step_data.inputs.len() == 1,
             "Found more than 1 input in inference step of requant layer"
@@ -333,6 +332,8 @@ where
             .collect::<Result<Vec<_>, anyhow::Error>>()?
             .into_iter()
             .unzip();
+
+        let mut gen = LookupWitnessGen::<E, PCS>::default();
         gen.logup_witnesses.insert(
             id,
             vec![
@@ -350,20 +351,11 @@ where
                 ),
             ],
         );
-        let lookups = gen.new_lookups.get_mut(&TableType::Range).ok_or(anyhow!(
-            "No table of type Range was expected, error occurred during requant step"
-        ))?;
-        lookups.extend(merged_shifted);
-        let lookups = gen
-            .new_lookups
-            .get_mut(&TableType::Clamping(self.clamping_size()))
-            .ok_or(anyhow!(
-                "No table of type {} was expected",
-                TableType::Clamping(self.clamping_size()).name()
-            ))?;
-        lookups.extend(merged_clamping);
+        gen.new_lookups.insert(TableType::Range, merged_shifted);
+        gen.new_lookups
+            .insert(TableType::Clamping(self.clamping_size()), merged_clamping);
 
-        Ok(())
+        Ok(gen)
     }
 }
 

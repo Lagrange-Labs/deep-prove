@@ -207,10 +207,9 @@ where
     fn gen_lookup_witness(
         &self,
         id: NodeId,
-        gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> Result<()> {
+    ) -> Result<LookupWitnessGen<E, PCS>> {
         ensure!(
             step_data.inputs.len() == 1,
             "Input for pooling layer with invalid length. expected: 1 got: {}",
@@ -246,6 +245,8 @@ where
                 Ok((commit, mle))
             })
             .collect::<Result<Vec<_>, anyhow::Error>>()?;
+
+        let mut gen = LookupWitnessGen::<E, PCS>::default();
         gen.logup_witnesses.insert(
             id,
             vec![LogUpWitness::<E, PCS>::new_lookup(
@@ -255,13 +256,9 @@ where
                 TableType::Range,
             )],
         );
+        gen.new_lookups.insert(TableType::Range, merged_lookups);
 
-        let lookups = gen.new_lookups.get_mut(&TableType::Range).ok_or(anyhow!(
-            "No table of type Range was expected, error occurred during a MaxPool step"
-        ))?;
-        lookups.extend(merged_lookups);
-
-        Ok(())
+        Ok(gen)
     }
 }
 

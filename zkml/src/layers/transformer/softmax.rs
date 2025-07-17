@@ -943,11 +943,10 @@ impl Softmax<Element> {
     pub(crate) fn lookup_witness<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         id: NodeId,
-        gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
         output: &Tensor<Element>,
         softmax_data: &SoftmaxData<E>,
-    ) -> Result<()> {
+    ) -> Result<LookupWitnessGen<E, PCS>> {
         // Get the data generated during quantised evaluation
         let SoftmaxData {
             shift_tensor,
@@ -1059,42 +1058,29 @@ impl Softmax<Element> {
                 .collect::<Vec<E::BaseField>>(),
         );
         let shift_commit = ctx.commitment_ctx.commit(&shift_mle)?;
+
+        let mut gen = LookupWitnessGen::<E, PCS>::default();
+
         // Add the looked up values to the generator so we can make multiplicity polys later
-        let lookups = gen.new_lookups.get_mut(&TableType::Range).ok_or(anyhow!(
-            "No table of type Range was expected, error occurred during Softmax step"
-        ))?;
-        lookups.extend(merged_range_check);
+        gen.new_lookups.insert(TableType::Range, merged_range_check);
 
         // Need to recreate the parameters for the Softmax table
         let float_temp_bits = inv_float_temperature.to_bits();
 
-        let lookups = gen
-            .new_lookups
-            .get_mut(&TableType::Softmax(SoftmaxTableData::new(
+        gen.new_lookups.insert(
+            TableType::Softmax(SoftmaxTableData::new(
                 float_temp_bits,
                 ceil_log2(lut.len()),
                 *bkm,
-            )))
-            .ok_or(anyhow!(
-                "No table of type {} was expected",
-                TableType::Softmax(SoftmaxTableData::new(
-                    float_temp_bits,
-                    ceil_log2(lut.len()),
-                    *bkm,
-                ))
-                .name()
-            ))?;
-        lookups.extend(merged_softmax);
+            )),
+            merged_softmax,
+        );
 
         let quant_one = OUTPUT_SCALE_FACTOR as Element;
-        let lookups = gen
-            .new_lookups
-            .get_mut(&TableType::ErrorTable(quant_one, allowable_error))
-            .ok_or(anyhow!(
-                "No table of type {} was expected",
-                TableType::ErrorTable(quant_one, allowable_error).name()
-            ))?;
-        lookups.extend(normalisation_lookup);
+        gen.new_lookups.insert(
+            TableType::ErrorTable(quant_one, allowable_error),
+            normalisation_lookup,
+        );
 
         let mut lookup_witnesses = vec![
             LogUpWitness::<E, PCS>::new_lookup(
@@ -1149,14 +1135,8 @@ impl Softmax<Element> {
                 })
                 .collect::<Vec<Element>>();
 
-            let lookups = gen
-                .new_lookups
-                .get_mut(&TableType::ZeroTable(*zero_table_vars))
-                .ok_or(anyhow!(
-                    "No table of type {} was expected",
-                    TableType::ZeroTable(*zero_table_vars).name()
-                ))?;
-            lookups.extend(merged_zero_lookup);
+            gen.new_lookups
+                .insert(TableType::ZeroTable(*zero_table_vars), merged_zero_lookup);
             lookup_witnesses.push(LogUpWitness::<E, PCS>::new_lookup(
                 zero_table_lookup_commits,
                 zero_table_lookup_evals,
@@ -1166,7 +1146,7 @@ impl Softmax<Element> {
         }
 
         gen.logup_witnesses.insert(id, lookup_witnesses);
-        Ok(())
+        Ok(gen)
     }
 }
 
@@ -1201,10 +1181,9 @@ where
     fn gen_lookup_witness(
         &self,
         id: NodeId,
-        gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> Result<()> {
+    ) -> Result<LookupWitnessGen<E, PCS>> {
         ensure!(
             step_data.inputs.len() == 1,
             "Found more than 1 input in inference step of Softmax layer"
@@ -1216,7 +1195,7 @@ where
         let softmax_data = step_data.outputs.try_softmax_data().ok_or(anyhow!(
             "Softmax data not found in inference step for Sopftmax layer"
         ))?;
-        self.lookup_witness(id, gen, ctx, step_data.outputs.outputs()[0], softmax_data)
+        self.lookup_witness(id, ctx, step_data.outputs.outputs()[0], softmax_data)
     }
 }
 
