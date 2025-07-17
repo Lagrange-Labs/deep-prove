@@ -63,6 +63,7 @@ p3-goldilocks = { workspace = true }
 utils = { path = "../utils" }
 prost = { version = "0.13.3" }
 prost-tract-compat = { package = "prost", version = "0.11.9" }
+sha2 = "0.10.9"
 
 [dev-dependencies]
 ndarray = "0.16.1"
