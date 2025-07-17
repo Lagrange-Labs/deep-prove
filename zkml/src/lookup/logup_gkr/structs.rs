@@ -6,6 +6,7 @@ use std::{
     ops::{Add, AddAssign, Mul, MulAssign},
 };
 
+use anyhow::anyhow;
 use ff_ext::ExtensionField;
 use multilinear_extensions::mle::DenseMultilinearExtension;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -148,6 +149,8 @@ pub enum LogUpInput<E: ExtensionField> {
         constant_challenge: E,
         column_separation_challenge: E,
     },
+    /// Grand product instance
+    Product { evals: Vec<E::BaseField> },
 }
 
 impl<E: ExtensionField> LogUpInput<E> {
@@ -237,11 +240,31 @@ impl<E: ExtensionField> LogUpInput<E> {
         })
     }
 
-    pub fn column_evals(&self) -> &[Vec<E::BaseField>] {
+    /// Ued to create a Grand product check that all the evaluations of an MLE multiply to a product.
+    pub fn new_product(evals: Vec<E::BaseField>) -> Result<LogUpInput<E>, LogUpError> {
+        if evals.is_empty() {
+            return Err(LogUpError::ParameterError(
+                "No column evals were provided for Lookup input".to_string(),
+            ));
+        }
+
+        let evals_len = evals.len();
+
+        if !evals_len.is_power_of_two() {
+            return Err(LogUpError::PolynomialError(format!(
+                "Need a power of two number of evaluations got: {evals_len}"
+            )));
+        }
+
+        Ok(LogUpInput::Product { evals })
+    }
+
+    pub fn column_evals(&self) -> Vec<Vec<E::BaseField>> {
         match self {
             LogUpInput::Lookup { column_evals, .. } | LogUpInput::Table { column_evals, .. } => {
-                column_evals
+                column_evals.to_vec()
             }
+            LogUpInput::Product { evals } => vec![evals.to_vec()],
         }
     }
 
@@ -275,6 +298,9 @@ impl<E: ExtensionField> LogUpInput<E> {
                     *column_separation_challenge,
                 )]
             }
+            LogUpInput::Product { evals } => {
+                vec![LogUpCircuit::<E>::new_product_circuit(evals)]
+            }
         }
     }
 
@@ -298,6 +324,11 @@ impl<E: ExtensionField> LogUpInput<E> {
                     DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, evaluations)
                 })
                 .collect(),
+            LogUpInput::Product { evals } => {
+                let num_vars = evals.len().ilog2() as usize;
+                let mle = DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, evals);
+                vec![mle]
+            }
         }
     }
 }
@@ -306,6 +337,7 @@ impl<E: ExtensionField> LogUpInput<E> {
 pub enum ProofType {
     Lookup,
     Table,
+    Product,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -326,15 +358,23 @@ impl<E: ExtensionField> LogUpProof<E> {
     }
 
     pub fn fractional_outputs(&self) -> (Vec<E>, Vec<E>) {
-        self.circuit_outputs
-            .iter()
-            .map(|evals| {
-                (
-                    evals[0] * evals[3] + evals[1] * evals[2],
-                    evals[2] * evals[3],
-                )
-            })
-            .unzip()
+        match self.proof_type() {
+            ProofType::Table | ProofType::Lookup => self
+                .circuit_outputs
+                .iter()
+                .map(|evals| {
+                    (
+                        evals[0] * evals[3] + evals[1] * evals[2],
+                        evals[2] * evals[3],
+                    )
+                })
+                .unzip(),
+            ProofType::Product => self
+                .circuit_outputs
+                .iter()
+                .map(|evals| (evals[0] * evals[1], E::ONE))
+                .unzip(),
+        }
     }
 
     pub fn proofs_and_evals(&self) -> impl Iterator<Item = (&IOPProof<E>, &Vec<E>)> {
@@ -386,6 +426,16 @@ impl<E: ExtensionField> LogUpVerifierClaim<E> {
 
     pub fn denominators(&self) -> &[E] {
         &self.denominators
+    }
+
+    pub fn products(&self) -> anyhow::Result<&[E]> {
+        if self.denominators.iter().all(|d| *d == E::ONE) {
+            Ok(&self.numerators)
+        } else {
+            Err(anyhow!(
+                "Not all of the denominators were one, so this isn't a grand product case"
+            ))
+        }
     }
 
     pub fn point(&self) -> &[E] {
