@@ -67,10 +67,20 @@ jobs:
       - name: Install the Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: nightly-2025-05-22
           components: clippy
-          cache-shared-key: "v0-dp-tests"
-          cache-workspaces: "true"
+          # Manually configure rust-cache
+          cache: false
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # The prefix cache key, this can be changed to start a new cache manually.
+          # default: "v0-rust"
+          shared-key: "v1-rust-dp"
+          # If `true` the workspace crates will be cached.
+          # Useful if the workspace contains libraries that are only updated sporadically.
+          # default: "false"
+          cache-workspace-crates: true
 
       - name: Run cargo test
         run: cargo test
@@ -93,6 +103,6 @@ jobs:
 
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: nightly-2025-05-22
           components: rustfmt
+          cache: false
       - run: cargo fmt --all
