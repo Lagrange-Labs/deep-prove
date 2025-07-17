@@ -18,6 +18,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: nightly-2025-05-22
+          cache-shared-key: "v0-dp-tests"
       - name: Checkout base
         uses: actions/checkout@v4
         with:
