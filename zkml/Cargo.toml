@@ -20,7 +20,7 @@ path = "src/bin/bench.rs"
 default = []
 blake = ["mpcs/blake"]
 # Capture layers' quatization outputs for regression tests
-capture-layers-quant = []
+capture-layers-quant = ["dep:sha2"]
 mem-track = ["utils/mem-track"]
 
 [dependencies]
@@ -43,6 +43,7 @@ poseidon = { version = "0.1.0", path = "../poseidon" }
 rayon.workspace = true
 rmp-serde = { workspace = true }
 rust_tokenizers = "8.1.1"
+sha2 = { version = "0.10.9", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 statrs = { workspace = true }
