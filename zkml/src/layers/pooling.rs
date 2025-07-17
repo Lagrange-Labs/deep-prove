@@ -213,11 +213,13 @@ where
     ) -> Result<()> {
         ensure!(
             step_data.inputs.len() == 1,
-            "Found more than 1 input in inference step of pooling layer"
+            "Input for pooling layer with invalid length. expected: 1 got: {}",
+            step_data.inputs.len(),
         );
         ensure!(
             step_data.outputs.outputs().len() == 1,
-            "Found more than 1 output in inference step of pooling layer"
+            "Output for pooling layer with invalid length. expected: 1 got: {}",
+            step_data.outputs.outputs().len(),
         );
 
         let (merged_lookups, column_evals) = self.lookup_witness::<E>(&step_data.inputs[0]);
