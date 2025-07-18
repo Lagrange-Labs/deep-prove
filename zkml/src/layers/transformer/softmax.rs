@@ -18,7 +18,10 @@ use crate::{
         transformer::mha::eval_zeroifier_mle,
     },
     lookup::{
-        context::{COLUMN_SEPARATOR, LookupWitnessGen, SoftmaxTableData, TableType},
+        context::{
+            COLUMN_SEPARATOR, CommsAndEvals, CommsAndProofs, LookupWitnessGen, SoftmaxTableData,
+            TableType,
+        },
         logup_gkr::{
             prover::batch_prove,
             structs::{LogUpProof, LogUpVerifierClaim},
@@ -421,7 +424,6 @@ impl<N: Number> OpInfo for Softmax<N> {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 /// Struct containing data useful for proving correctness of [`Softmax`]. This is data that we compute anyway
 /// during quantised evaluation.
 pub struct SoftmaxData<E>
@@ -575,24 +577,6 @@ impl Evaluate<Element> for Softmax<Element> {
 }
 
 impl PadOp for Softmax<Element> {}
-
-type CommsAndEvals<PCS, E> = (
-    Vec<(
-        <PCS as PolynomialCommitmentScheme<E>>::CommitmentWithWitness,
-        DenseMultilinearExtension<E>,
-    )>,
-    Vec<Vec<<E as ExtensionField>::BaseField>>,
-);
-
-type CommsAndProofs<PCS, E> = (
-    Vec<
-        Vec<(
-            <PCS as PolynomialCommitmentScheme<E>>::CommitmentWithWitness,
-            DenseMultilinearExtension<E>,
-        )>,
-    >,
-    Vec<LogUpProof<E>>,
-);
 
 impl Softmax<Element> {
     #[allow(clippy::type_complexity)]

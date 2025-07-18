@@ -43,7 +43,7 @@ use crate::{
         reshape::{Reshape, ReshapeCtx},
         transformer::{
             embeddings::Embeddings,
-            layernorm::LayerNorm,
+            layernorm::{LayerNorm, LayerNormCtx, LayerNormProof},
             logits::Logits,
             mha::{Mha, MhaCtx, MhaProof},
             positional::Positional,
@@ -113,7 +113,7 @@ where
     QKV(QKVCtx<E>),
     Mha(MhaCtx<E>),
     ConcatMatMul(ConcatMatMulCtx<E>),
-    LayerNorm,
+    LayerNorm(LayerNormCtx),
     Flatten,
     Softmax(SoftmaxCtx),
     Add,
@@ -140,7 +140,7 @@ where
     QKV(QKVProof<E>),
     Mha(MhaProof<E, PCS>),
     ConcatMatMul(ConcatMatMulProof<E>),
-    LayerNorm,
+    LayerNorm(LayerNormProof<E, PCS>),
     Softmax(SoftmaxProof<E, PCS>),
     Add,
     Embeddings,
@@ -187,7 +187,7 @@ where
             Self::QKV(_) => "QKV".to_string(),
             Self::Mha(_) => "MHA".to_string(),
             Self::ConcatMatMul(_) => "ConcatMatMul".to_string(),
-            Self::LayerNorm => "LayerNorm".to_string(),
+            Self::LayerNorm(_) => "LayerNorm".to_string(),
             Self::Softmax(_) => "Softmax".to_string(),
             Self::Add => "Add".to_string(),
             Self::Logits => "Logits".to_string(),
@@ -466,9 +466,7 @@ where
             Layer::QKV(qkv) => qkv.step_info(id, aux),
             Layer::Mha(mha) => mha.step_info(id, aux),
             Layer::ConcatMatMul(concat_matmul) => concat_matmul.step_info(id, aux),
-            Layer::LayerNorm(_layernorm) => {
-                unimplemented!("LayerNorm proving layer not implemented")
-            }
+            Layer::LayerNorm(layernorm) => layernorm.step_info(id, aux),
             Layer::Softmax(softmax) => softmax.step_info(id, aux),
             Layer::Add(_add) => unimplemented!("Add proving layer not implemented"),
             Layer::Logits(_logits) => unimplemented!("Logits proving layer not implemented"),
@@ -501,7 +499,7 @@ impl PadOp for Layer<Element> {
             Layer::QKV(qkv) => Layer::QKV(qkv.pad_node(si)?),
             Layer::Mha(mha) => Layer::Mha(mha.pad_node(si)?),
             Layer::ConcatMatMul(concat_matmul) => Layer::ConcatMatMul(concat_matmul.pad_node(si)?),
-            Layer::LayerNorm(_layernorm) => unimplemented!("LayerNorm layer not implemented"),
+            Layer::LayerNorm(layernorm) => Layer::LayerNorm(layernorm.pad_node(si)?),
             Layer::Softmax(softmax) => Layer::Softmax(softmax.pad_node(si)?),
             Layer::Add(_add) => unimplemented!("Add layer not implemented"),
             Layer::Logits(_logits) => unimplemented!("Logits layer not implemented"),
@@ -585,6 +583,10 @@ where
             (Layer::Softmax(softmax), LayerCtx::Softmax(info)) => {
                 softmax.prove(node_id, info, last_claims, step_data, prover)
             }
+            (Layer::LayerNorm(layernorm), LayerCtx::LayerNorm(info)) => {
+                layernorm.prove(node_id, info, last_claims, step_data, prover)
+            }
+
             _ => bail!(
                 "Incompatible layer {} and ctx {} found for node id {}",
                 self.describe(),
@@ -609,7 +611,7 @@ where
             Layer::ConcatMatMul(concat_matmul) => {
                 concat_matmul.gen_lookup_witness(id, ctx, step_data)
             }
-            Layer::LayerNorm(_layernorm) => unimplemented!("LayerNorm layer not implemented"),
+            Layer::LayerNorm(layernorm) => layernorm.gen_lookup_witness(id, ctx, step_data),
             Layer::Softmax(softmax) => softmax.gen_lookup_witness(id, ctx, step_data),
             Layer::Add(_add) => unimplemented!("Add layer not implemented"),
             Layer::Logits(_logits) => unimplemented!("Logits layer not implemented"),
@@ -752,7 +754,7 @@ where
             Self::QKV(_) => "QKV".to_string(),
             Self::Mha(_) => "MHA".to_string(),
             Self::ConcatMatMul(..) => "ConcatMatMul".to_string(),
-            Self::LayerNorm => "LayerNorm".to_string(),
+            Self::LayerNorm(_) => "LayerNorm".to_string(),
             Self::Positional => "Positional".to_string(),
             Self::Softmax(_) => "Softmax".to_string(),
             Self::Add => "Add".to_string(),
@@ -773,7 +775,7 @@ where
             LayerProof::QKV(..) => None,
             LayerProof::Mha(proof) => Some(proof.get_lookup_data()),
             LayerProof::ConcatMatMul(..) => None,
-            LayerProof::LayerNorm => None,
+            LayerProof::LayerNorm(proof) => Some(proof.get_lookup_data()),
             LayerProof::Softmax(proof) => Some(proof.get_lookup_data()),
             LayerProof::Add => None,
             LayerProof::Logits => None,
