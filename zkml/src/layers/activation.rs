@@ -217,10 +217,9 @@ where
     fn gen_lookup_witness(
         &self,
         id: NodeId,
-        gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> Result<()> {
+    ) -> Result<LookupWitnessGen<E, PCS>> {
         ensure!(
             step_data.inputs.len() == 1,
             "Found more than 1 input tensor in inference step of activation layer"
@@ -267,6 +266,8 @@ where
             .collect::<Result<Vec<_>, anyhow::Error>>()?
             .into_iter()
             .unzip();
+
+        let mut gen = LookupWitnessGen::<E, PCS>::default();
         gen.logup_witnesses.insert(
             id,
             vec![LogUpWitness::<E, PCS>::new_lookup(
@@ -276,14 +277,9 @@ where
                 TableType::Relu,
             )],
         );
+        gen.new_lookups.insert(TableType::Relu, merged_lookups);
 
-        let lookups = gen
-            .new_lookups
-            .get_mut(&TableType::Relu)
-            .ok_or(anyhow!("No table of type Relu was expected"))?;
-        lookups.extend(merged_lookups);
-
-        Ok(())
+        Ok(gen)
     }
 }
 

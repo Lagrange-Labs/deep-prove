@@ -1,6 +1,6 @@
 //! File containing code for lookup witness generation.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, btree_map::Entry};
 
 use ff_ext::ExtensionField;
 use mpcs::PolynomialCommitmentScheme;
@@ -437,6 +437,7 @@ impl LookupContext {
     }
 }
 
+#[derive(Default)]
 pub struct LookupWitnessGen<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> {
     pub(crate) new_lookups: BTreeMap<TableType, Vec<Element>>,
     pub(crate) logup_witnesses: HashMap<NodeId, Vec<LogUpWitness<E, PCS>>>,
@@ -452,6 +453,19 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> LookupWitnessGen<E, 
             new_lookups,
             logup_witnesses: HashMap::new(),
         }
+    }
+
+    /// Consume the lookups and witness of `other` into this instance.
+    fn consume(&mut self, other: Self) {
+        for (table_type, elements) in other.new_lookups.into_iter() {
+            match self.new_lookups.entry(table_type) {
+                Entry::Vacant(vacant_entry) => {
+                    vacant_entry.insert(elements);
+                }
+                Entry::Occupied(mut occupied_entry) => occupied_entry.get_mut().extend(elements),
+            }
+        }
+        self.logup_witnesses.extend(other.logup_witnesses);
     }
 }
 
@@ -498,13 +512,15 @@ where
             .ok_or(LogUpError::ProvingError(format!(
                 "Node {node_id} not found in trace"
             )))?;
-        step.op
-            .gen_lookup_witness(node_id, &mut witness_gen, ctx, &step.step_data)
+        let gen = step
+            .op
+            .gen_lookup_witness(node_id, ctx, &step.step_data)
             .map_err(|e| {
                 LogUpError::ParameterError(format!(
                     "Error generating lookup witness for node {node_id} with error: {e}"
                 ))
             })?;
+        witness_gen.consume(gen);
     }
     debug!(
         "== Witness poly fields generation metrics {} ==",

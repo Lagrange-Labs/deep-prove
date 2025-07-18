@@ -421,12 +421,10 @@ where
     fn gen_lookup_witness(
         &self,
         _id: NodeId,
-        _gen: &mut LookupWitnessGen<E, PCS>,
         _ctx: &Context<E, PCS>,
         _step_data: &StepData<Element, E>,
-    ) -> Result<()> {
-        // Default implementation for nodes that don't employ a lookup table
-        Ok(())
+    ) -> Result<LookupWitnessGen<E, PCS>> {
+        Ok(Default::default())
     }
 }
 

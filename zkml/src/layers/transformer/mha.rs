@@ -23,6 +23,7 @@ use crate::{
             OUTPUT_SCALE_FACTOR, Softmax, SoftmaxCtx, SoftmaxData, SoftmaxProof,
         },
     },
+    lookup::context::LookupWitnessGen,
     model::StepData,
     padding::{GarbagePad, PaddingMode, ShapeInfo},
     quantization::{Fieldizer, TensorFielder},
@@ -724,16 +725,15 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS> f
     fn gen_lookup_witness(
         &self,
         id: NodeId,
-        gen: &mut crate::lookup::context::LookupWitnessGen<E, PCS>,
         ctx: &crate::Context<E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<LookupWitnessGen<E, PCS>> {
         let mha_data = step_data
             .outputs
             .try_mha_data()
             .ok_or(anyhow!("MhaData not found when proving Mha layer"))?;
         self.softmax
-            .lookup_witness(id, gen, ctx, &mha_data.softmax_out, &mha_data.softmax_data)
+            .lookup_witness(id, ctx, &mha_data.softmax_out, &mha_data.softmax_data)
     }
 }
 
