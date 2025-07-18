@@ -153,10 +153,7 @@ where
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct MerklePathWithoutLeafOrRoot<E: ExtensionField, D>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-{
+pub struct MerklePathWithoutLeafOrRoot<E, D> {
     inner: Vec<D>,
     _phantom: PhantomData<E>,
 }

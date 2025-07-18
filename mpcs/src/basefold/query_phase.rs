@@ -28,13 +28,15 @@ use super::{
     structure::{BasefoldCommitment, BasefoldCommitmentWithWitness, BasefoldSpec},
 };
 
-pub fn prover_query_phase<E: ExtensionField, H: MerkleHasher<E>>(
+pub fn prover_query_phase<E, H>(
     transcript: &mut impl Transcript<E>,
     comm: &BasefoldCommitmentWithWitness<E, H>,
     trees: &[MerkleTree<E, H>],
     num_verifier_queries: usize,
-) -> QueriesResult<E>
+) -> QueriesResult<E, E::BaseField>
 where
+    E: ExtensionField,
+    H: MerkleHasher<E>,
     E::BaseField: Serialize + DeserializeOwned,
 {
     let queries: Vec<_> = (0..num_verifier_queries)
@@ -64,14 +66,16 @@ where
     }
 }
 
-pub fn batch_prover_query_phase<E: ExtensionField, H: MerkleHasher<E>>(
+pub fn batch_prover_query_phase<E, H>(
     transcript: &mut impl Transcript<E>,
     codeword_size: usize,
     comms: &[BasefoldCommitmentWithWitness<E, H>],
     trees: &[MerkleTree<E, H>],
     num_verifier_queries: usize,
-) -> BatchedQueriesResult<E>
+) -> BatchedQueriesResult<E, E::BaseField>
 where
+    E: ExtensionField,
+    H: MerkleHasher<E>,
     E::BaseField: Serialize + DeserializeOwned,
 {
     let queries: Vec<_> = (0..num_verifier_queries)
@@ -106,7 +110,7 @@ pub fn simple_batch_prover_query_phase<E: ExtensionField, H: MerkleHasher<E>>(
     comm: &BasefoldCommitmentWithWitness<E, H>,
     trees: &[MerkleTree<E, H>],
     num_verifier_queries: usize,
-) -> SimpleBatchQueriesResult<E>
+) -> SimpleBatchQueriesResult<E, E::BaseField>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
@@ -138,10 +142,14 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn verifier_query_phase<E: ExtensionField, Spec: BasefoldSpec<E>>(
+pub fn verifier_query_phase<E, Spec>(
     indices: &[usize],
     vp: &<Spec::EncodingScheme as EncodingScheme<E>>::VerifierParameters,
-    queries: &QueriesResultWithMerklePath<E, <Spec::MerkleHasher as MerkleHasher<E>>::Digest>,
+    queries: &QueriesResultWithMerklePath<
+        E,
+        E::BaseField,
+        <Spec::MerkleHasher as MerkleHasher<E>>::Digest,
+    >,
     sum_check_messages: &[Vec<E>],
     fold_challenges: &[E],
     num_rounds: usize,
@@ -152,6 +160,8 @@ pub fn verifier_query_phase<E: ExtensionField, Spec: BasefoldSpec<E>>(
     partial_eq: &[E],
     eval: &E,
 ) where
+    E: ExtensionField,
+    Spec: BasefoldSpec<E>,
     E::BaseField: Serialize + DeserializeOwned,
 {
     let timer = start_timer!(|| "Verifier query phase");
@@ -210,11 +220,12 @@ pub fn verifier_query_phase<E: ExtensionField, Spec: BasefoldSpec<E>>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn batch_verifier_query_phase<E: ExtensionField, Spec: BasefoldSpec<E>>(
+pub fn batch_verifier_query_phase<E, Spec>(
     indices: &[usize],
     vp: &<Spec::EncodingScheme as EncodingScheme<E>>::VerifierParameters,
     queries: &BatchedQueriesResultWithMerklePath<
         E,
+        E::BaseField,
         <Spec::MerkleHasher as MerkleHasher<E>>::Digest,
     >,
     sum_check_messages: &[Vec<E>],
@@ -228,6 +239,8 @@ pub fn batch_verifier_query_phase<E: ExtensionField, Spec: BasefoldSpec<E>>(
     partial_eq: &[E],
     eval: &E,
 ) where
+    E: ExtensionField,
+    Spec: BasefoldSpec<E>,
     E::BaseField: Serialize + DeserializeOwned,
 {
     let timer = start_timer!(|| "Verifier batch query phase");
@@ -294,6 +307,7 @@ pub fn simple_batch_verifier_query_phase<E: ExtensionField, Spec: BasefoldSpec<E
     vp: &<Spec::EncodingScheme as EncodingScheme<E>>::VerifierParameters,
     queries: &SimpleBatchQueriesResultWithMerklePath<
         E,
+        E::BaseField,
         <Spec::MerkleHasher as MerkleHasher<E>>::Digest,
     >,
     sum_check_messages: &[Vec<E>],
@@ -370,12 +384,14 @@ pub fn simple_batch_verifier_query_phase<E: ExtensionField, Spec: BasefoldSpec<E
     end_timer!(timer);
 }
 
-fn basefold_get_query<E: ExtensionField, H: MerkleHasher<E>>(
+fn basefold_get_query<E, H>(
     poly_codeword: &FieldType<E>,
     trees: &[MerkleTree<E, H>],
     x_index: usize,
-) -> SingleQueryResult<E>
+) -> SingleQueryResult<E, E::BaseField>
 where
+    E: ExtensionField,
+    H: MerkleHasher<E>,
     E::BaseField: Serialize + DeserializeOwned,
 {
     let mut index = x_index;
@@ -416,13 +432,15 @@ where
     }
 }
 
-fn batch_basefold_get_query<E: ExtensionField, H: MerkleHasher<E>>(
+fn batch_basefold_get_query<E, H>(
     comms: &[BasefoldCommitmentWithWitness<E, H>],
     trees: &[MerkleTree<E, H>],
     codeword_size: usize,
     x_index: usize,
-) -> BatchedSingleQueryResult<E>
+) -> BatchedSingleQueryResult<E, E::BaseField>
 where
+    E: ExtensionField,
+    H: MerkleHasher<E>,
     E::BaseField: Serialize + DeserializeOwned,
 {
     let mut oracle_list_queries = Vec::with_capacity(trees.len());
@@ -432,7 +450,7 @@ where
     for tree in trees {
         let p1 = index | 1;
         let p0 = p1 - 1;
-        oracle_list_queries.push(CodewordSingleQueryResult::<E>::new_ext(
+        oracle_list_queries.push(CodewordSingleQueryResult::<E, E::BaseField>::new_ext(
             tree.get_leaf_as_extension(p0)[0],
             tree.get_leaf_as_extension(p1)[0],
             p0,
@@ -471,12 +489,14 @@ where
     }
 }
 
-fn simple_batch_basefold_get_query<E: ExtensionField, H: MerkleHasher<E>>(
+fn simple_batch_basefold_get_query<E, H>(
     poly_codewords: &[FieldType<E>],
     trees: &[MerkleTree<E, H>],
     x_index: usize,
-) -> SimpleBatchSingleQueryResult<E>
+) -> SimpleBatchSingleQueryResult<E, E::BaseField>
 where
+    E: ExtensionField,
+    H: MerkleHasher<E>,
     E::BaseField: Serialize + DeserializeOwned,
 {
     let mut index = x_index;
@@ -534,16 +554,15 @@ where
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "E::BaseField: Serialize",
-    deserialize = "E::BaseField: DeserializeOwned"
-))]
-enum CodewordPointPair<E: ExtensionField> {
+enum CodewordPointPair<E, B> {
     Ext(E, E),
-    Base(E::BaseField, E::BaseField),
+    Base(B, B),
 }
 
-impl<E: ExtensionField> CodewordPointPair<E> {
+impl<E> CodewordPointPair<E, E::BaseField>
+where
+    E: ExtensionField,
+{
     pub fn as_ext(&self) -> (E, E) {
         match self {
             CodewordPointPair::Ext(x, y) => (*x, *y),
@@ -553,20 +572,14 @@ impl<E: ExtensionField> CodewordPointPair<E> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "E::BaseField: Serialize",
-    deserialize = "E::BaseField: DeserializeOwned"
-))]
-enum SimpleBatchLeavesPair<E: ExtensionField>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-{
+enum SimpleBatchLeavesPair<E, B> {
     Ext(Vec<(E, E)>),
-    Base(Vec<(E::BaseField, E::BaseField)>),
+    Base(Vec<(B, B)>),
 }
 
-impl<E: ExtensionField> SimpleBatchLeavesPair<E>
+impl<E> SimpleBatchLeavesPair<E, E::BaseField>
 where
+    E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
 {
     #[allow(unused)]
@@ -602,19 +615,12 @@ where
 }
 
 #[derive(Debug, Copy, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "E::BaseField: Serialize",
-    deserialize = "E::BaseField: DeserializeOwned"
-))]
-struct CodewordSingleQueryResult<E: ExtensionField>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-{
-    codepoints: CodewordPointPair<E>,
+struct CodewordSingleQueryResult<E, B> {
+    codepoints: CodewordPointPair<E, B>,
     index: usize,
 }
 
-impl<E: ExtensionField> CodewordSingleQueryResult<E>
+impl<E: ExtensionField> CodewordSingleQueryResult<E, E::BaseField>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
@@ -648,20 +654,12 @@ where
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "E::BaseField: Serialize",
-    deserialize = "E::BaseField: DeserializeOwned"
-))]
-struct CodewordSingleQueryResultWithMerklePath<E: ExtensionField, D>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-    D: Clone + Serialize + DeserializeOwned,
-{
-    query: CodewordSingleQueryResult<E>,
+struct CodewordSingleQueryResultWithMerklePath<E, B, D> {
+    query: CodewordSingleQueryResult<E, B>,
     merkle_path: MerklePathWithoutLeafOrRoot<E, D>,
 }
 
-impl<E: ExtensionField, D> CodewordSingleQueryResultWithMerklePath<E, D>
+impl<E: ExtensionField, D> CodewordSingleQueryResultWithMerklePath<E, E::BaseField, D>
 where
     E::BaseField: Serialize + DeserializeOwned,
     D: Clone + Serialize + DeserializeOwned,
@@ -691,118 +689,95 @@ where
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "E::BaseField: Serialize",
-    deserialize = "E::BaseField: DeserializeOwned"
-))]
-struct OracleListQueryResult<E: ExtensionField>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-{
-    inner: Vec<CodewordSingleQueryResult<E>>,
+struct OracleListQueryResult<E, B> {
+    inner: Vec<CodewordSingleQueryResult<E, B>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "E::BaseField: Serialize",
-    deserialize = "E::BaseField: DeserializeOwned"
-))]
-struct CommitmentsQueryResult<E: ExtensionField>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-{
-    inner: Vec<CodewordSingleQueryResult<E>>,
+struct CommitmentsQueryResult<E, B> {
+    inner: Vec<CodewordSingleQueryResult<E, B>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "E::BaseField: Serialize",
-    deserialize = "E::BaseField: DeserializeOwned"
-))]
-struct OracleListQueryResultWithMerklePath<E: ExtensionField, D>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-    D: Clone + Serialize + DeserializeOwned,
-{
-    inner: Vec<CodewordSingleQueryResultWithMerklePath<E, D>>,
+struct OracleListQueryResultWithMerklePath<E, B, D> {
+    inner: Vec<CodewordSingleQueryResultWithMerklePath<E, B, D>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "E::BaseField: Serialize",
-    deserialize = "E::BaseField: DeserializeOwned"
-))]
-struct CommitmentsQueryResultWithMerklePath<E: ExtensionField, D>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-    D: Clone + Serialize + DeserializeOwned,
-{
-    inner: Vec<CodewordSingleQueryResultWithMerklePath<E, D>>,
+struct CommitmentsQueryResultWithMerklePath<E, B, D> {
+    inner: Vec<CodewordSingleQueryResultWithMerklePath<E, B, D>>,
 }
 
-impl<E: ExtensionField> ListQueryResult<E> for OracleListQueryResult<E>
+impl<E> ListQueryResult<E> for OracleListQueryResult<E, E::BaseField>
 where
+    E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
 {
-    fn get_inner(&self) -> &Vec<CodewordSingleQueryResult<E>> {
+    fn get_inner(&self) -> &Vec<CodewordSingleQueryResult<E, E::BaseField>> {
         &self.inner
     }
 
-    fn get_inner_into(self) -> Vec<CodewordSingleQueryResult<E>> {
+    fn get_inner_into(self) -> Vec<CodewordSingleQueryResult<E, E::BaseField>> {
         self.inner
     }
 }
 
-impl<E: ExtensionField> ListQueryResult<E> for CommitmentsQueryResult<E>
+impl<E> ListQueryResult<E> for CommitmentsQueryResult<E, E::BaseField>
 where
+    E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
 {
-    fn get_inner(&self) -> &Vec<CodewordSingleQueryResult<E>> {
+    fn get_inner(&self) -> &Vec<CodewordSingleQueryResult<E, E::BaseField>> {
         &self.inner
     }
 
-    fn get_inner_into(self) -> Vec<CodewordSingleQueryResult<E>> {
+    fn get_inner_into(self) -> Vec<CodewordSingleQueryResult<E, E::BaseField>> {
         self.inner
     }
 }
 
-impl<D, E: ExtensionField, H: MerkleHasher<E, Digest = D>> ListQueryResultWithMerklePath<E, H>
-    for OracleListQueryResultWithMerklePath<E, D>
+impl<D, E, H> ListQueryResultWithMerklePath<E, H>
+    for OracleListQueryResultWithMerklePath<E, E::BaseField, D>
 where
+    E: ExtensionField,
+    H: MerkleHasher<E, Digest = D>,
     E::BaseField: Serialize + DeserializeOwned,
     D: Clone + Serialize + DeserializeOwned,
 {
-    fn get_inner(&self) -> &Vec<CodewordSingleQueryResultWithMerklePath<E, D>> {
+    fn get_inner(&self) -> &Vec<CodewordSingleQueryResultWithMerklePath<E, E::BaseField, D>> {
         &self.inner
     }
 
-    fn new(inner: Vec<CodewordSingleQueryResultWithMerklePath<E, D>>) -> Self {
+    fn new(inner: Vec<CodewordSingleQueryResultWithMerklePath<E, E::BaseField, D>>) -> Self {
         Self { inner }
     }
 }
 
-impl<D, E: ExtensionField, H: MerkleHasher<E, Digest = D>> ListQueryResultWithMerklePath<E, H>
-    for CommitmentsQueryResultWithMerklePath<E, D>
+impl<D, E, H> ListQueryResultWithMerklePath<E, H>
+    for CommitmentsQueryResultWithMerklePath<E, E::BaseField, D>
 where
+    E: ExtensionField,
+    H: MerkleHasher<E, Digest = D>,
     E::BaseField: Serialize + DeserializeOwned,
     D: Clone + Serialize + DeserializeOwned,
 {
-    fn get_inner(&self) -> &Vec<CodewordSingleQueryResultWithMerklePath<E, D>> {
+    fn get_inner(&self) -> &Vec<CodewordSingleQueryResultWithMerklePath<E, E::BaseField, D>> {
         &self.inner
     }
 
-    fn new(inner: Vec<CodewordSingleQueryResultWithMerklePath<E, D>>) -> Self {
+    fn new(inner: Vec<CodewordSingleQueryResultWithMerklePath<E, E::BaseField, D>>) -> Self {
         Self { inner }
     }
 }
 
-trait ListQueryResult<E: ExtensionField>
+trait ListQueryResult<E>
 where
+    E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
 {
-    fn get_inner(&self) -> &Vec<CodewordSingleQueryResult<E>>;
+    fn get_inner(&self) -> &Vec<CodewordSingleQueryResult<E, E::BaseField>>;
 
-    fn get_inner_into(self) -> Vec<CodewordSingleQueryResult<E>>;
+    fn get_inner_into(self) -> Vec<CodewordSingleQueryResult<E, E::BaseField>>;
 
     fn merkle_path<H: MerkleHasher<E>>(
         &self,
@@ -818,13 +793,18 @@ where
     }
 }
 
-trait ListQueryResultWithMerklePath<E: ExtensionField, H: MerkleHasher<E>>: Sized
+trait ListQueryResultWithMerklePath<E, H>: Sized
 where
+    E: ExtensionField,
+    H: MerkleHasher<E>,
     E::BaseField: Serialize + DeserializeOwned,
 {
-    fn new(inner: Vec<CodewordSingleQueryResultWithMerklePath<E, H::Digest>>) -> Self;
+    fn new(inner: Vec<CodewordSingleQueryResultWithMerklePath<E, E::BaseField, H::Digest>>)
+    -> Self;
 
-    fn get_inner(&self) -> &Vec<CodewordSingleQueryResultWithMerklePath<E, H::Digest>>;
+    fn get_inner(
+        &self,
+    ) -> &Vec<CodewordSingleQueryResultWithMerklePath<E, E::BaseField, H::Digest>>;
 
     fn from_query_and_trees<LQR: ListQueryResult<E>>(
         query_result: LQR,
@@ -858,45 +838,31 @@ where
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "E::BaseField: Serialize",
-    deserialize = "E::BaseField: DeserializeOwned"
-))]
-struct SingleQueryResult<E: ExtensionField>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-{
-    oracle_query: OracleListQueryResult<E>,
-    commitment_query: CodewordSingleQueryResult<E>,
+struct SingleQueryResult<E, B> {
+    oracle_query: OracleListQueryResult<E, B>,
+    commitment_query: CodewordSingleQueryResult<E, B>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "E::BaseField: Serialize",
-    deserialize = "E::BaseField: DeserializeOwned"
-))]
-struct SingleQueryResultWithMerklePath<E: ExtensionField, D>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-    D: Clone + Serialize + DeserializeOwned,
-{
-    oracle_query: OracleListQueryResultWithMerklePath<E, D>,
-    commitment_query: CodewordSingleQueryResultWithMerklePath<E, D>,
+struct SingleQueryResultWithMerklePath<E, B, D> {
+    oracle_query: OracleListQueryResultWithMerklePath<E, B, D>,
+    commitment_query: CodewordSingleQueryResultWithMerklePath<E, B, D>,
 }
 
-impl<E: ExtensionField, D> SingleQueryResultWithMerklePath<E, D>
+impl<E, D> SingleQueryResultWithMerklePath<E, E::BaseField, D>
 where
+    E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
     D: Clone + Serialize + DeserializeOwned,
 {
     pub fn from_single_query_result<H: MerkleHasher<E, Digest = D>>(
-        single_query_result: SingleQueryResult<E>,
+        single_query_result: SingleQueryResult<E, E::BaseField>,
         oracle_trees: &[MerkleTree<E, H>],
         commitment: &BasefoldCommitmentWithWitness<E, H>,
     ) -> Self {
         assert!(commitment.codeword_tree.height() > 0);
         Self {
-            oracle_query: <OracleListQueryResultWithMerklePath<E, D> as ListQueryResultWithMerklePath<E, H>>::from_query_and_trees(
+            oracle_query: <OracleListQueryResultWithMerklePath<E, E::BaseField, D> as ListQueryResultWithMerklePath<E, H>>::from_query_and_trees(
                 single_query_result.oracle_query,
                 |i, j| oracle_trees[i].merkle_path_without_leaf_sibling_or_root(j),
             ),
@@ -926,7 +892,7 @@ where
         Spec::MerkleHasher: MerkleHasher<E, Digest = D>,
     {
         // let timer = start_timer!(|| "Checking codeword single query");
-        <OracleListQueryResultWithMerklePath<E, D> as ListQueryResultWithMerklePath<
+        <OracleListQueryResultWithMerklePath<E, E::BaseField, D> as ListQueryResultWithMerklePath<
             E,
             Spec::MerkleHasher,
         >>::check_merkle_paths(&self.oracle_query, roots);
@@ -952,7 +918,7 @@ where
                 right_index = next_index | 1;
                 left_index = right_index - 1;
                 let next_oracle_query =
-                    <OracleListQueryResultWithMerklePath<E, D> as ListQueryResultWithMerklePath<
+                    <OracleListQueryResultWithMerklePath<E, E::BaseField, D> as ListQueryResultWithMerklePath<
                         E,
                         Spec::MerkleHasher,
                     >>::get_inner(&self.oracle_query)[i]
@@ -975,28 +941,18 @@ where
     }
 }
 
-pub struct QueriesResult<E: ExtensionField>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-{
-    inner: Vec<(usize, SingleQueryResult<E>)>,
+pub struct QueriesResult<E, B> {
+    inner: Vec<(usize, SingleQueryResult<E, B>)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "E::BaseField: Serialize",
-    deserialize = "E::BaseField: DeserializeOwned"
-))]
-pub struct QueriesResultWithMerklePath<E: ExtensionField, D>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-    D: Clone + Serialize + DeserializeOwned,
-{
-    inner: Vec<(usize, SingleQueryResultWithMerklePath<E, D>)>,
+pub struct QueriesResultWithMerklePath<E, B, D> {
+    inner: Vec<(usize, SingleQueryResultWithMerklePath<E, B, D>)>,
 }
 
-impl<E: ExtensionField, D> QueriesResultWithMerklePath<E, D>
+impl<E, D> QueriesResultWithMerklePath<E, E::BaseField, D>
 where
+    E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
     D: Clone + Send + Sync + Serialize + DeserializeOwned,
 {
@@ -1005,7 +961,7 @@ where
     }
 
     pub fn from_query_result<H: MerkleHasher<E, Digest = D>>(
-        query_result: QueriesResult<E>,
+        query_result: QueriesResult<E, E::BaseField>,
         oracle_trees: &[MerkleTree<E, H>],
         commitment: &BasefoldCommitmentWithWitness<E, H>,
     ) -> Self {
@@ -1060,48 +1016,34 @@ where
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "E::BaseField: Serialize",
-    deserialize = "E::BaseField: DeserializeOwned"
-))]
-struct BatchedSingleQueryResult<E: ExtensionField>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-{
-    oracle_query: OracleListQueryResult<E>,
-    commitments_query: CommitmentsQueryResult<E>,
+struct BatchedSingleQueryResult<E, B> {
+    oracle_query: OracleListQueryResult<E, B>,
+    commitments_query: CommitmentsQueryResult<E, B>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "E::BaseField: Serialize",
-    deserialize = "E::BaseField: DeserializeOwned"
-))]
-struct BatchedSingleQueryResultWithMerklePath<E: ExtensionField, D>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-    D: Clone + Serialize + DeserializeOwned,
-{
-    oracle_query: OracleListQueryResultWithMerklePath<E, D>,
-    commitments_query: CommitmentsQueryResultWithMerklePath<E, D>,
+struct BatchedSingleQueryResultWithMerklePath<E, B, D> {
+    oracle_query: OracleListQueryResultWithMerklePath<E, B, D>,
+    commitments_query: CommitmentsQueryResultWithMerklePath<E, B, D>,
 }
 
-impl<E: ExtensionField, D> BatchedSingleQueryResultWithMerklePath<E, D>
+impl<E, D> BatchedSingleQueryResultWithMerklePath<E, E::BaseField, D>
 where
+    E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
     D: Clone + Serialize + DeserializeOwned,
 {
     pub fn from_batched_single_query_result<H: MerkleHasher<E, Digest = D>>(
-        batched_single_query_result: BatchedSingleQueryResult<E>,
+        batched_single_query_result: BatchedSingleQueryResult<E, E::BaseField>,
         oracle_trees: &[MerkleTree<E, H>],
         commitments: &[BasefoldCommitmentWithWitness<E, H>],
     ) -> Self {
         Self {
-            oracle_query: <OracleListQueryResultWithMerklePath<E, H::Digest> as ListQueryResultWithMerklePath<E, H>>::from_query_and_trees(
+            oracle_query: <OracleListQueryResultWithMerklePath<E, E::BaseField, H::Digest> as ListQueryResultWithMerklePath<E, H>>::from_query_and_trees(
                 batched_single_query_result.oracle_query,
                 |i, j| oracle_trees[i].merkle_path_without_leaf_sibling_or_root(j),
             ),
-            commitments_query: <CommitmentsQueryResultWithMerklePath<E, H::Digest> as ListQueryResultWithMerklePath<E, H>>::from_query_and_trees(
+            commitments_query: <CommitmentsQueryResultWithMerklePath<E, E::BaseField, H::Digest> as ListQueryResultWithMerklePath<E, H>>::from_query_and_trees(
                 batched_single_query_result.commitments_query,
                 |i, j| {
                     commitments[i]
@@ -1127,11 +1069,11 @@ where
     ) where
         Spec::MerkleHasher: MerkleHasher<E, Digest = D>,
     {
-        <OracleListQueryResultWithMerklePath<E, D> as ListQueryResultWithMerklePath<
+        <OracleListQueryResultWithMerklePath<E, E::BaseField, D> as ListQueryResultWithMerklePath<
             E,
             Spec::MerkleHasher,
         >>::check_merkle_paths(&self.oracle_query, roots);
-        <CommitmentsQueryResultWithMerklePath<E, D> as ListQueryResultWithMerklePath<
+        <CommitmentsQueryResultWithMerklePath<E, E::BaseField, D> as ListQueryResultWithMerklePath<
             E,
             Spec::MerkleHasher,
         >>::check_merkle_paths(
@@ -1161,7 +1103,7 @@ where
 
             matching_comms.iter().for_each(|index| {
                 let query =
-                    <CommitmentsQueryResultWithMerklePath<E, D> as ListQueryResultWithMerklePath<
+                    <CommitmentsQueryResultWithMerklePath<E, E::BaseField, D> as ListQueryResultWithMerklePath<
                         E,
                         Spec::MerkleHasher,
                     >>::get_inner(&self.commitments_query)[*index]
@@ -1186,7 +1128,7 @@ where
                 right_index = next_index | 1;
                 left_index = right_index - 1;
                 let next_oracle_query =
-                    <OracleListQueryResultWithMerklePath<E, D> as ListQueryResultWithMerklePath<
+                    <OracleListQueryResultWithMerklePath<E, E::BaseField, D> as ListQueryResultWithMerklePath<
                         E,
                         Spec::MerkleHasher,
                     >>::get_inner(&self.oracle_query)[i]
@@ -1215,8 +1157,8 @@ where
                     .collect_vec();
 
                 matching_comms.iter().for_each(|index| {
-                    let query: CodewordSingleQueryResult<E> =
-                        <CommitmentsQueryResultWithMerklePath<E, D> as ListQueryResultWithMerklePath<E, Spec::MerkleHasher>>::get_inner(&self.commitments_query)[*index].query;
+                    let query: CodewordSingleQueryResult<E, E::BaseField> =
+                        <CommitmentsQueryResultWithMerklePath<E, E::BaseField, D> as ListQueryResultWithMerklePath<E, Spec::MerkleHasher>>::get_inner(&self.commitments_query)[*index].query;
                     assert_eq!(query.index >> 1, next_index >> 1);
                     if next_index & 1 == 0 {
                         res += query.left_ext() * coeffs[*index];
@@ -1236,33 +1178,22 @@ where
     }
 }
 
-pub struct BatchedQueriesResult<E: ExtensionField>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-{
-    inner: Vec<(usize, BatchedSingleQueryResult<E>)>,
+pub struct BatchedQueriesResult<E, B> {
+    inner: Vec<(usize, BatchedSingleQueryResult<E, B>)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "E::BaseField: Serialize",
-    deserialize = "E::BaseField: DeserializeOwned"
-))]
-pub struct BatchedQueriesResultWithMerklePath<E: ExtensionField, D>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-    D: Clone + Serialize + DeserializeOwned,
-{
-    inner: Vec<(usize, BatchedSingleQueryResultWithMerklePath<E, D>)>,
+pub struct BatchedQueriesResultWithMerklePath<E, B, D> {
+    inner: Vec<(usize, BatchedSingleQueryResultWithMerklePath<E, B, D>)>,
 }
 
-impl<E: ExtensionField, D> BatchedQueriesResultWithMerklePath<E, D>
+impl<E: ExtensionField, D> BatchedQueriesResultWithMerklePath<E, E::BaseField, D>
 where
     E::BaseField: Serialize + DeserializeOwned,
     D: Clone + Send + Sync + Serialize + DeserializeOwned,
 {
     pub fn from_batched_query_result<H: MerkleHasher<E, Digest = D>>(
-        batched_query_result: BatchedQueriesResult<E>,
+        batched_query_result: BatchedQueriesResult<E, E::BaseField>,
         oracle_trees: &[MerkleTree<E, H>],
         commitments: &[BasefoldCommitmentWithWitness<E, H>],
     ) -> Self {
@@ -1321,20 +1252,14 @@ where
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "E::BaseField: Serialize",
-    deserialize = "E::BaseField: DeserializeOwned"
-))]
-struct SimpleBatchCommitmentSingleQueryResult<E: ExtensionField>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-{
-    leaves: SimpleBatchLeavesPair<E>,
+struct SimpleBatchCommitmentSingleQueryResult<E, B> {
+    leaves: SimpleBatchLeavesPair<E, B>,
     index: usize,
 }
 
-impl<E: ExtensionField> SimpleBatchCommitmentSingleQueryResult<E>
+impl<E> SimpleBatchCommitmentSingleQueryResult<E, E::BaseField>
 where
+    E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
 {
     fn new_ext(left: Vec<E>, right: Vec<E>, index: usize) -> Self {
@@ -1369,20 +1294,12 @@ where
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "E::BaseField: Serialize",
-    deserialize = "E::BaseField: DeserializeOwned"
-))]
-struct SimpleBatchCommitmentSingleQueryResultWithMerklePath<E: ExtensionField, D>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-    D: Clone + Serialize + DeserializeOwned,
-{
-    query: SimpleBatchCommitmentSingleQueryResult<E>,
+struct SimpleBatchCommitmentSingleQueryResultWithMerklePath<E, B, D> {
+    query: SimpleBatchCommitmentSingleQueryResult<E, B>,
     merkle_path: MerklePathWithoutLeafOrRoot<E, D>,
 }
 
-impl<E: ExtensionField, D> SimpleBatchCommitmentSingleQueryResultWithMerklePath<E, D>
+impl<E: ExtensionField, D> SimpleBatchCommitmentSingleQueryResultWithMerklePath<E, E::BaseField, D>
 where
     E::BaseField: Serialize + DeserializeOwned,
     D: Clone + Serialize + DeserializeOwned,
@@ -1412,44 +1329,30 @@ where
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "E::BaseField: Serialize",
-    deserialize = "E::BaseField: DeserializeOwned"
-))]
-struct SimpleBatchSingleQueryResult<E: ExtensionField>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-{
-    oracle_query: OracleListQueryResult<E>,
-    commitment_query: SimpleBatchCommitmentSingleQueryResult<E>,
+struct SimpleBatchSingleQueryResult<E, B> {
+    oracle_query: OracleListQueryResult<E, B>,
+    commitment_query: SimpleBatchCommitmentSingleQueryResult<E, B>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "E::BaseField: Serialize",
-    deserialize = "E::BaseField: DeserializeOwned"
-))]
-struct SimpleBatchSingleQueryResultWithMerklePath<E: ExtensionField, D>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-    D: Clone + Serialize + DeserializeOwned,
-{
-    oracle_query: OracleListQueryResultWithMerklePath<E, D>,
-    commitment_query: SimpleBatchCommitmentSingleQueryResultWithMerklePath<E, D>,
+struct SimpleBatchSingleQueryResultWithMerklePath<E, B, D> {
+    oracle_query: OracleListQueryResultWithMerklePath<E, B, D>,
+    commitment_query: SimpleBatchCommitmentSingleQueryResultWithMerklePath<E, B, D>,
 }
 
-impl<E: ExtensionField, D> SimpleBatchSingleQueryResultWithMerklePath<E, D>
+impl<E, D> SimpleBatchSingleQueryResultWithMerklePath<E, E::BaseField, D>
 where
+    E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
     D: Clone + Serialize + DeserializeOwned,
 {
     pub fn from_single_query_result<H: MerkleHasher<E, Digest = D>>(
-        single_query_result: SimpleBatchSingleQueryResult<E>,
+        single_query_result: SimpleBatchSingleQueryResult<E, E::BaseField>,
         oracle_trees: &[MerkleTree<E, H>],
         commitment: &BasefoldCommitmentWithWitness<E, H>,
     ) -> Self {
         Self {
-            oracle_query: <OracleListQueryResultWithMerklePath<E, D> as ListQueryResultWithMerklePath<E, H>>::from_query_and_trees(
+            oracle_query: <OracleListQueryResultWithMerklePath<E, E::BaseField, D> as ListQueryResultWithMerklePath<E, H>>::from_query_and_trees(
                 single_query_result.oracle_query,
                 |i, j| oracle_trees[i].merkle_path_without_leaf_sibling_or_root(j),
             ),
@@ -1465,7 +1368,7 @@ where
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn check<Spec: BasefoldSpec<E>>(
+    pub fn check<Spec>(
         &self,
         vp: &<Spec::EncodingScheme as EncodingScheme<E>>::VerifierParameters,
         fold_challenges: &[E],
@@ -1477,9 +1380,10 @@ where
         comm: &BasefoldCommitment<<Spec::MerkleHasher as MerkleHasher<E>>::Digest>,
         index: usize,
     ) where
+        Spec: BasefoldSpec<E>,
         Spec::MerkleHasher: MerkleHasher<E, Digest = D>,
     {
-        <OracleListQueryResultWithMerklePath<E, D> as ListQueryResultWithMerklePath<
+        <OracleListQueryResultWithMerklePath<E, E::BaseField, D> as ListQueryResultWithMerklePath<
             E,
             Spec::MerkleHasher,
         >>::check_merkle_paths(&self.oracle_query, roots);
@@ -1508,7 +1412,7 @@ where
                 right_index = next_index | 1;
                 left_index = right_index - 1;
                 let next_oracle_query =
-                    <OracleListQueryResultWithMerklePath<E, D> as ListQueryResultWithMerklePath<
+                    <OracleListQueryResultWithMerklePath<E, E::BaseField, D> as ListQueryResultWithMerklePath<
                         E,
                         Spec::MerkleHasher,
                     >>::get_inner(&self.oracle_query)[i]
@@ -1530,33 +1434,22 @@ where
     }
 }
 
-pub struct SimpleBatchQueriesResult<E: ExtensionField>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-{
-    inner: Vec<(usize, SimpleBatchSingleQueryResult<E>)>,
+pub struct SimpleBatchQueriesResult<E, B> {
+    inner: Vec<(usize, SimpleBatchSingleQueryResult<E, B>)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "E::BaseField: Serialize",
-    deserialize = "E::BaseField: DeserializeOwned"
-))]
-pub struct SimpleBatchQueriesResultWithMerklePath<E: ExtensionField, D>
-where
-    E::BaseField: Serialize + DeserializeOwned,
-    D: Clone + Serialize + DeserializeOwned,
-{
-    inner: Vec<(usize, SimpleBatchSingleQueryResultWithMerklePath<E, D>)>,
+pub struct SimpleBatchQueriesResultWithMerklePath<E, B, D> {
+    inner: Vec<(usize, SimpleBatchSingleQueryResultWithMerklePath<E, B, D>)>,
 }
 
-impl<E: ExtensionField, D> SimpleBatchQueriesResultWithMerklePath<E, D>
+impl<E: ExtensionField, D> SimpleBatchQueriesResultWithMerklePath<E, E::BaseField, D>
 where
     E::BaseField: Serialize + DeserializeOwned,
     D: Clone + Send + Sync + Serialize + DeserializeOwned,
 {
     pub fn from_query_result<H: MerkleHasher<E, Digest = D>>(
-        query_result: SimpleBatchQueriesResult<E>,
+        query_result: SimpleBatchQueriesResult<E, E::BaseField>,
         oracle_trees: &[MerkleTree<E, H>],
         commitment: &BasefoldCommitmentWithWitness<E, H>,
     ) -> Self {

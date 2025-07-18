@@ -25,8 +25,10 @@ use super::{
     serialize = "E::BaseField: Serialize",
     deserialize = "E::BaseField: DeserializeOwned"
 ))]
-pub struct BasefoldParams<E: ExtensionField, Spec: BasefoldSpec<E>>
+pub struct BasefoldParams<E, Spec>
 where
+    E: ExtensionField,
+    Spec: BasefoldSpec<E>,
     E::BaseField: Serialize + DeserializeOwned,
 {
     pub(super) params: <Spec::EncodingScheme as EncodingScheme<E>>::PublicParameters,
@@ -60,8 +62,10 @@ pub struct BasefoldVerifierParams<E: ExtensionField, Spec: BasefoldSpec<E>> {
 /// used to generate this commitment and for assistant in opening
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
-pub struct BasefoldCommitmentWithWitness<E: ExtensionField, H: MerkleHasher<E>>
+pub struct BasefoldCommitmentWithWitness<E, H>
 where
+    E: ExtensionField,
+    H: MerkleHasher<E>,
     E::BaseField: Serialize + DeserializeOwned,
 {
     pub(crate) codeword_tree: MerkleTree<E, H>,
@@ -71,8 +75,10 @@ where
     pub(crate) num_polys: usize,
 }
 
-impl<E: ExtensionField, H: MerkleHasher<E>> BasefoldCommitmentWithWitness<E, H>
+impl<E, H> BasefoldCommitmentWithWitness<E, H>
 where
+    E: ExtensionField,
+    H: MerkleHasher<E>,
     E::BaseField: Serialize + DeserializeOwned,
 {
     pub fn to_commitment(&self) -> BasefoldCommitment<H::Digest> {
@@ -137,19 +143,10 @@ where
     }
 }
 
-// impl<E: ExtensionField, H: MerkleHasher<E>> From<BasefoldCommitmentWithWitness<E, H>>
-//     for <H as MerkleHasher<E>>::Digest
-// where
-//     E::BaseField: Serialize + DeserializeOwned,
-// {
-//     fn from(val: BasefoldCommitmentWithWitness<E, H>) -> Self {
-//         val.get_root_as()
-//     }
-// }
-
-impl<D, E: ExtensionField, H: MerkleHasher<E, Digest = D>>
-    From<&BasefoldCommitmentWithWitness<E, H>> for BasefoldCommitment<D>
+impl<D, E, H> From<&BasefoldCommitmentWithWitness<E, H>> for BasefoldCommitment<D>
 where
+    E: ExtensionField,
+    H: MerkleHasher<E, Digest = D>,
     E::BaseField: Serialize + DeserializeOwned,
 {
     fn from(val: &BasefoldCommitmentWithWitness<E, H>) -> Self {
@@ -188,8 +185,10 @@ impl<D: Clone> BasefoldCommitment<D> {
     }
 }
 
-impl<E: ExtensionField, H: MerkleHasher<E>> PartialEq for BasefoldCommitmentWithWitness<E, H>
+impl<E, H> PartialEq for BasefoldCommitmentWithWitness<E, H>
 where
+    E: ExtensionField,
+    H: MerkleHasher<E>,
     E::BaseField: Serialize + DeserializeOwned,
 {
     fn eq(&self, other: &Self) -> bool {
@@ -198,8 +197,11 @@ where
     }
 }
 
-impl<E: ExtensionField, H: MerkleHasher<E>> Eq for BasefoldCommitmentWithWitness<E, H> where
-    E::BaseField: Serialize + DeserializeOwned
+impl<E, H> Eq for BasefoldCommitmentWithWitness<E, H>
+where
+    E: ExtensionField,
+    H: MerkleHasher<E>,
+    E::BaseField: Serialize + DeserializeOwned,
 {
 }
 
@@ -225,8 +227,10 @@ pub struct BasefoldBasecodeParams<H> {
     _p: PhantomData<H>,
 }
 
-impl<E: ExtensionField, H: MerkleHasher<E>> BasefoldSpec<E> for BasefoldBasecodeParams<H>
+impl<E, H> BasefoldSpec<E> for BasefoldBasecodeParams<H>
 where
+    E: ExtensionField,
+    H: MerkleHasher<E>,
     E::BaseField: Serialize + DeserializeOwned,
 {
     type MerkleHasher = H;
@@ -238,8 +242,10 @@ pub struct BasefoldRSParams<H> {
     _p: PhantomData<H>,
 }
 
-impl<E: ExtensionField, H: MerkleHasher<E>> BasefoldSpec<E> for BasefoldRSParams<H>
+impl<E, H> BasefoldSpec<E> for BasefoldRSParams<H>
 where
+    E: ExtensionField,
+    H: MerkleHasher<E>,
     E::BaseField: Serialize + DeserializeOwned,
 {
     type MerkleHasher = H;
@@ -248,15 +254,6 @@ where
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Basefold<E: ExtensionField, Spec: BasefoldSpec<E>>(PhantomData<(E, Spec)>);
-
-// impl<E: ExtensionField, Spec: BasefoldSpec<E>> Serialize for Basefold<E, Spec> {
-//    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-//    where
-//        S: Serializer,
-//    {
-//        serializer.serialize_str("base_fold")
-//    }
-//}
 
 pub type BasefoldDefault<F, H> = Basefold<F, BasefoldRSParams<H>>;
 
@@ -273,9 +270,10 @@ impl<D> AsRef<[D]> for BasefoldCommitment<D> {
     }
 }
 
-impl<E: ExtensionField, H: MerkleHasher<E>> AsRef<[<H as MerkleHasher<E>>::Digest]>
-    for BasefoldCommitmentWithWitness<E, H>
+impl<E, H> AsRef<[<H as MerkleHasher<E>>::Digest]> for BasefoldCommitmentWithWitness<E, H>
 where
+    E: ExtensionField,
+    H: MerkleHasher<E>,
     E::BaseField: Serialize + DeserializeOwned,
 {
     fn as_ref(&self) -> &[<H as MerkleHasher<E>>::Digest] {
@@ -289,36 +287,40 @@ where
     serialize = "E::BaseField: Serialize",
     deserialize = "E::BaseField: DeserializeOwned"
 ))]
-pub enum ProofQueriesResultWithMerklePath<E: ExtensionField, Digest>
+pub enum ProofQueriesResultWithMerklePath<E, Digest>
 where
+    E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
     Digest: Clone + Serialize + DeserializeOwned,
 {
-    Single(QueriesResultWithMerklePath<E, Digest>),
-    Batched(BatchedQueriesResultWithMerklePath<E, Digest>),
-    SimpleBatched(SimpleBatchQueriesResultWithMerklePath<E, Digest>),
+    Single(QueriesResultWithMerklePath<E, E::BaseField, Digest>),
+    Batched(BatchedQueriesResultWithMerklePath<E, E::BaseField, Digest>),
+    SimpleBatched(SimpleBatchQueriesResultWithMerklePath<E, E::BaseField, Digest>),
 }
 
-impl<E: ExtensionField, Digest> ProofQueriesResultWithMerklePath<E, Digest>
+impl<E, Digest> ProofQueriesResultWithMerklePath<E, Digest>
 where
+    E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
     Digest: Clone + Serialize + DeserializeOwned,
 {
-    pub fn as_single(&self) -> &QueriesResultWithMerklePath<E, Digest> {
+    pub fn as_single(&self) -> &QueriesResultWithMerklePath<E, E::BaseField, Digest> {
         match self {
             Self::Single(x) => x,
             _ => panic!("Not a single query result"),
         }
     }
 
-    pub fn as_batched(&self) -> &BatchedQueriesResultWithMerklePath<E, Digest> {
+    pub fn as_batched(&self) -> &BatchedQueriesResultWithMerklePath<E, E::BaseField, Digest> {
         match self {
             Self::Batched(x) => x,
             _ => panic!("Not a batched query result"),
         }
     }
 
-    pub fn as_simple_batched(&self) -> &SimpleBatchQueriesResultWithMerklePath<E, Digest> {
+    pub fn as_simple_batched(
+        &self,
+    ) -> &SimpleBatchQueriesResultWithMerklePath<E, E::BaseField, Digest> {
         match self {
             Self::SimpleBatched(x) => x,
             _ => panic!("Not a simple batched query result"),
@@ -331,8 +333,9 @@ where
     serialize = "E::BaseField: Serialize",
     deserialize = "E::BaseField: DeserializeOwned"
 ))]
-pub struct BasefoldProof<E: ExtensionField, Digest>
+pub struct BasefoldProof<E, Digest>
 where
+    E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
     Digest: Clone + Serialize + DeserializeOwned,
 {
@@ -344,8 +347,9 @@ where
     pub(crate) trivial_proof: Vec<FieldType<E>>,
 }
 
-impl<E: ExtensionField, Digest> BasefoldProof<E, Digest>
+impl<E, Digest> BasefoldProof<E, Digest>
 where
+    E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
     Digest: Clone + Send + Sync + Serialize + DeserializeOwned,
 {
@@ -372,8 +376,9 @@ where
     serialize = "E::BaseField: Serialize",
     deserialize = "E::BaseField: DeserializeOwned"
 ))]
-pub struct BasefoldCommitPhaseProof<E: ExtensionField, D>
+pub struct BasefoldCommitPhaseProof<E, D>
 where
+    E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
     D: Clone + Serialize + DeserializeOwned,
 {
