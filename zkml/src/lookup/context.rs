@@ -471,11 +471,10 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> LookupWitnessGen<E, 
 
 pub(crate) const COLUMN_SEPARATOR: Element = 1 << 32;
 
+#[derive(Debug, Default)]
 pub struct LookupWitness<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> {
     pub challenge_storage: ChallengeStorage<E>,
-
     pub logup_witnesses: HashMap<NodeId, Vec<LogUpWitness<E, PCS>>>,
-
     pub table_witnesses: Vec<LogUpWitness<E, PCS>>,
 }
 
@@ -491,14 +490,7 @@ where
     // If the lookup context is empty then there are no lookup witnesses to generate so we return default values
     if ctx.lookup.is_empty() {
         warn!("Lookup witness generation: no tables found, returning empty context TEST?");
-        return Ok(LookupWitness {
-            challenge_storage: ChallengeStorage {
-                constant_challenge: E::ZERO,
-                challenge_map: HashMap::new(),
-            },
-            logup_witnesses: HashMap::new(),
-            table_witnesses: vec![],
-        });
+        return Ok(LookupWitness::default());
     }
 
     // Make the witness gen struct that stores relevant table lookup data
