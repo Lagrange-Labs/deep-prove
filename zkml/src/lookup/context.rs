@@ -444,17 +444,6 @@ pub struct LookupWitnessGen<E: ExtensionField, PCS: PolynomialCommitmentScheme<E
 }
 
 impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> LookupWitnessGen<E, PCS> {
-    pub fn new(lookup_ctx: &LookupContext) -> Self {
-        let new_lookups = lookup_ctx
-            .iter()
-            .map(|&table_type| (table_type, Vec::<Element>::new()))
-            .collect::<BTreeMap<TableType, Vec<Element>>>();
-        Self {
-            new_lookups,
-            logup_witnesses: HashMap::new(),
-        }
-    }
-
     /// Consume the lookups and witness of `other` into this instance.
     fn consume(&mut self, other: Self) {
         for (table_type, elements) in other.new_lookups.into_iter() {
@@ -496,7 +485,7 @@ where
     // Make the witness gen struct that stores relevant table lookup data
     debug!("== Witness poly fields generation ==");
     let metrics = Metrics::new();
-    let mut witness_gen = LookupWitnessGen::<E, PCS>::new(&ctx.lookup);
+    let mut witness_gen = LookupWitnessGen::<E, PCS>::default();
 
     for (node_id, _) in ctx.steps_info.to_forward_iterator() {
         let step = trace
