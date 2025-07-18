@@ -561,9 +561,7 @@ impl QuantizeOp for LayerNorm<f32> {
             -1.0f32..0.5f32 => 2.0f32.powf(-(obs_int - 1.0f32 + inter_fract)),
             _ => unreachable!(),
         };
-        println!(
-            "output scale: {output_scale}, observed scale: {observed_scale}, intermediate scale: {intermediate_scale}"
-        );
+
         let output_scaling = ScalingFactor::from_parts(
             observed_scaling.max(),
             observed_scaling.min(),
@@ -655,10 +653,16 @@ where
     pub(crate) accumulation_proof: IOPProof<E>,
     /// The IO proof that links all claims to `last_claim` and the input
     pub(crate) io_proof: IOPProof<E>,
+    /// The final sumcheck proof used to prove that `mean_poly` is the sum along the correct dim of `input_poly`
+    pub(crate) input_proof: IOPProof<E>,
     /// Evaluations needed to verify the final claim of the accumulation proof and link it to the io proof
     pub(crate) acc_evals: Vec<E>,
     /// The claimed evaluations of the commitments
     pub(crate) evaluations: Vec<E>,
+    /// The claimed Gamma evaluation
+    pub(crate) gamma_eval: E,
+    /// The claimed Beta evaluation
+    pub(crate) beta_eval: E,
 }
 
 impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> LayerNormProof<E, PCS> {
@@ -670,6 +674,23 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> LayerNormProof<E, PC
             .unzip();
 
         (nums.concat(), denoms.concat())
+    }
+
+    fn get_input_poly_io_eval(&self) -> E {
+        let total_evaluations = self.evaluations.len();
+        // Input poly eval should be the second last
+        self.evaluations[total_evaluations - 2]
+    }
+
+    fn get_mean_poly_io_eval(&self) -> E {
+        let total_evaluations = self.evaluations.len();
+        // mean_poly eval should be the last
+        self.evaluations[total_evaluations - 1]
+    }
+
+    fn get_lookup_output_io_eval(&self) -> E {
+        // lookup output eval should be the second
+        self.evaluations[1]
     }
 }
 
@@ -725,7 +746,22 @@ where
             .collect::<Vec<E>>()
             .into_mle()
             .into();
-        let (claims, proof) = self.prove_step(node_id, last_claims, input_mle, prover)?;
+        // We also make the MLE for the sum of each dim we perform layernorm on
+        let last_dim = *step_data.inputs[0]
+            .shape
+            .last()
+            .ok_or(anyhow!("Step data input tensor had no shape in LayerNorm"))?;
+        let mean_mle = step_data.inputs[0]
+            .get_data()
+            .chunks(last_dim)
+            .flat_map(|chunk| {
+                let sum = chunk.iter().copied().sum::<E>();
+                vec![sum; last_dim]
+            })
+            .collect::<Vec<E>>()
+            .into_mle()
+            .into();
+        let (claims, proof) = self.prove_step(node_id, last_claims, input_mle, mean_mle, prover)?;
         // Add the proof to the proof list
         prover.push_proof(node_id, LayerProof::<E, PCS>::LayerNorm(proof));
 
@@ -763,6 +799,7 @@ impl LayerNorm<Element> {
         node_id: NodeId,
         last_claims: Vec<&Claim<E>>,
         input_poly: ArcMultilinearExtension<E>,
+        mean_poly: ArcMultilinearExtension<E>,
         prover: &mut Prover<E, T, PCS>,
     ) -> Result<(Vec<Claim<E>>, LayerNormProof<E, PCS>)> {
         // Check we have the correct number of claims
@@ -785,7 +822,6 @@ impl LayerNorm<Element> {
         let (commits, logup_proofs): CommsAndProofs<PCS, E> = logup_witnesses
             .iter()
             .map(|logup_wit| {
-                println!("PROVING LAYERNORM LOGUP");
                 let commits = logup_wit.get_commitments();
                 let logup_input = logup_wit.get_logup_input(&prover.challenge_storage)?;
                 let logup_proof = batch_prove(&logup_input, prover.transcript)?;
@@ -889,13 +925,8 @@ impl LayerNorm<Element> {
             first_batch_chal * multiplier_field * dim_size_field * two_mul,
         );
         vp.add_mle_list(
-            vec![
-                input_eq_poly.clone(),
-                input_eq_poly.clone(),
-                input_poly.clone(),
-                input_poly.clone(),
-            ],
-            -first_batch_chal * multiplier_field * two_mul * two_mul,
+            vec![input_eq_poly.clone(), mean_poly.clone(), mean_poly.clone()],
+            -first_batch_chal * multiplier_field,
         );
 
         // `last_claim.eval` should be equal to `gamma(b) * eq(r,b)*(N * input(b))*inv_sqrt_out(b) - 2^k* gamma(b) * eq(2^-1,..,rk,..,rn,b)*input(b)*inv_qrt_out(b) + beta(b)`
@@ -929,13 +960,7 @@ impl LayerNorm<Element> {
 
         let last_claim_eq: ArcMultilinearExtension<E> =
             compute_betas_eval(last_claim_point).into_mle().into();
-        let last_claim_sum_eq: ArcMultilinearExtension<E> = compute_betas_eval(
-            &std::iter::repeat_n(two_inv, sum_dim_vars)
-                .chain(last_claim_point.iter().skip(sum_dim_vars).copied())
-                .collect::<Vec<E>>(),
-        )
-        .into_mle()
-        .into();
+
         let number_repeats_inv_sqrt = 1usize << sum_dim_vars;
 
         let inv_sqrt_out_poly: ArcMultilinearExtension<E> = commits[0][1]
@@ -957,60 +982,53 @@ impl LayerNorm<Element> {
             second_batch_chal * dim_size_field,
         );
 
-        let gamma_poly2: ArcMultilinearExtension<E> = self
-            .gamma
-            .get_data()
-            .iter()
-            .flat_map(|v| vec![<Element as Fieldizer<E>>::to_field(v); number_of_repeats])
-            .collect::<Vec<E>>()
-            .into_mle()
-            .into();
-
-        let maybe_last_claim = izip!(
-            last_claim_eq.get_ext_field_vec(),
-            gamma_poly.get_ext_field_vec(),
-            input_poly.get_ext_field_vec(),
-            inv_sqrt_out_poly.get_base_field_vec(),
-            last_claim_sum_eq.get_ext_field_vec(),
-            beta_poly.get_ext_field_vec(),
-        )
-        .enumerate()
-        .fold(
-            E::ZERO,
-            |acc, (i, (&lceq, &gam, &input, &sqrt, &lcsum, &beta))| {
-                acc + gam * E::from_base(sqrt) * input * (dim_size_field * lceq - two_mul * lcsum)
-                    + lceq * beta
-            },
-        );
-        println!(
-            "Maybe last claim: {:?}, last claim: {:?}",
-            maybe_last_claim, last_claim.eval
-        );
         vp.add_mle_list(
             vec![
-                last_claim_sum_eq,
+                last_claim_eq.clone(),
                 gamma_poly,
-                input_poly,
+                mean_poly,
                 inv_sqrt_out_poly.clone(),
             ],
-            -second_batch_chal * two_mul,
+            -second_batch_chal,
         );
         vp.add_mle_list(vec![last_claim_eq, beta_poly], second_batch_chal);
 
-        vp.add_mle_list(
-            vec![input_eq_poly, inv_sqrt_out_poly],
-            third_batch_chal * two_mul,
-        );
+        vp.add_mle_list(vec![input_eq_poly, inv_sqrt_out_poly], third_batch_chal);
         #[allow(deprecated)]
         let (io_proof, io_state) = IOPProverState::prove_parallel(vp, prover.transcript);
         let io_point = &io_proof.point;
         let io_evaluations = io_state.get_mle_final_evaluations();
         let input_eval = io_evaluations[1];
-        let gamma_eval = io_evaluations[3];
-        let inv_sqrt_out_eval = io_evaluations[4];
+        let mean_eval = io_evaluations[2];
+        let gamma_eval = io_evaluations[4];
+        let inv_sqrt_out_eval = io_evaluations[5];
         let beta_eval = io_evaluations[6];
 
-        let input_claim = Claim::<E>::new(io_point.to_vec(), input_eval);
+        // Finally we have to prove that `mean_poly` is `input_poly` summed over the normalisation dimension
+        let input_challenge = prover
+            .transcript
+            .get_and_append_challenge(b"batching")
+            .elements;
+        let mut vp = VirtualPolynomial::<E>::new(io_point.len());
+        // We need to replace the first sum_dim_vars of `io_point` with 2^-1
+        let sum_io_point = std::iter::repeat_n(two_inv, sum_dim_vars)
+            .chain(io_point.iter().skip(sum_dim_vars).copied())
+            .collect::<Vec<E>>();
+        let input_eq: ArcMultilinearExtension<E> = compute_betas_eval(io_point).into_mle().into();
+        let input_sum_eq: ArcMultilinearExtension<E> =
+            compute_betas_eval(&sum_io_point).into_mle().into();
+
+        vp.add_mle_list(vec![input_poly.clone(), input_eq], E::ONE - input_challenge);
+        vp.add_mle_list(vec![input_poly, input_sum_eq], input_challenge * two_mul);
+
+        #[allow(deprecated)]
+        let (input_proof, input_state) = IOPProverState::prove_parallel(vp, prover.transcript);
+        // Construct the input_claim that will be passed to the next layer
+        let input_claim = Claim::<E>::new(
+            input_proof.point.to_vec(),
+            input_state.get_mle_final_evaluations()[0],
+        );
+
         // Add the witness claims to the commitment prover
         let inv_sqrt_out_claim = Claim::<E>::new(
             io_point
@@ -1021,10 +1039,17 @@ impl LayerNorm<Element> {
             inv_sqrt_out_eval,
         );
 
-        let (commitments, evaluations): (Vec<PCS::Commitment>, Vec<E>) =
-            [inv_sqrt_claims[0].clone(), inv_sqrt_out_claim]
+        let inv_sqrt_in_claim = Claim::<E>::new(sumcheck_point.clone(), acc_evals[0]);
+
+        let (commitments, mut evaluations): (Vec<PCS::Commitment>, Vec<E>) =
+            [inv_sqrt_in_claim, inv_sqrt_out_claim]
                 .into_iter()
-                .chain(range_claims.iter().cloned())
+                .chain(
+                    acc_evals
+                        .iter()
+                        .skip(2)
+                        .map(|&eval| Claim::<E>::new(sumcheck_point.clone(), eval)),
+                )
                 .zip(commits.iter().flatten().into_iter())
                 .map(|(claim, comm_with_wit)| {
                     let comm = PCS::get_pure_commitment(&comm_with_wit.0);
@@ -1037,6 +1062,9 @@ impl LayerNorm<Element> {
                 .collect::<Result<Vec<(PCS::Commitment, E)>, anyhow::Error>>()?
                 .into_iter()
                 .unzip();
+        // We also add in the input_eval and mean_eval from the io sumcheck here
+        evaluations.push(input_eval);
+        evaluations.push(mean_eval);
 
         // Add common commitment claims to be proven
         let common_claims = {
@@ -1063,8 +1091,11 @@ impl LayerNorm<Element> {
             commitments,
             accumulation_proof,
             io_proof,
+            input_proof,
             acc_evals,
             evaluations,
+            gamma_eval,
+            beta_eval,
         };
 
         Ok((vec![input_claim], proof))
@@ -1210,7 +1241,7 @@ where
         proof: &Self::Proof,
         last_claims: &[&Claim<E>],
         verifier: &mut Verifier<E, T, PCS>,
-        shape_step: &ShapeStep,
+        _shape_step: &ShapeStep,
     ) -> Result<Vec<Claim<E>>> {
         // First we check that we only have one claim in `last_claims`
         ensure!(
@@ -1244,8 +1275,11 @@ where
             commitments,
             accumulation_proof,
             io_proof,
+            input_proof,
             acc_evals,
             evaluations,
+            gamma_eval,
+            beta_eval,
         } = proof;
 
         ensure!(
@@ -1361,9 +1395,127 @@ where
             &aux_info,
             verifier.transcript,
         );
-        println!("got to end of verificaiton so far");
-        Ok(vec![])
-        // todo!()
+
+        // Now we check that the io_subclaim can be reconstructed from the evaluations the prover supplied.
+        let io_point = io_subclaim.point_flat();
+        let input_io_eval = proof.get_input_poly_io_eval();
+        let mean_io_eval = proof.get_mean_poly_io_eval();
+        let inv_eval = proof.get_lookup_output_io_eval();
+
+        // Calculate the first part
+        let sum_dim_vars = ceil_log2(self.dim_size);
+        let dim_size_field: E = (self.dim_size as Element).to_field();
+        let two_inv = E::TWO.inverse();
+        let two_mul = E::from_canonical_u64(1 << sum_dim_vars);
+        let multiplier: E = self.multiplier.to_field();
+        let full_point = std::iter::repeat_n(two_inv, sum_dim_vars)
+            .chain(accumulation_point.iter().copied())
+            .collect::<Vec<E>>();
+        let input_eq_eval = eq_xy_eval(&full_point, &io_point);
+
+        let first_part = first_batch_chal
+            * multiplier
+            * input_eq_eval
+            * (dim_size_field * two_mul * input_io_eval * input_io_eval
+                - mean_io_eval * mean_io_eval);
+        // Now the second part
+        let last_claim_eq = eq_xy_eval(&last_claim.point, &io_point);
+        let second_part = second_batch_chal
+            * last_claim_eq
+            * (inv_eval * *gamma_eval * (dim_size_field * input_io_eval - mean_io_eval)
+                + *beta_eval);
+
+        // And the final part
+        let third_part = third_batch_chal * input_eq_eval * inv_eval;
+
+        // Ensure the subclaim is correct
+        let calculated_io_claim = first_part + second_part + third_part;
+        ensure!(
+            calculated_io_claim == io_subclaim.expected_evaluation,
+            "Calculated IO subclaim: {:?} did not equal expected: {:?} in LayerNorm verifiaction",
+            calculated_io_claim,
+            io_subclaim.expected_evaluation
+        );
+
+        // Verify the sumcheck that links `mean_poly` and `input_poly`
+        let input_challenge = verifier
+            .transcript
+            .get_and_append_challenge(b"batching")
+            .elements;
+
+        let input_initial_eval = input_io_eval + input_challenge * (mean_io_eval - input_io_eval);
+
+        let aux_info = VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![io_point.len(); 2]]);
+        let input_subclaim = IOPVerifierState::verify(
+            input_initial_eval,
+            input_proof,
+            &aux_info,
+            verifier.transcript,
+        );
+        // The subclaim eval should be equal to input_eval * ((1 - input_challenge) * eq(io_point, input_point) + input_challenge * two_mul * eq(io_sum_point, input_point))
+        let input_point = input_subclaim.point_flat();
+        let io_sum_point = std::iter::repeat_n(two_inv, sum_dim_vars)
+            .chain(io_point.iter().skip(sum_dim_vars).copied())
+            .collect::<Vec<E>>();
+        let eq_io = eq_xy_eval(&io_point, &input_point);
+        let eq_io_sum = eq_xy_eval(&io_sum_point, &input_point);
+
+        let non_input_term = eq_io + input_challenge * (two_mul * eq_io_sum - eq_io);
+        let input_eval = input_subclaim.expected_evaluation * non_input_term.inverse();
+
+        // Make the input claim
+        let input_claim = Claim::<E>::new(input_point, input_eval);
+
+        // Add witness commitments to the commitment verifier, first we make all the claims
+        let commit_claims = evaluations
+            .iter()
+            .enumerate()
+            .take(evaluations.len() - 2)
+            .map(|(i, &eval)| {
+                if i != 1 {
+                    Claim::<E>::new(accumulation_point.to_vec(), eval)
+                } else {
+                    // The lookup output poly is evaluated ona different point to the rest
+                    Claim::<E>::new(
+                        io_point
+                            .iter()
+                            .skip(sum_dim_vars)
+                            .copied()
+                            .collect::<Vec<E>>(),
+                        eval,
+                    )
+                }
+            })
+            .collect::<Vec<Claim<E>>>();
+        commitments
+            .iter()
+            .cloned()
+            .zip(commit_claims.into_iter())
+            .try_for_each(|(commit, claim)| {
+                verifier.commit_verifier.add_witness_claim(commit, claim)
+            })?;
+
+        // Add common commitment claims to be proven
+        let common_claims = {
+            let point = io_point
+                .iter()
+                .take(sum_dim_vars)
+                .copied()
+                .collect::<Vec<E>>();
+            let mut claims = HashMap::new();
+            claims.insert(
+                GAMMA_POLY_ID.to_string(),
+                Claim::<E>::new(point.clone(), *gamma_eval),
+            );
+            claims.insert(
+                BETA_POLY_ID.to_string(),
+                Claim::<E>::new(point.clone(), *beta_eval),
+            );
+            claims
+        };
+        verifier.add_common_claims(self.node_id, common_claims)?;
+
+        Ok(vec![input_claim])
     }
 }
 
@@ -1421,7 +1573,7 @@ mod tests {
         let input_tensor = Tensor::<f32>::random(&vec![2, 100].into());
         let input_scaling = ScalingFactor::from_tensor(&input_tensor, None);
         // Construct the quantised LayerNorm
-        let (quant_layernorm, intermediate_bit_size, output_scaling) =
+        let (quant_layernorm, _, output_scaling) =
             layernorm.quantise(input_scaling, input_scaling).unwrap();
         // We quantise the float input to obtain `quant_tensor` and then we dequantise to obtain `dequant_input`
         // this lets us run quantised evaluation and floating point evaluation and compare the outputs.
@@ -1441,21 +1593,13 @@ mod tests {
             .clone();
 
         let quant_output_dequant = quant_output.dequantize(&output_scaling);
-        let maximum_float = quant_output_dequant.max_abs_output();
-        println!("maximum float out: {maximum_float}");
+
         for (qdqo, dequant_o) in quant_output_dequant
             .get_data_into()
             .chunks(100)
             .into_iter()
             .zip(dequant_output.get_data_into().chunks(100))
         {
-            // Check the L1 error for the row
-            let sum = qdqo
-                .iter()
-                .zip(dequant_o.iter())
-                .map(|(a, b)| a - b)
-                .sum::<f32>();
-            println!("row sum error: {sum}");
             // Check that the values are within 0.01 of the float output
             for (&q, &d) in qdqo.iter().zip(dequant_o.iter()) {
                 assert!(
@@ -1465,8 +1609,6 @@ mod tests {
                 );
             }
         }
-        println!("intermediate bit size: {}", intermediate_bit_size);
-        println!("bias scaling log: {}", output_scaling.scale().log2());
     }
 
     #[test]
@@ -1482,7 +1624,7 @@ mod tests {
         };
 
         let mut model =
-            Model::new_from_input_shapes(vec![vec![16, 100].into()], PaddingMode::NoPadding);
+            Model::new_from_input_shapes(vec![vec![15, 100].into()], PaddingMode::NoPadding);
 
         let _ = model
             .add_consecutive_layer(Layer::LayerNorm(layernorm), None)
