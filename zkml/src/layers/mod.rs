@@ -611,8 +611,8 @@ where
             Layer::ConcatMatMul(concat_matmul) => {
                 concat_matmul.gen_lookup_witness(id, ctx, step_data)
             }
-            Layer::LayerNorm(layernorm) => layernorm.gen_lookup_witness(id, gen, ctx, step_data),
-            Layer::Softmax(softmax) => softmax.gen_lookup_witness(id, gen, ctx, step_data),
+            Layer::LayerNorm(layernorm) => layernorm.gen_lookup_witness(id, ctx, step_data),
+            Layer::Softmax(softmax) => softmax.gen_lookup_witness(id, ctx, step_data),
             Layer::Add(_add) => unimplemented!("Add layer not implemented"),
             Layer::Logits(_logits) => unimplemented!("Logits layer not implemented"),
             Layer::Positional(_positional) => unimplemented!("Positional layer not implemented"),

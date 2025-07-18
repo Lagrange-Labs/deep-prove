@@ -13,6 +13,7 @@ use multilinear_extensions::{
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
+use tracing::trace;
 
 use crate::{
     Claim, Context, Element, ScalingFactor, ScalingStrategy, Tensor,
@@ -163,7 +164,7 @@ impl<N: Number> LayerNorm<N> {
             0
         };
         // Calculate the lookup table
-        let table_max: Element = 1 << 2 * (*quantization::BIT_LEN - 1);
+        let table_max: Element = 1 << (2 * (*quantization::BIT_LEN - 1));
         let table_min = -table_max;
         // Because we don't use the same formula for the standard deviation as LayerNorm does in float we have to rescale `self.eps` in this case to be `N^2 * self.eps`
         let rescaled_eps = (dim_size * dim_size) as f32 * self.eps;
@@ -421,7 +422,7 @@ impl Evaluate<Element> for LayerNorm<Element> {
         ))?;
 
         let range_check_mask: Element = (1 << range_check_bits) - 1;
-        let table_max: Element = 1 << 2 * (*quantization::BIT_LEN - 1);
+        let table_max: Element = 1 << (2 * (*quantization::BIT_LEN - 1));
         let ((inv_sqrt_input, inv_sqrt_output), range_check): (
             (Vec<Element>, Vec<Element>),
             Vec<Element>,
@@ -738,13 +739,8 @@ where
             "LayerNorm step should only have one input, received {}",
             step_data.inputs.len()
         );
-        let input_mle: ArcMultilinearExtension<E> = step_data.inputs[0]
-            .get_data()
-            .iter()
-            .copied()
-            .collect::<Vec<E>>()
-            .into_mle()
-            .into();
+        let input_mle: ArcMultilinearExtension<E> =
+            step_data.inputs[0].get_data().to_vec().into_mle().into();
         // We also make the MLE for the sum of each dim we perform layernorm on
         let last_dim = *step_data.inputs[0]
             .shape
@@ -770,10 +766,9 @@ where
     fn gen_lookup_witness(
         &self,
         id: NodeId,
-        gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> Result<()> {
+    ) -> Result<LookupWitnessGen<E, PCS>> {
         ensure!(
             step_data.inputs.len() == 1,
             "Found more than 1 input in inference step of LayerNorm layer"
@@ -785,10 +780,11 @@ where
         let layernorm_data = step_data.outputs.try_layernorm_data().ok_or(anyhow!(
             "LayerNorm data not found in inference step for LayerNorm layer"
         ))?;
-        self.lookup_witness(id, gen, ctx, layernorm_data)
+        self.lookup_witness(id, ctx, layernorm_data)
     }
 }
 
+type ProveOut<E, PCS> = (Vec<Claim<E>>, LayerNormProof<E, PCS>);
 impl LayerNorm<Element> {
     pub(crate) fn prove_step<
         E: ExtensionField,
@@ -801,7 +797,7 @@ impl LayerNorm<Element> {
         input_poly: ArcMultilinearExtension<E>,
         mean_poly: ArcMultilinearExtension<E>,
         prover: &mut Prover<E, T, PCS>,
-    ) -> Result<(Vec<Claim<E>>, LayerNormProof<E, PCS>)> {
+    ) -> Result<ProveOut<E, PCS>> {
         // Check we have the correct number of claims
         ensure!(
             last_claims.len() == 1,
@@ -858,7 +854,7 @@ impl LayerNorm<Element> {
             .chain(std::iter::repeat_n(range_eq, range_claims.len()))
             .collect::<Vec<ArcMultilinearExtension<E>>>();
 
-        let vp = izip!(commits.iter().flatten().into_iter(), rlc_terms, eq_polys).fold(
+        let vp = izip!(commits.iter().flatten(), rlc_terms, eq_polys).fold(
             VirtualPolynomial::<E>::new(num_vars),
             |mut acc, ((_, poly), challenge, eq)| {
                 acc.add_mle_list(vec![poly.clone().into(), eq], challenge);
@@ -1050,7 +1046,7 @@ impl LayerNorm<Element> {
                         .skip(2)
                         .map(|&eval| Claim::<E>::new(sumcheck_point.clone(), eval)),
                 )
-                .zip(commits.iter().flatten().into_iter())
+                .zip(commits.iter().flatten())
                 .map(|(claim, comm_with_wit)| {
                     let comm = PCS::get_pure_commitment(&comm_with_wit.0);
                     let eval = claim.eval;
@@ -1104,14 +1100,14 @@ impl LayerNorm<Element> {
     fn lookup_witness<E, PCS>(
         &self,
         id: NodeId,
-        gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
         layernorm_data: &LayerNormData<E>,
-    ) -> Result<()>
+    ) -> Result<LookupWitnessGen<E, PCS>>
     where
         E: ExtensionField,
         PCS: PolynomialCommitmentScheme<E>,
     {
+        let mut gen = LookupWitnessGen::<E, PCS>::default();
         // Get the data generated during quantised evaluation
         let LayerNormData {
             lookup_input,
@@ -1194,22 +1190,12 @@ impl LayerNorm<Element> {
         let inv_sqrt_evals = evals.drain(..2).collect::<Vec<Vec<E::BaseField>>>();
 
         // Add the merged columsn to the lookups lists
-        let lookups = gen.new_lookups.get_mut(&TableType::Range).ok_or(anyhow!(
-            "No table of type Range was expected, error occured during LayerNorm step"
-        ))?;
-        lookups.extend(merged_range_check);
+        gen.new_lookups.insert(TableType::Range, merged_range_check);
 
-        let lookups = gen
-            .new_lookups
-            .get_mut(&TableType::InverseSQRT(
-                self.eps.to_bits(),
-                *range_check_bits,
-            ))
-            .ok_or(anyhow!(
-                "No table of type {} was expected, error occured during LayerNorm step",
-                TableType::InverseSQRT(self.eps.to_bits(), *range_check_bits).name()
-            ))?;
-        lookups.extend(merged_inv_sqrt);
+        gen.new_lookups.insert(
+            TableType::InverseSQRT(self.eps.to_bits(), *range_check_bits),
+            merged_inv_sqrt,
+        );
 
         // Insert the LogUpWitnesses
         gen.logup_witnesses.insert(
@@ -1224,7 +1210,7 @@ impl LayerNorm<Element> {
                 LogUpWitness::<E, PCS>::new_lookup(commits, evals, 1, TableType::Range),
             ],
         );
-        Ok(())
+        Ok(gen)
     }
 }
 
@@ -1495,7 +1481,7 @@ where
                 verifier.commit_verifier.add_witness_claim(commit, claim)
             })?;
 
-        // Add common commitment claims to be proven
+        // Add common commitment claims to be verified
         let common_claims = {
             let point = io_point
                 .iter()
