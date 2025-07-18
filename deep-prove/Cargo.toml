@@ -15,7 +15,6 @@ ignored = ["prost", "prost-types"]
 [features]
 blake = ["mpcs/blake"]
 default = []
-s3 = []
 
 [[bin]]
 name = "deep-prove-worker"
