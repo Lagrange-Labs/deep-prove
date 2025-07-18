@@ -1,5 +1,6 @@
 use crate::model::llm::LLMTokenizer;
 use anyhow::bail;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     Tensor,
@@ -25,7 +26,7 @@ use rust_tokenizers::{
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, derive_more::From, derive_more::Into)]
-pub struct Token(usize);
+pub struct Token(pub(crate) usize);
 
 // i64 is the type used by token_to_i
 impl From<i64> for Token {
@@ -65,7 +66,7 @@ impl Token {
 }
 
 /// Intermediary struct to hold the config of the model.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LLMConfig {
     /// The size of an embedding vector (each token gets translated to an embedding vector of this size)
     pub embedding_size: usize,
@@ -80,11 +81,13 @@ pub struct LLMConfig {
     pub context_length: usize,
     /// LayerNorm needs an epsilon value to determine the precision. This is it.
     pub norm_epsilon: f32,
+    /// The size of the vocabulary of the model, e.g. each token is an integer in [0, vocab_size)
+    pub vocab_size: usize,
     /// The specific config for the variant.
     pub specific_config: LLMVariant,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LLMVariant {
     GPT2,
 }
@@ -104,6 +107,11 @@ impl LLMVariant {
             Self::GPT2 => 50256usize.into(),
         }
     }
+    pub fn vocab_size(&self) -> usize {
+        match self {
+            Self::GPT2 => 50257,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -112,7 +120,7 @@ pub enum LLMModel {
 }
 
 impl LLMModel {
-    pub fn into_provable_model(
+    pub fn into_runnable_model(
         self,
         c: &LLMConfig,
         user_input_shape: Shape,
@@ -298,7 +306,6 @@ impl TokenizerData {
         }
     }
 
-    #[cfg(test)]
     pub fn load_tokenizer_from_gguf(
         path: impl AsRef<std::path::Path>,
     ) -> anyhow::Result<impl LLMTokenizer> {
@@ -309,7 +316,6 @@ impl TokenizerData {
         Ok(tokenizer)
     }
 
-    #[cfg(test)]
     pub fn into_tokenizer(self) -> impl LLMTokenizer {
         use std::io::Write;
 

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
-    Claim, VectorTranscript,
+    Claim, Element, VectorTranscript,
     commit::context::{CommitmentVerifier, PolyId},
     iop::{ChallengeStorage, context::ShapeStep},
     layers::{
@@ -20,22 +20,40 @@ use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 use tracing::trace;
 
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use transcript::Transcript;
 
 use super::{Context, Proof, TableProof};
 
 /// What the verifier must have besides the proof
+#[derive(Clone, Serialize, Deserialize)]
 pub struct IO<E> {
     /// Input of the inference given to the model
-    input: Vec<Tensor<E>>,
+    pub input: Vec<Tensor<E>>,
     /// Output of the inference
-    output: Vec<Tensor<E>>,
+    pub output: Vec<Tensor<E>>,
 }
 
 impl<E> IO<E> {
     pub fn new(input: Vec<Tensor<E>>, output: Vec<Tensor<E>>) -> Self {
         Self { input, output }
+    }
+}
+
+impl<E: ExtensionField> IO<E> {
+    pub fn to_element(self) -> IO<Element> {
+        IO {
+            input: self
+                .input
+                .into_iter()
+                .map(|t| t.map_data(|e| e.to_canonical_u64_vec()[0] as Element))
+                .collect(),
+            output: self
+                .output
+                .into_iter()
+                .map(|t| t.map_data(|e| e.to_canonical_u64_vec()[0] as Element))
+                .collect(),
+        }
     }
 }
 

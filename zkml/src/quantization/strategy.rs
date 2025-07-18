@@ -105,6 +105,8 @@ impl ScalingStrategy for InferenceObserver {
         // because of the generics and FFT requirement to take a field
         let mut nsamples = 0;
         for input in inputs.into_iter() {
+            println!(" STRATEGY: input: {:?} -> . {:?}", input.len(),input.iter().map(|x| x.len()).collect_vec());
+            println!("STRATEGY: model: {:?}", model.unpadded_input_shapes());
             let input_tensors = input
                 .into_iter()
                 .zip(model.unpadded_input_shapes())
