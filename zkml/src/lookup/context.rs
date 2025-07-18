@@ -248,7 +248,7 @@ impl TableType {
             }
             TableType::InverseSQRT(epsu32, range_checked_bits) => {
                 let epsilon = f32::from_bits(*epsu32);
-                let table_max: Element = 1 << 2 * (*quantization::BIT_LEN - 1);
+                let table_max: Element = 1 << (2 * (*quantization::BIT_LEN - 1));
                 let table_min = -table_max;
                 let (merged_lookup, (in_column, out_column)): LookupAndColumns<E::BaseField> =
                     (table_min..table_max)
@@ -437,7 +437,7 @@ impl TableType {
                 let first_column =
                     point.iter().enumerate().fold(E::ZERO, |acc, (index, p)| {
                         acc + *p * E::from_canonical_u64(1u64 << index)
-                    }) - E::from_canonical_u64(1u64 << 2 * (*quantization::BIT_LEN - 1));
+                    }) - E::from_canonical_u64(1u64 << (2 * (*quantization::BIT_LEN - 1)));
 
                 Ok(vec![first_column])
             }
@@ -526,7 +526,7 @@ impl TableType {
             }
             TableType::InverseSQRT(epsu32, range_checked_bits) => {
                 let epsilon = f32::from_bits(*epsu32);
-                let table_max: Element = 1 << 2 * (*quantization::BIT_LEN - 1);
+                let table_max: Element = 1 << (2 * (*quantization::BIT_LEN - 1));
                 let table_min = -table_max;
                 let column = (table_min..table_max)
                     .map(|i| {
