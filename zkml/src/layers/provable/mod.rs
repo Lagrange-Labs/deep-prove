@@ -15,7 +15,7 @@ use crate::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
     },
-    layers::transformer::mha::MhaData,
+    layers::transformer::{logits::ArgmaxData, mha::MhaData},
     lookup::context::LookupWitnessGen,
     model::trace::StepData,
     padding::{PaddingMode, ShapeInfo},
@@ -132,6 +132,8 @@ pub enum ProvingData<E: ExtensionField> {
     Softmax(SoftmaxData<E>),
     /// Variant for extra data used to prove Mha layer, computed during quantised evaluation
     Mha(MhaData<E>),
+    /// Variant for extra data used to prove Argmax in Logits layer, computed during quantised evaluation
+    ArgMax(ArgmaxData<E>),
     /// Variant used when no extra data is returned.
     None,
 }
@@ -183,6 +185,13 @@ impl<T, E: ExtensionField> LayerOut<T, E> {
     pub fn try_mha_data(&self) -> Option<&MhaData<E>> {
         match self.proving_data {
             ProvingData::Mha(ref mha_data) => Some(mha_data),
+            _ => None,
+        }
+    }
+
+    pub fn try_argmax_data(&self) -> Option<&ArgmaxData<E>> {
+        match self.proving_data {
+            ProvingData::ArgMax(ref argmax_data) => Some(argmax_data),
             _ => None,
         }
     }
@@ -552,7 +561,7 @@ where
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Softmax(softmax_ctx) => softmax_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Add => unimplemented!("Add layer not implemented"),
-            LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
+            LayerCtx::Logits(ctx) => ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Embeddings(ctx) => ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
             LayerCtx::Reshape(ctx) => ctx.output_shapes(input_shapes, padding_mode),
@@ -579,7 +588,7 @@ where
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Softmax(softmax_ctx) => softmax_ctx.num_outputs(num_inputs),
             LayerCtx::Add => unimplemented!("Add layer not implemented"),
-            LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
+            LayerCtx::Logits(ctx) => ctx.num_outputs(num_inputs),
             LayerCtx::Embeddings(ctx) => ctx.num_outputs(num_inputs),
             LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
             LayerCtx::Reshape(ctx) => ctx.num_outputs(num_inputs),
@@ -602,7 +611,7 @@ where
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Softmax(softmax_ctx) => softmax_ctx.describe(),
             LayerCtx::Add => unimplemented!("Add layer not implemented"),
-            LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
+            LayerCtx::Logits(ctx) => ctx.describe(),
             LayerCtx::Embeddings(ctx) => ctx.describe(),
             LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
             LayerCtx::Reshape(ctx) => ctx.describe(),
@@ -626,7 +635,7 @@ where
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Softmax(softmax_ctx) => softmax_ctx.is_provable(),
             LayerCtx::Add => unimplemented!("Add layer not implemented"),
-            LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
+            LayerCtx::Logits(ctx) => ctx.is_provable(),
             LayerCtx::Embeddings(ctx) => ctx.is_provable(),
             LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
             LayerCtx::Reshape(ctx) => ctx.is_provable(),
@@ -692,8 +701,8 @@ where
             (LayerCtx::Add, LayerProof::Add) => {
                 unimplemented!("Add layer not implemented")
             }
-            (LayerCtx::Logits, LayerProof::Logits) => {
-                unimplemented!("Logits layer not implemented")
+            (LayerCtx::Logits(ctx), LayerProof::Logits(proof)) => {
+                ctx.verify(proof, last_claims, verifier, shape_step)
             }
             (LayerCtx::Activation(activation_ctx), LayerProof::Activation(proof)) => {
                 activation_ctx.verify(proof, last_claims, verifier, shape_step)
@@ -748,7 +757,7 @@ where
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Softmax(ctx) => verify_input_claim::<E, PCS, _, _>(ctx, inputs, claims),
             LayerCtx::Add => unimplemented!("Add layer not implemented"),
-            LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
+            LayerCtx::Logits(ctx) => verify_input_claim::<E, PCS, _, _>(ctx, inputs, claims),
             LayerCtx::Embeddings(ctx) => verify_input_claim::<E, PCS, _, _>(ctx, inputs, claims),
             LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
             LayerCtx::Reshape(ctx) => {
