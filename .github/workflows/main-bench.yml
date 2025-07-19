@@ -1,0 +1,51 @@
+name: "Main branch Bench"
+
+on:
+  push:
+    branches: main
+
+jobs:
+  benchmark_pr_branch:
+    name: Continuous Benchmarking PRs with Bencher
+    # DO NOT REMOVE: For handling Fork PRs see Pull Requests from Forks
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            zkml_src:
+              - 'zkml/**'
+              - '.github/workflows/pr-bench.yml'
+      - name: Install protoc via apt
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Install the Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy
+          # Manually configure rust-cache
+          cache: false
+      - uses: bencherdev/bencher@main
+      - name: Track PR Benchmarks with Bencher
+        run: |
+          cd zkml && \
+          bencher run \
+          --project deep-prove-f264508-ok338l62t85v1 \
+          --token '${{ secrets.BENCHER_API_TOKEN }}' \
+          --branch main \
+          --threshold-measure latency \
+          --threshold-test t_test \
+          --threshold-upper-boundary 0.20 \
+          --thresholds-reset \
+          --testbed ci-runner \
+          --err \
+          --adapter rust_criterion \
+          --github-actions '${{ secrets.GITHUB_TOKEN }}' \
+          "cargo bench"
+
