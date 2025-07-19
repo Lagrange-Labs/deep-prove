@@ -27,7 +27,7 @@ path = "src/bin/cli/main.rs"
 [dependencies]
 alloy = { version = "1.0.22", default-features = false }
 anyhow.workspace = true
-axum = { workspace = true }
+axum = { workspace = true, features = ["http1", "json"] }
 clap = { workspace = true, features = ["derive", "env"] }
 derive_more = { workspace = true, features = ["from"] }
 ff_ext = { version = "0.1.0", path = "../ff_ext" }
@@ -40,13 +40,13 @@ prost = { version = "0.13.3" }
 prost-tract-compat = { package = "prost", version = "0.11.9" }
 prost-types = { version = "0.13.3" }
 prost-wkt-types = { version = "0.6.0" }
-reqwest = { version = "0.12.19", features = ["blocking"] }
 rmp-serde = { workspace = true }
 rustls = { version = "0.23.16", features = ["ring"] }
 semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2 = "0.10.9"
+tempfile.workspace = true
 tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "fs"] }
 tokio-stream = { version = "0.1.17" }
 tonic = { version = "0.12.3", features = [
@@ -63,6 +63,7 @@ tracing-subscriber = { workspace = true, features = [
   "json",
 ] }
 tract-onnx = { workspace = true }
+ureq = { version = "3.0.12", features = ["default", "json"] }
 url = "2.5.4"
 uuid = "1.17.0"
 zkml = { path = "../zkml" }
