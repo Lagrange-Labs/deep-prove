@@ -34,6 +34,7 @@ jobs:
       - uses: bencherdev/bencher@main
       - name: Track PR Benchmarks with Bencher
         run: |
+          cd zkml && \
           bencher run \
           --project deep-prove-f264508-ok338l62t85v1 \
           --token '${{ secrets.BENCHER_API_TOKEN }}' \
