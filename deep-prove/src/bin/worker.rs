@@ -1,6 +1,11 @@
 use alloy::signers::local::LocalSigner;
 use anyhow::{Context as _, Result};
-use axum::{Json, Router, routing::get};
+use axum::{
+    Json, Router,
+    extract::{DefaultBodyLimit, State},
+    http::StatusCode,
+    routing::{get, post},
+};
 use clap::{ArgGroup, Parser, Subcommand};
 use deep_prove::{
     middleware::{
@@ -17,10 +22,10 @@ use futures::{FutureExt, StreamExt};
 use lagrange::{WorkerToGwRequest, worker_to_gw_request::Request};
 use memmap2::Mmap;
 use mpcs::{Basefold, BasefoldRSParams, Hasher};
-use reqwest::StatusCode;
-use std::{net::SocketAddr, path::PathBuf, str::FromStr};
+use std::{net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc};
+use tokio::sync::Mutex;
 use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt::format::FmtSpan};
 use zkml::{
     Context, Element, FloatOnnxLoader, ModelType, Prover, default_transcript,
@@ -228,7 +233,7 @@ enum RunMode {
         #[arg(long, env, default_value = "100")]
         max_message_size: usize,
 
-        /// Should the logs be printed in json format or not
+        /// Print the logs in JSON format
         #[arg(long, env)]
         json: bool,
 
@@ -254,6 +259,20 @@ enum RunMode {
         /// The inputs to prove inference for
         #[arg(short = 'i', long)]
         inputs: PathBuf,
+    },
+    /// Run a HTTP server and process requests
+    LocalServer {
+        /// Listening port
+        #[arg(short, long, env, default_value_t = 8080)]
+        port: u16,
+
+        /// Print the logs in JSON format
+        #[arg(long, env)]
+        json: bool,
+
+        /// The maximal proof request size to accept (in MB)
+        #[arg(long, env, default_value_t = 100)]
+        max_body_size: usize,
     },
 }
 
@@ -447,6 +466,107 @@ async fn run_against_gw(args: RunMode) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn run_selfstanding(args: RunMode) -> anyhow::Result<()> {
+    #[derive(Default)]
+    struct AppState {
+        work_queue: Vec<DeepProveRequestV1>,
+        proofs_queue: Vec<Vec<ProofV1>>,
+    }
+
+    let RunMode::LocalServer {
+        port,
+        json,
+        max_body_size,
+    } = args
+    else {
+        unreachable!()
+    };
+    setup_logging(json);
+
+    let app_state = Arc::new(Mutex::new(AppState::default()));
+
+    {
+        let app_state = app_state.clone();
+        tokio::spawn(async move {
+            loop {
+                let maybe_work = { app_state.lock().await.work_queue.pop() };
+                if let Some(proof_request) = maybe_work {
+                    let now = std::time::Instant::now();
+                    info!("processing proof...");
+                    let result = run_model_v1(proof_request, MemStore::default()).await;
+                    match result {
+                        Ok(proofs) => {
+                            info!("proof generated in {}s", now.elapsed().as_secs());
+                            app_state.lock().await.proofs_queue.push(proofs);
+                        }
+                        Err(err) => error!("failed to generate proof: {err:?}"),
+                    }
+                } else {
+                    trace!("no proof request");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        });
+    }
+
+    let app = Router::new()
+        .route(
+            "/status",
+            get(|State(state): State<Arc<Mutex<AppState>>>| async move {
+                let state = state.lock().await;
+                (
+                    StatusCode::OK,
+                    format!(
+                        "tasks in queue: {}\nproofs ready: {}",
+                        state.work_queue.len(),
+                        state.proofs_queue.len()
+                    ),
+                )
+            }),
+        )
+        .route(
+            "/proofs",
+            get(|State(state): State<Arc<Mutex<AppState>>>| async move {
+                let mut state = state.lock().await;
+                if let Some(proof) = state.proofs_queue.pop() {
+                    let encoded = serde_json::to_string_pretty(&proof).unwrap();
+                    info!("returning a {}MB proof", encoded.len() / (1024 * 1024));
+                    (StatusCode::OK, encoded)
+                } else {
+                    info!("no proofs ready");
+                    (StatusCode::NO_CONTENT, "no proof ready".to_string())
+                }
+            }),
+        )
+        .route(
+            "/proofs",
+            post(
+                |State(state): State<Arc<Mutex<AppState>>>,
+                 Json(proof_request): Json<DeepProveRequestV1>| async move {
+                    let mut state = state.lock().await;
+                    info!("adding proof request to the queue");
+                    state.work_queue.push(proof_request);
+                    (StatusCode::CREATED, "proof submitted")
+                },
+            )
+            .layer(DefaultBodyLimit::max(max_body_size * 1024 * 1024)),
+        )
+        .route(
+            "/healthcheck",
+            get(|| async move { (StatusCode::OK, "OK") }),
+        )
+        .with_state(app_state.clone());
+
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+        .await
+        .context(format!("listening on port {port}"))?;
+    axum::serve(listener, app)
+        .await
+        .context("setting up HTTP server")?;
+
+    Ok(())
+}
+
 async fn run_locally(args: RunMode) -> anyhow::Result<()> {
     let RunMode::Local { onnx, inputs } = args else {
         unreachable!()
@@ -496,6 +616,7 @@ async fn main() -> anyhow::Result<()> {
     match args.run_mode {
         remote_args @ RunMode::Remote { .. } => run_against_gw(remote_args).await,
         local_args @ RunMode::Local { .. } => run_locally(local_args).await,
+        http_args @ RunMode::LocalServer { .. } => run_selfstanding(http_args).await,
     }
 }
 
