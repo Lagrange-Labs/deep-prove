@@ -100,7 +100,7 @@ async fn connect_to_lpn(gw_config: Executor) -> anyhow::Result<()> {
         .tls_config(ClientTlsConfig::new().with_enabled_roots())?
         .connect()
         .await
-        .with_context(|| format!("connecting to the GW at {}", gw_url))?;
+        .with_context(|| format!("connecting to the GW at {gw_url}"))?;
 
     let wallet = LocalSigner::from_str(&private_key)?;
     let client_id: MetadataValue<_> = wallet
@@ -305,7 +305,7 @@ async fn connect_to_prover(executor: Executor) -> anyhow::Result<()> {
             // Build the endpoint URL
             let mut resp = ureq::get(root_url.join("/proofs")?.as_str()).call()?;
 
-            match resp.status().clone() {
+            match resp.status() {
                 StatusCode::OK => {
                     // create a file to write the proofs to
                     let mut file = tempfile::Builder::new()
