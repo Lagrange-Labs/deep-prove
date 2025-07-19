@@ -30,8 +30,9 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Executor {
+    /// Interact with a LPN gateway.
     Lpn {
-        /// The URL of the Gateway to the proving network to connect to
+        /// The URL of the LPN gateway.
         #[clap(short, long, env)]
         gw_url: Url,
 
@@ -39,11 +40,11 @@ enum Executor {
         #[clap(short, long, env)]
         private_key: String,
 
-        /// Max message size passed through gRPC (in MBytes)
+        /// Max message size passed through gRPC (in MBytes).
         #[arg(long, default_value = "100")]
         max_message_size: usize,
 
-        /// Timeout for the task in seconds
+        /// Timeout for the task in seconds.
         #[arg(long, default_value = "3600")]
         timeout: u64,
 
@@ -51,7 +52,8 @@ enum Executor {
         command: Command,
     },
 
-    Local {
+    /// Interact with the API exposed by a prover.
+    LocalApi {
         /// The root URL of the worker
         #[arg(short, long, env, default_value = "http://localhost:8080")]
         worker_url: String,
@@ -68,16 +70,17 @@ enum Command {
         /// Path to the ONNX file of the model to prove.
         #[arg(short = 'm', long)]
         onnx: PathBuf,
+
         /// Path to the inputs to the model to prove inference for.
         #[arg(short, long)]
         inputs: PathBuf,
     },
 
-    /// Fetch the generated proofs, if any.
+    /// Fetch a generated proof, if any are available.
     Fetch {},
 }
 
-async fn run_gw(gw_config: Executor) -> anyhow::Result<()> {
+async fn connect_to_lpn(gw_config: Executor) -> anyhow::Result<()> {
     let Executor::Lpn {
         gw_url,
         private_key,
@@ -239,8 +242,8 @@ async fn run_gw(gw_config: Executor) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_local(executor: Executor) -> anyhow::Result<()> {
-    let Executor::Local {
+async fn connect_to_prover(executor: Executor) -> anyhow::Result<()> {
+    let Executor::LocalApi {
         worker_url,
         command,
     } = executor
@@ -307,7 +310,7 @@ async fn run_local(executor: Executor) -> anyhow::Result<()> {
                     // create a file to write the proofs to
                     let mut file = tempfile::Builder::new()
                         .prefix("proof-")
-                        .suffix(".bin")
+                        .suffix(".json")
                         .rand_bytes(10)
                         .disable_cleanup(true)
                         .tempfile_in(std::env::current_dir().unwrap_or("./".into()))?;
@@ -319,7 +322,7 @@ async fn run_local(executor: Executor) -> anyhow::Result<()> {
                         .limit(1000 * 1024 * 1024)
                         .read_to_vec()?;
                     file.write_all(&body)?;
-                    info!("proof received, saving to {}", file.path().display());
+                    info!("proof received, saved to {}", file.path().display());
                 }
                 StatusCode::NO_CONTENT => {
                     info!("no proof ready yet");
@@ -350,12 +353,12 @@ async fn main() -> anyhow::Result<()> {
                 .from_env_lossy(),
         )
         .finish();
-    tracing::subscriber::set_global_default(subscriber).expect("Setting up logging failed");
+    tracing::subscriber::set_global_default(subscriber).context("Setting up logging failed")?;
 
     let args = Args::parse();
 
     match args.executor {
-        gw_config @ Executor::Lpn { .. } => run_gw(gw_config).await,
-        local_config @ Executor::Local { .. } => run_local(local_config).await,
+        gw_config @ Executor::Lpn { .. } => connect_to_lpn(gw_config).await,
+        local_config @ Executor::LocalApi { .. } => connect_to_prover(local_config).await,
     }
 }

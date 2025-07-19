@@ -22,7 +22,7 @@ use futures::{FutureExt, StreamExt};
 use lagrange::{WorkerToGwRequest, worker_to_gw_request::Request};
 use memmap2::Mmap;
 use mpcs::{Basefold, BasefoldRSParams, Hasher};
-use std::{net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc};
+use std::{io::Write, net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc};
 use tokio::sync::Mutex;
 use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
 use tracing::{debug, error, info, trace, warn};
@@ -261,7 +261,7 @@ enum RunMode {
         inputs: PathBuf,
     },
     /// Run a HTTP server and process requests
-    LocalServer {
+    LocalApi {
         /// Listening port
         #[arg(short, long, env, default_value_t = 8080)]
         port: u16,
@@ -322,20 +322,21 @@ async fn process_message_from_gw(
     Ok(())
 }
 
-async fn health_check() -> (StatusCode, Json<()>) {
-    (StatusCode::OK, Json(()))
-}
+/// Connect to a LPN gateway and process received proof requests.
+async fn run_lpn(args: RunMode) -> anyhow::Result<()> {
+    async fn health_check() -> (StatusCode, Json<()>) {
+        (StatusCode::OK, Json(()))
+    }
 
-async fn serve_health_check(addr: SocketAddr) -> anyhow::Result<()> {
-    let app = Router::new().route("/health", get(health_check));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    async fn serve_health_check(addr: SocketAddr) -> anyhow::Result<()> {
+        let app = Router::new().route("/health", get(health_check));
+        let listener = tokio::net::TcpListener::bind(addr).await?;
 
-    axum::serve(listener, app).await?;
+        axum::serve(listener, app).await?;
 
-    Ok(())
-}
+        Ok(())
+    }
 
-async fn run_against_gw(args: RunMode) -> anyhow::Result<()> {
     let RunMode::Remote {
         gw_url,
         healthcheck_addr,
@@ -466,14 +467,16 @@ async fn run_against_gw(args: RunMode) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_selfstanding(args: RunMode) -> anyhow::Result<()> {
+/// Expose a long-lived local HTTP API, executing submitted proofs and returning
+/// ready proofs on request.
+async fn run_local_api(args: RunMode) -> anyhow::Result<()> {
     #[derive(Default)]
     struct AppState {
         work_queue: Vec<DeepProveRequestV1>,
         proofs_queue: Vec<Vec<ProofV1>>,
     }
 
-    let RunMode::LocalServer {
+    let RunMode::LocalApi {
         port,
         json,
         max_body_size,
@@ -567,7 +570,9 @@ async fn run_selfstanding(args: RunMode) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn run_locally(args: RunMode) -> anyhow::Result<()> {
+/// Run the prover once, directly feeding it the required inputs. The proofs are
+/// written to a file.
+async fn run_oneshot(args: RunMode) -> anyhow::Result<()> {
     let RunMode::Local { onnx, inputs } = args else {
         unreachable!()
     };
@@ -605,6 +610,16 @@ async fn run_locally(args: RunMode) -> anyhow::Result<()> {
         scaling_input_hash,
     };
     let proofs = run_model_v1(request, MemStore::default()).await?;
+
+    // create a file to write the proofs to
+    let mut file = tempfile::Builder::new()
+        .prefix("proof-")
+        .suffix(".json")
+        .rand_bytes(10)
+        .disable_cleanup(true)
+        .tempfile_in(std::env::current_dir().unwrap_or("./".into()))?;
+    file.write_all(serde_json::to_string_pretty(&proofs)?.as_bytes())?;
+
     info!("Successfully generated {} proofs", proofs.len());
 
     Ok(())
@@ -614,9 +629,9 @@ async fn run_locally(args: RunMode) -> anyhow::Result<()> {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     match args.run_mode {
-        remote_args @ RunMode::Remote { .. } => run_against_gw(remote_args).await,
-        local_args @ RunMode::Local { .. } => run_locally(local_args).await,
-        http_args @ RunMode::LocalServer { .. } => run_selfstanding(http_args).await,
+        remote_args @ RunMode::Remote { .. } => run_lpn(remote_args).await,
+        local_args @ RunMode::Local { .. } => run_oneshot(local_args).await,
+        http_args @ RunMode::LocalApi { .. } => run_local_api(http_args).await,
     }
 }
 
