@@ -36,8 +36,7 @@ jobs:
           --branch main \
           --threshold-measure latency \
           --threshold-test t_test \
-          --threshold-max-sample-size 64 \
-          --threshold-upper-boundary 0.99 \
+          --threshold-upper-boundary 0.20 \
           --thresholds-reset \
           --testbed ci-runner \
           --err \
