@@ -96,13 +96,13 @@ overflow-checks = true
 opt-level = 3
 
 [profile.release]
-lto = "fat"
-
-[profile.release-with-debug]
-debug = true
+debug = 1
 debug-assertions = true
-inherits = "release"
 lto = "thin"
+
+[profile.fast]
+inherits = "release"
+lto = "fat"
 
 #[patch."https://github.com/nikkolasg/timed-rs"]
 #timed = { path = "/Users/nalos/prog/timed/timed" }
