@@ -18,7 +18,7 @@ default = []
 
 [[bin]]
 name = "deep-prove-worker"
-path = "src/bin/worker.rs"
+path = "src/bin/worker/main.rs"
 
 [[bin]]
 name = "deep-prove-cli"
