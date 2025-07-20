@@ -80,12 +80,23 @@ enum Command {
 
     /// Submit inputs to be proved for an existing model.
     Request {
+        /// The user-facing name of this request. Will default to a timestamp if not set.
+        #[arg(short = 'p', long = "pretty")]
+        pretty_name: Option<String>,
+
+        /// The ID of the model to prove the inference for.
         #[arg(short, long)]
         model_id: usize,
 
-        /// Path to the inputs  to prove inference for.
+        /// Path to the inputs to prove inference for.
         #[arg(short, long)]
         inputs: PathBuf,
+    },
+
+    /// If it has not yet been processed, cancel this task.
+    Cancel {
+        /// The UUID of the task to cancel.
+        task_id: uuid::Uuid,
     },
 
     /// Fetch a generated proof, if any are available.

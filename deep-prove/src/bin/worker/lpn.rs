@@ -51,6 +51,9 @@ async fn process_message_from_gw(
             StoreKind::S3(store) => crate::run_model_v1(deep_prove_request_v1, store).await,
             StoreKind::Mem(store) => crate::run_model_v1(deep_prove_request_v1, store).await,
         },
+        DeepProveRequest::V2(_) => {
+            unimplemented!()
+        }
     };
 
     let reply = match result {

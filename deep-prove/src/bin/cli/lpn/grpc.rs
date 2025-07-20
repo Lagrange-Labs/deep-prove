@@ -174,6 +174,7 @@ pub async fn connect(gw_config: Executor) -> anyhow::Result<()> {
                 .await?;
         }
         Command::Request { .. } => bail!("`request` is not supported"),
+        Command::Cancel { .. } => bail!("`cancel` is not supported"),
     }
 
     Ok(())

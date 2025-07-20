@@ -95,6 +95,7 @@ pub async fn connect(executor: Executor) -> anyhow::Result<()> {
             }
         }
         Command::Request { .. } => bail!("`request` is not supported"),
+        Command::Cancel { .. } => bail!("`cancel` is not supported"),
     }
     Ok(())
 }
