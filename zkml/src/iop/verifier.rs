@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
 use crate::{
-    Claim, VectorTranscript,
+    Claim,
     commit::context::{CommitmentVerifier, PolyId},
     iop::{ChallengeStorage, context::ShapeStep},
     layers::{
         LayerCtx, LayerProof,
-        provable::{NodeCtx, NodeId, OpInfo, VerifiableCtx},
+        provable::{NodeCtx, NodeId, OpInfo, VerifiableCtx, compute_model_output_claims},
     },
     lookup::{context::TableType, logup_gkr::verifier::verify_logup_proof},
     model::ToIterator,
@@ -17,7 +17,6 @@ use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use mpcs::PolynomialCommitmentScheme;
-use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 use tracing::trace;
 
 use serde::{Serialize, de::DeserializeOwned};
@@ -116,27 +115,30 @@ where
         let num_outputs = self.io.output.len();
         let out_nodes =
             NodeCtx::bind_outputs_to_node(ctx.steps_info.to_backward_iterator(), num_outputs)?;
-        let out_claims = self
-            .io
-            .output
-            .iter()
-            .map(|out| {
-                // Derive the first randomness
-                let first_randomness = self
-                    .transcript
-                    .read_challenges(out.get_data().len().ilog2() as usize);
-                // For the output, we manually evaluate the MLE and check if it's the same as what prover
-                // gave. Note prover could ellude that but it's simpler to avoid that special check right
-                // now.
-                let output_mle = out.get_data().to_vec().into_mle();
-                let computed_sum = output_mle.evaluate(&first_randomness);
-
-                Claim {
-                    point: first_randomness,
-                    eval: computed_sum,
-                }
-            })
-            .collect_vec();
+        let mut out_claims = vec![Claim::default(); num_outputs];
+        out_nodes.into_iter().try_for_each(|(node_id, out_indexes)| {
+            let node = ctx.steps_info.nodes.get(&node_id).ok_or(
+                anyhow!("Node {node_id} not found in verifier context")
+            )?;
+            let output_values = out_indexes.iter().map(|index|
+                &self.io.output[*index]
+            ).collect_vec();
+            let claims = compute_model_output_claims::<_, PCS, _, _>(
+                &node.ctx,
+                self.transcript,
+                &output_values,
+            );
+            ensure!(
+                claims.len() == out_indexes.len(),
+                "Number of output claims ({}) does not match number of output indexes ({}) for node {node_id}",
+                out_claims.len(),
+                out_indexes.len(),
+            );
+            out_indexes.into_iter().zip(claims).for_each(|(index, claim)| {
+                out_claims[index] = claim;
+            });
+            Ok(())
+        })?;
 
         let mut shape_steps: HashMap<NodeId, ShapeStep> = HashMap::new();
         for (node_id, node_ctx) in ctx.steps_info.to_forward_iterator() {

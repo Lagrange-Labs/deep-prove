@@ -305,13 +305,14 @@ where
                 let out_indexes = out
                     .edges
                     .iter()
-                    .filter_map(|edge| edge.node.is_none().then(|| edge.index))
-                    .map(|index| {
+                    .filter(|edge| edge.node.is_none())
+                    .map(|edge| {
                         ensure!(
-                            outputs.insert(index),
-                            "Output index {index} found twice in the nodes of the model",
+                            outputs.insert(edge.index),
+                            "Output index {} found twice in the nodes of the model",
+                            edge.index
                         );
-                        Ok(index)
+                        Ok(edge.index)
                     })
                     .collect::<anyhow::Result<Vec<_>>>()?;
                 if !out_indexes.is_empty() {
@@ -563,6 +564,19 @@ where
     <V as VerifiableCtx<E, PCS>>::verify_input_claim(ctx, inputs, claims)
 }
 
+pub(crate) fn compute_model_output_claims<
+    E: ExtensionField,
+    PCS: PolynomialCommitmentScheme<E>,
+    T: Transcript<E>,
+    V: VerifiableCtx<E, PCS>,
+>(
+    ctx: &V,
+    transcript: &mut T,
+    outputs: &[&Tensor<E>],
+) -> Vec<Claim<E>> {
+    <V as VerifiableCtx<E, PCS>>::compute_model_output_claims(ctx, transcript, outputs)
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct NonProvableVerifierCtx<'a, O>(&'a O);
 
@@ -790,6 +804,66 @@ where
                 self.describe(),
                 proof.variant_name()
             ),
+        }
+    }
+
+    fn compute_model_output_claims<T: Transcript<E>>(
+        &self,
+        transcript: &mut T,
+        outputs: &[&Tensor<E>],
+    ) -> Vec<Claim<E>> {
+        match self {
+            LayerCtx::Dense(dense_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(dense_ctx, transcript, outputs)
+            }
+            LayerCtx::MatMul(mat_mul_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(mat_mul_ctx, transcript, outputs)
+            }
+            LayerCtx::Convolution(conv_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(conv_ctx, transcript, outputs)
+            }
+            LayerCtx::SchoolBookConvolution(_) => unreachable!(),
+            LayerCtx::Activation(activation_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(activation_ctx, transcript, outputs)
+            }
+            LayerCtx::Requant(requant_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(requant_ctx, transcript, outputs)
+            }
+            LayerCtx::Pooling(pooling_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(pooling_ctx, transcript, outputs)
+            }
+            LayerCtx::Table(_) => unreachable!(),
+            LayerCtx::QKV(qkvctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(qkvctx, transcript, outputs)
+            }
+            LayerCtx::Mha(mha_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(mha_ctx, transcript, outputs)
+            }
+            LayerCtx::ConcatMatMul(concat_mat_mul_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(concat_mat_mul_ctx, transcript, outputs)
+            }
+            LayerCtx::LayerNorm => unimplemented!(),
+            LayerCtx::Flatten => compute_model_output_claims::<_, PCS, _, _>(
+                &NonProvableVerifierCtx(&Flatten),
+                transcript,
+                outputs,
+            ),
+            LayerCtx::Softmax(softmax_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(softmax_ctx, transcript, outputs)
+            }
+            LayerCtx::Add => todo!(),
+            LayerCtx::Reshape(reshape_ctx) => compute_model_output_claims::<_, PCS, _, _>(
+                &NonProvableVerifierCtx(reshape_ctx),
+                transcript,
+                outputs,
+            ),
+            LayerCtx::Embeddings(embeddings_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(embeddings_ctx, transcript, outputs)
+            }
+            LayerCtx::Positional => unimplemented!(),
+            LayerCtx::Logits(logits_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(logits_ctx, transcript, outputs)
+            }
         }
     }
 

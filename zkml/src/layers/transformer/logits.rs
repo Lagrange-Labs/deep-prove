@@ -126,7 +126,7 @@ impl Logits {
 
     fn output_shapes(input_shapes: &[Shape], _padding_mode: PaddingMode) -> Vec<Shape> {
         input_shapes
-            .into_iter()
+            .iter()
             .map(|s| vec![s.dim(0), 1].into())
             .collect()
     }
@@ -412,14 +412,10 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS> f
 
         // build one-hot encoded output matrix
         let mut one_hot_output = vec![E::ZERO; input_shape.product()];
-        output
-            .get_data()
-            .into_iter()
-            .enumerate()
-            .for_each(|(i, out)| {
-                let index = i * input_shape.dim(input_shape.rank() - 1) + out.to_element() as usize;
-                one_hot_output[index] = E::ONE;
-            });
+        output.get_data().iter().enumerate().for_each(|(i, out)| {
+            let index = i * input_shape.dim(input_shape.rank() - 1) + out.to_element() as usize;
+            one_hot_output[index] = E::ONE;
+        });
         let one_hot_mle = one_hot_output.into_mle();
         let mut vp = VirtualPolynomial::new(input_mle.num_vars());
         vp.add_mle_list(
@@ -669,6 +665,17 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> VerifiableCtx<E, PCS
 
         Ok(vec![final_input_claim])
     }
+
+    fn compute_model_output_claims<T: Transcript<E>>(
+        &self,
+        _transcript: &mut T,
+        outputs: &[&Tensor<E>],
+    ) -> Vec<Claim<E>> {
+        // simply return default claims, as the verifier of this layer doesn't need to employ any
+        // claim about the output tensors. Indeed, the claims about the output tensors are computed
+        // by the prover, and are verified directly in `LogitsCtx::verify_output_evaluation` method
+        vec![Claim::default(); outputs.len()]
+    }
 }
 
 impl<E: ExtensionField> LogitsCtx<E> {
@@ -690,20 +697,18 @@ impl<E: ExtensionField> LogitsCtx<E> {
         let (column_point, row_point) =
             Logits::split_claim_point(&output_claim.point, num_row_vars)?;
         let beta = compute_betas_eval(row_point);
-        let computed_eval =
-            output
-                .get_data()
-                .into_iter()
-                .zip(beta)
-                .fold(E::ZERO, |sum, (token, b1)| {
-                    let token_value = token.to_canonical_u64_vec()[0] as usize;
-                    let le_bits = to_bit_sequence_le(token_value, column_point.len())
-                        .into_iter()
-                        .map(|b| E::from_canonical_usize(b))
-                        .collect_vec();
-                    let selector = b1 * identity_eval(column_point, &le_bits);
-                    sum + selector
-                });
+        let computed_eval = output
+            .get_data()
+            .iter()
+            .zip(beta)
+            .fold(E::ZERO, |sum, (token, b1)| {
+                let token_value = token.to_canonical_u64_vec()[0] as usize;
+                let le_bits = to_bit_sequence_le(token_value, column_point.len())
+                    .map(|b| E::from_canonical_usize(b))
+                    .collect_vec();
+                let selector = b1 * identity_eval(column_point, &le_bits);
+                sum + selector
+            });
         ensure!(
             computed_eval == output_claim.eval,
             "Output claim evaluation check failed for Logits layer: Expected {}, found {}",
