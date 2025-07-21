@@ -21,6 +21,7 @@ pub struct DeepProveRequest {
 
 /// The `v2` proofs that have been computed by the worker
 #[derive(Serialize, Deserialize)]
-pub struct DeepProveResponse {
-    pub proofs: Vec<Proof>,
+pub enum DeepProveResponse {
+    Proofs(Vec<u8>),
+    Error(String),
 }

@@ -49,7 +49,7 @@ pub async fn run(args: RunMode) -> anyhow::Result<()> {
         scaling_strategy,
         scaling_input_hash,
     };
-    let proofs = crate::run_model_v1(request, MemStore::default()).await?;
+    let proofs = crate::run_model_v1(request, &mut MemStore::default()).await?;
 
     // create a file to write the proofs to
     let mut file = tempfile::Builder::new()

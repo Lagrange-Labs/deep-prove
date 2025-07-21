@@ -9,6 +9,7 @@ use mpcs::{Basefold, BasefoldRSParams, Hasher};
 use std::{net::SocketAddr, path::PathBuf};
 use tracing::{debug, error, info};
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt::format::FmtSpan};
+use url::Url;
 use zkml::{
     Context, Element, FloatOnnxLoader, Prover, default_transcript,
     model::Model,
@@ -29,7 +30,7 @@ type Pcs<E> = Basefold<E, BasefoldRSParams<Hasher>>;
 /// From a proof request wrapped in a [`DeepProveRequestV1`] and a [`Store`]
 /// implementation (to interact with the PPs), attempt to generate proofs for a
 /// list of inputs.
-async fn run_model_v1(model: DeepProveRequestV1, mut store: impl Store) -> Result<Vec<ProofV1>> {
+async fn run_model_v1<S: Store>(model: DeepProveRequestV1, store: &mut S) -> Result<Vec<ProofV1>> {
     info!("Proving inference");
     let DeepProveRequestV1 {
         model,
@@ -212,11 +213,13 @@ enum RunMode {
         #[arg(long, env, default_value = "deep-prove-1")]
         worker_class: String,
 
+        /// The operator name.
         #[arg(long, env, default_value = "Lagrange Labs")]
         operator_name: String,
 
+        /// The operator private key.
         #[arg(long, env)]
-        operator_priv_key: String,
+        private_key: String,
 
         /// Max message size passed through gRPC (in MBytes)
         #[arg(long, env, default_value = "100")]
@@ -245,13 +248,29 @@ enum RunMode {
         #[arg(long, env, requires = "s3_store")]
         fs_cache_dir: Option<PathBuf>,
     },
+    /// Connect to a LPN gateway to receive inference tasks.
+    Http {
+        #[arg(long, env, default_value = "http://localhost:4000")]
+        gw_url: Url,
+
+        #[arg(short, long)]
+        worker_name: String,
+
+        /// The operator ETH address.
+        #[arg(long, env)]
+        address: String,
+
+        /// Print the logs in JSON format.
+        #[arg(long, env)]
+        json: bool,
+    },
     /// Prove inference on local files
     Local {
-        /// The model to prove inference on
+        /// The model to prove inference on.
         #[arg(short = 'm', long)]
         onnx: PathBuf,
 
-        /// The inputs to prove inference for
+        /// The inputs to prove inference for.
         #[arg(short = 'i', long)]
         inputs: PathBuf,
     },
@@ -275,9 +294,10 @@ enum RunMode {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     match args.run_mode {
-        remote_args @ RunMode::Grpc { .. } => lpn::run(remote_args).await,
+        grpc_args @ RunMode::Grpc { .. } => lpn::grpc::run(grpc_args).await,
         local_args @ RunMode::Local { .. } => immediate::run(local_args).await,
         api_args @ RunMode::LocalApi { .. } => api::serve(api_args).await,
+        http_args @ RunMode::Http { .. } => lpn::http::run(http_args).await,
     }
 }
 

@@ -82,7 +82,7 @@ pub async fn serve(args: RunMode) -> anyhow::Result<()> {
                 if let Some(proof_request) = maybe_work {
                     let now = std::time::Instant::now();
                     info!("processing proof...");
-                    let result = crate::run_model_v1(proof_request, MemStore::default()).await;
+                    let result = crate::run_model_v1(proof_request, &mut MemStore::default()).await;
                     match result {
                         Ok(proofs) => {
                             info!("proof generated in {}s", now.elapsed().as_secs());

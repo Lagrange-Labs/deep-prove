@@ -37,7 +37,7 @@ async fn serve_health_check(addr: SocketAddr) -> anyhow::Result<()> {
 async fn process_message_from_gw(
     msg: WorkerToGwResponse,
     outbound_tx: &tokio::sync::mpsc::Sender<WorkerToGwRequest>,
-    store: StoreKind,
+    store: &mut StoreKind,
 ) -> anyhow::Result<()> {
     let task: DeepProveRequest = rmp_serde::from_slice(
         zstd::decode_all(msg.task.as_slice())
@@ -89,7 +89,7 @@ pub async fn run(args: crate::RunMode) -> anyhow::Result<()> {
         healthcheck_addr,
         worker_class,
         operator_name,
-        operator_priv_key,
+        private_key,
         max_message_size,
         json,
         s3_region,
@@ -111,7 +111,7 @@ pub async fn run(args: crate::RunMode) -> anyhow::Result<()> {
         .expect("Failed to install rustls crypto provider");
 
     // NOTE: the checked arg must not have a default
-    let store = if s3_bucket.is_some() {
+    let mut store = if s3_bucket.is_some() {
         info!("Running with S3 store");
         let region = s3_region.context("gathering S3 config arguments")?;
         let timeout = std::time::Duration::from_secs(s3_timeout_secs.unwrap());
@@ -149,8 +149,7 @@ pub async fn run(args: crate::RunMode) -> anyhow::Result<()> {
 
     let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(1024);
 
-    let wallet =
-        LocalSigner::from_str(&operator_priv_key).context("parsing operator private key")?;
+    let wallet = LocalSigner::from_str(&private_key).context("parsing operator private key")?;
 
     let claims = grpc_worker::auth::jwt::get_claims(
         operator_name.to_string(),
@@ -206,7 +205,7 @@ pub async fn run(args: crate::RunMode) -> anyhow::Result<()> {
                         break;
                     }
                 };
-                process_message_from_gw(msg, &outbound_tx, store.clone()).await?;
+                process_message_from_gw(msg, &outbound_tx, &mut store).await?;
             }
             h = &mut healthcheck_handler => {
                 if let Err(e) = h {
