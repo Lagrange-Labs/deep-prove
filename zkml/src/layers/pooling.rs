@@ -229,7 +229,7 @@ where
             Pooling::Maxpool2D(maxpool2d) => {
                 let field_vecs = maxpool2d.compute_polys::<E>(inputs);
 
-                for value in field_vecs.iter().map(|v| v.iter()).flatten() {
+                for value in field_vecs.iter().flat_map(|v| v.iter()) {
                     let el = E::from(*value).to_element();
                     *element_count.entry(el).or_default() += 1;
                 }

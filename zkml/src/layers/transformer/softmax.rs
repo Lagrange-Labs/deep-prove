@@ -1132,8 +1132,7 @@ impl Softmax<Element> {
                 zero_in
                     .iter()
                     .zip(zero_out.iter())
-                    .map(|(input, output)| input.iter().zip(output.iter()))
-                    .flatten()
+                    .flat_map(|(input, output)| input.iter().zip(output.iter()))
                     .map(|(input, output)| input + output * COLUMN_SEPARATOR),
             );
 
