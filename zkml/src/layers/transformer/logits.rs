@@ -223,7 +223,7 @@ impl<E: ExtensionField> ProveInfo<E> for Logits {
         let num_vars = aux.last_output_shape[0]
             .dim(aux.last_output_shape[0].rank() - 1)
             .ilog2() as usize;
-        let sumcheck_poly_aux = VPAuxInfo::from_mle_list_dimensions(&[vec![num_vars]]);
+        let sumcheck_poly_aux = VPAuxInfo::from_mle_list_dimensions(&[vec![num_vars, num_vars]]);
 
         let ctx = same_poly::Context::new(input_num_vars);
 
@@ -390,9 +390,12 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS> f
             anyhow::Ok(())
         })?;
 
-        let reduced_mle = Tensor::new(vec![reduced_m.len(), 1].into(), reduced_m).to_mle_2d();
+        let reduced_m_len = reduced_m.len();
+        let reduced_mle = Tensor::new(vec![reduced_m_len, 1].into(), reduced_m).to_mle_2d();
         let mut vp = VirtualPolynomial::new(reduced_mle.num_vars());
-        vp.add_mle_list(vec![reduced_mle.into()], E::ONE);
+        let one_vec =
+            Tensor::new(vec![reduced_m_len, 1].into(), vec![E::ONE; reduced_m_len]).to_mle_2d();
+        vp.add_mle_list(vec![reduced_mle.into(), one_vec.into()], E::ONE);
         #[allow(deprecated)]
         let (sumcheck_proof, state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
 
@@ -616,10 +619,13 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> VerifiableCtx<E, PCS
             verifier.transcript,
         );
 
-        // verify sum-check
+        // verify sum-check: we compare the claimed sum-check evaluation with the evaluation of the sparse
+        // matrix of maximum values; note that if the prover used a different vector from 1^v, i.e., the constant vector
+        // with all `v` entries equal to 1, then this check should fail since with high probability the evaluation
+        // of the vector over `subclaim.point_flat` wouldn't be 1
         ensure!(
             subclaim.expected_evaluation == proof.max_mat_eval,
-            "Sumcheck evaluation failed"
+            "Sparse-matrix Sumcheck evaluation failed when verifying Logits layer"
         );
 
         let max_mat_claim_point = subclaim
