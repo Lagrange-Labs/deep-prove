@@ -383,6 +383,10 @@ pub(crate) fn pad_matmul(mut mat: MatMul<Element>, si: &mut ShapeInfo) -> Result
         input_shape_padded: vec![left_shape[0], right_shape[1]].into(),
         ignore_garbage_pad: None,
     }];
+    if let Some(mut bias) = mat.bias {
+        bias.pad_to_shape(right_shape.slice(1..));
+        mat.bias = Some(bias);
+    }
     Ok(mat)
 }
 
@@ -486,7 +490,7 @@ pub(crate) fn pad_qkv(mut qkv: QKV<Element>, si: &mut ShapeInfo) -> Result<QKV<E
 
 pub(crate) fn pad_concat_mat_mul(mat: ConcatMatMul, si: &mut ShapeInfo) -> Result<ConcatMatMul> {
     // no padding is needed since we don't have constant matrices in this layer
-    // So, we check inpout shapes are padded, and we update shape info
+    // So, we check input shapes are padded, and we update shape info
     ensure!(
         si.shapes.len() == 2,
         "Expected 2 input shapes when padding ConcatMatMul layer, found {}",

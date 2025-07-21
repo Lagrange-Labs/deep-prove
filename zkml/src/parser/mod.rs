@@ -13,29 +13,29 @@ use crate::{
 };
 use anyhow::{Context, Error, Result, bail, ensure};
 use itertools::Either;
-use memmap2::Mmap;
+use tracing::debug;
 use tract_onnx::{pb::ModelProto, prelude::*};
 
 /// Utility struct for loading a onnx model with float weights and producing a quantized model
 /// that can be used for inference and proving.
 #[derive(Debug)]
-pub struct FloatOnnxLoader<S: ScalingStrategy> {
+pub struct FloatOnnxLoader<'a, S: ScalingStrategy> {
     /// Either a path to model file or memmap'd bytes
-    model: Either<String, Mmap>,
+    model: Either<String, &'a [u8]>,
     scaling_strategy: S,
     model_type: Option<ModelType>,
     keep_float: bool,
 }
 
-pub type DefaultFloatOnnxLoader = FloatOnnxLoader<AbsoluteMax>;
+pub type DefaultFloatOnnxLoader<'a> = FloatOnnxLoader<'a, AbsoluteMax>;
 
-impl DefaultFloatOnnxLoader {
+impl DefaultFloatOnnxLoader<'_> {
     pub fn new(model_path: &str) -> Self {
         Self::new_with_scaling_strategy(model_path, AbsoluteMax::new())
     }
 }
 
-impl<S: ScalingStrategy> FloatOnnxLoader<S> {
+impl<'a, S: ScalingStrategy> FloatOnnxLoader<'a, S> {
     pub fn new_with_scaling_strategy(model_path: &str, scaling_strategy: S) -> Self {
         Self {
             model: Either::Left(model_path.to_string()),
@@ -44,7 +44,7 @@ impl<S: ScalingStrategy> FloatOnnxLoader<S> {
             keep_float: false,
         }
     }
-    pub fn from_bytes_with_scaling_strategy(model_bytes: Mmap, scaling_strategy: S) -> Self {
+    pub fn from_bytes_with_scaling_strategy(model_bytes: &'a [u8], scaling_strategy: S) -> Self {
         Self {
             model: Either::Right(model_bytes),
             scaling_strategy,
@@ -52,14 +52,17 @@ impl<S: ScalingStrategy> FloatOnnxLoader<S> {
             keep_float: false,
         }
     }
+
     pub fn with_scaling_strategy(mut self, scaling_strategy: S) -> Self {
         self.scaling_strategy = scaling_strategy;
         self
     }
+
     pub fn with_model_type(mut self, model_type: ModelType) -> Self {
         self.model_type = Some(model_type);
         self
     }
+
     pub fn with_keep_float(mut self, keep_float: bool) -> Self {
         self.keep_float = keep_float;
         self
@@ -70,7 +73,7 @@ impl<S: ScalingStrategy> FloatOnnxLoader<S> {
             Either::Left(path) => load_proto_from_path(&path)?,
             Either::Right(bytes) => {
                 use prost_tract_compat::Message;
-                ModelProto::decode(&*bytes)
+                ModelProto::decode(bytes)
                     .map_err(|e| Error::msg(format!("Failed to load model: {e:?}")))?
             }
         };
@@ -78,7 +81,7 @@ impl<S: ScalingStrategy> FloatOnnxLoader<S> {
             model_type.validate_proto(&proto)?
         }
         let float_model = load_float_model(&proto)?;
-        println!("Input shape: {:?}", float_model.input_shapes());
+        debug!("Input shape: {:?}", float_model.input_shapes());
         let mut kept_float = None;
         if self.keep_float {
             kept_float = Some(float_model.clone());
@@ -266,19 +269,19 @@ pub fn load_float_model(model: &ModelProto) -> Result<Model<f32>> {
 pub mod file_cache {
     use anyhow::{Context as _, anyhow, bail};
     use hex;
-    use once_cell::sync::Lazy;
     use reqwest;
     use sha2::{Digest, Sha256};
     use std::{
         fs::{self, File},
         io::{ErrorKind, Write},
         path::{Path, PathBuf},
+        sync::LazyLock,
         thread,
         time::Duration,
     };
 
     // Directory to store cached files.
-    static CACHE_DIR: Lazy<PathBuf> = Lazy::new(|| {
+    static CACHE_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
         let dir = PathBuf::from("target").join("test_assets_cache");
         if !dir.exists() {
             fs::create_dir_all(&dir).expect("Failed to create cache directory for test assets");
@@ -346,8 +349,8 @@ pub mod file_cache {
         let local_file_path = CACHE_DIR.join(&base_filename);
         let lock_file_path = CACHE_DIR.join(format!("{}.lock", base_filename));
 
-        const MAX_RETRIES: u32 = 60; // Approx 60 * 200ms = 12 seconds total timeout
-        const RETRY_DELAY_MS: u64 = 200;
+        const MAX_RETRIES: u32 = 60; // Approx 60 seconds total timeout
+        const RETRY_DELAY_MS: u64 = 1000;
 
         for attempt in 0..MAX_RETRIES {
             // Check 1: File exists and no lock. This is the ideal fast path.
@@ -573,14 +576,14 @@ mod tests {
 
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
         info!("GENERATING CONTEXT...");
-        let ctx = Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None)
+        let ctx = Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None, None)
             .expect("Unable to generate context");
         info!("GENERATING CONTEXT DONE...");
         let io = trace.to_verifier_io();
         info!("GENERATING Proof...");
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
             Prover::new(&ctx, &mut tr);
-        let proof = prover.prove(trace).expect("unable to generate proof");
+        let proof = prover.prove(&trace).expect("unable to generate proof");
         info!("GENERATING Proof DONE...");
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
@@ -620,15 +623,14 @@ mod tests {
         println!("Result: {:?}", trace.outputs());
 
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
-        let ctx = Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None)
+        let ctx = Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None, None)
             .expect("Unable to generate context");
 
         println!("YELO");
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
             Prover::new(&ctx, &mut tr);
         let io = trace.to_verifier_io();
-        let proof = prover.prove(trace).expect("unable to generate proof");
-        println!("YELO2");
+        let proof = prover.prove(&trace).expect("unable to generate proof");
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
         verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).unwrap();

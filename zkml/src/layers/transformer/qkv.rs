@@ -497,7 +497,7 @@ where
         );
         step_data.outputs.outputs().into_iter().try_for_each(|out| {
                 ensure!(out.get_shape() == expected_output_shape,
-                    "Expected shape {expected_output_shape:?} for output of QKV layer, foudn shape {:?}", out.get_shape(),
+                    "Expected shape {expected_output_shape:?} for output of QKV layer, found shape {:?}", out.get_shape(),
                 );
                 Ok(())
             }
@@ -747,19 +747,24 @@ where
 
         // Build claims corresponding to each evaluation of the MLEs involved in the batched sumcheck,
         // splitting between claims related to the input matrix and claims related to the weight matrices
-        let (input_claims, weight_claims): (Vec<_>, Vec<_>) = try_unzip(last_claims.iter().zip(
-            proof.individual_claims.iter() // each chunk refers to a pair of (input, weight matrix) MLEs in the sumcheck
-        ).map(|(&claim, evals)| {
-            let (point_for_input, point_for_weight) = QKV::<Element>::build_points(
-                &claim.point,
-                &subclaim.point_flat(),
-                output_num_vars,
-            )?;
-            anyhow::Ok((
-                Claim::new(point_for_input, evals.0),
-                Claim::new(point_for_weight, evals.1),
-            ))
-        }))?;
+        let (input_claims, weight_claims): (Vec<_>, Vec<_>) = try_unzip(
+            last_claims
+                .iter()
+                .zip(
+                    proof.individual_claims.iter(), // each chunk refers to a pair of (input, weight matrix) MLEs in the sumcheck
+                )
+                .map(|(&claim, evals)| {
+                    let (point_for_input, point_for_weight) = QKV::<Element>::build_points(
+                        &claim.point,
+                        &subclaim.point_flat(),
+                        output_num_vars,
+                    )?;
+                    anyhow::Ok((
+                        Claim::new(point_for_input, evals.0),
+                        Claim::new(point_for_weight, evals.1),
+                    ))
+                }),
+        )?;
 
         // Build set of claims to be proven via polynomial commitment opening proof
         let common_claims = weight_claims

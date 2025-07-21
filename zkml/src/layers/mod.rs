@@ -595,42 +595,39 @@ where
     fn gen_lookup_witness(
         &self,
         id: provable::NodeId,
-        gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> Result<()> {
+    ) -> Result<LookupWitnessGen<E, PCS>> {
         match self {
-            Layer::Dense(dense) => dense.gen_lookup_witness(id, gen, ctx, step_data),
-            Layer::Convolution(convolution) => {
-                convolution.gen_lookup_witness(id, gen, ctx, step_data)
-            }
-            Layer::MatMul(m) => m.gen_lookup_witness(id, gen, ctx, step_data),
-            Layer::QKV(qkv) => qkv.gen_lookup_witness(id, gen, ctx, step_data),
-            Layer::Mha(mha) => mha.gen_lookup_witness(id, gen, ctx, step_data),
+            Layer::Dense(dense) => dense.gen_lookup_witness(id, ctx, step_data),
+            Layer::Convolution(convolution) => convolution.gen_lookup_witness(id, ctx, step_data),
+            Layer::MatMul(m) => m.gen_lookup_witness(id, ctx, step_data),
+            Layer::QKV(qkv) => qkv.gen_lookup_witness(id, ctx, step_data),
+            Layer::Mha(mha) => mha.gen_lookup_witness(id, ctx, step_data),
             Layer::ConcatMatMul(concat_matmul) => {
-                concat_matmul.gen_lookup_witness(id, gen, ctx, step_data)
+                concat_matmul.gen_lookup_witness(id, ctx, step_data)
             }
             Layer::LayerNorm(_layernorm) => unimplemented!("LayerNorm layer not implemented"),
-            Layer::Softmax(softmax) => softmax.gen_lookup_witness(id, gen, ctx, step_data),
+            Layer::Softmax(softmax) => softmax.gen_lookup_witness(id, ctx, step_data),
             Layer::Add(_add) => unimplemented!("Add layer not implemented"),
             Layer::Logits(_logits) => unimplemented!("Logits layer not implemented"),
             Layer::Positional(_positional) => unimplemented!("Positional layer not implemented"),
-            Layer::Embeddings(embeddings) => embeddings.gen_lookup_witness(id, gen, ctx, step_data),
+            Layer::Embeddings(embeddings) => embeddings.gen_lookup_witness(id, ctx, step_data),
             Layer::SchoolBookConvolution(school_book_conv) => {
                 // check that the layer is not provable, so we don't need to call the method
                 assert!(!school_book_conv.is_provable());
-                Ok(())
+                Ok(Default::default())
             }
-            Layer::Activation(activation) => activation.gen_lookup_witness(id, gen, ctx, step_data),
-            Layer::Requant(requant) => requant.gen_lookup_witness(id, gen, ctx, step_data),
-            Layer::Pooling(pooling) => pooling.gen_lookup_witness(id, gen, ctx, step_data),
+            Layer::Activation(activation) => activation.gen_lookup_witness(id, ctx, step_data),
+            Layer::Requant(requant) => requant.gen_lookup_witness(id, ctx, step_data),
+            Layer::Pooling(pooling) => pooling.gen_lookup_witness(id, ctx, step_data),
             Layer::Reshape(r) => {
                 assert!(!r.is_provable());
-                Ok(())
+                Ok(Default::default())
             }
             Layer::Flatten(r) => {
                 assert!(!r.is_provable());
-                Ok(())
+                Ok(Default::default())
             }
         }
     }

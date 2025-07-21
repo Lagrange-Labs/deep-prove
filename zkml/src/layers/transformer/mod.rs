@@ -459,11 +459,11 @@ pub(crate) mod test {
         let embedded = llm_model
             .embeddings
             .evaluate::<GoldilocksExt2>(&vec![&input], vec![])?;
-        let positionned = llm_model
+        let positioned = llm_model
             .positional
             .evaluate::<GoldilocksExt2>(&vec![embedded.outputs()[0]], vec![])?;
         assert!(is_close(
-            &positionned.outputs()[0].get_data(),
+            &positioned.outputs()[0].get_data(),
             &gpt2_output.inputs_embeds
         ));
         Ok(())

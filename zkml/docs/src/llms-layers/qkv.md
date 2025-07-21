@@ -14,7 +14,7 @@ These vectors are all computed from a vector $x \in \mathbb{R}^e$ representing a
 - $k = xW_k + B_k$, where $W_k \in \mathbb{R}^{e \times h}$ is a weight matrix and $B_k \in \mathbb{R}^h$ is a bias vector
 - $v = xW_v + B_v$, where $W_v \in \mathbb{R}^{e \times h}$ is a weight matrix and $B_v \in \mathbb{R}^h$ is a bias vector
 
-Since an LLM processes all the input tokens simultaneously, the computation of `q`, `k` and `v` vectors for all the input tokens is done in a "batched" fashon over matrices rather than over single vectors, as depicted in the following picture:
+Since an LLM processes all the input tokens simultaneously, the computation of `q`, `k` and `v` vectors for all the input tokens is done in a "batched" fashion over matrices rather than over single vectors, as depicted in the following picture:
 
 ![Batching Inputs](../img/qkv_input_batching.png)
 
@@ -40,7 +40,7 @@ The prover starts from the following 3 claims about the MLEs of the output matri
 - Claim $y_K$ about the MLE of matrix `K`, computed at the random point $r_K \in \mathbb{F}^{\log(s)+\log(h)}$; consider $r_K$ to be split in 2 sub-points $r_K^r \in \mathbb{F}^{\log(s)}$, $r_K^c \in \mathbb{F}^{\log(h)}$, which are built from the coordinates of $r_K$ referring to the rows and columns variables, respectively, of the MLE of `K`
 - Claim $y_V$ about the MLE of matrix `V`, computed at the random point $r_V \in \mathbb{F}^{\log(s)+\log(h)}$; consider $r_V$ to be split in 2 sub-points $r_V^r \in \mathbb{F}^{\log(s)}$, $r_V^c \in \mathbb{F}^{\log(h)}$, which are built from the coordinates of $r_V$ referring to the rows and columns variables, respectively, of the MLE of `V`
 
-Furthermore, the prover has computed the MLEs of the weight matrices $W_q$, $W_k$ and $W_v$ and the MLEs of the bias vectors $B_q$, $B_k$ and $B_v$, which were commited to in a setup phase. 
+Furthermore, the prover has computed the MLEs of the weight matrices $W_q$, $W_k$ and $W_v$ and the MLEs of the bias vectors $B_q$, $B_k$ and $B_v$, which were committed to in a setup phase. 
 
 Given the 3 claims $y_Q$, $y_K,$ and $y_V$, the prover computes also the claims $y_{B_q} = B_q(r_Q^c)$, $y_{B_k} = B_k(r_K^c)$ and $y_{B_v} = B_v(r_V^c)$, and claims $\widetilde{y_Q} = y_Q - B_q(r_Q^c)$, $\widetilde{y_K} = y_K - B_k(r_K^c)$, $\widetilde{y_V} = y_V - B_V(r_V^c)$.
 
@@ -61,7 +61,7 @@ The proving protocol requires the prover to commit to the weight matrices $W_q$,
 
 Then, when proving the inference for a given input matrix $X$, the prover needs to bind the following claims, produced in the proving protocol, to the corresponding polynomial committed in the setup phase, employing a PCS opening proof:
 
-- The claims $y_{W_Q}$, $y_{W_K}$, $y_{W_V}$ about the MLEs of the weight matrices $W_q$, $W_k$ and $W_v$, repsectively
+- The claims $y_{W_Q}$, $y_{W_K}$, $y_{W_V}$ about the MLEs of the weight matrices $W_q$, $W_k$ and $W_v$, respectively
 - The claims $y_{B_q}$, $y_{B_k}$, $y_{B_v}$ about the MLEs of the bias vectors $B_q$, $B_k$ and $B_v$, respectively
 
 ## Proving Passes over Output Tokens
@@ -117,7 +117,7 @@ y_{\widetilde{M}} = \sum_{x \in \{0, 1\}^{\log(l)}} \sum_{y \in \{0, 1\}^{\log(h
 \end{equation}
 The sum-check proof will produce the following claims for a random point $r_s \in \mathbb{F}^{\log(l*h)} = (r_l \in \mathbb{F}^{\log(l)}, r_h \in \mathbb{F}^{\log{h}})$:
 
-- Claim $\beta(r_s, r)$, which can be verified efficienctly by the verifier
+- Claim $\beta(r_s, r)$, which can be verified efficiency by the verifier
 - Claim $P(r_l)$, which can be verified efficiently by the verifier as well: indeed, given that P has only one non-zero entry (i.e., $P[s] = 1$), its MLE is simply $P(x) = \beta(x, \mathtt{BitDecompose}(s))$, where $\mathtt{BitDecompose}(s)$ is the sequence of $\log(l)$ bits representing $s$; therefore, $P(r_l) = \beta(r_l, s)$. 
 - Claim $m(r_h)$, which is the claim about the input vector $m$ produced by the proving sub-protocol
 
@@ -147,7 +147,7 @@ $$
 
 The sum-check proof will produce the following claims for a random point $r \in \mathbb{F}^{\log(l*h)} = (r_l \in \mathbb{F}^{\log(l)}, r_h \in \mathbb{F}^{\log{h}})$:
 
-- Claims $\beta(r, r_K)$, $\beta(r, r_V)$ which can be verified efficienctly by the verifier
+- Claims $\beta(r, r_K)$, $\beta(r, r_V)$ which can be verified efficiency by the verifier
 - Claim $P(r_l)$, which can be verified efficiently by the verifier as well, given the simple structure of the MLE of P
 - Claims $k(r_h)$, $v(r_h)$, which correspond to the claims about the input vector $k$ and $v$ produced by the proving protocol. These claims can then be employed to prove the computation of the $k$, $v$ vectors from the input $x$ of the QKV layer, as shown next.
 
@@ -165,7 +165,7 @@ The claim obtained about the MLE $X$ will be the input claim of the QKV layer, w
 
 #### Bind Claims With Previous Iteration
 
-Note that the claims $y_{K_{prev}}$ and $y_{V_{prev}}$, computed by the prover when proving concatentation, needs to be bound to the MLEs of the output matrices $K_{prev}$ and $V_{prev}$ computed in the previous iteration for the same QKV layer.
+Note that the claims $y_{K_{prev}}$ and $y_{V_{prev}}$, computed by the prover when proving concatenation, needs to be bound to the MLEs of the output matrices $K_{prev}$ and $V_{prev}$ computed in the previous iteration for the same QKV layer.
 
 ![Claims Across Layers](../img/claims_for_qkv.png)
 

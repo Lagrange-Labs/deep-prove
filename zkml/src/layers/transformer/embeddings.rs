@@ -197,7 +197,7 @@ where
         let shape = aux.last_output_shape.remove(0);
         aux.last_output_shape
             .push(one_hot_shape(&shape, self.vocab_size, PaddingMode::Padding));
-        let mat_ctx = self.mat.ctx(id, &mut aux).context("embeddings matmul: ")?;
+        let (mat_ctx, aux) = self.mat.ctx(id, aux).context("embeddings matmul: ")?;
         Ok((
             LayerCtx::Embeddings(EmbeddingsCtx {
                 mat_ctx,

@@ -2,6 +2,7 @@ use std::{collections::HashMap, path::Path};
 
 use anyhow::{Context, bail, ensure};
 use serde::Deserialize;
+use tracing::trace;
 
 use crate::{
     Tensor,
@@ -140,9 +141,9 @@ impl Attention<f32> {
             vec![c.embedding_size, hidden_size].into(),
             unfused_weights_data.remove(0),
         );
-        println!("fused qkv: {fused_qkv_weight:?}");
-        println!("qkv full tensor {unfused_weights_data:?}");
-        println!("q_weight {:?}", q_weight.get_data());
+        trace!("fused qkv: {fused_qkv_weight:?}");
+        trace!("qkv full tensor {unfused_weights_data:?}");
+        trace!("q_weight {:?}", q_weight.get_data());
 
         // Unfuse biases:
         // Expected shape of fused_qkv_bias is [3 * hidden_size].
@@ -385,7 +386,7 @@ pub mod test {
         };
         assert!(
             path.exists(),
-            "Missing model locally, create a venv and run `python3 gpt2_internal.py --output-dir ./assets/scripts/llms/ --export-model` to retrive it",
+            "Missing model locally, create a venv and run `python3 gpt2_internal.py --output-dir ./assets/scripts/llms/ --export-model` to retrieve it",
         );
         Ok(path.to_str().unwrap().to_string())
     }

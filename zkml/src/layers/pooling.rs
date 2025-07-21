@@ -207,17 +207,18 @@ where
     fn gen_lookup_witness(
         &self,
         id: NodeId,
-        gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> Result<()> {
+    ) -> Result<LookupWitnessGen<E, PCS>> {
         ensure!(
             step_data.inputs.len() == 1,
-            "Found more than 1 input in inference step of pooling layer"
+            "Input for pooling layer with invalid length. expected: 1 got: {}",
+            step_data.inputs.len(),
         );
         ensure!(
             step_data.outputs.outputs().len() == 1,
-            "Found more than 1 output in inference step of pooling layer"
+            "Output for pooling layer with invalid length. expected: 1 got: {}",
+            step_data.outputs.outputs().len(),
         );
 
         let (merged_lookups, column_evals) = self.lookup_witness::<E>(&step_data.inputs[0]);
@@ -244,6 +245,8 @@ where
                 Ok((commit, mle))
             })
             .collect::<Result<Vec<_>, anyhow::Error>>()?;
+
+        let mut gen = LookupWitnessGen::<E, PCS>::default();
         gen.logup_witnesses.insert(
             id,
             vec![LogUpWitness::<E, PCS>::new_lookup(
@@ -253,13 +256,9 @@ where
                 TableType::Range,
             )],
         );
+        gen.new_lookups.insert(TableType::Range, merged_lookups);
 
-        let lookups = gen.new_lookups.get_mut(&TableType::Range).ok_or(anyhow!(
-            "No table of type Range was expected, error occurred during a MaxPool step"
-        ))?;
-        lookups.extend(merged_lookups);
-
-        Ok(())
+        Ok(gen)
     }
 }
 
@@ -832,7 +831,7 @@ mod tests {
                 .collect::<Shape>();
             let input_data_size = random_shape.product();
             let data = (0..input_data_size)
-                .map(|_| rng.gen_range(-128i128..128))
+                .map(|_| rng.gen_range(-128..128))
                 .collect::<Vec<Element>>();
             let input = Tensor::<Element>::new(random_shape, data);
 

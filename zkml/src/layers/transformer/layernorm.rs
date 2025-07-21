@@ -1,6 +1,6 @@
 use anyhow::ensure;
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{trace, warn};
 
 use crate::{
     Element, ScalingFactor, Tensor,
@@ -33,7 +33,7 @@ impl<N: Number> LayerNorm<N> {
 
 impl LayerNorm<f32> {
     pub fn from_json(l: &json::FileTensorLoader, _c: &LLMConfig) -> anyhow::Result<Self> {
-        println!("from_json: current path: {:?}", l.prefix);
+        trace!("from_json: current path: {:?}", l.prefix);
         let gamma = l.get_tensor("norm.weight")?;
         let beta = l.get_tensor("norm.bias")?;
         let eps = l.metadata_to_f32("norm_epsilon")?;

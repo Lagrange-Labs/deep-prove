@@ -10,6 +10,7 @@ members = [
   "simple-frontend",
   "gkr",
   "zkml",
+  "deep-prove",
   "utils",
 ]
 resolver = "2"
@@ -24,84 +25,84 @@ repository = "https://github.com/scroll-tech/ceno"
 version = "0.1.0"
 
 [workspace.dependencies]
+aes = "0.8"
 anyhow = { version = "1.0", default-features = false }
 ark-std = "0.5"
 axum = { version = "0.8" }
+bitvec = "1.0"
+blake3 = { version = "1.4", features = ["serde"] }
 cfg-if = "1.0"
+clap = "4"
 criterion = { version = "0.6", features = ["html_reports"] }
 crossbeam-channel = "0.5"
-hex = { version = "0.4" }
-ff = "0.13"
-goldilocks = { git = "https://github.com/scroll-tech/ceno-Goldilocks" }
-itertools = "0.13"
-plonky2 = "1.1"
-p3-challenger = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
-p3-field = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
-p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb", features = ["nightly-features"] }
-p3-poseidon = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
-p3-mds = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
-p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
-p3-poseidon2 = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
-poseidon = { path = "./poseidon" }
-rand = "0.8.5"
-rand_chacha = { version = "0.3", features = ["serde"] }
-rand_core = "0.6"
-rayon = "1.10"
-blake3 = { version = "1.4", features = ["serde"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tracing = { version = "0.1.41", features = ["log"] }
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-timed = { git = "https://github.com/nikkolasg/timed-rs" }
-timed-core = { git = "https://github.com/nikkolasg/timed-rs" }
-aes = "0.8"
-bitvec = "1.0"
-clap = "4"
-code-timing-macros = "0.0.6"
 csv = "1.3.1"
 ctr = "0.9"
-derive_builder = "0.20.2"
 derive_more = "2.0.1"
 env_logger = "0.11"
+ff = "0.13"
 gkr = { version = "0.1.0", path = "gkr" }
+goldilocks = { git = "https://github.com/scroll-tech/ceno-Goldilocks" }
+hex = { version = "0.4" }
+itertools = "0.13"
 log = "0.4"
 memmap2 = "0.9"
 mpcs = { version = "0.1.0", path = "mpcs" }
 num-bigint = "0.4"
 num-integer = "0.1"
-num-traits = "0.2.19"
-once_cell = "1.20.3"
+object_store = { version = "0.12", features = ["aws"] }
+p3-challenger = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
+p3-field = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
+p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb", features = [
+  "nightly-features",
+] }
+p3-poseidon2 = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
+p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
+plonky2 = "1.1"
+poseidon = { path = "./poseidon" }
 pprof = "0.14.0"
 proc-macro2 = "1.0.92"
 quote = "1.0"
+rand = "0.8.5"
+rand_chacha = { version = "0.3", features = ["serde"] }
+rand_core = "0.6"
+rayon = "1.10"
 rmp-serde = "1.3.0"
+semver = "1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 simple-frontend = { path = "simple-frontend" }
 statrs = "0.18.0"
 sumcheck_macro = { path = "sumcheck_macro" }
 syn = "2.0"
+tempfile = "3"
 thiserror = "2.0.12"
+timed = { git = "https://github.com/nikkolasg/timed-rs" }
+timed-core = { git = "https://github.com/nikkolasg/timed-rs" }
 tiny-keccak = "2.0"
+tracing = { version = "0.1.41", features = ["log"] }
 tracing-flame = "0.2.0"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tract-onnx = "0.21"
-unroll = "0.1"
 
 
 # Test must run fast, but still provides stacktraces.
 [profile.test]
-opt-level = 3
 debug = true
 debug-assertions = true
+opt-level = 3
 overflow-checks = true
 
 [profile.test.package."*"]
 opt-level = 3
 
 [profile.release]
-lto = "fat"
+debug = 1
+debug-assertions = true
+lto = "thin"
 
-[profile.release-with-debug]
+[profile.fast]
 inherits = "release"
-debug = true
+lto = "fat"
 
 #[patch."https://github.com/nikkolasg/timed-rs"]
 #timed = { path = "/Users/nalos/prog/timed/timed" }

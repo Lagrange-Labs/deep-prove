@@ -5,10 +5,14 @@
 
   packages = [
     # General dev.
-    pkgs.git
+    pkgs.git pkgs.openssl
     # Rust
-    pkgs.rustup pkgs.protobuf
+    pkgs.rustup pkgs.protobuf pkgs.openssl
   ];
+
+  env = {
+    OPENSSL_DEV = pkgs.openssl.dev;
+  };
 
   # https://devenv.sh/tasks/
   # tasks = {
@@ -41,24 +45,25 @@
   # https://devenv.sh/git-hooks/
   # git-hooks.hooks.shellcheck.enable = true;
   git-hooks.hooks = {
-    actionlint.enable = true;
+    # actionlint.enable = true;
     check-merge-conflicts.enable = true;
     ripsecrets.enable = true;
-    rustfmt.enable = true;
-    flake8 = {
+    rustfmt = {
+      enable = false;
+      settings.color = "auto";
+    };
+    black = {
       enable = true;
-      settings.extendIgnore = [ "E501" ];
+    };
+    taplo = {
+      enable = true;
     };
     typos = {
       enable = true;
       settings = {
-        exclude = "*.nix";
         format = "brief";
-        ignored-words = [
-          "Ein"
-          "EinSum"
-        ];
         write = true;
+        configPath = "typos.toml";
       };
     };
   };
