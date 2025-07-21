@@ -7,7 +7,7 @@ use crate::{
         LayerProof,
         provable::{QuantizeOp, QuantizeOutput},
     },
-    to_be_bits,
+    to_bit_sequence_le,
 };
 
 use anyhow::{anyhow, bail, ensure};
@@ -524,7 +524,7 @@ where
         // involved in the sumcheck the prover's giving,e.g. y(res) = SUM f_i(res)
         ensure!(
             one_hot_eval * embedding_mat_eval == subclaim.expected_evaluation,
-            "sumcheck claim failed",
+            "sumcheck claim failed in Logits layer verifier",
         );
 
         // the first claim is the one hot encoding claim. To verify it we need to
@@ -552,18 +552,18 @@ where
         );
         let (r1, r2) = one_hot_claim.point.split_at(vocab_nv as usize);
         let b1 = compute_betas_eval(r2);
-        let mut sum = E::ZERO;
-        for (idx, token) in input.get_data().iter().enumerate() {
-            let token_value = token.to_canonical_u64_vec()[0] as usize;
-            let token_be_bits = to_be_bits(token_value as Element, r1.len())?;
-            let token_le_bits = token_be_bits
-                .into_iter()
-                .rev()
-                .map(|b| E::from_canonical_u8(b as u8))
-                .collect_vec();
-            let selector = b1[idx] * identity_eval(r1, &token_le_bits);
-            sum += selector;
-        }
+        let sum = input
+            .get_data()
+            .iter()
+            .zip(b1)
+            .fold(E::ZERO, |sum, (token, beta)| {
+                let token_value = token.to_canonical_u64_vec()[0] as usize;
+                let token_le_bits = to_bit_sequence_le(token_value, r1.len())
+                    .map(|b| E::from_canonical_usize(b))
+                    .collect_vec();
+                let selector = beta * identity_eval(r1, &token_le_bits);
+                sum + selector
+            });
         ensure!(
             sum == one_hot_claim.eval,
             "one hot encoding claim is incorrect"

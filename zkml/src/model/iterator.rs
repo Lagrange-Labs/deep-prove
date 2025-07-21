@@ -48,14 +48,14 @@ where
 {
     fn to_forward_iterator<'a>(&'a self) -> ModelCtxForwardIterator<'a, E> {
         NodeIterator {
-            unvisited_nodes: self.nodes.keys().cloned().collect(),
+            unvisited_nodes: self.nodes.keys().copied().collect(),
             nodes: BTreeMapNodeSet(&self.nodes).to_node_set(),
         }
     }
 
     fn to_backward_iterator<'a>(&'a self) -> ModelCtxBackwardIterator<'a, E> {
         NodeIterator {
-            unvisited_nodes: self.nodes.keys().cloned().collect(),
+            unvisited_nodes: self.nodes.keys().copied().collect(),
             nodes: BTreeMapNodeSet(&self.nodes).to_node_set(),
         }
     }
@@ -64,14 +64,14 @@ where
 impl<N> ToIterator<Node<N>> for Model<N> {
     fn to_forward_iterator<'a>(&'a self) -> ModelForwardIterator<'a, N> {
         NodeIterator {
-            unvisited_nodes: self.nodes.keys().cloned().collect(),
+            unvisited_nodes: self.nodes.keys().copied().collect(),
             nodes: HashMapNodeSet(&self.nodes).to_node_set(),
         }
     }
 
     fn to_backward_iterator<'a>(&'a self) -> ModelBackwardIterator<'a, N> {
         NodeIterator {
-            unvisited_nodes: self.nodes.keys().cloned().collect(),
+            unvisited_nodes: self.nodes.keys().copied().collect(),
             nodes: HashMapNodeSet(&self.nodes).to_node_set(),
         }
     }
