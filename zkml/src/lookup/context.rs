@@ -1,6 +1,6 @@
 //! File containing code for lookup witness generation.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, btree_map::Entry};
+use std::collections::{BTreeMap, BTreeSet, HashMap, btree_map};
 
 use ff_ext::ExtensionField;
 use mpcs::PolynomialCommitmentScheme;
@@ -437,21 +437,37 @@ impl LookupContext {
     }
 }
 
+pub(crate) fn count_elements<I: IntoIterator<Item = Element>>(i: I) -> HashMap<Element, u64> {
+    let mut count = HashMap::<Element, u64>::new();
+    for v in i.into_iter() {
+        *count.entry(v).or_default() += 1;
+    }
+    count
+}
+
 #[derive(Default)]
 pub struct LookupWitnessGen<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> {
-    pub(crate) new_lookups: BTreeMap<TableType, Vec<Element>>,
+    /// Contains the count of elements per table type.
+    ///
+    /// These values are later used to compute the GKR's multiplicities.
+    pub(crate) element_count: BTreeMap<TableType, HashMap<Element, u64>>,
     pub(crate) logup_witnesses: HashMap<NodeId, Vec<LogUpWitness<E, PCS>>>,
 }
 
 impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> LookupWitnessGen<E, PCS> {
     /// Consume the lookups and witness of `other` into this instance.
     fn consume(&mut self, other: Self) {
-        for (table_type, elements) in other.new_lookups.into_iter() {
-            match self.new_lookups.entry(table_type) {
-                Entry::Vacant(vacant_entry) => {
+        for (table_type, elements) in other.element_count.into_iter() {
+            match self.element_count.entry(table_type) {
+                btree_map::Entry::Vacant(vacant_entry) => {
                     vacant_entry.insert(elements);
                 }
-                Entry::Occupied(mut occupied_entry) => occupied_entry.get_mut().extend(elements),
+                btree_map::Entry::Occupied(mut occupied_entry) => {
+                    let agg_count = occupied_entry.get_mut();
+                    for (element, count) in elements.into_iter() {
+                        *agg_count.entry(element).or_default() += count;
+                    }
+                }
             }
         }
         self.logup_witnesses.extend(other.logup_witnesses);
@@ -512,16 +528,9 @@ where
     let metrics = Metrics::new();
     // calculate the table multiplicities
     let table_witnesses = witness_gen
-        .new_lookups
+        .element_count
         .par_iter()
-        .map(|(table_type, lookups)| {
-            let table_lookup_data =
-                lookups
-                    .iter()
-                    .fold(HashMap::<Element, u64>::new(), |mut map, elem| {
-                        *map.entry(*elem).or_insert(0) += 1;
-                        map
-                    });
+        .map(|(table_type, table_lookup_data)| {
             let (table_column, column_evals) =
                 table_type.get_merged_table_column::<E>(COLUMN_SEPARATOR);
 
@@ -591,7 +600,7 @@ where
     debug!("== Challenge storage ==");
     let metrics = Metrics::new();
     let challenge_storage =
-        initialise_from_table_set::<E, T, _>(witness_gen.new_lookups.keys(), transcript);
+        initialise_from_table_set::<E, T, _>(witness_gen.element_count.keys(), transcript);
     debug!("== Challenge storage metrics {} ==", metrics.to_span());
 
     Ok(LookupWitness {

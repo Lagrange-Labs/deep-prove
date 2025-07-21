@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{
     Claim, Context, Element, Prover,
     commit::compute_betas_eval,
@@ -221,7 +223,20 @@ where
             step_data.outputs.outputs().len(),
         );
 
-        let (merged_lookups, column_evals) = self.lookup_witness::<E>(&step_data.inputs[0]);
+        let mut element_count = HashMap::<Element, u64>::new();
+        let inputs = &step_data.inputs[0];
+        let column_evals = match self {
+            Pooling::Maxpool2D(maxpool2d) => {
+                let field_vecs = maxpool2d.compute_polys::<E>(inputs);
+
+                for value in field_vecs.iter().map(|v| v.iter()).flatten() {
+                    let el = E::from(*value).to_element();
+                    *element_count.entry(el).or_default() += 1;
+                }
+
+                field_vecs
+            }
+        };
         // Commit to the witnes polys
         let output_poly = step_data.outputs.outputs()[0]
             .get_data()
@@ -256,7 +271,7 @@ where
                 TableType::Range,
             )],
         );
-        gen.new_lookups.insert(TableType::Range, merged_lookups);
+        gen.element_count.insert(TableType::Range, element_count);
 
         Ok(gen)
     }
@@ -329,28 +344,6 @@ impl Pooling {
         }
     }
 
-    pub fn lookup_witness<E: ExtensionField>(
-        &self,
-        input: &Tensor<Element>,
-    ) -> (Vec<Element>, Vec<Vec<E::BaseField>>) {
-        match self {
-            Pooling::Maxpool2D(maxpool2d) => {
-                let field_vecs = maxpool2d.compute_polys::<E>(input);
-
-                let merged_lookups = field_vecs
-                    .iter()
-                    .flat_map(|vector| {
-                        vector
-                            .iter()
-                            .map(|&a| E::from(a).to_element())
-                            .collect::<Vec<Element>>()
-                    })
-                    .collect::<Vec<Element>>();
-
-                (merged_lookups, field_vecs)
-            }
-        }
-    }
     #[timed::timed_instrument(name = "Prover::prove_pooling_step")]
     pub fn prove_pooling<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
