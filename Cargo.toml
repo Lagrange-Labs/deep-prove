@@ -29,6 +29,8 @@ aes = "0.8"
 anyhow = { version = "1.0", default-features = false }
 ark-std = "0.5"
 axum = { version = "0.8" }
+aws-config = { version = "1.8", features = ["behavior-version-latest"] }
+aws-sdk-marketplacemetering = "1.78"
 bitvec = "1.0"
 blake3 = { version = "1.4", features = ["serde"] }
 cfg-if = "1.0"

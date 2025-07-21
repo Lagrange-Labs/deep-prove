@@ -44,6 +44,31 @@ pub async fn serve(args: RunMode) -> anyhow::Result<()> {
     };
     crate::setup_logging(json);
 
+    #[cfg(not(feature = "disable-aws-marketplace"))]
+    {
+        use std::env;
+
+        let config = aws_config::load_from_env().await;
+        let client = aws_sdk_marketplacemetering::Client::new(&config);
+        let aws_product_code =
+            env::var("AWS_PRODUCT_CODE").context("getting AWS marketplace product code")?;
+        let aws_pk_version: i32 = env::var("AWS_PK_VERSION")
+            .context("getting AWS marketplace public key version")?
+            .parse()
+            .context("Parsing `AWS_PK_VERSION` into i32")?;
+        // This will trigger metering when ran within AWS ECS or EKS
+        let aws_marketplace_res = client
+            .register_usage()
+            .product_code(aws_product_code)
+            .public_key_version(aws_pk_version)
+            .nonce(env!("CARGO_PKG_VERSION"))
+            .send()
+            .await;
+        if let Err(err) = aws_marketplace_res {
+            anyhow::bail!("AWS marketplace error registering usage: {err}")
+        }
+    }
+
     let app_state = Arc::new(Mutex::new(AppState::default()));
 
     {
