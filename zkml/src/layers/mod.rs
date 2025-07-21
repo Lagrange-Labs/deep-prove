@@ -120,7 +120,7 @@ where
     Reshape(ReshapeCtx),
     Embeddings(EmbeddingsCtx<E>),
     Positional,
-    Logits(LogitsCtx),
+    Logits(LogitsCtx<E>),
 }
 
 #[derive(Clone, Serialize, Deserialize)]

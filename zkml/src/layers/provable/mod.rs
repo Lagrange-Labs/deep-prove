@@ -10,7 +10,7 @@ use std::{
 use transcript::Transcript;
 
 use crate::{
-    Claim, Context, Element, Prover, ScalingFactor, ScalingStrategy, Tensor,
+    Claim, Context, Element, Prover, ScalingFactor, ScalingStrategy, Tensor, VectorTranscript,
     iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
@@ -293,6 +293,41 @@ where
         );
         Ok(claims)
     }
+
+    pub(crate) fn bind_outputs_to_node<'a, I: Iterator<Item = (NodeId, &'a Self)>>(
+        nodes: I,
+        num_outputs: usize,
+    ) -> anyhow::Result<HashMap<NodeId, Vec<usize>>> {
+        let mut out_nodes = HashMap::new();
+        let mut outputs = BTreeSet::new(); // set employed to check that we found all outputs
+        for (node_id, ctx) in nodes {
+            for out in ctx.outputs.iter() {
+                let out_indexes = out
+                    .edges
+                    .iter()
+                    .filter_map(|edge| edge.node.is_none().then(|| edge.index))
+                    .map(|index| {
+                        ensure!(
+                            outputs.insert(index),
+                            "Output index {index} found twice in the nodes of the model",
+                        );
+                        Ok(index)
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                if !out_indexes.is_empty() {
+                    out_nodes.insert(node_id, out_indexes);
+                }
+            }
+            if outputs.len() == num_outputs {
+                // we already found all the outputs, so we can stop here
+                break;
+            }
+        }
+
+        ensure!(outputs.len() == num_outputs);
+
+        Ok(out_nodes)
+    }
 }
 
 pub trait OpInfo {
@@ -460,6 +495,31 @@ where
         verifier: &mut Verifier<E, T, PCS>,
         shape_step: &ShapeStep,
     ) -> Result<Vec<Claim<E>>>;
+
+    fn compute_model_output_claims<T: Transcript<E>>(
+        &self,
+        transcript: &mut T,
+        outputs: &[&Tensor<E>],
+    ) -> Vec<Claim<E>> {
+        outputs
+            .iter()
+            .map(|out| {
+                // Derive the first randomness
+                let first_randomness =
+                    transcript.read_challenges(out.get_data().len().ilog2() as usize);
+                // For the output, we manually evaluate the MLE and check if it's the same as what prover
+                // gave. Note prover could ellude that but it's simpler to avoid that special check right
+                // now.
+                let output_mle = out.get_data().to_vec().into_mle();
+                let computed_sum = output_mle.evaluate(&first_randomness);
+
+                Claim {
+                    point: first_randomness,
+                    eval: computed_sum,
+                }
+            })
+            .collect()
+    }
 
     /// Verify the claim about the input of the model. Sometimes
     /// the input needs to be processed in a certain way before being evaluated.

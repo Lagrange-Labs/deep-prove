@@ -28,9 +28,9 @@ use super::{Context, Proof, TableProof};
 /// What the verifier must have besides the proof
 pub struct IO<E> {
     /// Input of the inference given to the model
-    input: Vec<Tensor<E>>,
+    pub(crate) input: Vec<Tensor<E>>,
     /// Output of the inference
-    output: Vec<Tensor<E>>,
+    pub(crate) output: Vec<Tensor<E>>,
 }
 
 impl<E> IO<E> {
@@ -48,6 +48,7 @@ where
     E: Serialize + DeserializeOwned,
     PCS: PolynomialCommitmentScheme<E>,
 {
+    pub(crate) io: IO<E>,
     pub(crate) commit_verifier: CommitmentVerifier<E, PCS>,
     pub(crate) transcript: &'a mut T,
     pub(crate) challenge_storage: ChallengeStorage<E>,
@@ -59,9 +60,10 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    pub(crate) fn new(ctx: &Context<E, PCS>, transcript: &'a mut T) -> Self {
+    pub(crate) fn new(ctx: &Context<E, PCS>, transcript: &'a mut T, io: IO<E>) -> Self {
         let commit_verifier = CommitmentVerifier::<E, PCS>::new(&ctx.commitment_ctx);
         Self {
+            io,
             commit_verifier,
             transcript,
             challenge_storage: ChallengeStorage::<E>::default(),
@@ -72,7 +74,6 @@ where
         mut self,
         ctx: Context<E, PCS>,
         proof: Proof<E, PCS>,
-        io: IO<E>,
     ) -> anyhow::Result<()> {
         // 1. Instantiate everything and append relevant info to the transcript
         let mut numerators = Vec::<E>::new();
@@ -110,7 +111,13 @@ where
             denominators.extend(denoms);
         });
         // 2. Derive output claims
-        let out_claims = io
+        // first, we bind each output to the node that computes it, so that we know whether we
+        // need to compute the output claim or not
+        let num_outputs = self.io.output.len();
+        let out_nodes =
+            NodeCtx::bind_outputs_to_node(ctx.steps_info.to_backward_iterator(), num_outputs)?;
+        let out_claims = self
+            .io
             .output
             .iter()
             .map(|out| {
@@ -158,7 +165,7 @@ where
                         );
                         Ok((
                             ctx.unpadded_input_shapes[edge.index].clone(),
-                            io.input[edge.index].get_shape(),
+                            self.io.input[edge.index].get_shape(),
                         ))
                     }
                 }))?;
@@ -232,7 +239,7 @@ where
         let input_claims =
             NodeCtx::input_claims(ctx.steps_info.to_forward_iterator(), &claims_by_layer)?;
         // 6. input verification: evaluating the input at the random evaluation point from the sumcheck
-        let num_inputs = io.input.len();
+        let num_inputs = self.io.input.len();
         for (node_id, claims) in input_claims.into_iter() {
             // we assume the inputs are given in the same order as the claims, "flattened"
             let (inputs, claims): (Vec<_>, Vec<_>) = try_unzip(claims.into_iter()
@@ -241,7 +248,7 @@ where
                         "Processing claim associated to input {index}, but there are only {num_inputs} inputs",
                     );
                     Ok((
-                        &io.input[index],
+                        &self.io.input[index],
                         claim,
                     ))
                 }))?;
@@ -302,8 +309,8 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: ExtensionField + Serialize + DeserializeOwned,
 {
-    let verifier = Verifier::new(&ctx, transcript);
-    verifier.verify(ctx, proof, io)
+    let verifier = Verifier::new(&ctx, transcript, io);
+    verifier.verify(ctx, proof)
 }
 
 fn verify_table<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
