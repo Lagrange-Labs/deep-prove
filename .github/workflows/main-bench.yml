@@ -2,7 +2,7 @@ name: "Main branch Bench"
 
 on:
   push:
-    branches: main
+    branches: master
 
 jobs:
   benchmark_pr_branch:
