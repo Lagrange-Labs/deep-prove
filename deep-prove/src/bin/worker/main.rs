@@ -253,8 +253,10 @@ enum RunMode {
         #[arg(long, env, default_value = "http://localhost:4000")]
         gw_url: Url,
 
+        /// This worker unique name. If not set, a UID will be tentatively built
+        /// from the machine ID.
         #[arg(short, long)]
-        worker_name: String,
+        worker_name: Option<String>,
 
         /// The operator ETH address.
         #[arg(long, env)]

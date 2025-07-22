@@ -1,9 +1,10 @@
 use crate::{RunMode, StoreKind};
-use anyhow::Context;
+use anyhow::{Context, anyhow};
+use base64::{Engine, prelude::BASE64_STANDARD};
 use deep_prove::{middleware::v2, store::MemStore};
 use exponential_backoff::Backoff;
 use serde_json::json;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 use url::Url;
 
 const ATTEMPTS: u32 = 5;
@@ -77,6 +78,11 @@ fn ack_job(gw_url: &Url, worker_name: &str, job_id: i64) -> anyhow::Result<()> {
 }
 
 fn submit_proof(gw_url: &Url, worker_name: &str, job_id: i64, proof: &[u8]) -> anyhow::Result<()> {
+    let encoded_proof = BASE64_STANDARD.encode(proof);
+    info!(
+        "submitting a {} proof",
+        humansize::format_size(encoded_proof.len(), humansize::DECIMAL)
+    );
     retry_operation(
         || {
             ureq::put(
@@ -86,7 +92,7 @@ fn submit_proof(gw_url: &Url, worker_name: &str, job_id: i64, proof: &[u8]) -> a
                     .as_str(),
             )
             .send_json(json!({
-                "proof": proof,
+                "proof": BASE64_STANDARD.encode(proof),
             }))
         },
         || format!("sending proof for job #{job_id} to the gateway"),
@@ -142,6 +148,14 @@ pub async fn run(args: crate::RunMode) -> anyhow::Result<()> {
         unreachable!()
     };
     crate::setup_logging(json);
+
+    let worker_name = worker_name
+        .ok_or(anyhow!("no worker name set"))
+        .or_else(|_| machine_uid::get())
+        .map_err(|_| anyhow!("failed to build a unique worker name"))?;
+    info!("gateway URL: {gw_url}");
+    info!("operator address: {address}");
+    info!("worker unique name: {worker_name}");
 
     // TODO: add S3
     // TODO:

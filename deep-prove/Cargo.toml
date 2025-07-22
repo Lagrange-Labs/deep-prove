@@ -39,6 +39,8 @@ exponential-backoff = "2.1.0"
 ff_ext = { version = "0.1.0", path = "../ff_ext" }
 futures = { version = "0.3.30" }
 grpc-worker = { git = "https://github.com/Lagrange-Labs/grpc-worker-rs", branch = "main" }
+humansize = "2.1.3"
+machine-uid = "0.5.3"
 memmap2.workspace = true
 mpcs.workspace = true
 object_store.workspace = true

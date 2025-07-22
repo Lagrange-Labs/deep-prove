@@ -60,13 +60,10 @@ pub async fn connect(executor: Executor) -> anyhow::Result<()> {
         Command::Fetch {} => todo!(),
         Command::Cancel { task_id } => {
             // build the API endpoint request and send the whole thing
-            let mut resp = ureq::delete(
-                api_url
-                    .join(format!("tasks/{}", task_id).as_str())?
-                    .as_str(),
-            )
-            .call()
-            .context("calling API")?;
+            let mut resp =
+                ureq::delete(api_url.join(format!("tasks/{task_id}").as_str())?.as_str())
+                    .call()
+                    .context("calling API")?;
             match resp.status() {
                 StatusCode::NO_CONTENT => {
                     info!("task successfully cancelled");
