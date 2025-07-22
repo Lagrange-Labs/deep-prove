@@ -94,7 +94,7 @@ where
 
     /// Runs take the _already_ tokenized input and run the model until the maximum sequence length is reached OR until a eos token is generated.
     /// The returned trace contains the _whole_ sequence.
-    pub fn run<E>(
+    pub fn run_inference<E>(
         &mut self,
         input: Vec<Token>,
         observer: impl Observer<N>,
@@ -198,7 +198,7 @@ mod test {
         let detokenized = tokenizer.detokenize(&user_tokens);
         assert_eq!(detokenized, sentence);
         println!("user input in tokens: {:?}", user_tokens);
-        let trace = driver.run::<GoldilocksExt2>(
+        let trace = driver.run_inference::<GoldilocksExt2>(
             user_tokens,
             LLMTokenizerObserver {
                 input: sentence.to_string(),

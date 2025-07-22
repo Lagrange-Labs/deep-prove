@@ -204,7 +204,7 @@ impl<N: Number> Evaluate<N> for Embeddings<N> {
                 let shape: Shape = x.get_shape();
                 shape.rank() == 1
             }),
-            "embeddings only support 2d tensors with 1 value: {:?}",
+            "embeddings only support 1d tensors: {:?}",
             inputs.iter().map(|x| x.get_shape()).collect::<Vec<_>>()
         );
         ensure!(inputs.len() == 1, "embeddings only support 1 input tensor");
