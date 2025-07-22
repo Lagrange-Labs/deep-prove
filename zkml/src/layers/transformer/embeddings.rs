@@ -248,7 +248,7 @@ impl PadOp for Embeddings<Element> {
             "embeddings only support 1 input tensor"
         );
         // we need to give the shapes that the one hot encoding will have
-        let shape_data = &mut si.shapes[0];
+        let shape_data = si.shapes.get_mut(0).unwrap();
         ensure!(
             shape_data.input_shape_og.rank() == 1,
             "embeddings only support 1d tensors"
