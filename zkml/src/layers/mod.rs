@@ -42,7 +42,7 @@ use crate::{
         requant::{Requant, RequantProof},
         reshape::{Reshape, ReshapeCtx},
         transformer::{
-            embeddings::Embeddings,
+            embeddings::{Embeddings, EmbeddingsCtx, EmbeddingsProof},
             layernorm::LayerNorm,
             logits::Logits,
             mha::{Mha, MhaCtx, MhaProof},
@@ -118,7 +118,7 @@ where
     Add(AddCtx),
     Softmax(SoftmaxCtx),
     Reshape(ReshapeCtx),
-    Embeddings,
+    Embeddings(EmbeddingsCtx<E>),
     Positional,
     Logits,
 }
@@ -143,7 +143,7 @@ where
     LayerNorm,
     Add(AddProof<E>),
     Softmax(SoftmaxProof<E, PCS>),
-    Embeddings,
+    Embeddings(EmbeddingsProof<E>),
     Positional,
     Logits,
     Dummy, // To be used for non-provable layers
@@ -192,7 +192,7 @@ where
             Self::Add(_) => "Add".to_string(),
             Self::Logits => "Logits".to_string(),
             Self::Reshape(_) => "Reshape".to_string(),
-            Self::Embeddings => "Embeddings".to_string(),
+            Self::Embeddings(_) => "Embeddings".to_string(),
             Self::Positional => "Positional".to_string(),
             Self::SchoolBookConvolution(_) => "Traditional Convolution".to_string(),
             Self::Convolution(_) => "Convolution".to_string(),
@@ -475,9 +475,7 @@ where
             Layer::Positional(_positional) => {
                 unimplemented!("Positional proving layer not implemented")
             }
-            Layer::Embeddings(_embeddings) => {
-                unimplemented!("Embeddings proving layer not implemented")
-            }
+            Layer::Embeddings(embeddings) => embeddings.step_info(id, aux),
             Layer::Reshape(reshape) => reshape.step_info(id, aux),
             Layer::MatMul(mat) => mat.step_info(id, aux),
             Layer::Convolution(conv) => conv.step_info(id, aux),
@@ -506,7 +504,7 @@ impl PadOp for Layer<Element> {
             Layer::Softmax(softmax) => Layer::Softmax(softmax.pad_node(si)?),
             Layer::Logits(_logits) => unimplemented!("Logits layer not implemented"),
             Layer::Positional(_positional) => unimplemented!("Positional layer not implemented"),
-            Layer::Embeddings(_embeddings) => unimplemented!("Embeddings layer not implemented"),
+            Layer::Embeddings(embeddings) => Layer::Embeddings(embeddings.pad_node(si)?),
             Layer::MatMul(mat) => Layer::MatMul(mat.pad_node(si)?),
             Layer::SchoolBookConvolution(school_book_conv) => {
                 Layer::SchoolBookConvolution(school_book_conv.pad_node(si)?)
@@ -555,8 +553,8 @@ where
             (Layer::ConcatMatMul(concat_matmul), LayerCtx::ConcatMatMul(info)) => {
                 concat_matmul.prove(node_id, info, last_claims, step_data, prover)
             }
-            (Layer::Embeddings(_embeddings), LayerCtx::Embeddings) => {
-                unimplemented!("Embeddings layer not implemented")
+            (Layer::Embeddings(embeddings), LayerCtx::Embeddings(ctx)) => {
+                embeddings.prove(node_id, ctx, last_claims, step_data, prover)
             }
             (Layer::Positional(_positional), LayerCtx::Positional) => {
                 unimplemented!("Positional layer not implemented")
@@ -614,7 +612,7 @@ where
             Layer::Softmax(softmax) => softmax.gen_lookup_witness(id, ctx, step_data),
             Layer::Logits(_logits) => unimplemented!("Logits layer not implemented"),
             Layer::Positional(_positional) => unimplemented!("Positional layer not implemented"),
-            Layer::Embeddings(_embeddings) => unimplemented!("Embeddings layer not implemented"),
+            Layer::Embeddings(embeddings) => embeddings.gen_lookup_witness(id, ctx, step_data),
             Layer::SchoolBookConvolution(school_book_conv) => {
                 // check that the layer is not provable, so we don't need to call the method
                 assert!(!school_book_conv.is_provable());
@@ -705,8 +703,13 @@ impl QuantizeOp for Layer<f32> {
             Layer::Positional(_positional) => {
                 unimplemented!("Positional layer not implemented")
             }
-            Layer::Embeddings(_embeddings) => {
-                unimplemented!("Embeddings layer not implemented")
+            Layer::Embeddings(embeddings) => {
+                let output = embeddings.quantize_op::<S>(data, node_id, input_scaling)?;
+                QuantizeOutput::new(
+                    Layer::Embeddings(output.quantized_op),
+                    output.output_scalings,
+                )
+                .maybe_requants(output.requant_layer)
             }
             Layer::SchoolBookConvolution(school_book_conv) => {
                 let output = school_book_conv.quantize_op::<S>(data, node_id, input_scaling)?;
@@ -757,7 +760,7 @@ where
             Self::Add(_) => "Add".to_string(),
             Self::Softmax(_) => "Softmax".to_string(),
             Self::Logits => "Logits".to_string(),
-            Self::Embeddings => "Embeddings".to_string(),
+            Self::Embeddings(_) => "Embeddings".to_string(),
             Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
             Self::Requant(_) => "Requant".to_string(),
@@ -778,7 +781,7 @@ where
             LayerProof::Softmax(proof) => Some(proof.get_lookup_data()),
             LayerProof::Logits => None,
             LayerProof::Positional => None,
-            LayerProof::Embeddings => None,
+            LayerProof::Embeddings(..) => None,
             LayerProof::Convolution(..) => None,
             LayerProof::Dummy => None,
             LayerProof::Activation(ActivationProof { lookup, .. })

@@ -13,6 +13,10 @@ use crate::{
 use super::provable::{Evaluate, LayerOut, NodeId, OpInfo, PadOp, ProveInfo};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Flatten;
+/// Even if empty, we need a context such that it implements the default
+/// methods of `VerifiableCtx``
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FlattenCtx;
 
 impl OpInfo for Flatten {
     fn output_shapes(&self, input_shapes: &[Shape], _padding_mode: PaddingMode) -> Vec<Shape> {

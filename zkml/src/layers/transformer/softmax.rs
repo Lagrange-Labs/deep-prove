@@ -1806,8 +1806,7 @@ impl<N: Number> AttentionMask<N> {
 
             Ok(input.mul(&self.tril).add(&self.bias))
         } else {
-            let mut new_shape = input.get_shape();
-            new_shape.insert(0, 1);
+            let new_shape = input.get_shape().insert(0, 1);
             let new_input = input.clone().reshape(new_shape);
 
             if !new_input

@@ -942,6 +942,7 @@ mod test {
         },
         quantization::{self, Fieldizer},
         testing::random_field_vector,
+        to_bit_sequence_le,
     };
 
     use super::*;
@@ -1054,30 +1055,16 @@ mod test {
         });
     }
 
-    // Testing method which, given as input the big-endian bit representations of 2 integers `x`, `y`,
+    // Testing method which, given as input the little-endian bit representations of 2 integers `x`, `y`,
     // returns 1 if x <= y, 0 otherwise. The output is computed through a multi-linear polynomial, which
     // should correspond to the MLE of the zeroifier matrix
     fn eval_lteq_poly(x_i: &[Element], y_i: &[Element]) -> Element {
         assert_eq!(x_i.len(), y_i.len());
         x_i.into_iter()
-            .rev()
-            .zip(y_i.into_iter().rev())
+            .zip(y_i.into_iter())
             .fold(Element::from(1), |acc, (x, y)| {
                 acc * (1 - x - y + 2 * x * y) + (1 - x) * y
             })
-    }
-
-    fn to_be_bits<const NUM_BITS: usize>(x: Element) -> [Element; NUM_BITS] {
-        (0..NUM_BITS)
-            .rev()
-            .map(|i| {
-                let mask = 1 << i;
-                let bit = (x & Element::from(mask)) >> i;
-                bit
-            })
-            .collect::<Vec<_>>()
-            .try_into()
-            .unwrap()
     }
 
     fn test_zeroifier_evaluation_for_num_heads<const NUM_HEADS_BITS: usize>() {
@@ -1108,9 +1095,13 @@ mod test {
         for i in 0..num_columns {
             for j in 0..num_columns {
                 for h in 0..num_heads {
-                    let x_i = to_be_bits::<NUM_BITS>(Element::from(i as u32));
-                    let y_i = to_be_bits::<NUM_BITS>(Element::from(j as u32));
-                    let h_i = to_be_bits::<NUM_HEADS_BITS>(Element::from(h as u32));
+                    let x_i = to_bit_sequence_le(i, NUM_BITS)
+                        .map(|x| x as Element)
+                        .collect_vec();
+                    let y_i = to_bit_sequence_le(j, NUM_BITS)
+                        .map(|x| x as Element)
+                        .collect_vec();
+                    let h_i = to_bit_sequence_le(h, NUM_HEADS_BITS).map(|x| x as Element);
                     // check that the zeroifier matrix is equivalent to the lteq function
                     let cmp = eval_lteq_poly(&y_i, &x_i);
                     assert_eq!(
@@ -1124,9 +1115,8 @@ mod test {
                     // then head bits in little-endian order
                     let point = y_i
                         .into_iter()
-                        .rev()
-                        .chain(x_i.into_iter().rev())
-                        .chain(h_i.into_iter().rev())
+                        .chain(x_i)
+                        .chain(h_i)
                         .map(|bit| GoldilocksExt2::from_v(bit as u64))
                         .collect_vec();
                     let eval = mle.evaluate(&point);
@@ -1203,9 +1193,13 @@ mod test {
         for i in 0..num_columns {
             for j in 0..num_columns {
                 for h in 0..num_heads {
-                    let x_i = to_be_bits::<NUM_BITS>(Element::from(i as u32));
-                    let y_i = to_be_bits::<NUM_BITS>(Element::from(j as u32));
-                    let h_i = to_be_bits::<NUM_HEADS_BITS>(Element::from(h as u32));
+                    let x_i = to_bit_sequence_le(i, NUM_BITS)
+                        .map(|x| x as Element)
+                        .collect_vec();
+                    let y_i = to_bit_sequence_le(j, NUM_BITS)
+                        .map(|x| x as Element)
+                        .collect_vec();
+                    let h_i = to_bit_sequence_le(h, NUM_HEADS_BITS).map(|x| x as Element);
                     // check that the zeroifier matrix is equivalent to the gt function with output being minus_infinity
                     let cmp = eval_gt_poly(&y_i, &x_i, minus_infinity);
                     assert_eq!(
@@ -1219,9 +1213,8 @@ mod test {
                     // then head bits in little-endian order
                     let point = y_i
                         .into_iter()
-                        .rev()
-                        .chain(x_i.into_iter().rev())
-                        .chain(h_i.into_iter().rev())
+                        .chain(x_i.into_iter())
+                        .chain(h_i.into_iter())
                         .map(|bit| bit.to_field())
                         .collect_vec();
                     let eval = mle.evaluate(&point);

@@ -148,7 +148,7 @@ pub struct MatMulCtx<E> {
 }
 
 /// Proof of the layer.
-#[derive(Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct MatMulProof<E: ExtensionField> {
     /// the actual sumcheck proof proving the matmul protocol
@@ -638,13 +638,15 @@ where
         step_data: &StepData<E, E>,
         prover: &mut Prover<E, T, PCS>,
     ) -> Result<Vec<Claim<E>>> {
-        self.prove_step(
+        let (claims, proof) = self.prove_step(
             node_id,
             prover,
             last_claims[0],
             step_data.inputs.iter().collect(),
             step_data.outputs.outputs()[0],
-        )
+        )?;
+        prover.push_proof(node_id, LayerProof::MatMul(proof));
+        Ok(claims)
     }
 }
 
@@ -703,7 +705,7 @@ impl MatMul<Element> {
         last_claim: &Claim<E>,
         mut inputs: Vec<&Tensor<E>>,
         output: &Tensor<E>,
-    ) -> Result<Vec<Claim<E>>>
+    ) -> Result<(Vec<Claim<E>>, MatMulProof<E>)>
     where
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
@@ -868,11 +870,14 @@ impl MatMul<Element> {
         prover
             .add_common_claims(node_id, common_claims)
             .context("unable to add weight matrix claims")?;
-        prover.push_proof(node_id, LayerProof::MatMul(proof));
-        Ok(output_claims)
+        Ok((output_claims, proof))
     }
 
-    fn ctx<E>(&self, id: NodeId, mut ctx_aux: ContextAux) -> Result<(MatMulCtx<E>, ContextAux)>
+    pub(crate) fn ctx<E>(
+        &self,
+        id: NodeId,
+        mut ctx_aux: ContextAux,
+    ) -> Result<(MatMulCtx<E>, ContextAux)>
     where
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,

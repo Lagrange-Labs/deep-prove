@@ -543,7 +543,7 @@ pub struct ModelCtx<E: ExtensionField + DeserializeOwned>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
-    pub(crate) nodes: HashMap<NodeId, NodeCtx<E>>,
+    pub(crate) nodes: BTreeMap<NodeId, NodeCtx<E>>,
 }
 
 #[cfg(test)]
@@ -1027,7 +1027,7 @@ pub(crate) mod test {
         let io = trace.to_verifier_io();
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
             Prover::new(&ctx, &mut tr);
-        let proof = prover.prove(&trace).expect("unable to generate proof");
+        let proof = prover.prove(trace).expect("unable to generate proof");
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
         verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
@@ -1065,7 +1065,7 @@ pub(crate) mod test {
             Context::<F, Pcs<F>>::generate(&model, None, None).expect("Unable to generate context");
         let io = trace.to_verifier_io();
         let prover = Prover::new(&ctx, &mut tr);
-        let proof = prover.prove(&trace).expect("unable to generate proof");
+        let proof = prover.prove(trace).expect("unable to generate proof");
         let mut verifier_transcript = BasicTranscript::<F>::new(b"matmul");
         verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
     }
@@ -1104,7 +1104,7 @@ pub(crate) mod test {
 
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
             Prover::new(&ctx, &mut tr);
-        let proof = prover.prove(&trace).expect("unable to generate proof");
+        let proof = prover.prove(trace).expect("unable to generate proof");
 
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
@@ -1155,7 +1155,7 @@ pub(crate) mod test {
                         let io = trace.to_verifier_io();
                         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
                             Prover::new(&ctx, &mut tr);
-                        let proof = prover.prove(&trace).expect("unable to generate proof");
+                        let proof = prover.prove(trace).expect("unable to generate proof");
                         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
                             BasicTranscript::new(b"m2vec");
                         verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).unwrap();
@@ -1275,11 +1275,20 @@ pub(crate) mod test {
             .expect("Unable to generate context");
         let prover: Prover<'_, E, T, _> = Prover::new(&ctx, &mut tr);
         let io = trace.to_verifier_io();
-        let proof = prover.prove(&trace).expect("unable to generate proof");
+        let proof = prover.prove(trace).expect("unable to generate proof");
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"model");
+        println!("Verifying");
         verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript)?;
         Ok(outputs)
+    }
+
+    pub(crate) fn prove_model_with(
+        model: Model<f32>,
+        float_inputs: Vec<Tensor<f32>>,
+    ) -> anyhow::Result<Vec<Tensor<Element>>> {
+        let (quantized_model, quantized_inputs) = quantize_model(model, float_inputs, None)?;
+        prove_quantized_model(quantized_model, quantized_inputs)
     }
 
     pub(crate) fn prove_model(model: Model<f32>) -> anyhow::Result<Vec<Tensor<Element>>> {
@@ -1288,8 +1297,7 @@ pub(crate) mod test {
             .into_iter()
             .map(|shape| Tensor::random(&shape))
             .collect_vec();
-        let (quantized_model, quantized_inputs) = quantize_model(model, float_inputs, None)?;
-        prove_quantized_model(quantized_model, quantized_inputs)
+        prove_model_with(model, float_inputs)
     }
 
     #[test]
@@ -1464,6 +1472,52 @@ pub(crate) mod test {
         assert!(out_node_ids.contains(&second_output_node));
 
         model.describe();
+
+        prove_model(model).unwrap();
+    }
+
+    #[test]
+    fn test_model_with_multiple_inputs() {
+        let input_shapes = vec![vec![6, 9].into(), vec![9, 13].into(), vec![11, 9].into()];
+
+        let mut model = Model::new_from_input_shapes(input_shapes, PaddingMode::NoPadding);
+
+        // Add an input MatMul layer multiplying second with third input
+        let first_input_node = model
+            .add_node(Node::new(
+                vec![Edge::new_at_edge(2), Edge::new_at_edge(1)],
+                Layer::MatMul(MatMul::new(OperandMatrix::Input, OperandMatrix::Input).unwrap()),
+            ))
+            .unwrap();
+
+        // Add another input MatMul layer multiplying second with first input
+        let second_input_node = model
+            .add_node(Node::new(
+                vec![Edge::new_at_edge(0), Edge::new_at_edge(1)],
+                Layer::MatMul(MatMul::new(OperandMatrix::Input, OperandMatrix::Input).unwrap()),
+            ))
+            .unwrap();
+
+        // multiply the previous nodes
+        let _ = model
+            .add_node(Node::new(
+                vec![
+                    Edge::new(first_input_node, 0),
+                    Edge::new(second_input_node, 0),
+                ],
+                Layer::MatMul(
+                    MatMul::new_with_config(
+                        OperandMatrix::Input,
+                        OperandMatrix::Input,
+                        None,
+                        crate::layers::matrix_mul::Config::TransposeB,
+                    )
+                    .unwrap(),
+                ),
+            ))
+            .unwrap();
+
+        model.route_output(None).unwrap();
 
         prove_model(model).unwrap();
     }
