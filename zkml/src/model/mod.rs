@@ -942,7 +942,7 @@ pub(crate) mod test {
     fn test_model_sequential() {
         let (model, input) = Model::random(1).unwrap();
         model.describe();
-        let trace = model.run::<F>(&input).unwrap().as_fields();
+        let trace = model.run::<F>(&input).unwrap().into_fields();
         let dense_layers = model
             .to_unstable_iterator()
             .flat_map(|(id, l)| match l.operation {

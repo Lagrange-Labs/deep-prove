@@ -263,17 +263,17 @@ where
         let mut col_one = Vec::<E::BaseField>::with_capacity(size);
         let mut col_two = Vec::<E::BaseField>::with_capacity(size);
         for (a, b) in inputs.iter().zip(outputs.iter()) {
-                let (a, a_field): (Element, E) = match self {
-                    Activation::Relu(_) => (*a, a.to_field()),
-                    Activation::Gelu(g) => {
-                        let scaled = a * g.quant_data.as_ref().unwrap().multiplier;
-                        assert!(
-                            scaled >= g.quant_data.as_ref().unwrap().min
-                                && scaled <= g.quant_data.as_ref().unwrap().max
-                        );
-                        (scaled, scaled.to_field())
-                    }
-                };
+            let (a, a_field): (Element, E) = match self {
+                Activation::Relu(_) => (*a, a.to_field()),
+                Activation::Gelu(g) => {
+                    let scaled = a * g.quant_data.as_ref().unwrap().multiplier;
+                    assert!(
+                        scaled >= g.quant_data.as_ref().unwrap().min
+                            && scaled <= g.quant_data.as_ref().unwrap().max
+                    );
+                    (scaled, scaled.to_field())
+                }
+            };
             // Calculate the lookup element
             let el = a + COLUMN_SEPARATOR * b;
             *element_count.entry(el).or_default() += 1;

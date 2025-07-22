@@ -411,7 +411,7 @@ where
 
         debug!("== Generating claims ==");
         let metrics = Metrics::new();
-        let trace = full_trace.as_fields();
+        let trace = full_trace.into_fields();
         // this is the random set of variables to fix at each step derived as the output of
         // sumcheck.
         // For the first step, so before the first sumcheck, we generate it from FS.
