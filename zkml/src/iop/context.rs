@@ -12,7 +12,7 @@ use ff_ext::ExtensionField;
 use mpcs::{BasefoldCommitment, PolynomialCommitmentScheme};
 use multilinear_extensions::{mle::DenseMultilinearExtension, util::ceil_log2};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use tracing::{debug, trace};
 use transcript::Transcript;
 
@@ -135,16 +135,14 @@ where
         // construct the commitment context from node shapes.
         // Otherwise, we also need generate the params for which we need to find
         // the largest polynomial.
-        let (step_infos, commitment_ctx, lookup, node_ids_in_order) = match params {
+        let (step_infos, commitment_ctx, lookup) = match params {
             Some((prover_params, verifier_params)) => {
                 let mut model_polys =
                     Vec::<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>::new();
-                let mut step_infos = HashMap::new();
-                let mut node_ids_in_order = BTreeSet::new();
+                let mut step_infos = BTreeMap::new();
                 let mut shapes: HashMap<NodeId, Vec<Shape>> = HashMap::new();
                 debug!("Context : layer info generation ...");
                 for (id, node) in model.to_forward_iterator() {
-                    node_ids_in_order.insert(id);
                     ctx_aux = compute_node_shape::<E>(
                         ctx_aux,
                         &mut model_polys,
@@ -166,17 +164,15 @@ where
                     prover_params,
                     verifier_params,
                 )?;
-                (step_infos, commitment_ctx, lookup_ctx, node_ids_in_order)
+                (step_infos, commitment_ctx, lookup_ctx)
             }
             None => {
                 let mut model_polys =
                     Vec::<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>::new();
-                let mut step_infos = HashMap::new();
-                let mut node_ids_in_order = BTreeSet::new();
+                let mut step_infos = BTreeMap::new();
                 let mut shapes: HashMap<NodeId, Vec<Shape>> = HashMap::new();
                 debug!("Context : layer info generation ...");
                 for (id, node) in model.to_forward_iterator() {
-                    node_ids_in_order.insert(id);
                     ctx_aux = compute_node_shape::<E>(
                         ctx_aux,
                         &mut model_polys,
@@ -200,15 +196,12 @@ where
                 debug!("Context : commitment generating ...");
                 let commitment_ctx =
                     CommitmentContext::<E, PCS>::new(max_poly_len, model_polys, &lookup_ctx)?;
-                (step_infos, commitment_ctx, lookup_ctx, node_ids_in_order)
+                (step_infos, commitment_ctx, lookup_ctx)
             }
         };
 
         Ok(Self {
-            steps_info: ModelCtx {
-                nodes: step_infos,
-                node_ids: node_ids_in_order,
-            },
+            steps_info: ModelCtx { nodes: step_infos },
             commitment_ctx,
             lookup,
             unpadded_input_shapes: model.unpadded_input_shapes(),
@@ -224,7 +217,7 @@ where
 fn compute_node_shape<E: ExtensionField>(
     mut ctx_aux: ContextAux,
     model_polys: &mut Vec<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>,
-    step_infos: &mut HashMap<NodeId, NodeCtx<E>>,
+    step_infos: &mut BTreeMap<NodeId, NodeCtx<E>>,
     shapes: &mut HashMap<NodeId, Vec<Shape>>,
     input_shapes: &[Shape],
     id: usize,
