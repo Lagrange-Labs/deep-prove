@@ -72,6 +72,7 @@ reqwest = { version = "0.12.22", features = ["blocking"] }
 rstest = "0.25.0"
 sha2 = "0.10.9"
 tempfile.workspace = true
+zstd = "0.13.3"
 
 [[bench]]
 harness = false

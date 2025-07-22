@@ -11648,6 +11648,7 @@ dependencies = [
  "tract-onnx",
  "transcript",
  "utils",
+ "zstd 0.13.3",
 ]
 
 [[package]]
