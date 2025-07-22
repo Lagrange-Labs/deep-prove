@@ -28,7 +28,7 @@ use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::mle::{DenseMultilinearExtension, IntoMLE};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{cmp::max, collections::HashMap, marker::PhantomData};
+use std::{collections::HashMap, marker::PhantomData};
 use transcript::Transcript;
 
 use crate::{quantization::BIT_LEN, tensor::Tensor};
@@ -231,7 +231,12 @@ where
 
         let inputs = step_data.inputs[0].get_data();
         let outputs = step_data.outputs.outputs()[0].get_data();
-        let size = max(inputs.len(), outputs.len());
+        debug_assert_eq!(
+            inputs.len(),
+            outputs.len(),
+            "Input and outputs must have the same length",
+        );
+        let size = inputs.len();
 
         let mut element_count = HashMap::<Element, u64>::new();
         let mut col_one = Vec::<E::BaseField>::with_capacity(size);
