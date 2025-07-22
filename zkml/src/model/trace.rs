@@ -47,25 +47,25 @@ impl<'a, E: ExtensionField, N, D> Trace<'a, E, N, D> {
 
     /// Convert an inference trace computed over integers to a trace over field elements, which is
     /// needed to prove the inference
-    pub(crate) fn to_field(self) -> ProvingTrace<'a, E, N>
+    pub(crate) fn as_fields(&self) -> ProvingTrace<'a, E, N>
     where
         D: Fieldizer<E>,
     {
-        let input = self.input.into_iter().map(|inp| inp.to_fields()).collect();
-        let output = self.output.into_iter().map(|out| out.to_fields()).collect();
+        let input = self.input.iter().map(|inp| inp.to_fields()).collect();
+        let output = self.output.iter().map(|out| out.to_fields()).collect();
         let field_steps = self
             .steps
-            .into_iter()
+            .iter()
             .map(|(id, step)| {
                 (
-                    id,
+                    *id,
                     InferenceStep {
                         op: step.op,
                         step_data: StepData {
                             inputs: step
                                 .step_data
                                 .inputs
-                                .into_iter()
+                                .iter()
                                 .map(|inp| inp.to_fields())
                                 .collect(),
                             outputs: LayerOut {
@@ -73,12 +73,12 @@ impl<'a, E: ExtensionField, N, D> Trace<'a, E, N, D> {
                                     .step_data
                                     .outputs
                                     .outputs
-                                    .into_iter()
+                                    .iter()
                                     .map(|out| out.to_fields())
                                     .collect(),
-                                proving_data: step.step_data.outputs.proving_data,
+                                proving_data: step.step_data.outputs.proving_data.clone(),
                             },
-                            unpadded_output_shapes: step.step_data.unpadded_output_shapes,
+                            unpadded_output_shapes: step.step_data.unpadded_output_shapes.clone(),
                         },
                     },
                 )

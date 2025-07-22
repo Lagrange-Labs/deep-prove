@@ -14,6 +14,7 @@ use anyhow::{Context, Result, bail, ensure};
 use std::{collections::HashMap, iter::Peekable};
 use tracing::debug;
 use tract_onnx::{
+    pb::ModelProto,
     prelude::*,
     tract_core::{
         self,
@@ -51,12 +52,20 @@ macro_rules! ensure_onnx {
         };
     }
 
-pub fn from_path(path: &str) -> Result<Model<f32>> {
+pub fn from_proto(proto: &ModelProto) -> Result<Model<f32>> {
+    let model = tract_onnx::onnx().model_for_proto_model(proto)?;
+    from_inference_model(model)
+}
+
+#[cfg(test)]
+fn from_path(path: &str) -> Result<Model<f32>> {
+    let model = tract_onnx::onnx().model_for_path(path)?;
+    from_inference_model(model)
+}
+
+fn from_inference_model(model: InferenceModel) -> Result<Model<f32>> {
     let model = {
-        let pmodel = tract_onnx::onnx()
-            .model_for_path(path)?
-            .into_typed()?
-            .into_decluttered()?;
+        let pmodel = model.into_typed()?.into_decluttered()?;
         // so far we dont support batching
         let mut values = SymbolValues::default();
         let symbol = pmodel.sym("batch_size");
@@ -191,10 +200,7 @@ impl<'a, I: Iterator<Item = &'a usize> + Sized> ParserFactory<'a, I> {
                 }),
             )
         } else {
-            Some(err(format!(
-                "Unknown node type: {op_name}: {:?}",
-                curr_node
-            )))
+            Some(err(format!("Unknown node type: {op_name}: {curr_node:?}")))
         }
     }
 }
@@ -216,12 +222,12 @@ fn load_reshape<'a, I: Iterator<Item = &'a usize> + Sized>(
     };
     let current_shape: Shape = current_shape
         .iter()
-        .map(|x| tdim_to_usize(x))
+        .map(tdim_to_usize)
         .collect::<Result<Vec<_>>>()?
         .into();
     let new_shape: Shape = new_shape
         .iter()
-        .map(|x| tdim_to_usize(x))
+        .map(tdim_to_usize)
         .collect::<Result<Vec<_>>>()?
         .into();
     ensure_onnx!(
@@ -434,8 +440,7 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
             weight.shape = Shape::new(vec![out_features, in_features]);
         } else {
             return err(format!(
-                "Could not determine layout of weights for Gemm. Shape: {:?}, expecting output dim of size {}",
-                weight_shape, out_features
+                "Could not determine layout of weights for Gemm. Shape: {weight_shape:?}, expecting output dim of size {out_features}"
             ));
         }
     }
@@ -448,8 +453,7 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
     if input_shape.len() != 1 {
         assert!(
             input_shape[0] == 1,
-            "First dimension of Gemm layer input should be 1. Input shape was: {:?}",
-            input_shape
+            "First dimension of Gemm layer input should be 1. Input shape was: {input_shape:?}"
         );
         input_shape.remove(0);
     }
@@ -717,11 +721,9 @@ fn tdim_to_usize(tdim: &TDim) -> anyhow::Result<usize> {
 
 #[cfg(test)]
 mod tests {
-
+    use super::*;
     use anyhow::Ok;
     use ff_ext::GoldilocksExt2;
-
-    use super::*;
 
     #[test]
     fn test_parser_load_conv() {

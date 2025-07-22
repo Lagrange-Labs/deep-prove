@@ -76,7 +76,7 @@ impl<N> OpInfo for Activation<N> {
     fn describe(&self) -> String {
         match self {
             Activation::Relu(_relu) => format!("RELU: {}", 1 << Relu::num_vars()),
-            Activation::Gelu(_gelu) => format!("GELU"),
+            Activation::Gelu(_gelu) => "GELU".to_string(),
         }
     }
 
@@ -148,6 +148,10 @@ where
 {
     fn step_info(&self, id: NodeId, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         aux.tables.insert(TableType::Relu);
+
+        // `try_fold` would not allow returning of `Err` values from here and would short-circuit
+        // instead of looping over all values in the iterator
+        #[allow(clippy::manual_try_fold)]
         let num_vars = aux
             .last_output_shape
             .iter_mut()
@@ -164,6 +168,12 @@ where
             .expect("No input shape found for activation layer?");
         // Set the model polys to be empty
         aux.model_polys = None;
+        aux.max_poly_len = aux
+            .last_output_shape
+            .iter()
+            .fold(aux.max_poly_len, |acc, shapes| {
+                acc.max(shapes.next_power_of_two().product())
+            });
         let info = match self {
             Activation::Relu(relu) => LayerCtx::Activation(ActivationCtx {
                 op: Activation::Relu(*relu),
@@ -207,10 +217,9 @@ where
     fn gen_lookup_witness(
         &self,
         id: NodeId,
-        gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> Result<()> {
+    ) -> Result<LookupWitnessGen<E, PCS>> {
         ensure!(
             step_data.inputs.len() == 1,
             "Found more than 1 input tensor in inference step of activation layer"
@@ -221,6 +230,7 @@ where
         );
 
         // Calculate the column_evals and also the merged lookups
+        #[allow(clippy::type_complexity)]
         let (merged_lookups, field): (Vec<Element>, Vec<(E::BaseField, E::BaseField)>) = step_data
             .inputs[0]
             .get_data()
@@ -241,6 +251,7 @@ where
         let num_vars = ceil_log2(col_one.len());
 
         // Add the witness polynomials that we need to commit to
+        #[allow(clippy::type_complexity)]
         let (commits, column_evals): (
             Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
             Vec<Vec<E::BaseField>>,
@@ -255,6 +266,8 @@ where
             .collect::<Result<Vec<_>, anyhow::Error>>()?
             .into_iter()
             .unzip();
+
+        let mut gen = LookupWitnessGen::<E, PCS>::default();
         gen.logup_witnesses.insert(
             id,
             vec![LogUpWitness::<E, PCS>::new_lookup(
@@ -264,14 +277,9 @@ where
                 TableType::Relu,
             )],
         );
+        gen.new_lookups.insert(TableType::Relu, merged_lookups);
 
-        let lookups = gen
-            .new_lookups
-            .get_mut(&TableType::Relu)
-            .ok_or(anyhow!("No table of type Relu was expected"))?;
-        lookups.extend(merged_lookups);
-
-        Ok(())
+        Ok(gen)
     }
 }
 
@@ -328,11 +336,7 @@ where
 
 impl<N> Activation<N> {
     #[timed::timed_instrument(name = "Prover::prove_activation_step")]
-    pub(crate) fn prove_step<
-        E: ExtensionField,
-        T: Transcript<E>,
-        PCS: PolynomialCommitmentScheme<E>,
-    >(
+    pub(crate) fn prove_step<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         prover: &mut Prover<E, T, PCS>,
         last_claim: &Claim<E>,
@@ -401,11 +405,7 @@ impl<N> Activation<N> {
 }
 
 impl ActivationCtx {
-    pub(crate) fn verify_activation<
-        E: ExtensionField,
-        T: Transcript<E>,
-        PCS: PolynomialCommitmentScheme<E>,
-    >(
+    pub(crate) fn verify_activation<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         verifier: &mut Verifier<E, T, PCS>,
         last_claim: &Claim<E>,
@@ -415,7 +415,7 @@ impl ActivationCtx {
     ) -> anyhow::Result<Claim<E>>
     where
         E::BaseField: Serialize + DeserializeOwned,
-        E: Serialize + DeserializeOwned,
+        E: ExtensionField + Serialize + DeserializeOwned,
     {
         // 1. Verify the lookup proof
         let verifier_claims = verify_logup_proof(
@@ -497,6 +497,12 @@ impl Relu {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GELU<N> {
     _n: PhantomData<N>,
+}
+
+impl<N> Default for GELU<N> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<N> GELU<N> {

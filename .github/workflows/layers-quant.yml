@@ -1,0 +1,65 @@
+name: "Layer quantization regression tests"
+on:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ['hostname:hetzner-dedicated-6']
+    steps:
+      - name: Clean previous outputs
+        run: |
+          rm -r ~/layers-quant 2> /dev/null || true
+          rm -r ~/layers-quant-base 2> /dev/null || true
+      - name: Set RNG seed
+        run: |
+          seed="$(date +%s)"
+          echo RNG seed: "$seed"
+          echo RNG_SEED="$seed" >> "$GITHUB_ENV"
+      - name: Checkout base
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.base_ref || 'master' }}
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: nightly-2025-05-22
+          cache: false
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # The prefix cache key, this can be changed to start a new cache manually.
+          # default: "v0-rust"
+          shared-key: "v1-rust-dp"
+          # If `true` the workspace crates will be cached.
+          # Useful if the workspace contains libraries that are only updated sporadically.
+          # default: "false"
+          cache-workspace-crates: true
+      - name: Capture layers outputs on base
+        run: |
+          cd zkml
+          # Skip tests that require py exported model
+          cargo test --features capture-layers-quant -- \
+            --skip layers::transformer::test::test_gpt2_model_full_pass \
+            --skip layers::transformer::test::test_read_gpt2_pytorch_embeddings \
+            --skip layers::transformer::test::test_read_gpt2_pytorch_output_first \
+            --skip parser::json::test::test_json_tensor_loader \
+            --skip layers::transformer::mha::test::test_mha_with_real_values
+          mv layers-quant ~/layers-quant-base
+      - name: Checkout HEAD
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Capture layers outputs on HEAD
+        run: |
+          cd zkml
+          cargo test --features capture-layers-quant -- \
+            --skip layers::transformer::test::test_gpt2_model_full_pass \
+            --skip layers::transformer::test::test_read_gpt2_pytorch_embeddings \
+            --skip layers::transformer::test::test_read_gpt2_pytorch_output_first \
+            --skip parser::json::test::test_json_tensor_loader \
+            --skip layers::transformer::mha::test::test_mha_with_real_values
+          mv layers-quant ~/layers-quant
+          cp ../scripts/ci/cmp-layers-quant.sh ~/cmp-layers-quant.sh
+      - name: Compare HEAD outputs against base
+        run: |
+          cd ~
+          ./cmp-layers-quant.sh

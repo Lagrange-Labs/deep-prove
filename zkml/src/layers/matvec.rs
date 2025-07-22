@@ -117,7 +117,7 @@ impl MatVec<Element> {
     }
 }
 
-pub fn verify<E: ExtensionField, T: Transcript<E>>(
+pub fn verify<E, T>(
     transcript: &mut T,
     last_claim: &Claim<E>,
     proof: &MatVecProof<E>,

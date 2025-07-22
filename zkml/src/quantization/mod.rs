@@ -4,9 +4,8 @@ mod strategy;
 use derive_more::From;
 use ff_ext::{ExtensionField, SmallField};
 use itertools::Itertools;
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::env;
+use std::{env, sync::LazyLock};
 use tracing::warn;
 
 use crate::{
@@ -15,10 +14,10 @@ use crate::{
 };
 pub use metadata::ModelMetadata;
 pub(crate) use strategy::InferenceTracker;
-pub use strategy::{AbsoluteMax, InferenceObserver, ScalingStrategy};
+pub use strategy::{AbsoluteMax, InferenceObserver, ScalingStrategy, ScalingStrategyKind};
 
 // Get BIT_LEN from environment variable or use default value
-pub static BIT_LEN: Lazy<usize> = Lazy::new(|| {
+pub static BIT_LEN: LazyLock<usize> = LazyLock::new(|| {
     env::var("ZKML_BIT_LEN")
         .ok()
         .and_then(|val| val.parse::<usize>().ok())
@@ -26,10 +25,10 @@ pub static BIT_LEN: Lazy<usize> = Lazy::new(|| {
 });
 
 /// symmetric quantization range
-pub static MIN: Lazy<Element> = Lazy::new(|| -(1 << (*BIT_LEN - 1)) + 1);
-pub static MAX: Lazy<Element> = Lazy::new(|| (1 << (*BIT_LEN - 1)) - 1);
-pub static RANGE: Lazy<Element> = Lazy::new(|| *MAX - *MIN);
-pub static ZERO: Lazy<Element> = Lazy::new(|| 0);
+pub static MIN: LazyLock<Element> = LazyLock::new(|| -(1 << (*BIT_LEN - 1)) + 1);
+pub static MAX: LazyLock<Element> = LazyLock::new(|| (1 << (*BIT_LEN - 1)) - 1);
+pub static RANGE: LazyLock<Element> = LazyLock::new(|| *MAX - *MIN);
+pub static ZERO: LazyLock<Element> = LazyLock::new(|| 0);
 pub const MIN_FLOAT: f32 = -1.0;
 pub const MAX_FLOAT: f32 = 1.0;
 pub const QUANTIZATION_RANGE: std::ops::RangeInclusive<f32> = MIN_FLOAT..=MAX_FLOAT;
@@ -84,6 +83,22 @@ impl ScalingFactor {
         }
     }
 
+    /// Create a [`ScalingFactor`] from its constituent parts. Useful for operations like Softmax where its
+    /// important to preserve its structure as a probability distribution.
+    pub(crate) fn from_parts(
+        max: f32,
+        min: f32,
+        scale: f32,
+        quantized_domain: (Element, Element),
+    ) -> ScalingFactor {
+        Self {
+            max,
+            min,
+            scale,
+            quantized_domain,
+        }
+    }
+
     pub fn min(&self) -> f32 {
         self.min
     }
@@ -94,6 +109,10 @@ impl ScalingFactor {
 
     pub fn scale(&self) -> f32 {
         self.scale
+    }
+
+    pub fn domain(&self) -> (Element, Element) {
+        self.quantized_domain
     }
     /// M = S1 * S2 / S3
     pub fn m(&self, s2: &Self, s3: &Self) -> f32 {
@@ -165,22 +184,21 @@ pub fn split_scale_into_multiplier(s: f32) -> (i32, f32) {
 /// S2 in the formula S1 * S2 / S3.
 pub fn model_scaling_factor_from_tensor_and_bias(
     input: &ScalingFactor,
-    output: &ScalingFactor,
     main: &Tensor<f32>,
     bias: &Tensor<f32>,
 ) -> (ScalingFactor, ScalingFactor) {
     let max_weight = main.max_abs_output();
     let max_bias = bias.max_abs_output();
     let main_sf = ScalingFactor::from_absolute_max(max_weight.max(max_bias), None);
-    let bias_sf = bias_scaling_matmul(input, output);
+    let bias_sf = bias_scaling_matmul(input, &main_sf);
     (main_sf, bias_sf)
 }
 
-pub fn bias_scaling_matmul(input: &ScalingFactor, output: &ScalingFactor) -> ScalingFactor {
+pub fn bias_scaling_matmul(input: &ScalingFactor, model: &ScalingFactor) -> ScalingFactor {
     let min_quantized = -(1 << (2 * (*BIT_LEN) - 1)) + 1;
     let max_quantized = (1 << (2 * (*BIT_LEN) - 1)) - 1;
     ScalingFactor::from_scale(
-        input.scale() * output.scale(),
+        input.scale() * model.scale(),
         Some((min_quantized, max_quantized)),
     )
 }
@@ -193,9 +211,7 @@ impl<F: ExtensionField> Fieldizer<F> for Element {
     fn to_field(&self) -> F {
         if self.is_negative() {
             // Doing wrapped arithmetic : p-128 ... p-1 means negative number
-            F::from_canonical_u64(
-                <F::BaseField as SmallField>::MODULUS_U64 - self.unsigned_abs() as u64,
-            )
+            F::from_canonical_u64(<F::BaseField as SmallField>::MODULUS_U64 - self.unsigned_abs())
         } else {
             // for positive and zero, it's just the number
             F::from_canonical_u64(*self as u64)
@@ -203,23 +219,23 @@ impl<F: ExtensionField> Fieldizer<F> for Element {
     }
 }
 pub(crate) trait IntoElement {
-    fn into_element(&self) -> Element;
+    fn to_element(&self) -> Element;
 }
 
 impl<F: ExtensionField> IntoElement for F {
-    fn into_element(&self) -> Element {
-        let e = self.to_canonical_u64_vec()[0] as Element;
+    fn to_element(&self) -> Element {
+        let e = self.to_canonical_u64_vec()[0];
         let modulus_half = <F::BaseField as SmallField>::MODULUS_U64 >> 1;
         // That means he's a positive number
         if *self == F::ZERO {
             0
         // we dont assume any bounds on the field elements, requant might happen at a later stage
         // so we assume the worst case
-        } else if e <= modulus_half as Element {
-            e
+        } else if e <= modulus_half {
+            e as Element
         } else {
             // That means he's a negative number - so take the diff with the modulus and recenter around 0
-            let diff = <F::BaseField as SmallField>::MODULUS_U64 - e as u64;
+            let diff = <F::BaseField as SmallField>::MODULUS_U64 - e;
             -(diff as Element)
         }
     }
@@ -338,7 +354,7 @@ mod test {
         let test_values = [*MIN, -100, -50, -1, 0, 1, 50, 100, *MAX];
         for &val in &test_values {
             let field_val: F = val.to_field();
-            let roundtrip = field_val.into_element();
+            let roundtrip = field_val.to_element();
 
             assert_eq!(
                 val, roundtrip,

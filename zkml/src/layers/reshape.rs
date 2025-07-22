@@ -1,43 +1,107 @@
 use std::ops::{Range, RangeBounds};
 
 use crate::{
-    layers::provable::{QuantizeOp, QuantizeOutput},
-    padding::PaddingMode,
+    NextPowerOfTwo,
+    iop::context::ContextAux,
+    layers::{
+        LayerCtx,
+        provable::{NodeId, PadOp, ProveInfo, QuantizeOp, QuantizeOutput},
+    },
+    padding::{PaddingMode, pad_reshape_layer},
     tensor::Shape,
 };
 use anyhow::ensure;
 use ff_ext::ExtensionField;
 use serde::{Deserialize, Serialize};
+use tracing::trace;
 
 use crate::{Tensor, tensor::Number};
 
 use super::provable::{Evaluate, LayerOut, OpInfo};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Subspace {
+    // Indices in the shape of the tensor that we want to remove
+    pub(crate) to_remove: Range<usize>,
+    // Actual indices that we add in place of the removed indices
+    pub(crate) to_add: Vec<usize>,
+    // These are the original indices to be added in place of the
+    // removed indices. They might differ from indices in `to_add`
+    // after we pad the node, as padding will make the indices in
+    // `to_add` powers of 2, while indices here will not be changed
+    // by padding operation. It is necessary to keep track of these
+    // indices to compute the unpadded output shapes for reshaped
+    // tensors
+    pub(crate) unpadded_to_add: Vec<usize>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Reshape {
-    Full(Vec<Shape>),
-    // (v1,v2) where
+    // First is the actual new shape, second one is the unpadded new shape
+    Full((Vec<Shape>, Vec<Shape>)),
+    // (v1,(v2, v3)) where
     // - v1 are the indices in the shape of the tensor that we want to remove
-    // - v2 are the indices that we add in place
+    // - v2 are the actual indices that we add in place
+    // - v3 are the actual unpadded indices that we add in place
     // e.g. if tensor is [a,b,c], and we give Subspace(1..=2,vec![b/6,c,6]) then the
     // output shape is [a,b/6,c,6]
-    Subspace((Range<usize>, Vec<usize>)),
+    Subspace(Subspace),
     /// Adds a 1 at the given index in the shape.
     Squeeze(usize),
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReshapeCtx(Reshape);
+
 impl Reshape {
     pub fn new_fixed(new_dim: Vec<Shape>) -> Self {
-        Self::Full(new_dim)
+        Self::Full((new_dim.clone(), new_dim))
     }
     pub fn new_subspace<R: RangeBounds<usize>>(to_remove: R, to_add: Vec<usize>) -> Self {
         let start = range_start(&to_remove).expect("invalid start bound");
         let end = range_end(&to_remove).expect("invalid end bound");
-        Self::Subspace((Range { start, end }, to_add))
+        Self::Subspace(Subspace {
+            to_remove: Range { start, end },
+            to_add: to_add.clone(),
+            unpadded_to_add: to_add,
+        })
     }
+
     pub fn new_squeeze(index: usize) -> Self {
         Self::Squeeze(index)
     }
+    pub(crate) fn to_unpadded_reshape(&self) -> Self {
+        match self {
+            Reshape::Full((_, unpadded_new_dim)) => {
+                Reshape::Full((unpadded_new_dim.clone(), unpadded_new_dim.clone()))
+            }
+            Reshape::Subspace(subspace) => Reshape::Subspace(Subspace {
+                to_remove: subspace.to_remove.clone(),
+                to_add: subspace.unpadded_to_add.clone(),
+                unpadded_to_add: subspace.unpadded_to_add.clone(),
+            }),
+            Reshape::Squeeze(index) => Reshape::Squeeze(*index),
+        }
+    }
+
+    pub(crate) fn to_padded_reshape(&self) -> Self {
+        match self {
+            Reshape::Full((actual_shapes, unpadded_shapes)) => Reshape::Full((
+                actual_shapes
+                    .iter()
+                    .map(|s| s.next_power_of_two())
+                    .collect(),
+                unpadded_shapes.clone(),
+            )),
+            Reshape::Subspace(subspace) => Reshape::Subspace(Subspace {
+                to_remove: subspace.to_remove.clone(),
+                to_add: subspace.to_add.next_power_of_two(),
+                unpadded_to_add: subspace.unpadded_to_add.clone(),
+            }),
+            Reshape::Squeeze(index) => Reshape::Squeeze(*index), // no need to change anything,
+        }
+    }
+
     fn internal_output(&self, input_shapes: &[Shape]) -> anyhow::Result<Vec<Shape>> {
         let new_dims = match self {
             Reshape::Squeeze(index) => {
@@ -46,12 +110,16 @@ impl Reshape {
                 new_dim.insert(*index, 1);
                 vec![Shape::new(new_dim)]
             }
-            Reshape::Full(ref new_dim) => new_dim.clone(),
-            Reshape::Subspace((to_remove, to_add)) => input_shapes
+            Reshape::Full((ref new_dim, _)) => new_dim.clone(),
+            Reshape::Subspace(subspace) => input_shapes
                 .iter()
                 .map(|shape| {
                     let mut new_shape = shape.clone();
-                    new_shape.splice(to_remove.clone(), to_add.clone());
+                    trace!(
+                        "moving from shape {:?} by splice({:?},{:?})",
+                        shape, subspace.to_remove, subspace.to_add
+                    );
+                    new_shape.splice(subspace.to_remove.clone(), subspace.to_add.clone());
                     new_shape
                 })
                 .collect::<Vec<Shape>>(),
@@ -68,13 +136,34 @@ impl Reshape {
         );
         Ok(new_dims)
     }
+
+    // Core evaluation method that relaxes the trait bound T: Number to be used in proving methods
+    pub(crate) fn evaluate_layer<N: Clone, E: ExtensionField>(
+        &self,
+        inputs: &[&Tensor<N>],
+        _unpadded_input_shapes: Vec<Shape>,
+    ) -> anyhow::Result<LayerOut<N, E>> {
+        let output_shapes =
+            self.internal_output(&inputs.iter().map(|x| x.get_shape()).collect::<Vec<_>>())?;
+        #[allow(suspicious_double_ref_op)]
+        let mut out_tensors = inputs.iter().map(|&x| x.clone()).collect::<Vec<_>>();
+        output_shapes
+            .into_iter()
+            .zip(out_tensors.iter_mut())
+            .for_each(|(new_dim, input_tensor)| input_tensor.reshape_in_place(new_dim));
+        Ok(LayerOut::from_vec(out_tensors))
+    }
 }
 
 impl OpInfo for Reshape {
-    fn output_shapes(&self, input_shapes: &[Shape], _padding_mode: PaddingMode) -> Vec<Shape> {
-        match self.internal_output(input_shapes) {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
+        let reshape = match padding_mode {
+            PaddingMode::NoPadding => self.to_unpadded_reshape(),
+            PaddingMode::Padding => self.to_padded_reshape(),
+        };
+        match reshape.internal_output(input_shapes) {
             Ok(out) => out,
-            Err(e) => panic!("invalid reshape parameters: {:?}", e),
+            Err(e) => panic!("invalid reshape parameters: {e:?}"),
         }
     }
 
@@ -84,9 +173,9 @@ impl OpInfo for Reshape {
 
     fn describe(&self) -> String {
         match self {
-            Reshape::Squeeze(index) => format!("Reshape: squeeze({})", index),
-            Reshape::Full(ref new_dim) => format!("Reshape: fixed {:?}", new_dim),
-            Reshape::Subspace(_) => format!("Reshape: dynamic"),
+            Reshape::Squeeze(index) => format!("Reshape: squeeze({index})"),
+            Reshape::Full(ref new_dim) => format!("Reshape: fixed {new_dim:?}"),
+            Reshape::Subspace(_) => "Reshape: dynamic".to_string(),
         }
     }
 
@@ -99,18 +188,9 @@ impl<N: Number> Evaluate<N> for Reshape {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<N>],
-        _unpadded_input_shapes: Vec<Shape>,
+        unpadded_input_shapes: Vec<Shape>,
     ) -> anyhow::Result<LayerOut<N, E>> {
-        let output_shapes =
-            self.internal_output(&inputs.iter().map(|x| x.get_shape()).collect::<Vec<_>>())?;
-        #[allow(suspicious_double_ref_op)]
-        let out_tensors = inputs.iter().map(|x| x.clone().clone()).collect::<Vec<_>>();
-        let out_tensors = output_shapes
-            .into_iter()
-            .zip(out_tensors.into_iter())
-            .map(|(new_dim, input_tensor)| input_tensor.reshape(new_dim))
-            .collect();
-        Ok(LayerOut::from_vec(out_tensors))
+        self.evaluate_layer(inputs, unpadded_input_shapes)
     }
 }
 
@@ -140,6 +220,45 @@ fn range_end<R: RangeBounds<usize>>(range: &R) -> Option<usize> {
         std::ops::Bound::Included(&e) => Some(e + 1),
         std::ops::Bound::Excluded(&e) => Some(e),
         std::ops::Bound::Unbounded => None,
+    }
+}
+
+impl<E: ExtensionField> ProveInfo<E> for Reshape {
+    fn step_info(
+        &self,
+        _id: NodeId,
+        mut aux: ContextAux,
+    ) -> anyhow::Result<(super::LayerCtx<E>, ContextAux)> {
+        aux.last_output_shape = self.output_shapes(&aux.last_output_shape, PaddingMode::Padding);
+
+        Ok((LayerCtx::Reshape(ReshapeCtx(self.clone())), aux))
+    }
+}
+
+impl OpInfo for ReshapeCtx {
+    fn output_shapes(&self, input_shapes: &[Shape], padding_mode: PaddingMode) -> Vec<Shape> {
+        self.0.output_shapes(input_shapes, padding_mode)
+    }
+
+    fn num_outputs(&self, num_inputs: usize) -> usize {
+        self.0.num_outputs(num_inputs)
+    }
+
+    fn describe(&self) -> String {
+        self.0.describe()
+    }
+
+    fn is_provable(&self) -> bool {
+        self.0.is_provable()
+    }
+}
+
+impl PadOp for Reshape {
+    fn pad_node(self, si: &mut crate::padding::ShapeInfo) -> anyhow::Result<Self>
+    where
+        Self: Sized,
+    {
+        pad_reshape_layer(self, si)
     }
 }
 

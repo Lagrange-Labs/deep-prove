@@ -56,6 +56,12 @@ pub struct AddProof<E> {
     right_eval: E,
 }
 
+impl<N: Number> Default for Add<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<N: Number> Add<N> {
     pub fn new() -> Self {
         Self {
@@ -79,8 +85,7 @@ impl Evaluate<f32> for Add<f32> {
     ) -> anyhow::Result<LayerOut<f32, E>> {
         let result = if inputs.len() == 2 {
             ensure!(
-                Shape::from(inputs[0].get_shape()).product()
-                    == Shape::from(inputs[1].get_shape()).product(),
+                inputs[0].get_shape().product() == inputs[1].get_shape().product(),
                 "Add layer expects inputs to have the same shape: {:?} vs {:?}",
                 inputs[0].get_shape(),
                 inputs[1].get_shape()

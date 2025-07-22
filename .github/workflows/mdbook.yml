@@ -2,8 +2,13 @@ name: Deploy mdBook
 
 on:
   pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
     paths:
-      - 'zkml/docs/**'  # Only trigger when docs are updated
+      - 'docs/src/**'  # Only trigger when docs are updated
+      - 'docs/book.toml'
 
 jobs:
   deploy:

@@ -2,16 +2,17 @@ use crate::{
     layers::provable::{Node, NodeId, QuantizeOp},
     model::{Model, ToIterator},
     quantization::metadata::{MetadataBuilder, ModelMetadata},
+    rng_from_env_or_random,
     tensor::Number,
 };
 use std::collections::HashMap;
 
 use crate::{Element, Tensor, quantization};
 use anyhow::{Result, anyhow, ensure};
-use ark_std::rand;
 use ff_ext::GoldilocksExt2;
 use itertools::Itertools;
-use statrs::statistics::{Data, Max, Min, OrderStatistics};
+use serde::{Deserialize, Serialize};
+use statrs::statistics::{Data, Max, Min};
 use tracing::{debug, info, warn};
 
 use super::ScalingFactor;
@@ -34,6 +35,13 @@ pub trait ScalingStrategy: std::fmt::Debug {
     ) -> Vec<ScalingFactor>;
 
     fn name(&self) -> String;
+}
+
+/// Implementors of [`ScalingStrategy`]
+#[derive(Debug, Clone, Copy, derive_more::Display, Serialize, Deserialize)]
+pub enum ScalingStrategyKind {
+    InferenceObserver,
+    AbsoluteMax,
 }
 
 /// Quantization strategy that observes the inference of the model with different inputs and uses the
@@ -60,6 +68,7 @@ impl InferenceObserver {
 }
 
 const INPUT_TRACKING_ID: usize = 10_000;
+
 impl ScalingStrategy for InferenceObserver {
     type AuxData = InferenceTracker;
 
@@ -72,6 +81,7 @@ impl ScalingStrategy for InferenceObserver {
         let input_shapes = model.input_shapes();
         let input_not_padded_shapes = model.unpadded_input_shapes();
         let inputs = if self.inputs.is_empty() {
+            let mut rng = rng_from_env_or_random();
             warn!("No representative inputs provided, generating random ones");
             (0..10)
                 .map(|_| {
@@ -80,7 +90,7 @@ impl ScalingStrategy for InferenceObserver {
                         .map(|shape| {
                             let size = shape.product();
                             (0..size)
-                                .map(|_| <f32 as Number>::random(&mut rand::thread_rng()))
+                                .map(|_| <f32 as Number>::random(&mut rng))
                                 .collect_vec()
                         })
                         .collect_vec()
@@ -155,7 +165,7 @@ impl InferenceTracker {
 
     /// Returns the 0.05 and 0.95 quantiles of the distribution of the output values of the layer.
     pub(crate) fn distribution_info(&self, node_id: NodeId, output_index: usize) -> (f32, f32) {
-        let mut d: Data<Vec<f64>> = Data::new(
+        let d: Data<Vec<f64>> = Data::new(
             self.data
                 .get(&(node_id, output_index))
                 .unwrap_or_else(|| {
@@ -163,9 +173,9 @@ impl InferenceTracker {
                 })
                 .clone(),
         );
-        let min = d.percentile(5) as f32;
-        let max = d.percentile(95) as f32;
-        assert!(min <= max);
+        // let min = d.percentile(5) as f32;
+        // let max = d.percentile(95) as f32;
+        // assert!(min <= max);
         //(min, max)
         (d.min() as f32, d.max() as f32)
         // let mean = d.mean().unwrap();

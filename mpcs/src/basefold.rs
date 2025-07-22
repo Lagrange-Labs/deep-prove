@@ -885,8 +885,7 @@ where
                     return Ok(());
                 } else {
                     return Err(Error::InvalidPcsOpen(format!(
-                        "Trivial proof did not evaluate to the correct value, expected: {:?}, calculated: {:?}",
-                        eval, computed_eval
+                        "Trivial proof did not evaluate to the correct value, expected: {eval:?}, calculated: {computed_eval:?}"
                     )));
                 }
             } else {

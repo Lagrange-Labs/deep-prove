@@ -1,18 +1,47 @@
-name: "Test Suite"
+name: "Rust tests & lint"
+permissions:
+  contents: read
 
 on:
   push:
+    tags:
+      - '**'
+    branches:
+      - master
   pull_request:
 
 jobs:
+  changes:
+    name: Check for changes in zkML sources
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+      contents: read
+    outputs:
+      zkml_src: ${{ steps.filter.outputs.zkml_src }}
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            zkml_src:
+              - 'zkml/**'
+              - '.github/workflows/tests.yml'
+
   test:
+    name: Run zkML Rust tests
+    needs: changes
+    if: ${{ needs.changes.outputs.zkml_src != '[]' }}
     runs-on: ['hostname:hetzner-dedicated-6']
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: "recursive"
 
-      - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10.13'
 
@@ -29,21 +58,44 @@ jobs:
 
       - name: Set Environment Variables for Rust tests
         run: |
-          echo "DEEPPROVE_CI=true" >> $GITHUB_ENV
-          echo "DEEPPROVE_ASSET_DIR=${{ github.workspace }}/zkml/assets/scripts/llms/" >> $GITHUB_ENV
+          echo "DEEPPROVE_CI=true" >> "$GITHUB_ENV"
+          echo "DEEPPROVE_ASSET_DIR=${{ github.workspace }}/zkml/assets/scripts/llms/" >> "$GITHUB_ENV"
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install protoc via apt
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install the Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: nightly
+          components: clippy
+          # Manually configure rust-cache
+          cache: false
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # The prefix cache key, this can be changed to start a new cache manually.
+          # default: "v0-rust"
+          shared-key: "v1-rust-dp"
+          # If `true` the workspace crates will be cached.
+          # Useful if the workspace contains libraries that are only updated sporadically.
+          # default: "false"
+          cache-workspace-crates: true
 
       - name: Run cargo test
         run: cargo test
         env:
           RUSTFLAGS: "-W warnings"
 
+      - name: Run Clippy
+        run: cargo clippy --all -- -D warnings
+
+
   formatting:
-    name: cargo fmt
+    name: Validate code formatting
+    needs: changes
     runs-on: ubuntu-latest
+    if: ${{ needs.changes.outputs.zkml_src != '[]' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,7 +104,5 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: rustfmt
-          toolchain: nightly
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+          cache: false
+      - run: cargo fmt --all
