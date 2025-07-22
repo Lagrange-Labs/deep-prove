@@ -291,7 +291,7 @@ impl TableType {
                 let size = qd.table_size();
                 if point.len() != size {
                     return Err(LogUpError::VerifierError(format!(
-                        "Point was not the correct size to produce a softmax table evaluation, point size: {}, expected: {}",
+                        "Point was not the correct size to produce a Gelu table evaluation, point size: {}, expected: {}",
                         point.len(),
                         size
                     )));
