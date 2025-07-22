@@ -95,9 +95,9 @@ impl From<&[ShapeData]> for ShapeInfo {
 
 #[derive(Clone, Debug)]
 pub struct ShapeData {
-    input_shape_padded: Shape,
-    ignore_garbage_pad: Option<GarbagePad>,
-    input_shape_og: Shape,
+    pub(crate) input_shape_padded: Shape,
+    pub(crate) ignore_garbage_pad: Option<GarbagePad>,
+    pub(crate) input_shape_og: Shape,
 }
 
 impl ShapeData {
