@@ -8,7 +8,7 @@ jobs:
   benchmark_pr_branch:
     name: Continuous Benchmarking PRs with Bencher
     permissions:
-      pull-requests: write
+      checks: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
