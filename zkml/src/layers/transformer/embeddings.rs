@@ -161,7 +161,7 @@ impl PadOp for Embeddings<Element> {
             "embeddings only support 1 input tensor"
         );
         // we need to give the shapes that the one hot encoding will have
-        let mut shape_data = si.shapes.remove(0);
+        let shape_data = si.shapes.get_mut(0).unwrap();
         ensure!(
             shape_data.input_shape_og.rank() == 1,
             "embeddings only support 1d tensors"
@@ -176,7 +176,6 @@ impl PadOp for Embeddings<Element> {
             self.vocab_size,
             PaddingMode::Padding,
         );
-        si.shapes.push(shape_data);
         let r = self.mat.pad_node(si).map(|mat| Self { mat, ..self })?;
         Ok(r)
     }
@@ -330,14 +329,14 @@ where
             "embeddings only support 1 last claim"
         );
         // we verify the matmul proof first
-        let mut claims = self
+        let claims = self
             .mat_ctx
             .verify_matmul(verifier, last_claims[0], &proof.mat_proof)?;
         ensure!(claims.len() == 1, "embeddings matmul should have 1 claim");
         // the first claim is the one hot encoding claim. To verify it we need to
         // efficiently evaluate the one hot encoding on it - we do this "at the end" of the verification
         // procedure to respect the framework's order of operations. The logic is in `verify_input_claim`.
-        Ok(vec![claims.remove(0)])
+        Ok(claims)
     }
 
     fn verify_input_claim(&self, inputs: &[Tensor<E>], claims: &[&Claim<E>]) -> anyhow::Result<()> {
@@ -389,11 +388,7 @@ fn one_hot_encoding<E: ExtensionField>(indices: &[E], vb: usize, mode: PaddingMo
                 indices.len().is_power_of_two(),
                 "indices length must be a power of two"
             );
-            let target_len = indices.len() * vocab_size;
-            let curr_len = data.len();
-            data.into_iter()
-                .chain(std::iter::repeat_n(E::ZERO, target_len - curr_len))
-                .collect()
+            data
         }
     };
     Tensor::new(vec![indices.len(), vocab_size].into(), data)
