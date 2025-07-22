@@ -18,6 +18,8 @@ use std::{
     future::Future,
     sync::{Arc, Mutex},
 };
+use tempfile::TempDir;
+use tokio::fs;
 use zkml::{
     Element,
     model::Model,
@@ -78,7 +80,21 @@ pub trait Store {
 
 /// AWS S3 store for prod.
 #[derive(Clone, derive_more::From)]
-pub struct S3Store(#[from] AmazonS3);
+pub struct S3Store {
+    store: AmazonS3,
+    fs_cache: Arc<TempDir>,
+}
+
+impl From<AmazonS3> for S3Store {
+    fn from(store: AmazonS3) -> Self {
+        S3Store {
+            store,
+            fs_cache: Arc::new(
+                TempDir::new().expect("able to setup an S3 store cache in a temp dir"),
+            ),
+        }
+    }
+}
 
 impl Store for S3Store {
     fn get_params(
@@ -87,13 +103,28 @@ impl Store for S3Store {
     ) -> impl Future<Output = anyhow::Result<Option<Params>>> + Send {
         async move {
             let key = params_key(key);
-            let S3Store(store) = self;
-            let location = Path::parse(&key)?;
-            match store.get(&location).await {
+            let S3Store { store, fs_cache } = self;
+
+            // Try read from FS cache first
+            let path = fs_cache.path().join(key.to_string());
+            if fs::try_exists(&path).await.context("access FS cache")? {
+                let bytes = fs::read(path).await?;
+                let value = serde_json::from_slice::<Params>(&bytes)
+                    .context("decoding params value from FS cache")?;
+                return Ok(Some(value));
+            }
+
+            match store.get(&key).await {
                 Ok(result) => {
                     let bytes = result.bytes().await?;
                     let value = serde_json::from_slice::<Params>(&bytes)
                         .context("decoding params value from S3")?;
+
+                    // Cache to FS
+                    fs::write(&path, &bytes)
+                        .await
+                        .context("write params to FS cache")?;
+
                     Ok(Some(value))
                 }
                 Err(object_store::Error::NotFound { .. }) => Ok(None),
@@ -113,11 +144,22 @@ impl Store for S3Store {
             let value_bytes: Vec<u8> =
                 serde_json::to_vec(&params).context("serializing params to store")?;
             let key = params_key(key);
-            let S3Store(store) = self;
-            let location = Path::parse(&key)?;
+            let S3Store { store, fs_cache } = self;
+
+            // Write to FS cache first
+            let path = fs_cache.path().join(key.to_string());
+            fs::create_dir_all(&path)
+                .await
+                .context("create FS cache dirs")?;
+            if !fs::try_exists(&path).await.context("access FS cache")? {
+                fs::write(&path, &value_bytes)
+                    .await
+                    .context("write params to FS cache")?;
+            }
+
             if store
                 .get_opts(
-                    &location,
+                    &key,
                     GetOptions {
                         head: true,
                         ..Default::default()
@@ -129,7 +171,7 @@ impl Store for S3Store {
                 bail!("trying to insert params with {key} that is already present")
             }
             store
-                .put(&location, PutPayload::from(value_bytes))
+                .put(&key, PutPayload::from(value_bytes))
                 .await
                 .context("storing generated params in S3 store")?;
             Ok(())
@@ -147,21 +189,48 @@ impl Store for S3Store {
     {
         async move {
             let key = model_key(key);
-            let S3Store(store) = self;
-            let location = Path::parse(&key)?;
-            match store.get(&location).await {
+            let S3Store { store, fs_cache } = self;
+
+            // Try read from FS cache first
+            let path = fs_cache.path().join(key.to_string());
+            if fs::try_exists(&path).await.context("access FS cache")? {
+                let bytes = fs::read(path).await?;
+                let value = serde_json::from_slice::<ScaledModel>(&bytes)
+                    .context("decoding scaled model value from FS cache")?;
+                return Ok(value);
+            }
+
+            match store.get(&key).await {
                 Ok(result) => {
                     let bytes = result.bytes().await?;
                     let value = serde_json::from_slice::<ScaledModel>(&bytes)
                         .context("decoding scaled model value from S3")?;
+
+                    // Cache to FS
+                    fs::write(&path, &bytes)
+                        .await
+                        .context("write params to FS cache")?;
+
                     Ok(value)
                 }
                 Err(object_store::Error::NotFound { .. }) => {
                     let value = init().await?;
                     let value_bytes: Vec<u8> =
                         serde_json::to_vec(&value).context("serializing scaled model to store")?;
+
+                    // Write to FS cache first
+                    let path = fs_cache.path().join(key.to_string());
+                    fs::create_dir_all(&path)
+                        .await
+                        .context("create FS cache dirs")?;
+                    if !fs::try_exists(&path).await.context("access FS cache")? {
+                        fs::write(&path, &value_bytes)
+                            .await
+                            .context("write params to FS cache")?;
+                    }
+
                     store
-                        .put(&location, PutPayload::from(value_bytes))
+                        .put(&key, PutPayload::from(value_bytes))
                         .await
                         .context("storing generated params in S3 store")?;
                     Ok(value)
