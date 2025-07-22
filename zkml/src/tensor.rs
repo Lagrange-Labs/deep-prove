@@ -1934,8 +1934,7 @@ impl<T> Tensor<T> {
     }
 
     pub fn unsqueeze(self, index: usize) -> Self {
-        let mut new_shape = self.shape.clone();
-        new_shape.insert(index, 1);
+        let new_shape = self.shape.insert(index, 1);
         Self {
             data: self.data,
             shape: new_shape,
@@ -2054,6 +2053,26 @@ impl Shape {
 
         strides.reverse();
         strides
+    }
+
+    /// Inserts a new dimension at the given index.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index` is larger than this shape size.
+    ///
+    /// ```
+    /// # use zkml::tensor::Shape;
+    /// let shape = Shape::new(vec![3, 5]);
+    /// let new_shape = shape.insert(1, 1);
+    /// assert_eq!(new_shape.dim(0), 3);
+    /// assert_eq!(new_shape.dim(1), 1);
+    /// assert_eq!(new_shape.dim(2), 5);
+    /// ```
+    pub fn insert(&self, index: usize, value: usize) -> Self {
+        let mut new_shape = self.0.clone();
+        new_shape.insert(index, value);
+        Self(new_shape)
     }
 
     pub fn permute(&self, permutation: &[usize]) -> Self {

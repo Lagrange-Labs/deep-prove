@@ -10,4 +10,5 @@
 - [LLMs](./LLMs.md)
     - [QKV Layer](./llms-layers/qkv.md)
     - [Positional Encoding](./llms-layers/positionals.md)
+    - [Embeddings](./llms-layers/embeddings.md)
     - [MHA Layer](./llms-layers/mha.md)
