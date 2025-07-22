@@ -10,7 +10,7 @@ use tracing::warn;
 
 use crate::{
     Element,
-    tensor::{Number, Tensor, is_close},
+    tensor::{Number, Tensor, TensorSlice, is_close},
 };
 pub use metadata::ModelMetadata;
 pub(crate) use strategy::InferenceTracker;
@@ -246,6 +246,15 @@ pub trait TensorFielder<F> {
 }
 
 impl<F: ExtensionField, T> TensorFielder<F> for &Tensor<T>
+where
+    T: Fieldizer<F>,
+{
+    fn to_fields(self) -> Tensor<F> {
+        TensorSlice::from(self).to_fields()
+    }
+}
+
+impl<'a, F: ExtensionField, T> TensorFielder<F> for &TensorSlice<'a, T>
 where
     T: Fieldizer<F>,
 {

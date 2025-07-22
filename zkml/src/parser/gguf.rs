@@ -253,7 +253,7 @@ impl Positional<f32> {
                     c.embedding_size,
                     position_embd.get_shape()
                 );
-                Ok(Self::Learned(position_embd))
+                Ok(Self::new_learned(position_embd))
             }
         }
     }

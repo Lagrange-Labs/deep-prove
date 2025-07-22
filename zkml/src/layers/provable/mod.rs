@@ -550,11 +550,11 @@ where
             LayerCtx::Mha(mha_ctx) => mha_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::ConcatMatMul(ctx) => ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
+            LayerCtx::Positional(ctx) => ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Add(ctx) => ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Softmax(softmax_ctx) => softmax_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
             LayerCtx::Embeddings(ctx) => ctx.output_shapes(input_shapes, padding_mode),
-            LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
             LayerCtx::Reshape(ctx) => ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Activation(activation_ctx) => {
                 activation_ctx.output_shapes(input_shapes, padding_mode)
@@ -577,11 +577,11 @@ where
             LayerCtx::Mha(mha_ctx) => mha_ctx.num_outputs(num_inputs),
             LayerCtx::ConcatMatMul(ctx) => ctx.num_outputs(num_inputs),
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
+            LayerCtx::Positional(ctx) => ctx.num_outputs(num_inputs),
             LayerCtx::Add(ctx) => ctx.num_outputs(num_inputs),
             LayerCtx::Softmax(softmax_ctx) => softmax_ctx.num_outputs(num_inputs),
             LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
             LayerCtx::Embeddings(ctx) => ctx.num_outputs(num_inputs),
-            LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
             LayerCtx::Reshape(ctx) => ctx.num_outputs(num_inputs),
             LayerCtx::Activation(activation_ctx) => activation_ctx.num_outputs(num_inputs),
             LayerCtx::Requant(requant_ctx) => requant_ctx.num_outputs(num_inputs),
@@ -601,10 +601,10 @@ where
             LayerCtx::ConcatMatMul(ctx) => ctx.describe(),
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Add(ctx) => ctx.describe(),
+            LayerCtx::Positional(ctx) => ctx.describe(),
             LayerCtx::Softmax(softmax_ctx) => softmax_ctx.describe(),
             LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
             LayerCtx::Embeddings(ctx) => ctx.describe(),
-            LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
             LayerCtx::Reshape(ctx) => ctx.describe(),
             LayerCtx::Activation(activation_ctx) => activation_ctx.describe(),
             LayerCtx::Requant(requant_ctx) => requant_ctx.describe(),
@@ -624,11 +624,11 @@ where
             LayerCtx::ConcatMatMul(ctx) => ctx.is_provable(),
             LayerCtx::Activation(activation_ctx) => activation_ctx.is_provable(),
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
+            LayerCtx::Positional(ctx) => ctx.is_provable(),
             LayerCtx::Add(ctx) => ctx.is_provable(),
             LayerCtx::Softmax(softmax_ctx) => softmax_ctx.is_provable(),
             LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
             LayerCtx::Embeddings(ctx) => ctx.is_provable(),
-            LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
             LayerCtx::Reshape(ctx) => ctx.is_provable(),
             LayerCtx::Requant(requant_ctx) => requant_ctx.is_provable(),
             LayerCtx::Pooling(pooling_ctx) => pooling_ctx.is_provable(),
@@ -686,8 +686,8 @@ where
             (LayerCtx::Embeddings(ctx), LayerProof::Embeddings(proof)) => {
                 ctx.verify(proof, last_claims, verifier, shape_step)
             }
-            (LayerCtx::Positional, LayerProof::Positional) => {
-                unimplemented!("Positional layer not implemented")
+            (LayerCtx::Positional(pos_ctx), LayerProof::Positional(proof)) => {
+                pos_ctx.verify(proof, last_claims, verifier, shape_step)
             }
             (LayerCtx::Add(ctx), LayerProof::Add(proof)) => {
                 ctx.verify(proof, last_claims, verifier, shape_step)
@@ -750,7 +750,7 @@ where
             LayerCtx::Add(ctx) => verify_input_claim::<E, PCS, _, _>(ctx, inputs, claims),
             LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
             LayerCtx::Embeddings(ctx) => verify_input_claim::<E, PCS, _, _>(ctx, inputs, claims),
-            LayerCtx::Positional => unimplemented!("Positional layer not implemented"),
+            LayerCtx::Positional(ctx) => verify_input_claim::<E, PCS, _, _>(ctx, inputs, claims),
             LayerCtx::Reshape(ctx) => {
                 verify_input_claim::<E, PCS, _, _>(&NonProvableVerifierCtx(ctx), inputs, claims)
             }

@@ -41,6 +41,12 @@ pub struct Add<N> {
     quant_info: Option<QuantInfo>,
 }
 
+impl<N: Number> Default for Add<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Context info for the add layer.
 /// NOTE: In LLM, we assume the same scaling info regardless of the sequence length.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -54,12 +60,6 @@ pub struct AddCtx {
 pub struct AddProof<E> {
     left_eval: E,
     right_eval: E,
-}
-
-impl<N: Number> Default for Add<N> {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl<N: Number> Add<N> {
@@ -77,6 +77,76 @@ impl<N: Number> Add<N> {
     }
 }
 
+impl Add<Element> {
+    pub(crate) fn prove_step<
+        A: AsRef<Tensor<E>>,
+        E: ExtensionField,
+        T: Transcript<E>,
+        PCS: PolynomialCommitmentScheme<E>,
+    >(
+        &self,
+        node_id: NodeId,
+        last_claims: Vec<&Claim<E>>,
+        inputs: &[A],
+        prover: &mut Prover<E, T, PCS>,
+    ) -> anyhow::Result<(Vec<Claim<E>>, AddProof<E>)> {
+        ensure!(last_claims.len() == 1, "Add layer expects 1 claim");
+        let last_claim = last_claims[0];
+        ensure!(self.quant_info.is_some(), "Add layer is not quantized");
+        // assuming last_claim is f(r) = y
+        // we want to prove that x1(r) + x2(r) = y
+        // in the case there is no operand, we output two claims, x1(r) and x2(r)
+        // in the case there is an operand, we output one claim, x1(r) and we
+        // add the claim OPERAND(r) to the list of claims to verify via the committed weights PCS.
+        // Regarding the scaling operation, we actually want to prove
+        // that x1(r) * M1 / 2^shift1 + x2(r) * M2 / 2^shift2 = y, so the prover outputs only x1(r) and x2(r)
+        // and the verifier will "scale" the claims accordingly to check the equation.
+        let left_input = inputs[0].as_ref();
+        let left_eval = left_input
+            .get_data()
+            .to_vec()
+            .into_mle()
+            .evaluate(&last_claim.point);
+        let mut output_claims = vec![Claim::new(last_claim.point.clone(), left_eval)];
+        let right_eval = match self.operand {
+            Some((_, _)) => {
+                // out = x1 * s1 + x2 * s2
+                // so x1 = (out - x2 * s2) / s1
+                let a: E = self.quant_info.as_ref().unwrap().left_scale().to_field();
+                let left_side: E = left_eval * a;
+                let right_side: E = last_claim.eval - left_side;
+                let right_eval =
+                    right_side / self.quant_info.as_ref().unwrap().right_scale().to_field();
+                let mut claims = HashMap::new();
+                claims.insert(
+                    OPERAND_POLY_ID.to_string(),
+                    Claim::new(last_claim.point.clone(), right_eval),
+                );
+                // this claim gets verified by the PCS openings since it's a static one
+                prover.add_common_claims(node_id, claims)?;
+                right_eval
+            }
+            None => {
+                let right_eval = inputs[1]
+                    .as_ref()
+                    .get_data()
+                    .to_vec()
+                    .into_mle()
+                    .evaluate(&last_claim.point);
+                // this claims gets passed to the previous layer alongside the left one.
+                output_claims.push(Claim::new(last_claim.point.clone(), right_eval));
+                right_eval
+            }
+        };
+
+        let proof = AddProof {
+            left_eval,
+            right_eval,
+        };
+
+        Ok((output_claims, proof))
+    }
+}
 impl Evaluate<f32> for Add<f32> {
     fn evaluate<E: ExtensionField>(
         &self,
@@ -496,60 +566,10 @@ where
     where
         T: Transcript<E>,
     {
-        ensure!(last_claims.len() == 1, "Add layer expects 1 claim");
-        let last_claim = last_claims[0];
-        ensure!(self.quant_info.is_some(), "Add layer is not quantized");
-        // assuming last_claim is f(r) = y
-        // we want to prove that x1(r) + x2(r) = y
-        // in the case there is no operand, we output two claims, x1(r) and x2(r)
-        // in the case there is an operand, we output one claim, x1(r) and we
-        // add the claim OPERAND(r) to the list of claims to verify via the committed weights PCS.
-        // Regarding the scaling operation, we actually want to prove
-        // that x1(r) * M1 / 2^shift1 + x2(r) * M2 / 2^shift2 = y, so the prover outputs only x1(r) and x2(r)
-        // and the verifier will "scale" the claims accordingly to check the equation.
-        let left_input = &step_data.inputs[0];
-        let left_eval = left_input
-            .get_data()
-            .to_vec()
-            .into_mle()
-            .evaluate(&last_claim.point);
-        let mut output_claims = vec![Claim::new(last_claim.point.clone(), left_eval)];
-        let right_eval = match self.operand {
-            Some((_, _)) => {
-                // out = x1 * s1 + x2 * s2
-                // so x1 = (out - x2 * s2) / s1
-                let a: E = self.quant_info.as_ref().unwrap().left_scale().to_field();
-                let left_side: E = left_eval * a;
-                let right_side: E = last_claim.eval - left_side;
-                let right_eval =
-                    right_side / self.quant_info.as_ref().unwrap().right_scale().to_field();
-                let mut claims = HashMap::new();
-                claims.insert(
-                    OPERAND_POLY_ID.to_string(),
-                    Claim::new(last_claim.point.clone(), right_eval),
-                );
-                // this claim gets verified by the PCS openings since it's a static one
-                prover.add_common_claims(node_id, claims)?;
-                right_eval
-            }
-            None => {
-                let right_eval = step_data.inputs[1]
-                    .get_data()
-                    .to_vec()
-                    .into_mle()
-                    .evaluate(&last_claim.point);
-                // this claims gets passed to the previous layer alongside the left one.
-                output_claims.push(Claim::new(last_claim.point.clone(), right_eval));
-                right_eval
-            }
-        };
-        prover.push_proof(
-            node_id,
-            LayerProof::Add(AddProof {
-                left_eval,
-                right_eval,
-            }),
-        );
+        let (output_claims, proof) =
+            self.prove_step(node_id, last_claims, &step_data.inputs, prover)?;
+
+        prover.push_proof(node_id, LayerProof::Add(proof));
         Ok(output_claims)
     }
 }
