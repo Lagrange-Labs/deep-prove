@@ -12,7 +12,7 @@ use ff_ext::ExtensionField;
 use mpcs::{BasefoldCommitment, PolynomialCommitmentScheme};
 use multilinear_extensions::{mle::DenseMultilinearExtension, util::ceil_log2};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use tracing::{debug, trace};
 use transcript::Transcript;
 
@@ -139,7 +139,7 @@ where
             Some((prover_params, verifier_params)) => {
                 let mut model_polys =
                     Vec::<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>::new();
-                let mut step_infos = HashMap::new();
+                let mut step_infos = BTreeMap::new();
                 let mut shapes: HashMap<NodeId, Vec<Shape>> = HashMap::new();
                 debug!("Context : layer info generation ...");
                 for (id, node) in model.to_forward_iterator() {
@@ -169,7 +169,7 @@ where
             None => {
                 let mut model_polys =
                     Vec::<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>::new();
-                let mut step_infos = HashMap::new();
+                let mut step_infos = BTreeMap::new();
                 let mut shapes: HashMap<NodeId, Vec<Shape>> = HashMap::new();
                 debug!("Context : layer info generation ...");
                 for (id, node) in model.to_forward_iterator() {
@@ -217,7 +217,7 @@ where
 fn compute_node_shape<E: ExtensionField>(
     mut ctx_aux: ContextAux,
     model_polys: &mut Vec<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>,
-    step_infos: &mut HashMap<NodeId, NodeCtx<E>>,
+    step_infos: &mut BTreeMap<NodeId, NodeCtx<E>>,
     shapes: &mut HashMap<NodeId, Vec<Shape>>,
     input_shapes: &[Shape],
     id: usize,

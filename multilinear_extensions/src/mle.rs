@@ -109,6 +109,13 @@ impl<F: Field, E: ExtensionField> IntoMLE<DenseMultilinearExtension<E>> for Vec<
         DenseMultilinearExtension::from_evaluation_vec_smart::<F>(ceil_log2(next_pow2), self)
     }
 }
+
+impl<F: Field, E: ExtensionField> IntoMLE<DenseMultilinearExtension<E>> for &[F] {
+    fn into_mle(self) -> DenseMultilinearExtension<E> {
+        self.to_vec().into_mle()
+    }
+}
+
 pub trait IntoMLEs<T>: Sized {
     /// Converts this type into the (usually inferred) input type.
     fn into_mles(self) -> Vec<T>;
