@@ -930,7 +930,7 @@ mod test {
             transformer::{qkv::QKV, test::GPT2Output},
         },
         model::{
-            Model,
+            Model, ToIterator,
             test::{prove_model, prove_quantized_model, quantize_model},
         },
         padding::pad_model,
@@ -1529,13 +1529,18 @@ mod test {
         let _mha_id = model
             .add_consecutive_layer(Layer::Mha(mha), Some(qkv_node_id))
             .unwrap();
-
+        println!("qkv id: {qkv_node_id}");
+        println!("mha id: {_mha_id}");
         model.route_output(None).unwrap();
 
         let inputs = vec![Tensor::random(&input_shape)];
 
         let (quantized_model, inputs) = quantize_model(model, inputs, None).unwrap();
-
+        quantized_model
+            .to_forward_iterator()
+            .for_each(|(node_id, node)| {
+                println!("node with id {node_id}, node name: {}", node.describe())
+            });
         // run to get unpadded output
         let mut outputs = quantized_model
             .run::<GoldilocksExt2>(&inputs)

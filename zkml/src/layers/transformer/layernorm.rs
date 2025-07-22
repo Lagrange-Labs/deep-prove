@@ -1,4 +1,4 @@
-use std::{collections::HashMap, marker::PhantomData};
+use std::collections::HashMap;
 
 use anyhow::{Result, anyhow, ensure};
 use ark_std::Zero;
@@ -10,6 +10,7 @@ use multilinear_extensions::{
     util::ceil_log2,
     virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial},
 };
+use p3_field::FieldAlgebra;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
@@ -63,10 +64,17 @@ const GAMMA_POLY_ID: &str = "LayerNormGamma";
 const BETA_POLY_ID: &str = "LayerNormBeta";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Struct storing all information needed to perform LayerNorm. The `gamma` and `beta` fields
+/// are normally learned parameters that are applied elementwise. The `eps` field is used for normalisation when calculating
+/// the inverse square root.
 pub struct LayerNorm<N> {
+    /// Each element of the normalisation dimension is multiplied elementwise by this
     pub gamma: Tensor<N>,
+    /// Added elementwise to each element in the normalisation dimension
     pub beta: Tensor<N>,
+    /// Normalisation factor
     pub eps: f32,
+    /// Contains information needed to perform quantised evaluation
     pub quant_info: Option<QuantisedLayerNormData>,
 }
 
@@ -89,16 +97,14 @@ pub struct QuantisedLayerNormData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 /// Data obtained during quantised evaluation of [`LayerNorm`] that is used during proving
-pub struct LayerNormData<E: ExtensionField> {
+pub struct LayerNormData {
     /// The input of the inverse square root lookup
     lookup_input: Vec<Element>,
     /// The output of the inverse square root lookup
     lookup_output: Vec<Element>,
     /// The part of the input that need to be range checked
     range_check: Vec<Element>,
-    _phantom: PhantomData<E>,
 }
 
 impl<N: Number> LayerNorm<N> {
@@ -298,6 +304,43 @@ pub struct LayerNormCtx {
     top_chunk_scalar_log: usize,
 }
 
+impl LayerNormCtx {
+    fn calculate_lt_poly_evals<E: ExtensionField>(unpadded_shape: &Shape, point: &[E]) -> Vec<E> {
+        // For each dimension we need to use the first ceil_log2(dim) elements of point to calculate the eval
+        let to_bits_le_field = |d: usize, bits: usize| -> Vec<E> {
+            let mut val = d - 1;
+            (0..bits)
+                .map(|_| {
+                    let bit = val & 1;
+                    val >>= 1;
+                    E::from_canonical_usize(bit)
+                })
+                .collect::<Vec<E>>()
+        };
+
+        unpadded_shape
+            .iter()
+            .take(unpadded_shape.len() - 1)
+            .scan(point.len(), |state, &d| {
+                let log_d = ceil_log2(d);
+                *state -= log_d;
+                let le_bits = to_bits_le_field(d, log_d);
+
+                Some(
+                    point
+                        .iter()
+                        .skip(*state)
+                        .take(log_d)
+                        .zip(le_bits)
+                        .fold(E::ONE, |acc, (&x, y)| {
+                            acc * (E::ONE - x - y + E::TWO * x * y) + (E::ONE - x) * y
+                        }),
+                )
+            })
+            .collect::<Vec<E>>()
+    }
+}
+
 impl OpInfo for LayerNormCtx {
     // https://docs.rs/burn/0.17.0/burn/nn/struct.LayerNorm.html#method.forward
     fn output_shapes(&self, input_shapes: &[Shape], _padding_mode: PaddingMode) -> Vec<Shape> {
@@ -328,11 +371,7 @@ impl<N: Number> OpInfo for LayerNorm<N> {
     }
 
     fn describe(&self) -> String {
-        format!(
-            "LayerNorm({:?},{:?})",
-            self.gamma.get_shape(),
-            self.beta.get_shape()
-        )
+        format!("LayerNorm(dimension size: {:?})", self.gamma.get_shape(),)
     }
 
     fn is_provable(&self) -> bool {
@@ -393,7 +432,7 @@ impl Evaluate<Element> for LayerNorm<Element> {
     fn evaluate<E: ExtensionField>(
         &self,
         inputs: &[&Tensor<Element>],
-        _unpadded_input_shapes: Vec<Shape>,
+        unpadded_input_shapes: Vec<Shape>,
     ) -> Result<LayerOut<Element, E>> {
         // First we check to see if there is any quant_info, if not error
         ensure!(
@@ -441,29 +480,109 @@ impl Evaluate<Element> for LayerNorm<Element> {
             })
             .unzip();
 
+        // When we work out the output data we also have to account for the fact the tensor may already be padded for proving
+        let unpadded = input
+            .shape
+            .iter()
+            .zip(unpadded_input_shapes[0].iter())
+            .all(|(&a, &b)| a == b);
+        // Check to see if `self` has been padded
+        let op_padded = self.gamma.shape.iter().product::<usize>() != *dim_size;
+
+        let (gamma, beta) = match (unpadded, op_padded) {
+            // In (true, false) scenario we just expand self.gamma and self.beta
+            (true, false) => {
+                let expanded_gamma = self.gamma.expand(&unpadded_input_shapes[0])?;
+                let expanded_beta = self.beta.expand(&unpadded_input_shapes[0])?;
+                (expanded_gamma, expanded_beta)
+            }
+            // (false, false) means we have to expand to unpadded input shape and then pad to next power of two
+            (false, false) => {
+                let expanded_gamma = self
+                    .gamma
+                    .expand(&unpadded_input_shapes[0])?
+                    .pad_next_power_of_two();
+                let expanded_beta = self
+                    .beta
+                    .expand(&unpadded_input_shapes[0])?
+                    .pad_next_power_of_two();
+                (expanded_gamma, expanded_beta)
+            }
+            // (true, true) means we have to remove the padding from self.gamma and self.beta and then expand
+            (true, true) => {
+                let unpadded_gamma = Tensor::<Element>::new(
+                    vec![*dim_size].into(),
+                    self.gamma
+                        .get_data()
+                        .iter()
+                        .take(*dim_size)
+                        .copied()
+                        .collect::<Vec<Element>>(),
+                )
+                .expand(&unpadded_input_shapes[0])?;
+                let unpadded_beta = Tensor::<Element>::new(
+                    vec![*dim_size].into(),
+                    self.beta
+                        .get_data()
+                        .iter()
+                        .take(*dim_size)
+                        .copied()
+                        .collect::<Vec<Element>>(),
+                )
+                .expand(&unpadded_input_shapes[0])?;
+                (unpadded_gamma, unpadded_beta)
+            }
+            // (false, true) means we have to remove the padding from self.gamma and self.beta, then expand and finally repad to the next power of two
+            (false, true) => {
+                let padded_gamma = Tensor::<Element>::new(
+                    vec![*dim_size].into(),
+                    self.gamma
+                        .get_data()
+                        .iter()
+                        .take(*dim_size)
+                        .copied()
+                        .collect::<Vec<Element>>(),
+                )
+                .expand(&unpadded_input_shapes[0])?
+                .pad_next_power_of_two();
+                let padded_beta = Tensor::<Element>::new(
+                    vec![*dim_size].into(),
+                    self.beta
+                        .get_data()
+                        .iter()
+                        .take(*dim_size)
+                        .copied()
+                        .collect::<Vec<Element>>(),
+                )
+                .expand(&unpadded_input_shapes[0])?
+                .pad_next_power_of_two();
+                (padded_gamma, padded_beta)
+            }
+        };
+
         let output_data = input
             .get_data()
             .chunks(final_dim)
             .zip(inv_sqrt_output.iter())
             .flat_map(|(input_chunk, denominator)| {
                 let sum = input_chunk.iter().sum::<Element>();
-                izip!(input_chunk, self.gamma.get_data(), self.beta.get_data())
-                    .map(|(&v, &gamma, &beta)| {
-                        gamma * (*dim_size as Element * v - sum) * *denominator + beta
-                    })
+                input_chunk
+                    .iter()
+                    .map(|&v| (*dim_size as Element * v - sum) * *denominator)
                     .collect::<Vec<Element>>()
             })
             .collect::<Vec<Element>>();
 
         // Make the proving data
-        let layernorm_data = LayerNormData::<E> {
+        let layernorm_data = LayerNormData {
             lookup_input: inv_sqrt_input,
             lookup_output: inv_sqrt_output,
             range_check,
-            _phantom: PhantomData::<E>,
         };
 
-        let output_tensor = Tensor::<Element>::new(input.get_shape(), output_data);
+        let output_tensor = Tensor::<Element>::new(input.get_shape(), output_data)
+            .mul(&gamma)
+            .add(&beta);
         Ok(LayerOut::from_tensor(output_tensor)
             .with_proving_data(ProvingData::LayerNorm(layernorm_data)))
     }
@@ -481,14 +600,16 @@ impl Requant {
         let input_s = input_scaling.scale();
         let output_s = output_scaling.scale();
 
+        let input_fract = input_s.log2().fract();
+        let output_fract = output_s.log2().fract();
         let m = input_s / output_s;
         let m_log = m.log2();
         let int_part = m_log.trunc().abs();
         // We allow for a possible floating point error that results in an imperfect division
         ensure!(
-            (m_log.abs() - int_part).abs() < 1e-5,
+            (input_fract - output_fract).abs() < 1e-5,
             "Cannot perform shift only Requant as the fractional part of the exponent was too large, fractional part: {}",
-            (m_log.abs() - int_part).abs()
+            (input_fract - output_fract).abs()
         );
 
         // We want the part that gets shifted away to be a multiple of the quantisation bit length (that way we can use the same range table for each chunk)
@@ -756,7 +877,8 @@ where
             .collect::<Vec<E>>()
             .into_mle()
             .into();
-        let (claims, proof) = self.prove_step(node_id, last_claims, input_mle, mean_mle, prover)?;
+        let (claims, proof) =
+            self.prove_step(node_id, last_claims, input_mle, mean_mle, step_data, prover)?;
         // Add the proof to the proof list
         prover.push_proof(node_id, LayerProof::<E, PCS>::LayerNorm(proof));
 
@@ -796,6 +918,7 @@ impl LayerNorm<Element> {
         last_claims: Vec<&Claim<E>>,
         input_poly: ArcMultilinearExtension<E>,
         mean_poly: ArcMultilinearExtension<E>,
+        step_data: &StepData<E, E>,
         prover: &mut Prover<E, T, PCS>,
     ) -> Result<ProveOut<E, PCS>> {
         // Check we have the correct number of claims
@@ -927,7 +1050,7 @@ impl LayerNorm<Element> {
 
         // `last_claim.eval` should be equal to `gamma(b) * eq(r,b)*(N * input(b))*inv_sqrt_out(b) - 2^k* gamma(b) * eq(2^-1,..,rk,..,rn,b)*input(b)*inv_qrt_out(b) + beta(b)`
         let last_claim_point = &last_claim.point;
-        // We need to repeat the gamma and beta evals the correct number of times
+        // We need to repeat the gamma and beta evals the correct number of times, additionally we also need to construct the less than polys to multiply beta by
         let number_of_repeats = 1usize << (last_claim_point.len() - sum_dim_vars);
         let gamma_poly: ArcMultilinearExtension<E> = std::iter::repeat_n(
             self.gamma
@@ -953,6 +1076,8 @@ impl LayerNorm<Element> {
         .collect::<Vec<E>>()
         .into_mle()
         .into();
+        let mut lt_polys =
+            LayerNorm::<Element>::lt_polys::<E>(&step_data.unpadded_output_shapes[0]);
 
         let last_claim_eq: ArcMultilinearExtension<E> =
             compute_betas_eval(last_claim_point).into_mle().into();
@@ -987,7 +1112,10 @@ impl LayerNorm<Element> {
             ],
             -second_batch_chal,
         );
-        vp.add_mle_list(vec![last_claim_eq, beta_poly], second_batch_chal);
+
+        lt_polys.insert(0, beta_poly);
+        lt_polys.insert(0, last_claim_eq);
+        vp.add_mle_list(lt_polys, second_batch_chal);
 
         vp.add_mle_list(vec![input_eq_poly, inv_sqrt_out_poly], third_batch_chal);
         #[allow(deprecated)]
@@ -1096,12 +1224,43 @@ impl LayerNorm<Element> {
 
         Ok((vec![input_claim], proof))
     }
+    /// Internal method used to calculate the less than polys that we have to multiply beta by
+    fn lt_polys<E: ExtensionField>(unpadded_shape: &Shape) -> Vec<ArcMultilinearExtension<E>> {
+        let total_vars = unpadded_shape.iter().map(|d| ceil_log2(*d)).sum::<usize>();
+        // For the first dim we have to repeat each element the correct number of times,
+        // We don't make a poly for the final dimension
+        unpadded_shape
+            .iter()
+            .take(unpadded_shape.len() - 1)
+            .scan(0usize, |state, &d| {
+                let log_d = ceil_log2(d);
+                *state += log_d;
+                let lt_evals = (0..d.next_power_of_two())
+                    .flat_map(|i| {
+                        if i < d {
+                            vec![E::BaseField::ONE; 1usize << (total_vars - *state)]
+                        } else {
+                            vec![E::BaseField::ZERO; 1usize << (total_vars - *state)]
+                        }
+                    })
+                    .collect::<Vec<E::BaseField>>();
+
+                let num_repeats = 1usize << (*state - log_d);
+                let full_evals = vec![lt_evals; num_repeats].concat();
+                Some(
+                    DenseMultilinearExtension::<E>::from_evaluations_vec(total_vars, full_evals)
+                        .into(),
+                )
+            })
+            .collect::<Vec<ArcMultilinearExtension<E>>>()
+    }
+
     /// Internal method for generating the [`LogUpWitness`] for a [`LayerNorm`] step.
     fn lookup_witness<E, PCS>(
         &self,
         id: NodeId,
         ctx: &Context<E, PCS>,
-        layernorm_data: &LayerNormData<E>,
+        layernorm_data: &LayerNormData,
     ) -> Result<LookupWitnessGen<E, PCS>>
     where
         E: ExtensionField,
@@ -1113,7 +1272,6 @@ impl LayerNorm<Element> {
             lookup_input,
             lookup_output,
             range_check,
-            ..
         } = layernorm_data;
 
         let num_vars = ceil_log2(lookup_input.len());
@@ -1237,7 +1395,7 @@ where
         proof: &Self::Proof,
         last_claims: &[&Claim<E>],
         verifier: &mut Verifier<E, T, PCS>,
-        _shape_step: &ShapeStep,
+        shape_step: &ShapeStep,
     ) -> Result<Vec<Claim<E>>> {
         // First we check that we only have one claim in `last_claims`
         ensure!(
@@ -1416,10 +1574,15 @@ where
                 - mean_io_eval * mean_io_eval);
         // Now the second part
         let last_claim_eq = eq_xy_eval(&last_claim.point, &io_point);
+
+        let lt_poly_evals =
+            LayerNormCtx::calculate_lt_poly_evals(&shape_step.unpadded_input_shape[0], &io_point)
+                .into_iter()
+                .product::<E>();
         let second_part = second_batch_chal
             * last_claim_eq
             * (inv_eval * *gamma_eval * (dim_size_field * input_io_eval - mean_io_eval)
-                + *beta_eval);
+                + lt_poly_evals * *beta_eval);
 
         // And the final part
         let third_part = third_batch_chal * input_eq_eval * inv_eval;

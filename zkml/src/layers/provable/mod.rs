@@ -136,6 +136,10 @@ pub enum ProvingData<E: ExtensionField> {
     Softmax(SoftmaxData<E>),
     /// Variant for extra data used to prove Mha layer, computed during quantised evaluation
     Mha(MhaData<E>),
+    /// Variant used for extra data used to prove [LayerNorm][`crate::layers::transformer::layernorm::LayerNorm`]
+    LayerNorm(LayerNormData),
+    /// Varient used for extra data used to prove [ArgMax][`crate::layers::transformer::logits::Logits`]
+    ArgMax(ArgmaxData<E>)
     /// Variant used when no extra data is returned.
     None,
 }
@@ -198,7 +202,7 @@ impl<T, E: ExtensionField> LayerOut<T, E> {
         }
     }
 
-    pub fn try_layernorm_data(&self) -> Option<&LayerNormData<E>> {
+    pub fn try_layernorm_data(&self) -> Option<&LayerNormData> {
         match self.proving_data {
             ProvingData::LayerNorm(ref layernorm_data) => Some(layernorm_data),
             _ => None,
