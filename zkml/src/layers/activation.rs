@@ -28,7 +28,7 @@ use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::mle::{DenseMultilinearExtension, IntoMLE};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::marker::PhantomData;
+use std::{collections::HashMap, marker::PhantomData};
 use transcript::Transcript;
 
 use crate::{quantization::BIT_LEN, tensor::Tensor};
@@ -229,24 +229,29 @@ where
             "Found more than 1 output tensor in inference step of activation layer"
         );
 
-        // Calculate the column_evals and also the merged lookups
-        #[allow(clippy::type_complexity)]
-        let (merged_lookups, field): (Vec<Element>, Vec<(E::BaseField, E::BaseField)>) = step_data
-            .inputs[0]
-            .get_data()
-            .iter()
-            .zip(step_data.outputs.outputs()[0].get_data().iter())
-            .map(|(a, b)| {
-                let a_field: E = a.to_field();
-                let b_field: E = b.to_field();
-                (
-                    a + COLUMN_SEPARATOR * b,
-                    (a_field.as_bases()[0], b_field.as_bases()[0]),
-                )
-            })
-            .unzip();
+        let inputs = step_data.inputs[0].get_data();
+        let outputs = step_data.outputs.outputs()[0].get_data();
+        debug_assert_eq!(
+            inputs.len(),
+            outputs.len(),
+            "Input and outputs must have the same length",
+        );
+        let size = inputs.len();
 
-        let (col_one, col_two): (Vec<E::BaseField>, Vec<E::BaseField>) = field.into_iter().unzip();
+        let mut element_count = HashMap::<Element, u64>::new();
+        let mut col_one = Vec::<E::BaseField>::with_capacity(size);
+        let mut col_two = Vec::<E::BaseField>::with_capacity(size);
+        for (a, b) in inputs.iter().zip(outputs.iter()) {
+            // Calculate the lookup element
+            let el = a + COLUMN_SEPARATOR * b;
+            *element_count.entry(el).or_default() += 1;
+
+            // Calculate the column_evals
+            let a_field: E = a.to_field();
+            let b_field: E = b.to_field();
+            col_one.push(a_field.as_bases()[0]);
+            col_two.push(b_field.as_bases()[0]);
+        }
 
         let num_vars = ceil_log2(col_one.len());
 
@@ -277,7 +282,7 @@ where
                 TableType::Relu,
             )],
         );
-        gen.new_lookups.insert(TableType::Relu, merged_lookups);
+        gen.element_count.insert(TableType::Relu, element_count);
 
         Ok(gen)
     }

@@ -9,7 +9,7 @@ use crate::{
     },
     layers::LayerProof,
     lookup::{
-        context::{COLUMN_SEPARATOR, LookupWitnessGen, TableType},
+        context::{COLUMN_SEPARATOR, LookupWitnessGen, TableType, count_elements},
         logup_gkr::{
             prover::batch_prove as logup_batch_prove, structs::LogUpProof,
             verifier::verify_logup_proof,
@@ -273,17 +273,14 @@ where
             })
             .collect::<Vec<Vec<Element>>>();
 
-        let merged_shifted = shifted_chunks
-            .iter()
-            .flatten()
-            .copied()
-            .collect::<Vec<Element>>();
+        let shifted_elements_count = count_elements(shifted_chunks.iter().flatten().copied());
 
-        let merged_clamping = clamping_in
-            .iter()
-            .zip(clamping_out.iter())
-            .map(|(&c_in, &c_out)| c_in + c_out * COLUMN_SEPARATOR)
-            .collect::<Vec<Element>>();
+        let clamping_elements_count = count_elements(
+            clamping_in
+                .iter()
+                .zip(clamping_out.iter())
+                .map(|(&c_in, &c_out)| c_in + c_out * COLUMN_SEPARATOR),
+        );
         let num_vars = ceil_log2(clamping_in.len());
         // Add the witnesses to be committed
 
@@ -351,9 +348,12 @@ where
                 ),
             ],
         );
-        gen.new_lookups.insert(TableType::Range, merged_shifted);
-        gen.new_lookups
-            .insert(TableType::Clamping(self.clamping_size()), merged_clamping);
+        gen.element_count
+            .insert(TableType::Range, shifted_elements_count);
+        gen.element_count.insert(
+            TableType::Clamping(self.clamping_size()),
+            clamping_elements_count,
+        );
 
         Ok(gen)
     }
