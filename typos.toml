@@ -1,0 +1,7 @@
+[files]
+extend-exclude = ["*.nix"]
+
+[default]
+format = "brief"
+check-filename = true
+extend-identifiers = {"Ein" = "Ein", "EinSum" = "EinSum", "NdArray" = "NdArray"}

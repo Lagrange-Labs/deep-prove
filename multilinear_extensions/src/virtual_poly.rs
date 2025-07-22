@@ -38,10 +38,12 @@ pub type ArcMultilinearExtension<'a, E> =
 /// - flattened_ml_extensions stores the multilinear extension representation of
 ///   f0, f1, f2, f3 and f4
 /// - products is
-///     \[
-///         (c0, \[0, 1, 2\]),
-///         (c1, \[3, 4\])
-///     \]
+///   $$
+///   \[
+///   (c0, \[0, 1, 2\]),
+///   (c1, \[3, 4\])
+///   \]
+///   $$
 /// - raw_pointers_lookup_table maps fi to i
 ///
 #[derive(Default, Clone)]
@@ -180,6 +182,7 @@ impl<'a, E: ExtensionField> VirtualPolynomial<'a, E> {
     /// Multiple the current VirtualPolynomial by an MLE:
     /// - add the MLE to the MLE list;
     /// - multiple each product by MLE and its coefficient.
+    ///
     /// Returns an error if the MLE has a different `num_vars()` from self.
     pub fn mul_by_mle(&mut self, mle: ArcMultilinearExtension<'a, E>, coefficient: E::BaseField) {
         let start = start_timer!(|| "mul by mle");

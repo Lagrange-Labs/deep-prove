@@ -7,25 +7,22 @@ use crate::{
         Layer,
         activation::{Activation, GELU},
         add,
-        concat_matmul::ConcatMatMul,
         matrix_mul::MatMul,
         provable::{Edge, Node, NodeId},
-        reshape::Reshape,
         transformer::{
-            embeddings::Embeddings, layernorm::LayerNorm, logits::Logits, mha::MhaQK,
-            positional::Positional, qkv::QKV, softmax::Softmax,
+            embeddings::Embeddings, layernorm::LayerNorm, logits::Logits, mha::Mha,
+            positional::Positional, qkv::QKV,
         },
     },
     model::Model,
     padding::PaddingMode,
-    parser::gguf,
     tensor::{Number, Shape},
 };
 use rust_tokenizers::{
     tokenizer::{Gpt2Tokenizer, Tokenizer as RT},
     vocab::Vocab,
 };
-use std::{collections::HashMap, env, fs, path::Path, process};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, derive_more::From, derive_more::Into)]
 pub struct Token(usize);
@@ -62,7 +59,7 @@ impl From<&Token> for u32 {
 }
 
 impl Token {
-    pub fn to_number<N: Number>(&self) -> N {
+    pub fn as_number<N: Number>(&self) -> N {
         N::from_usize(self.0)
     }
 }
@@ -115,13 +112,13 @@ pub enum LLMModel {
 }
 
 impl LLMModel {
-    pub fn to_provable_model(
+    pub fn into_provable_model(
         self,
         c: &LLMConfig,
         user_input_shape: Shape,
     ) -> anyhow::Result<Model<f32>> {
         match self {
-            Self::GPT2(model) => model.to_provable_model(c, user_input_shape),
+            Self::GPT2(model) => model.into_provable_model(c, user_input_shape),
         }
     }
 }
@@ -156,7 +153,7 @@ impl GPT2Model {
     /// Creates a Model<f32> from the GPT2Model. Currently it does NOT support the embeddings and positional nor
     /// multiple passes.
     /// User input shape is the shape of the user input tensor.
-    pub fn to_provable_model(
+    pub fn into_provable_model(
         self,
         c: &LLMConfig,
         user_input_shape: Shape,
@@ -245,14 +242,10 @@ impl Attention<f32> {
             self.k_bias,
             self.v,
             self.v_bias,
-        );
-        let mha = MhaQK::new(c.num_heads, c.head_dim());
-        let softmax = Softmax::<f32>::new()
-            .with_scale((1.0 / (c.head_dim() as f32)).sqrt())
-            .on_dim(1);
-        let qkt_v = ConcatMatMul::new_with_permute(vec![1, 0, 2]);
+            c.num_heads,
+        )?;
+        let mha = Mha::new(c.context_length, c.num_heads, c.head_dim())?;
         let out = MatMul::new_constant(self.out, Some(self.out_bias))?;
-        let reshape_merged = Reshape::new_subspace(1..=2, vec![c.hidden_size]);
         // input is [seq_len, emb_size]
         let last_node_id =
             model.add_consecutive_layer(Layer::LayerNorm(self.norm), input_node_id)?;
@@ -261,22 +254,9 @@ impl Attention<f32> {
         // then this output two tensors:
         // * first one is [num_heads, seq_len] (Q @ K^T - all heads concatenated)
         // * second one is [num_heads, seq_len, head_dim] (V)
-        let mha_id = model.add_consecutive_layer(Layer::MhaQK(mha), Some(last_node_id))?;
+        let mha_id = model.add_consecutive_layer(Layer::Mha(mha), Some(last_node_id))?;
 
-        // same output shape as QKT but now we have softmaxed values
-        let last_node_id = model.add_node(Node::new(
-            vec![Edge::new(mha_id, 0)],
-            Layer::Softmax(softmax),
-        ))?;
-
-        let last_node_id = model.add_node(Node::new(
-            // here we take the first output of softmax (QKT) and the second output of MhaQK (V)
-            vec![Edge::new(last_node_id, 0), Edge::new(mha_id, 1)],
-            Layer::ConcatMatMul(qkt_v),
-        ))?;
-        let last_node_id =
-            model.add_consecutive_layer(Layer::Reshape(reshape_merged), Some(last_node_id))?;
-        let last_node_id = model.add_consecutive_layer(Layer::MatMul(out), Some(last_node_id))?;
+        let last_node_id = model.add_consecutive_layer(Layer::MatMul(out), Some(mha_id))?;
         let last_node_id = model.add_node(Node::new(
             vec![
                 Edge {
@@ -318,19 +298,20 @@ impl TokenizerData {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn load_tokenizer_from_gguf(path: impl AsRef<Path>) -> anyhow::Result<impl LLMTokenizer> {
+    #[cfg(test)]
+    pub fn load_tokenizer_from_gguf(
+        path: impl AsRef<std::path::Path>,
+    ) -> anyhow::Result<impl LLMTokenizer> {
+        use crate::parser::gguf;
+
         let loader = gguf::FileTensorLoader::from_path(path)?;
         let tokenizer = TokenizerData::from_loader(&loader)?.into_tokenizer();
         Ok(tokenizer)
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn into_tokenizer(self) -> impl LLMTokenizer {
-        let temp_dir = env::temp_dir();
-        let pid = process::id();
-        let vocab_path = temp_dir.join(format!("vocab-{}.json", pid));
-        let merges_path = temp_dir.join(format!("merges-{}.txt", pid));
+        use std::io::Write;
 
         // Prepare vocab.json content
         let values: HashMap<String, i64> = self
@@ -339,23 +320,15 @@ impl TokenizerData {
             .enumerate()
             .map(|(i, s)| (s, i as i64))
             .collect();
-        let vocab_file = fs::File::create(&vocab_path).unwrap();
-        serde_json::to_writer(vocab_file, &values).unwrap();
+        let vocab_file = tempfile::NamedTempFile::new().unwrap();
+        serde_json::to_writer(&vocab_file, &values).unwrap();
 
         // Prepare merges.txt content
         let merges_content = self.merges.join("\n");
-        fs::write(&merges_path, merges_content).unwrap();
+        let mut merges_file = tempfile::NamedTempFile::new().unwrap();
+        merges_file.write_all(merges_content.as_bytes()).unwrap();
 
-        let tokenizer = Gpt2Tokenizer::from_file(
-            vocab_path.to_str().unwrap(),
-            merges_path.to_str().unwrap(),
-            false,
-        )
-        .unwrap();
-
-        // Clean up
-        fs::remove_file(vocab_path).ok();
-        fs::remove_file(merges_path).ok();
+        let tokenizer = Gpt2Tokenizer::from_file(vocab_file, merges_file, false).unwrap();
 
         tokenizer
     }

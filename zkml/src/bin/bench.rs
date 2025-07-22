@@ -1,13 +1,8 @@
-use std::{
-    collections::HashMap,
-    fs::{File, OpenOptions},
-    io::BufReader,
-    path::Path,
-    time,
-};
+use std::{fs::File, io::BufReader};
 use timed_core::Output;
 #[cfg(feature = "blake")]
 use transcript::blake::BlakeTranscript;
+use utils::{Metrics, init_csv_recorder, stream_data, stream_metrics};
 use zkml::{
     model::Model,
     quantization::{AbsoluteMax, InferenceObserver, ModelMetadata},
@@ -15,7 +10,6 @@ use zkml::{
 
 use anyhow::{Context as CC, Result, bail, ensure};
 use clap::Parser;
-use csv::WriterBuilder;
 use ff_ext::GoldilocksExt2;
 use mpcs::{Basefold, BasefoldRSParams, Hasher};
 use tracing::{debug, info};
@@ -43,12 +37,10 @@ fn new_transcript() -> Transcript {
     #[cfg(feature = "blake")]
     {
         use transcript::blake::BlakeTranscript;
-        println!("using blake transcript");
         BlakeTranscript::new(b"bench")
     }
     #[cfg(not(feature = "blake"))]
     {
-        println!("using basic transcript");
         default_transcript()
     }
 }
@@ -171,7 +163,7 @@ impl InputJSON {
         );
         Ok(())
     }
-    fn to_elements(self, md: &ModelMetadata) -> (Vec<Vec<Element>>, Vec<Vec<Element>>) {
+    fn into_elements(self, md: &ModelMetadata) -> (Vec<Vec<Element>>, Vec<Vec<Element>>) {
         let input_sf = md.input.first().unwrap();
         let inputs = self
             .input_data
@@ -212,13 +204,6 @@ impl InputJSON {
         calculate_average_accuracy(&accuracies)
     }
 }
-
-const CSV_SETUP: &str = "setup (ms)";
-const CSV_INFERENCE: &str = "inference (ms)";
-const CSV_PROVING: &str = "proving (ms)";
-const CSV_VERIFYING: &str = "verifying (ms)";
-const CSV_ACCURACY: &str = "accuracy (bool)";
-const CSV_PROOF_SIZE: &str = "proof size (KB)";
 
 /// Runs the model in float format and returns the average accuracy
 fn run_float_model(raw_inputs: &InputJSON, model: &Model<f32>) -> Result<f32> {
@@ -273,82 +258,100 @@ fn read_model(args: &Args, inputs: &InputJSON) -> Result<(Model<Element>, ModelM
 }
 
 fn run(args: Args) -> anyhow::Result<()> {
-    info!("[+] Reading raw input/output from {}", args.io);
+    init_csv_recorder(["accuracy", "proof_size"], &args.bench).unwrap();
+
+    info!("== Reading Model ==");
+    let metrics = Metrics::new();
+
     let run_inputs = InputJSON::from(&args.io, args.num_samples).context("loading input:")?;
-    info!("[+] Found {} IO samples", run_inputs.input_data.len());
+    info!(
+        "[+] Read input from {} with {} IO samples",
+        args.io,
+        run_inputs.input_data.len()
+    );
+
     let (model, md) = read_model(&args, &run_inputs)?;
-    info!("[+] Model loaded");
+
+    info!("[+] Model loaded:");
     model.describe();
 
     let run_inputs = run_inputs.filter(args.run_indices.as_ref());
 
-    // Get float accuracy if float model is available
+    let span = metrics.to_span();
+    stream_metrics("Model loading", &span);
+    info!("== Reading model metrics: {} ==", span);
+
+    info!("== Accuracy ==");
+    let metrics = Metrics::new();
+
     let float_accuracy = if let Some(ref float_model) = md.float_model {
-        info!("[+] Running float model");
-        run_float_model(&run_inputs, float_model)?
+        let float_accuracy = run_float_model(&run_inputs, float_model)?;
+        info!("[+] Ran float model");
+        float_accuracy
     } else {
         info!("[!] No float model available");
         0.0
     };
 
-    info!("[+] Computing PyTorch accuracy");
     let num_samples = run_inputs.output_data.len();
     let pytorch_accuracy = run_inputs.compute_pytorch_accuracy();
-    info!("[+] Quantizing inputs with strategy: {}", args.quantization);
-    let (inputs, given_outputs) = run_inputs.to_elements(&md);
+    info!("[+] Computed PyTorch accuracy");
 
-    // Generate context once and measure the time
-    let now = time::Instant::now();
+    let span = metrics.to_span();
+    stream_metrics("Accuracy metrics", &span);
+    info!("== Accuracy metrics: {} ==", span);
+
+    info!("== Creating context ==");
+    let metrics = Metrics::new();
+
+    let (inputs, given_outputs) = run_inputs.into_elements(&md);
+    info!("[+] Quantized inputs with strategy: {}", args.quantization);
+
     let ctx = if !args.skip_proving {
-        info!("[+] Generating context for proving");
-        Some(Context::<F, Pcs<F>>::generate(&model, None).expect("unable to generate context"))
+        Some(
+            Context::<F, Pcs<F>>::generate(&model, None, None).expect("unable to generate context"),
+        )
     } else {
         None
     };
-    let setup_time = now.elapsed().as_millis();
-    info!("STEP: {} took {}ms", CSV_SETUP, setup_time);
 
-    // Collect accuracies for final average
+    let span = metrics.to_span();
+    stream_metrics("Context creation", &span);
+    info!("== Context creation metrics: {} ==", span);
+
     let mut accuracies = Vec::new();
-    // Track failed inputs
     let mut failed_inputs = Vec::new();
-
     let input_iter = inputs.into_iter().zip(given_outputs).enumerate();
 
     for (i, (input, given_output)) in input_iter {
-        let mut bencher = CSVBencher::from_headers(vec![
-            CSV_SETUP,
-            CSV_INFERENCE,
-            CSV_PROVING,
-            CSV_VERIFYING,
-            CSV_PROOF_SIZE,
-            CSV_ACCURACY,
-        ]);
-
-        // Store the setup time in the bencher (without re-running setup)
-        bencher.set(CSV_SETUP, setup_time);
-
+        info!("== Running model ==");
+        let metrics = Metrics::new();
         let input_tensor = model.load_input_flat(vec![input])?;
-        // let input_tensor : Tensor<Element> = Tensor::new(model.input_not_padded.clone(), input);
 
-        info!("[+] Running inference");
-        // Handle model.run failures gracefully
-        let trace_result = bencher.r(CSV_INFERENCE, || model.run(&input_tensor));
+        let trace_result = model.run(&input_tensor);
+
+        let span = metrics.to_span();
+        stream_metrics(format!("Inference {i}"), &span);
+        info!("== Running model metrics: {} ==", span);
+
+        info!("== Checking accuracy ==");
+        let metrics = Metrics::new();
 
         // If model.run fails, print the error and continue to the next input
         let trace = match trace_result {
             Ok(trace) => trace,
-            Err(e) => {
+            Err(err) => {
                 info!(
                     "[!] Error running inference for input {}/{}: {}",
                     i + 1,
                     args.num_samples,
-                    e
+                    err,
                 );
                 failed_inputs.push(i);
                 continue; // Skip to the next input without writing to CSV
             }
         };
+
         // TEST:
         //  This prints the min/max in f32 of the output of each layer for this run
         //  Useful to check consistency with pytorch for example
@@ -363,48 +366,65 @@ fn run(args: Args) -> anyhow::Result<()> {
         //        );
         //    }
         //}
+
         let output = trace.outputs()?[0];
         let accuracy = argmax_compare(&given_output, output.get_data());
         accuracies.push(accuracy);
-        bencher.set(CSV_ACCURACY, accuracy);
-        // Log per-run accuracy
+
         info!(
             "Run {}/{}: Accuracy: {}",
             i + 1,
             args.num_samples,
             if accuracy > 0 { "correct" } else { "incorrect" }
         );
+
+        let span = metrics.to_span();
+        stream_data(format!("Accuracy {i}"), &span, [("accuracy", accuracy)]);
+        info!("== Checking accuracy metrics: {} ==", span);
+
         if args.skip_proving {
             info!("[+] Skipping proving");
             continue;
         }
-        info!("[+] Running prover");
+
+        info!("== Proving ==");
+        let metrics = Metrics::new();
+
         let io = trace.to_verifier_io();
         let mut prover_transcript = new_transcript();
         let prover = Prover::<_, _, _>::new(ctx.as_ref().unwrap(), &mut prover_transcript);
-        let proof = bencher.r(CSV_PROVING, move || {
-            prover.prove(trace).expect("unable to generate proof")
-        });
+        let proof = prover.prove(&trace).expect("unable to generate proof");
 
         // Serialize proof using MessagePack and calculate size in KB
         let proof_bytes = to_vec_named(&proof)?;
         let proof_size_kb = proof_bytes.len() as f64 / 1024.0;
-        bencher.set(CSV_PROOF_SIZE, format!("{proof_size_kb:.3}"));
 
-        info!("[+] Running verifier");
+        let span = metrics.to_span();
+        stream_data(
+            format!("Proving {i}"),
+            &span,
+            [("proof_size", proof_size_kb)],
+        );
+        info!("== Proving metrics: {} ==", span);
+
+        info!("== Verifying ==");
+        let metrics = Metrics::new();
+
         let mut verifier_transcript = new_transcript();
-        bencher.r(CSV_VERIFYING, || {
-            verify::<_, _, _>(
-                ctx.as_ref().unwrap().clone(),
-                proof,
-                io,
-                &mut verifier_transcript,
-            )
-            .expect("invalid proof")
-        });
+        verify::<_, _, _>(
+            ctx.as_ref().unwrap().clone(),
+            proof,
+            io,
+            &mut verifier_transcript,
+        )
+        .expect("invalid proof");
+
         info!("[+] Verify proof: valid");
 
-        bencher.flush(&args.bench)?;
+        let span = metrics.to_span();
+        stream_metrics(format!("Verify {i}"), &span);
+        info!("== Verifier metrics: {} ==", span);
+
         info!("[+] Benchmark results appended to {}", args.bench);
     }
 
@@ -439,78 +459,6 @@ fn argmax_compare<A: PartialOrd, B: PartialOrd>(
     let a_max = argmax(&given_output[..compare_size]);
     let b_max = argmax(&computed_output[..compare_size]);
     if a_max == b_max { 1 } else { 0 }
-}
-
-struct CSVBencher {
-    data: HashMap<String, String>,
-    headers: Vec<String>,
-}
-
-impl CSVBencher {
-    pub fn from_headers<S: IntoIterator<Item = T>, T: Into<String>>(headers: S) -> Self {
-        let strings: Vec<String> = headers.into_iter().map(Into::into).collect();
-        Self {
-            data: Default::default(),
-            headers: strings,
-        }
-    }
-
-    pub fn r<A, F: FnOnce() -> A>(&mut self, column: &str, f: F) -> A {
-        self.check(column);
-        let now = time::Instant::now();
-        let output = f();
-        let elapsed = now.elapsed().as_millis();
-        info!("STEP: {} took {}ms", column, elapsed);
-        self.data.insert(column.to_string(), elapsed.to_string());
-        output
-    }
-
-    fn check(&self, column: &str) {
-        if self.data.contains_key(column) {
-            panic!(
-                "CSVBencher only flushes one row at a time for now (key already registered: {column})"
-            );
-        }
-        if !self.headers.contains(&column.to_string()) {
-            panic!("column {column} non existing");
-        }
-    }
-
-    pub fn set<I: ToString>(&mut self, column: &str, data: I) {
-        self.check(column);
-        self.data.insert(column.to_string(), data.to_string());
-    }
-
-    fn flush(&self, fname: &str) -> anyhow::Result<()> {
-        let file_exists = Path::new(fname).exists();
-        let file = OpenOptions::new()
-            .create(true)
-            .append(file_exists)
-            .write(true)
-            .open(fname)
-            .context(format!("opening file {fname}"))?;
-        let mut writer = WriterBuilder::new()
-            .has_headers(!file_exists)
-            .from_writer(file);
-
-        let values: Vec<_> = self
-            .headers
-            .iter()
-            .map(|k| self.data[k].to_string())
-            .collect();
-
-        if !file_exists {
-            writer
-                .write_record(&self.headers)
-                .context(format!("writing headers to {fname}"))?;
-        }
-
-        writer
-            .write_record(&values)
-            .context(format!("writing values to {fname}"))?;
-        writer.flush().context(format!("flushing file {fname}"))?;
-        Ok(())
-    }
 }
 
 fn calculate_average_accuracy(accuracies: &[usize]) -> f32 {

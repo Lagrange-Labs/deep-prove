@@ -15,10 +15,10 @@ use crate::{
 };
 use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
-
 use itertools::Itertools;
 use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
+use tracing::trace;
 
 use serde::{Serialize, de::DeserializeOwned};
 use transcript::Transcript;
@@ -180,8 +180,8 @@ where
             let shape_step = shape_steps
                 .get(&node_id)
                 .ok_or(anyhow!("Shape for node {node_id} not found"))?;
-            println!(
-                "VERIFIER: Verifying proof {} for node {node_id}",
+            trace!(
+                "Verifying proof {} for node {node_id}",
                 node_proof.variant_name(),
             );
             let claims_for_verify = step.claims_for_node(&claims_by_layer, &out_claims)?;
@@ -202,7 +202,6 @@ where
         let input_claims = NodeCtx::input_claims(ctx.steps_info.nodes.iter(), &claims_by_layer)?;
 
         // 5. Verify the lookup table proofs
-        let mut table_poly_id = proof.steps.len();
         proof
             .table_proofs
             .iter()
@@ -224,7 +223,6 @@ where
                     constant_challenge,
                     column_separation_challenge,
                 )?;
-                table_poly_id += 1;
 
                 Result::<(), anyhow::Error>::Ok(())
             })?;
@@ -240,8 +238,10 @@ where
                 let given_randomized_input = claim.eval;
                 ensure!(
                     computed_randomized_input == given_randomized_input,
-                    "input {} not valid from proof",
-                    i
+                    "input {} not valid from proof, computed: {:?}, given: {:?}",
+                    i,
+                    computed_randomized_input,
+                    given_randomized_input,
                 );
                 Ok(())
             })
@@ -277,14 +277,12 @@ where
         node_id: NodeId,
         claims: HashMap<PolyId, Claim<E>>,
     ) -> anyhow::Result<()> {
-        self.commit_verifier
-            .add_common_claims(node_id, claims)
-            .map_err(|e| e.into())
+        self.commit_verifier.add_common_claims(node_id, claims)
     }
 }
 
 /// Verifies an inference proof given a context, a proof and the input / output of the model.
-pub fn verify<E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
+pub fn verify<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
     ctx: Context<E, PCS>,
     proof: Proof<E, PCS>,
     io: IO<E>,
@@ -292,13 +290,13 @@ pub fn verify<E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentSche
 ) -> anyhow::Result<()>
 where
     E::BaseField: Serialize + DeserializeOwned,
-    E: Serialize + DeserializeOwned,
+    E: ExtensionField + Serialize + DeserializeOwned,
 {
     let verifier = Verifier::new(&ctx, transcript);
     verifier.verify(ctx, proof, io)
 }
 
-fn verify_table<E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
+fn verify_table<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
     proof: &TableProof<E, PCS>,
     table_type: TableType,
     witness_verifier: &mut CommitmentVerifier<E, PCS>,
@@ -308,7 +306,7 @@ fn verify_table<E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentSc
 ) -> anyhow::Result<()>
 where
     E::BaseField: Serialize + DeserializeOwned,
-    E: Serialize + DeserializeOwned,
+    E: ExtensionField + Serialize + DeserializeOwned,
 {
     // 1. Verify the lookup proof
     let verifier_claims = verify_logup_proof(
@@ -329,15 +327,28 @@ where
             .ok_or(anyhow!("Claims was empty in table verification!"))?
             .clone(),
     )?;
+    // Add any table poly claims to the commitment verifier
+    let table_poly_claims = table_type.table_claims(poly_claims);
+
+    if !table_poly_claims.is_empty() {
+        // If the table poly claims aren't empty there should only be 1
+        ensure!(
+            table_poly_claims.len() == 1,
+            "If table poly claims isn't empty we should only have 1, got: {}",
+            table_poly_claims.len()
+        );
+        witness_verifier.add_table_claim(table_type, table_poly_claims[0].clone())?;
+    }
 
     // Hard indexing is okay here because we checked above that at least one claim exists
     let expected_claim_evals = table_type.evaluate_table_columns::<E>(&poly_claims[0].point)?;
 
     ensure!(
-        expected_claim_evals.len() == (poly_claims.len() - 1),
-        "Expected {} table column evaluation claims, got {}",
+        expected_claim_evals.len() == (poly_claims.len() - table_poly_claims.len() - 1),
+        "Expected {} table column evaluation claims, got {}, for table type: {}",
+        poly_claims.len() - table_poly_claims.len() - 1,
         expected_claim_evals.len(),
-        poly_claims.len() - 1
+        table_type.name(),
     );
     for (poly_claim, expected) in poly_claims[1..].iter().zip(expected_claim_evals.iter()) {
         ensure!(

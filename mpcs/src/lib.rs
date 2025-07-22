@@ -108,7 +108,7 @@ where
     Pcs::batch_verify(vp, comms, points, evals, proof, transcript)
 }
 
-pub trait PolynomialCommitmentScheme<E: ExtensionField>: Clone + Debug {
+pub trait PolynomialCommitmentScheme<E: ExtensionField>: Clone + Debug + Default {
     type Param: Clone + Debug + Serialize + DeserializeOwned + Send + Sync;
     type ProverParam: Clone + Debug + Serialize + DeserializeOwned + Send + Sync;
     type VerifierParam: Clone + Debug + Serialize + DeserializeOwned + Send + Sync;

@@ -1,16 +1,12 @@
 use std::{io::BufReader, path::Path};
 
 use anyhow::{Context, ensure};
-use ff_ext::GoldilocksExt2;
-use mpcs::{Basefold, BasefoldRSParams, Hasher};
 use serde::{Deserialize, Serialize};
 
-use crate::quantization::QUANTIZATION_RANGE;
-
-use super::{Element, Model, ModelMetadata, ProofG};
-
-/// A type of the proof for the `v1` of the protocol
-pub type Proof = ProofG<GoldilocksExt2, Basefold<GoldilocksExt2, BasefoldRSParams<Hasher>>>;
+use crate::{
+    Element,
+    quantization::{ModelMetadata, QUANTIZATION_RANGE},
+};
 
 /// Inputs to the model
 #[derive(Clone, Serialize, Deserialize)]
@@ -18,7 +14,6 @@ pub struct Input {
     input_data: Vec<Vec<f32>>,
 }
 
-// TODO: this is a copypaste from `bench.rs`.
 impl Input {
     pub fn from_file<P: AsRef<Path>>(p: P) -> anyhow::Result<Self> {
         let inputs: Self = serde_json::from_reader(BufReader::new(
@@ -30,7 +25,14 @@ impl Input {
         Ok(inputs)
     }
 
-    fn validate(&self) -> anyhow::Result<()> {
+    pub fn from_reader<R: std::io::Read>(r: R) -> anyhow::Result<Self> {
+        let inputs: Self = serde_json::from_reader(r).context("deserializing inputs")?;
+        inputs.validate()?;
+
+        Ok(inputs)
+    }
+
+    pub fn validate(&self) -> anyhow::Result<()> {
         ensure!(self.input_data.len() > 0);
         ensure!(
             self.input_data
@@ -61,30 +63,21 @@ impl Input {
 
     pub fn to_elements(self, md: &ModelMetadata) -> Vec<Vec<Element>> {
         let input_sf = md.input.first().unwrap();
-        let inputs = self
-            .input_data
+
+        self.input_data
             .into_iter()
             .map(|input| input.into_iter().map(|e| input_sf.quantize(&e)).collect())
-            .collect();
-        inputs
+            .collect()
     }
 }
 
-/// The `v1` proving request
-#[derive(Serialize, Deserialize)]
-pub struct DeepProveRequest {
-    /// The model
-    pub model: Model<Element>,
+impl std::str::FromStr for Input {
+    type Err = anyhow::Error;
 
-    /// Model metadata
-    pub model_metadata: ModelMetadata,
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let inputs: Self = serde_json::from_str(s).context("deserializing inputs")?;
+        inputs.validate()?;
 
-    /// An array of inputs to run proving for
-    pub input: Input,
-}
-
-/// The `v1` proofs that have been computed by the worker
-#[derive(Serialize, Deserialize)]
-pub struct DeepProveResponse {
-    pub proofs: Vec<Proof>,
+        Ok(inputs)
+    }
 }

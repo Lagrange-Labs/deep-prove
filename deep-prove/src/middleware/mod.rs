@@ -1,7 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-use super::{Element, Proof as ProofG, model::Model, quantization::ModelMetadata};
-
 pub mod v1;
 
 /// A versioned enum representing a deep prove proving request

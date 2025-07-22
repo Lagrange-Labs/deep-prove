@@ -1,6 +1,6 @@
 //! File containing code for lookup witness generation.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, btree_map};
 
 use ff_ext::ExtensionField;
 use mpcs::PolynomialCommitmentScheme;
@@ -12,20 +12,24 @@ use p3_field::{Field, FieldAlgebra};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tracing::{debug, warn};
 use transcript::Transcript;
+use utils::Metrics;
 
 use super::{logup_gkr::error::LogUpError, witness::LogUpWitness};
 use crate::{
-    Context, Element,
+    Claim, Context, Element,
     iop::ChallengeStorage,
     layers::{
         activation::Relu,
         provable::{NodeId, ProvableOp},
+        transformer::softmax::{LOG_SCALE_FACTOR, OUTPUT_SCALE_FACTOR, SCALE_FACTOR},
     },
     model::{InferenceTrace, ToIterator},
     quantization::{self, Fieldizer},
 };
 use rayon::prelude::*;
 pub const TABLE_POLY_ID_OFFSET: usize = 666;
+
+type LookupAndColumns<BaseField> = (Vec<Element>, (Vec<BaseField>, Vec<BaseField>));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 /// Enum used for establishing the different table types needed to prove non-linear functions in a model.
@@ -36,29 +40,86 @@ pub enum TableType {
     Range,
     /// Table used for clamping values, the inner [`usize`] denotes the maximum bit length a value can be before clamping to use this table
     Clamping(usize),
+    /// Table type used for computing Softmax, see the [`SoftmaxTableData`] struct for more info.
+    Softmax(SoftmaxTableData),
+    /// Table used for checking the normalisation error in Softmax operations, the first inner [`Element`] is `1` quantised by the scale factor, the second inner [`Element`] is the absolute value of the allowable error
+    ErrorTable(Element, Element),
+    /// Table use to check if a value is zero or not, returns 1 if the value is zero and zero otherwise, the [`usize`] indicates how many variables the table has.
+    ZeroTable(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+/// Struct used to store Softmax table data
+pub struct SoftmaxTableData {
+    /// This is the result of calling [`f32::to_bits`] on the temperature value.
+    float_bits: u32,
+    /// The bit length of table size.
+    table_size: usize,
+    /// Any value larger than this gets mapped to zero.
+    bkm: Element,
+}
+
+impl SoftmaxTableData {
+    pub(crate) fn new(float_bits: u32, table_size: usize, bkm: Element) -> SoftmaxTableData {
+        SoftmaxTableData {
+            float_bits,
+            table_size,
+            bkm,
+        }
+    }
+
+    pub(crate) fn float_temperature(&self) -> f32 {
+        f32::from_bits(self.float_bits)
+    }
+
+    pub(crate) fn full_table_size(&self) -> Element {
+        1 << self.table_size
+    }
+
+    pub(crate) fn size(&self) -> usize {
+        self.table_size
+    }
+
+    pub(crate) fn bkm(&self) -> Element {
+        self.bkm
+    }
+
+    pub(crate) fn table_output(&self, j: Element) -> Element {
+        let float_temperature = self.float_temperature();
+        let base: Element = 1 << (LOG_SCALE_FACTOR - 8);
+        let bkm = self.bkm();
+        let prod = base * j;
+        if prod >= bkm {
+            0
+        } else {
+            let float_exp = (-prod as f32 / (SCALE_FACTOR as f32 * float_temperature)).exp();
+            (float_exp * OUTPUT_SCALE_FACTOR as f32).round() as Element
+        }
+    }
 }
 
 impl TableType {
-    fn get_merged_table_column<E: ExtensionField>(
+    pub fn get_merged_table_column<E: ExtensionField>(
         &self,
         column_separator: Element,
     ) -> (Vec<Element>, Vec<Vec<E::BaseField>>) {
         match self {
             TableType::Relu => {
-                let (comb, field): (Vec<Element>, Vec<(E::BaseField, E::BaseField)>) =
-                    (*quantization::MIN - 1..=*quantization::MAX)
-                        .map(|i| {
-                            let out = Relu::apply(i);
-                            let i_field: E = i.to_field();
-                            let out_field: E = out.to_field();
-                            (
-                                i + out * column_separator,
-                                (i_field.as_bases()[0], out_field.as_bases()[0]),
-                            )
-                        })
-                        .unzip();
-                let (col_one, col_two): (Vec<E::BaseField>, Vec<E::BaseField>) =
-                    field.into_iter().unzip();
+                #[allow(clippy::type_complexity)]
+                let (comb, (col_one, col_two)): (
+                    Vec<Element>,
+                    (Vec<E::BaseField>, Vec<E::BaseField>),
+                ) = (*quantization::MIN - 1..=*quantization::MAX)
+                    .map(|i| {
+                        let out = Relu::apply(i);
+                        let i_field: E = i.to_field();
+                        let out_field: E = out.to_field();
+                        (
+                            i + out * column_separator,
+                            (i_field.as_bases()[0], out_field.as_bases()[0]),
+                        )
+                    })
+                    .unzip();
                 (comb, vec![col_one, col_two])
             }
             TableType::Range => {
@@ -72,9 +133,9 @@ impl TableType {
                 (element_out, vec![field])
             }
             TableType::Clamping(size) => {
-                let max = 1i128 << (size - 1);
-                let min = -max;
-                let (comb, field): (Vec<Element>, Vec<(E::BaseField, E::BaseField)>) = (min..max)
+                let max: Element = 1 << (size - 1);
+                let min: Element = -max;
+                let (comb, (col_one, col_two)): LookupAndColumns<E::BaseField> = (min..max)
                     .map(|i| {
                         let out = if i < *quantization::MIN {
                             *quantization::MIN
@@ -91,9 +152,55 @@ impl TableType {
                         )
                     })
                     .unzip();
-                let (col_one, col_two): (Vec<E::BaseField>, Vec<E::BaseField>) =
-                    field.into_iter().unzip();
                 (comb, vec![col_one, col_two])
+            }
+            TableType::Softmax(table_data) => {
+                let table_size = table_data.full_table_size();
+
+                let (merged_lookup, (in_column, out_column)): LookupAndColumns<E::BaseField> = (0
+                    ..table_size)
+                    .map(|j| {
+                        let out_elem = table_data.table_output(j);
+                        let in_field: E = j.to_field();
+                        let out_field: E = out_elem.to_field();
+                        (
+                            j + COLUMN_SEPARATOR * out_elem,
+                            (in_field.as_bases()[0], out_field.as_bases()[0]),
+                        )
+                    })
+                    .unzip();
+                (merged_lookup, vec![in_column, out_column])
+            }
+            TableType::ErrorTable(quant_one, allowable_error) => {
+                // Work out the minimum and maximum elements of the table
+                let table_min = *quant_one - *allowable_error;
+                let table_max = *quant_one + *allowable_error;
+                // Work out the full table size
+                let table_size = 1usize << ceil_log2(2 * *allowable_error as usize);
+                let (element_out, field): (Vec<Element>, Vec<E::BaseField>) = (table_min
+                    ..=table_max)
+                    .map(|elem| {
+                        let f: E = elem.to_field();
+                        (elem, f.as_bases()[0])
+                    })
+                    .chain(std::iter::repeat((0, E::BaseField::ZERO)))
+                    .take(table_size)
+                    .unzip();
+                (element_out, vec![field])
+            }
+            TableType::ZeroTable(bit_size) => {
+                let table_size: Element = 1 << bit_size;
+                let (merged_lookup, (in_column, out_column)): LookupAndColumns<E::BaseField> = (0
+                    ..table_size)
+                    .map(|i| {
+                        let out: Element = if i != 0 { 0 } else { 1 };
+                        let merged_val = i + COLUMN_SEPARATOR * out;
+                        let i_field: E = i.to_field();
+                        let out_field: E = out.to_field();
+                        (merged_val, (i_field.as_bases()[0], out_field.as_bases()[0]))
+                    })
+                    .unzip();
+                (merged_lookup, vec![in_column, out_column])
             }
         }
     }
@@ -102,7 +209,16 @@ impl TableType {
         match self {
             TableType::Relu => "Relu".to_string(),
             TableType::Range => "Range".to_string(),
-            TableType::Clamping(size) => format!("Clamping: {}", size),
+            TableType::Clamping(size) => format!("Clamping: {size}"),
+            TableType::Softmax(table_data) => {
+                format!("Softmax - temperature: {}", table_data.float_temperature())
+            }
+            TableType::ErrorTable(quant_one, allowable_error) => {
+                format!(
+                    "Error Table - quantised one: {quant_one}, allowable error: {allowable_error}",
+                )
+            }
+            TableType::ZeroTable(bit_size) => format!("Zero: {bit_size}"),
         }
     }
 
@@ -160,8 +276,8 @@ impl TableType {
                     acc + *p * E::from_canonical_u64(1u64 << index)
                 }) - E::from_canonical_u64(1u64 << (size - 1));
 
-                let max = 1i128 << (size - 1);
-                let min = -max;
+                let max: Element = 1 << (size - 1);
+                let min: Element = -max;
 
                 let second_col_eval = (min..max)
                     .map(|i| {
@@ -182,17 +298,56 @@ impl TableType {
 
                 Ok(vec![first_column, second_col_eval])
             }
+            TableType::Softmax(table_data) => {
+                let size = table_data.size();
+                if point.len() != size {
+                    return Err(LogUpError::VerifierError(format!(
+                        "Point was not the correct size to produce a softmax table evaluation, point size: {}, expected: {}",
+                        point.len(),
+                        size
+                    )));
+                }
+
+                Ok(vec![
+                    point.iter().enumerate().fold(E::ZERO, |acc, (index, p)| {
+                        acc + *p * E::from_canonical_u64(1u64 << index)
+                    }),
+                ])
+            }
+            TableType::ErrorTable(..) => Ok(vec![]),
+            TableType::ZeroTable(bit_size) => {
+                if point.len() != *bit_size {
+                    return Err(LogUpError::VerifierError(format!(
+                        "Point was not the correct size to produce a softmax table evaluation, point size: {}, expected: {}",
+                        point.len(),
+                        bit_size
+                    )));
+                }
+
+                let (in_column_eval, out_column_eval) = point.iter().enumerate().fold(
+                    (E::ZERO, E::ONE),
+                    |(in_acc, out_acc), (index, p)| {
+                        (
+                            in_acc + *p * E::from_canonical_u64(1u64 << index),
+                            out_acc * (E::ONE - *p),
+                        )
+                    },
+                );
+                Ok(vec![in_column_eval, out_column_eval])
+            }
         }
     }
 
     pub fn generate_challenge<E: ExtensionField, T: Transcript<E>>(&self, transcript: &mut T) -> E {
         match self {
             TableType::Relu => transcript.get_and_append_challenge(b"Relu").elements,
-            TableType::Range => {
+            TableType::Range | TableType::ErrorTable(..) => {
                 // Theres only one column for a range check so we don't need to generate a challenge
                 E::ONE
             }
             TableType::Clamping(_) => transcript.get_and_append_challenge(b"Clamping").elements,
+            TableType::Softmax(..) => transcript.get_and_append_challenge(b"Softmax").elements,
+            TableType::ZeroTable(..) => transcript.get_and_append_challenge(b"Zero").elements,
         }
     }
 
@@ -201,6 +356,62 @@ impl TableType {
         match self {
             TableType::Range | TableType::Relu => *quantization::BIT_LEN,
             TableType::Clamping(bits) => *bits,
+            TableType::Softmax(table_data) => table_data.size(),
+            TableType::ErrorTable(_, allowable_error) => ceil_log2(2 * *allowable_error as usize),
+            TableType::ZeroTable(bits) => *bits,
+        }
+    }
+
+    /// Function that returns any MLEs that have to be committed for this [`TableType`]
+    pub fn committed_columns<E: ExtensionField>(&self) -> Option<DenseMultilinearExtension<E>> {
+        match self {
+            TableType::Softmax(table_data) => {
+                let table_size = table_data.full_table_size();
+
+                let out_column = (0..table_size)
+                    .map(|j| {
+                        let out_elem = table_data.table_output(j);
+                        let out_field: E = out_elem.to_field();
+                        out_field.as_bases()[0]
+                    })
+                    .collect::<Vec<E::BaseField>>();
+                Some(DenseMultilinearExtension::<E>::from_evaluations_vec(
+                    table_data.size(),
+                    out_column,
+                ))
+            }
+            TableType::ErrorTable(quant_one, allowable_error) => {
+                // Work out the minimum and maximum elements of the table
+                let table_min = quant_one - allowable_error;
+                let table_max = quant_one + allowable_error;
+                // Work out the full table size
+                let num_vars = ceil_log2(2 * *allowable_error as usize);
+                let table_size = 1usize << num_vars;
+                let column = (table_min..=table_max)
+                    .map(|elem| {
+                        let f: E = elem.to_field();
+                        f.as_bases()[0]
+                    })
+                    .chain(std::iter::repeat(E::BaseField::ZERO))
+                    .take(table_size)
+                    .collect::<Vec<E::BaseField>>();
+                Some(DenseMultilinearExtension::<E>::from_evaluations_vec(
+                    num_vars, column,
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// Method that takes all of the claims output by a logup table proof and outputs only those that need to be checked via commitment opening (excluding the multiplicity poly claim)
+    pub fn table_claims<E: ExtensionField>(&self, claims: &[Claim<E>]) -> Vec<Claim<E>> {
+        match self {
+            TableType::Softmax(..) | TableType::ErrorTable(..) => {
+                // For Softmax and Error Table we just need the output column claim so the last of the slice
+                vec![claims.last().cloned().unwrap()]
+            }
+
+            _ => vec![],
         }
     }
 }
@@ -226,43 +437,57 @@ impl LookupContext {
     }
 }
 
+pub(crate) fn count_elements<I: IntoIterator<Item = Element>>(i: I) -> HashMap<Element, u64> {
+    let mut count = HashMap::<Element, u64>::new();
+    for v in i.into_iter() {
+        *count.entry(v).or_default() += 1;
+    }
+    count
+}
+
+#[derive(Default)]
 pub struct LookupWitnessGen<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> {
-    pub(crate) new_lookups: BTreeMap<TableType, Vec<Element>>,
+    /// Contains the count of elements per table type.
+    ///
+    /// These values are later used to compute the GKR's multiplicities.
+    pub(crate) element_count: BTreeMap<TableType, HashMap<Element, u64>>,
     pub(crate) logup_witnesses: HashMap<NodeId, Vec<LogUpWitness<E, PCS>>>,
 }
 
 impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> LookupWitnessGen<E, PCS> {
-    pub fn new(lookup_ctx: &LookupContext) -> Self {
-        let new_lookups = lookup_ctx
-            .iter()
-            .map(|&table_type| (table_type, Vec::<Element>::new()))
-            .collect::<BTreeMap<TableType, Vec<Element>>>();
-        Self {
-            new_lookups,
-            logup_witnesses: HashMap::new(),
+    /// Consume the lookups and witness of `other` into this instance.
+    fn consume(&mut self, other: Self) {
+        for (table_type, elements) in other.element_count.into_iter() {
+            match self.element_count.entry(table_type) {
+                btree_map::Entry::Vacant(vacant_entry) => {
+                    vacant_entry.insert(elements);
+                }
+                btree_map::Entry::Occupied(mut occupied_entry) => {
+                    let agg_count = occupied_entry.get_mut();
+                    for (element, count) in elements.into_iter() {
+                        *agg_count.entry(element).or_default() += count;
+                    }
+                }
+            }
         }
+        self.logup_witnesses.extend(other.logup_witnesses);
     }
 }
 
-pub(crate) const COLUMN_SEPARATOR: Element = 1i128 << 32;
+pub(crate) const COLUMN_SEPARATOR: Element = 1 << 32;
 
-pub fn generate_lookup_witnesses<
-    'a,
-    E: ExtensionField,
-    T: Transcript<E>,
-    PCS: PolynomialCommitmentScheme<E>,
->(
+#[derive(Debug, Default)]
+pub struct LookupWitness<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> {
+    pub challenge_storage: ChallengeStorage<E>,
+    pub logup_witnesses: HashMap<NodeId, Vec<LogUpWitness<E, PCS>>>,
+    pub table_witnesses: Vec<LogUpWitness<E, PCS>>,
+}
+
+pub fn generate_lookup_witnesses<'a, E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
     trace: &InferenceTrace<'a, E, Element>,
     ctx: &Context<E, PCS>,
     transcript: &mut T,
-) -> Result<
-    (
-        ChallengeStorage<E>,
-        HashMap<NodeId, Vec<LogUpWitness<E, PCS>>>,
-        Vec<LogUpWitness<E, PCS>>,
-    ),
-    LogUpError,
->
+) -> Result<LookupWitness<E, PCS>, LogUpError>
 where
     E: ExtensionField + Serialize + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
@@ -270,50 +495,42 @@ where
     // If the lookup context is empty then there are no lookup witnesses to generate so we return default values
     if ctx.lookup.is_empty() {
         warn!("Lookup witness generation: no tables found, returning empty context TEST?");
-        return Ok((
-            ChallengeStorage {
-                constant_challenge: E::ZERO,
-                challenge_map: HashMap::new(),
-            },
-            HashMap::new(),
-            vec![],
-        ));
+        return Ok(LookupWitness::default());
     }
 
     // Make the witness gen struct that stores relevant table lookup data
-    let mut witness_gen = LookupWitnessGen::<E, PCS>::new(&ctx.lookup);
+    debug!("== Witness poly fields generation ==");
+    let metrics = Metrics::new();
+    let mut witness_gen = LookupWitnessGen::<E, PCS>::default();
 
-    debug!("Lookup witness generation: generating poly fields...");
     for (node_id, _) in ctx.steps_info.to_forward_iterator() {
         let step = trace
             .get_step(&node_id)
             .ok_or(LogUpError::ProvingError(format!(
                 "Node {node_id} not found in trace"
             )))?;
-        step.op
-            .gen_lookup_witness(node_id, &mut witness_gen, ctx, &step.step_data)
+        let gen = step
+            .op
+            .gen_lookup_witness(node_id, ctx, &step.step_data)
             .map_err(|e| {
                 LogUpError::ParameterError(format!(
-                    "Error generating lookup witness for node {} with error: {}",
-                    node_id,
-                    e.to_string()
+                    "Error generating lookup witness for node {node_id} with error: {e}"
                 ))
             })?;
+        witness_gen.consume(gen);
     }
+    debug!(
+        "== Witness poly fields generation metrics {} ==",
+        metrics.to_span()
+    );
 
-    debug!("Lookup witness generation: generating table multiplicities...");
+    debug!("== Witness table multiplicities generation ==");
+    let metrics = Metrics::new();
     // calculate the table multiplicities
     let table_witnesses = witness_gen
-        .new_lookups
+        .element_count
         .par_iter()
-        .map(|(table_type, lookups)| {
-            let table_lookup_data =
-                lookups
-                    .iter()
-                    .fold(HashMap::<Element, u64>::new(), |mut map, elem| {
-                        *map.entry(*elem).or_insert(0) += 1;
-                        map
-                    });
+        .map(|(table_type, table_lookup_data)| {
             let (table_column, column_evals) =
                 table_type.get_merged_table_column::<E>(COLUMN_SEPARATOR);
 
@@ -375,17 +592,22 @@ where
         })
         .collect::<Result<Vec<LogUpWitness<E, PCS>>, LogUpError>>()?;
 
-    debug!("Lookup witness generation: commit context generation...");
+    debug!(
+        "== Witness table multiplicities metrics {} ==",
+        metrics.to_span()
+    );
 
-    debug!("Lookup witness generation: challenge storage...");
+    debug!("== Challenge storage ==");
+    let metrics = Metrics::new();
     let challenge_storage =
-        initialise_from_table_set::<E, T, _>(witness_gen.new_lookups.keys(), transcript);
+        initialise_from_table_set::<E, T, _>(witness_gen.element_count.keys(), transcript);
+    debug!("== Challenge storage metrics {} ==", metrics.to_span());
 
-    Ok((
+    Ok(LookupWitness {
         challenge_storage,
-        witness_gen.logup_witnesses,
+        logup_witnesses: witness_gen.logup_witnesses,
         table_witnesses,
-    ))
+    })
 }
 
 fn initialise_from_table_set<

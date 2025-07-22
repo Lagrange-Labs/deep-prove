@@ -9,7 +9,7 @@ use crate::{
     },
     layers::LayerProof,
     lookup::{
-        context::{COLUMN_SEPARATOR, LookupWitnessGen, TableType},
+        context::{COLUMN_SEPARATOR, LookupWitnessGen, TableType, count_elements},
         logup_gkr::{
             prover::batch_prove as logup_batch_prove, structs::LogUpProof,
             verifier::verify_logup_proof,
@@ -144,6 +144,11 @@ where
     fn step_info(&self, id: NodeId, mut aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
         aux.tables.insert(TableType::Range);
         aux.tables.insert(TableType::Clamping(self.clamping_size()));
+
+        // `try_fold` would not allow returning of `Err` values
+        // from here and would short-circuit
+        // instead of looping over all values in the iterator
+        #[allow(clippy::manual_try_fold)]
         let num_vars = aux
             .last_output_shape
             .iter_mut()
@@ -152,7 +157,8 @@ where
                 if let Some(vars) = expected_num_vars? {
                     ensure!(
                         vars == num_vars,
-                        "All input shapes for requant layer must have the same number of variables"
+                        "All input shapes for requant layer \
+                        must have the same number of variables"
                     );
                 }
                 Ok(Some(num_vars))
@@ -160,6 +166,12 @@ where
             .expect("No input shape found for requant layer?");
         // Set the model polys to be empty
         aux.model_polys = None;
+        aux.max_poly_len = aux
+            .last_output_shape
+            .iter()
+            .fold(aux.max_poly_len, |acc, shapes| {
+                acc.max(shapes.next_power_of_two().product())
+            });
         Ok((
             LayerCtx::Requant(RequantCtx {
                 requant: *self,
@@ -195,10 +207,9 @@ where
     fn gen_lookup_witness(
         &self,
         id: NodeId,
-        gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> Result<()> {
+    ) -> Result<LookupWitnessGen<E, PCS>> {
         ensure!(
             step_data.inputs.len() == 1,
             "Found more than 1 input in inference step of requant layer"
@@ -211,8 +222,8 @@ where
         // We take the input, multiply by the fixed point multiplier and add the rounding constant. Then we split the resulting values into
         // parts that are either shifted away (these get range checked) or passed to the clamping table.
         let shift = self.shift();
-        let rounding_constant = 1i128 << (shift - 1);
-        let mask = (1i128 << shift) - 1;
+        let rounding_constant: Element = 1 << (shift - 1);
+        let mask: Element = (1 << shift) - 1;
         let (clamping, shifted): (Vec<Element>, Vec<Element>) = step_data.inputs[0]
             .get_data()
             .iter()
@@ -244,7 +255,7 @@ where
 
         // Now we split the shifted part into pieces that fit into the range table
         let range_check_bit_size = *quantization::BIT_LEN;
-        let range_mask = (1i128 << range_check_bit_size) - 1;
+        let range_mask: Element = (1 << range_check_bit_size) - 1;
 
         // We need to calculate how many cunks we are splitting into, there should never be any remainder from this division.
         let no_chunks = shift / range_check_bit_size;
@@ -262,20 +273,18 @@ where
             })
             .collect::<Vec<Vec<Element>>>();
 
-        let merged_shifted = shifted_chunks
-            .iter()
-            .flatten()
-            .copied()
-            .collect::<Vec<Element>>();
+        let shifted_elements_count = count_elements(shifted_chunks.iter().flatten().copied());
 
-        let merged_clamping = clamping_in
-            .iter()
-            .zip(clamping_out.iter())
-            .map(|(&c_in, &c_out)| c_in + c_out * COLUMN_SEPARATOR)
-            .collect::<Vec<Element>>();
+        let clamping_elements_count = count_elements(
+            clamping_in
+                .iter()
+                .zip(clamping_out.iter())
+                .map(|(&c_in, &c_out)| c_in + c_out * COLUMN_SEPARATOR),
+        );
         let num_vars = ceil_log2(clamping_in.len());
         // Add the witnesses to be committed
 
+        #[allow(clippy::type_complexity)]
         let (clamping_commits, clamping_evals): (
             Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
             Vec<Vec<E::BaseField>>,
@@ -298,6 +307,7 @@ where
             .into_iter()
             .unzip();
 
+        #[allow(clippy::type_complexity)]
         let (shifted_chunk_commits, shifted_chunks_evals): (
             Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
             Vec<Vec<E::BaseField>>,
@@ -319,6 +329,8 @@ where
             .collect::<Result<Vec<_>, anyhow::Error>>()?
             .into_iter()
             .unzip();
+
+        let mut gen = LookupWitnessGen::<E, PCS>::default();
         gen.logup_witnesses.insert(
             id,
             vec![
@@ -336,20 +348,14 @@ where
                 ),
             ],
         );
-        let lookups = gen.new_lookups.get_mut(&TableType::Range).ok_or(anyhow!(
-            "No table of type Range was expected, error occurred during requant step"
-        ))?;
-        lookups.extend(merged_shifted);
-        let lookups = gen
-            .new_lookups
-            .get_mut(&TableType::Clamping(self.clamping_size()))
-            .ok_or(anyhow!(
-                "No table of type {} was expected",
-                TableType::Clamping(self.clamping_size()).name()
-            ))?;
-        lookups.extend(merged_clamping);
+        gen.element_count
+            .insert(TableType::Range, shifted_elements_count);
+        gen.element_count.insert(
+            TableType::Clamping(self.clamping_size()),
+            clamping_elements_count,
+        );
 
-        Ok(())
+        Ok(gen)
     }
 }
 
@@ -426,7 +432,10 @@ impl Requant {
         let fixed_point_multiplier = (epsilon * (1u64 << fp_scale) as f32).round() as Element;
 
         // Assertion to check that we can perform requantisation, we need intermediate_bit_size + fp_scale <= 63
-        assert!(intermediate_bit_size + fp_scale <= 63);
+        assert!(
+            intermediate_bit_size + fp_scale <= 63,
+            "intermediate bit size: {intermediate_bit_size}, fp scale: {fp_scale}, int part: {int_part}",
+        );
         Requant {
             right_shift: int_part,
             fixed_point_multiplier,
@@ -455,22 +464,19 @@ impl Requant {
 
     /// Internal method that applies this op to an [`Element`]
     fn apply(&self, elem: &Element) -> Element {
-        let rounding = 1i128 << (self.shift() - 1);
+        let rounding: Element = 1 << (self.shift() - 1);
         let unclamped = (rounding + elem * self.fixed_point_multiplier) >> self.shift();
-
-        let sign = if unclamped.is_positive() || unclamped == 0i128 {
-            1i128
+        let sign: Element = if unclamped.is_positive() || unclamped == 0 {
+            1
         } else {
-            -1i128
+            -1
         };
 
-        let clamped = if unclamped.abs() >= *quantization::MAX {
+        if unclamped.abs() >= *quantization::MAX {
             *quantization::MAX * sign
         } else {
             unclamped
-        };
-
-        clamped
+        }
     }
 
     /// API for performing this op on a quantised tensor.
@@ -533,11 +539,7 @@ impl Requant {
     /// Method that proves requantisation was performed correctly. First it runs the lookup argument for the clamping claim and batches all the range checks
     /// for the shifted polys together. Then it performs a sumcheck that takes the output claims from the two lookup arguments and produces a new claim where all of the polynomials are
     /// evaluated at the same point. This sumcheck also checks that the output column of the clamping lookup relates to the same polynomial as `last_claim`.
-    pub(crate) fn prove_step<
-        E: ExtensionField,
-        T: Transcript<E>,
-        PCS: PolynomialCommitmentScheme<E>,
-    >(
+    pub(crate) fn prove_step<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         prover: &mut Prover<E, T, PCS>,
         last_claim: &Claim<E>,
@@ -696,11 +698,7 @@ impl RequantCtx {
     /// It verifies both lookup argument proofs, calculates the initial claim for the sumcheck proof using the lookup argument claims
     /// and then verifies the sumcheck using this initial claim. It then takes the output claims provided by the prover, checks they relate to the sumcheck
     /// subclaim, adds them to the list of claims of commitment openings and then calculates the next claim.
-    pub(crate) fn verify_requant<
-        E: ExtensionField,
-        T: Transcript<E>,
-        PCS: PolynomialCommitmentScheme<E>,
-    >(
+    pub(crate) fn verify_requant<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         verifier: &mut Verifier<E, T, PCS>,
         last_claim: &Claim<E>,
@@ -709,7 +707,7 @@ impl RequantCtx {
         column_separation_challenge: E,
     ) -> anyhow::Result<Claim<E>>
     where
-        E: Serialize + DeserializeOwned,
+        E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
         // 1. Verify the lookup proofs

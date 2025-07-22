@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{
     Claim, Context, Element, Prover,
     commit::compute_betas_eval,
@@ -128,6 +130,11 @@ where
         let info = match self {
             Pooling::Maxpool2D(info) => {
                 aux.tables.insert(TableType::Range);
+
+                // `try_fold` would not allow returning of `Err` values
+                // from here and would short-circuit
+                // instead of looping over all values in the iterator
+                #[allow(clippy::manual_try_fold)]
                 let num_vars = aux.last_output_shape.iter_mut().fold(Ok(None), |expected_num_vars, shape| {
                     // Pooling only affects the last two dimensions
                     let total_number_dims = shape.len();
@@ -147,6 +154,12 @@ where
                 })?.expect("No input shape found for convolution layer?");
                 // Set the model polys to be empty
                 aux.model_polys = None;
+                aux.max_poly_len = aux
+                    .last_output_shape
+                    .iter()
+                    .fold(aux.max_poly_len, |acc, shapes| {
+                        acc.max(shapes.next_power_of_two().product())
+                    });
                 LayerCtx::Pooling(PoolingCtx {
                     poolinfo: *info,
                     node_id: id,
@@ -196,20 +209,34 @@ where
     fn gen_lookup_witness(
         &self,
         id: NodeId,
-        gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> Result<()> {
+    ) -> Result<LookupWitnessGen<E, PCS>> {
         ensure!(
             step_data.inputs.len() == 1,
-            "Found more than 1 input in inference step of pooling layer"
+            "Input for pooling layer with invalid length. expected: 1 got: {}",
+            step_data.inputs.len(),
         );
         ensure!(
             step_data.outputs.outputs().len() == 1,
-            "Found more than 1 output in inference step of pooling layer"
+            "Output for pooling layer with invalid length. expected: 1 got: {}",
+            step_data.outputs.outputs().len(),
         );
 
-        let (merged_lookups, column_evals) = self.lookup_witness::<E>(&step_data.inputs[0]);
+        let mut element_count = HashMap::<Element, u64>::new();
+        let inputs = &step_data.inputs[0];
+        let column_evals = match self {
+            Pooling::Maxpool2D(maxpool2d) => {
+                let field_vecs = maxpool2d.compute_polys::<E>(inputs);
+
+                for value in field_vecs.iter().flat_map(|v| v.iter()) {
+                    let el = E::from(*value).to_element();
+                    *element_count.entry(el).or_default() += 1;
+                }
+
+                field_vecs
+            }
+        };
         // Commit to the witnes polys
         let output_poly = step_data.outputs.outputs()[0]
             .get_data()
@@ -233,6 +260,8 @@ where
                 Ok((commit, mle))
             })
             .collect::<Result<Vec<_>, anyhow::Error>>()?;
+
+        let mut gen = LookupWitnessGen::<E, PCS>::default();
         gen.logup_witnesses.insert(
             id,
             vec![LogUpWitness::<E, PCS>::new_lookup(
@@ -242,13 +271,9 @@ where
                 TableType::Range,
             )],
         );
+        gen.element_count.insert(TableType::Range, element_count);
 
-        let lookups = gen.new_lookups.get_mut(&TableType::Range).ok_or(anyhow!(
-            "No table of type Range was expected, error occurred during a MaxPool step"
-        ))?;
-        lookups.extend(merged_lookups);
-
-        Ok(())
+        Ok(gen)
     }
 }
 
@@ -319,30 +344,8 @@ impl Pooling {
         }
     }
 
-    pub fn lookup_witness<E: ExtensionField>(
-        &self,
-        input: &Tensor<Element>,
-    ) -> (Vec<Element>, Vec<Vec<E::BaseField>>) {
-        match self {
-            Pooling::Maxpool2D(maxpool2d) => {
-                let field_vecs = maxpool2d.compute_polys::<E>(input);
-
-                let merged_lookups = field_vecs
-                    .iter()
-                    .flat_map(|vector| {
-                        vector
-                            .iter()
-                            .map(|&a| E::from(a).into_element())
-                            .collect::<Vec<Element>>()
-                    })
-                    .collect::<Vec<Element>>();
-
-                (merged_lookups, field_vecs)
-            }
-        }
-    }
     #[timed::timed_instrument(name = "Prover::prove_pooling_step")]
-    pub fn prove_pooling<E: ExtensionField, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
+    pub fn prove_pooling<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         prover: &mut Prover<E, T, PCS>,
         // last random claim made
@@ -356,7 +359,7 @@ impl Pooling {
     ) -> anyhow::Result<Claim<E>>
     where
         E::BaseField: Serialize + DeserializeOwned,
-        E: Serialize + DeserializeOwned,
+        E: ExtensionField + Serialize + DeserializeOwned,
     {
         assert_eq!(input.get_shape().len(), 3, "Maxpool needs 3D inputs.");
         // Should only be one prover_info for this step
@@ -526,11 +529,7 @@ impl PoolingCtx {
     pub fn output_shape(&self, input_shape: &Shape) -> Shape {
         maxpool2d_shape(input_shape)
     }
-    pub(crate) fn verify_pooling<
-        E: ExtensionField,
-        T: Transcript<E>,
-        PCS: PolynomialCommitmentScheme<E>,
-    >(
+    pub(crate) fn verify_pooling<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         verifier: &mut Verifier<E, T, PCS>,
         last_claim: &Claim<E>,
@@ -540,7 +539,7 @@ impl PoolingCtx {
     ) -> anyhow::Result<Claim<E>>
     where
         E::BaseField: Serialize + DeserializeOwned,
-        E: Serialize + DeserializeOwned,
+        E: ExtensionField + Serialize + DeserializeOwned,
     {
         // 1. Verify the lookup proof
         let verifier_claims = verify_logup_proof(
@@ -574,7 +573,7 @@ impl PoolingCtx {
 
         // Verify the sumcheck output claim and add commitment claims to the commit verifier
         let zerocheck_point = subclaim.point_flat();
-        let beta_eval = eq_xy_eval(&verifier_claims.point(), &zerocheck_point);
+        let beta_eval = eq_xy_eval(verifier_claims.point(), &zerocheck_point);
 
         let last_claim_beta_eval = eq_xy_eval(&last_claim.point, &zerocheck_point);
 
@@ -726,6 +725,7 @@ impl Maxpool2D {
             .cloned()
             .collect::<Vec<Vec<Element>>>();
 
+        #[allow(clippy::type_complexity)]
         let (even_diff, odd_diff): (Vec<Vec<E::BaseField>>, Vec<Vec<E::BaseField>>) = new_even
             .par_chunks(padded_input_shape[2] >> 1)
             .zip(new_odd.par_chunks(padded_input_shape[2] >> 1))
@@ -791,11 +791,11 @@ pub fn maxpool2d_shape(input_shape: &Shape) -> Shape {
 }
 #[cfg(test)]
 mod tests {
-    use crate::{commit::compute_betas_eval, default_transcript};
+    use crate::{commit::compute_betas_eval, default_transcript, rng_from_env_or_random};
 
     use super::*;
     use crate::quantization::Fieldizer;
-    use ark_std::rand::{Rng, thread_rng};
+    use ark_std::rand::Rng;
     use ff_ext::{FromUniformBytes, GoldilocksExt2};
     use gkr::util::ceil_log2;
     use itertools::Itertools;
@@ -811,7 +811,7 @@ mod tests {
 
     #[test]
     fn test_max_pool_zerocheck() {
-        let mut rng = thread_rng();
+        let mut rng = rng_from_env_or_random();
         for _ in 0..50 {
             let random_shape = (0..4)
                 .map(|i| {
@@ -824,7 +824,7 @@ mod tests {
                 .collect::<Shape>();
             let input_data_size = random_shape.product();
             let data = (0..input_data_size)
-                .map(|_| rng.gen_range(-128i128..128))
+                .map(|_| rng.gen_range(-128..128))
                 .collect::<Vec<Element>>();
             let input = Tensor::<Element>::new(random_shape, data);
 

@@ -2,6 +2,7 @@ use std::{collections::HashMap, path::Path};
 
 use anyhow::{Context, bail, ensure};
 use serde::Deserialize;
+use tracing::trace;
 
 use crate::{
     Tensor,
@@ -64,7 +65,7 @@ impl GPT2Model {
         let positional = Positional::from_json(l, config)?;
         let num_layers = config.num_block;
         let blocks = (0..num_layers)
-            .map(|i| Attention::from_json(&l.pp(&format!("blk.{i}.")), &config))
+            .map(|i| Attention::from_json(&l.pp(&format!("blk.{i}.")), config))
             .collect::<anyhow::Result<Vec<Attention<f32>>>>()?;
         let final_norm = LayerNorm::from_json(&l.pp("output_"), config)?;
         let proj_weights = l.get_tensor("output.weight")?.transpose();
@@ -140,9 +141,9 @@ impl Attention<f32> {
             vec![c.embedding_size, hidden_size].into(),
             unfused_weights_data.remove(0),
         );
-        println!("fused qkv: {:?}", fused_qkv_weight);
-        println!("qkv full tensor {:?}", unfused_weights_data);
-        println!("q_weight {:?}", q_weight.get_data());
+        trace!("fused qkv: {fused_qkv_weight:?}");
+        trace!("qkv full tensor {unfused_weights_data:?}");
+        trace!("q_weight {:?}", q_weight.get_data());
 
         // Unfuse biases:
         // Expected shape of fused_qkv_bias is [3 * hidden_size].
@@ -288,7 +289,7 @@ pub struct JsonTensor {
 }
 
 impl JsonTensor {
-    pub fn into_tensor(&self) -> Tensor<f32> {
+    pub fn as_tensor(&self) -> Tensor<f32> {
         Tensor::new(self.shape.clone(), self.data.clone())
     }
 }
@@ -385,7 +386,7 @@ pub mod test {
         };
         assert!(
             path.exists(),
-            "Missing model locally, create a venv and run `python3 gpt2_internal.py --output-dir ./assets/scripts/llms/ --export-model` to retrive it",
+            "Missing model locally, create a venv and run `python3 gpt2_internal.py --output-dir ./assets/scripts/llms/ --export-model` to retrieve it",
         );
         Ok(path.to_str().unwrap().to_string())
     }

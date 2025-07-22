@@ -8,59 +8,80 @@ use crate::{
     layers::{convolution::conv2d_shape, pooling::maxpool2d_shape},
     model::Model,
     padding::pad_model,
-    parser::onnx::from_path,
     quantization::{AbsoluteMax, ModelMetadata, ScalingStrategy},
     tensor::Shape,
 };
 use anyhow::{Context, Error, Result, bail, ensure};
-use tract_onnx::prelude::*;
+use itertools::Either;
+use tracing::debug;
+use tract_onnx::{pb::ModelProto, prelude::*};
 
 /// Utility struct for loading a onnx model with float weights and producing a quantized model
 /// that can be used for inference and proving.
 #[derive(Debug)]
-pub struct FloatOnnxLoader<S: ScalingStrategy> {
-    model_path: String,
+pub struct FloatOnnxLoader<'a, S: ScalingStrategy> {
+    /// Either a path to model file or memmap'd bytes
+    model: Either<String, &'a [u8]>,
     scaling_strategy: S,
     model_type: Option<ModelType>,
     keep_float: bool,
 }
 
-pub type DefaultFloatOnnxLoader = FloatOnnxLoader<AbsoluteMax>;
+pub type DefaultFloatOnnxLoader<'a> = FloatOnnxLoader<'a, AbsoluteMax>;
 
-impl DefaultFloatOnnxLoader {
+impl DefaultFloatOnnxLoader<'_> {
     pub fn new(model_path: &str) -> Self {
         Self::new_with_scaling_strategy(model_path, AbsoluteMax::new())
     }
 }
 
-impl<S: ScalingStrategy> FloatOnnxLoader<S> {
+impl<'a, S: ScalingStrategy> FloatOnnxLoader<'a, S> {
     pub fn new_with_scaling_strategy(model_path: &str, scaling_strategy: S) -> Self {
         Self {
-            model_path: model_path.to_string(),
+            model: Either::Left(model_path.to_string()),
             scaling_strategy,
             model_type: None,
             keep_float: false,
         }
     }
+    pub fn from_bytes_with_scaling_strategy(model_bytes: &'a [u8], scaling_strategy: S) -> Self {
+        Self {
+            model: Either::Right(model_bytes),
+            scaling_strategy,
+            model_type: None,
+            keep_float: false,
+        }
+    }
+
     pub fn with_scaling_strategy(mut self, scaling_strategy: S) -> Self {
         self.scaling_strategy = scaling_strategy;
         self
     }
+
     pub fn with_model_type(mut self, model_type: ModelType) -> Self {
         self.model_type = Some(model_type);
         self
     }
+
     pub fn with_keep_float(mut self, keep_float: bool) -> Self {
         self.keep_float = keep_float;
         self
     }
 
     pub fn build(self) -> Result<(Model<Element>, ModelMetadata)> {
+        let proto = match self.model {
+            Either::Left(path) => load_proto_from_path(&path)?,
+            Either::Right(bytes) => {
+                use prost_tract_compat::Message;
+                ModelProto::decode(bytes)
+                    .map_err(|e| Error::msg(format!("Failed to load model: {e:?}")))?
+            }
+        };
         if let Some(model_type) = self.model_type {
-            model_type.validate(&self.model_path)?;
+            model_type.validate_proto(&proto)?
         }
-        let float_model = load_float_model(&self.model_path)?;
-        println!("Input shape: {:?}", float_model.input_shapes());
+        let float_model = load_float_model(&proto)?;
+        debug!("Input shape: {:?}", float_model.input_shapes());
         let mut kept_float = None;
         if self.keep_float {
             kept_float = Some(float_model.clone());
@@ -71,6 +92,12 @@ impl<S: ScalingStrategy> FloatOnnxLoader<S> {
         Ok((padded_model, md))
     }
 }
+
+fn load_proto_from_path(path: &str) -> Result<ModelProto> {
+    tract_onnx::onnx()
+        .proto_model_for_path(path)
+        .map_err(|e| Error::msg(format!("Failed to load model: {e:?}")))
+}
 // Supported operators
 const ACTIVATION: [&str; 2] = ["Relu", "Sigmoid"];
 const CONVOLUTION: [&str; 1] = ["Conv"];
@@ -78,14 +105,9 @@ const DOWNSAMPLING: [&str; 1] = ["MaxPool"];
 const LINEAR_ALG: [&str; 2] = ["Gemm", "MatMul"];
 const RESHAPE: [&str; 2] = ["Flatten", "Reshape"];
 
-fn is_mlp(filepath: &str) -> Result<bool> {
-    let is_mlp = true;
+fn is_mlp(model: &ModelProto) -> Result<bool> {
     let mut prev_was_gemm_or_matmul = false;
-
-    let model = tract_onnx::onnx()
-        .proto_model_for_path(filepath)
-        .map_err(|e| Error::msg(format!("Failed to load model: {e:?}")))?;
-    let graph = model.graph.unwrap();
+    let graph = model.graph.as_ref().context("Model has no graph")?;
 
     for node in graph.node.iter() {
         if LINEAR_ALG.contains(&node.op_type.as_str()) {
@@ -106,19 +128,14 @@ fn is_mlp(filepath: &str) -> Result<bool> {
         }
     }
 
-    Ok(is_mlp)
+    Ok(true)
 }
 
-fn is_cnn(filepath: &str) -> Result<bool> {
+fn is_cnn(model: &ModelProto) -> Result<bool> {
     let mut is_cnn = true;
     let mut found_lin = false;
 
-    // Load the ONNX model
-    let model = tract_onnx::onnx()
-        .proto_model_for_path(filepath)
-        .map_err(|e| Error::msg(format!("Failed to load model: {e:?}")))?;
-
-    let graph = model.graph.unwrap();
+    let graph = model.graph.as_ref().context("Model has no graph")?;
     let mut previous_op = "";
 
     for node in graph.node.iter() {
@@ -152,9 +169,11 @@ fn is_cnn(filepath: &str) -> Result<bool> {
         // Conv layers should appear before dense layers
         if found_lin && CONVOLUTION.contains(&op_type) {
             is_cnn = false;
-            break;
         }
         previous_op = op_type;
+        if !is_cnn {
+            break;
+        }
     }
 
     Ok(is_cnn)
@@ -198,28 +217,35 @@ pub enum ModelType {
 
 impl ModelType {
     /// Analyze the given filepath and determine if it matches this model type
-    pub fn validate(&self, filepath: &str) -> Result<()> {
+    pub fn validate_file(&self, filepath: &str) -> Result<()> {
+        let model = load_proto_from_path(filepath)?;
+        self.validate_proto(&model)
+    }
+
+    /// Analyze the `ModelProto` and determine if it matches this model type
+    pub fn validate_proto(&self, model: &ModelProto) -> Result<()> {
         match self {
             ModelType::CNN => {
-                if !is_cnn(filepath)? {
+                if !is_cnn(model)? {
                     bail!("Model is not a valid CNN architecture");
                 }
-                Ok(())
             }
             ModelType::MLP => {
-                if !is_mlp(filepath)? {
+                if !is_mlp(model)? {
                     bail!("Model is not a valid MLP architecture");
                 }
-                Ok(())
             }
         }
+        Ok(())
     }
+
     pub fn from_onnx(filepath: &str) -> Result<ModelType> {
-        let is_mlp = is_mlp(filepath);
+        let model = load_proto_from_path(filepath)?;
+        let is_mlp = is_mlp(&model);
         if is_mlp.is_ok() {
             return Ok(ModelType::MLP);
         }
-        let is_cnn = is_cnn(filepath);
+        let is_cnn = is_cnn(&model);
         if is_cnn.is_ok() {
             return Ok(ModelType::CNN);
         }
@@ -232,8 +258,8 @@ impl ModelType {
 }
 
 /// Unified model loading function that handles both MLP and CNN models
-pub fn load_float_model(filepath: &str) -> Result<Model<f32>> {
-    let model = from_path(filepath)?;
+pub fn load_float_model(model: &ModelProto) -> Result<Model<f32>> {
+    let model = onnx::from_proto(model)?;
     model.describe();
     Ok(model)
 }
@@ -243,19 +269,19 @@ pub fn load_float_model(filepath: &str) -> Result<Model<f32>> {
 pub mod file_cache {
     use anyhow::{Context as _, anyhow, bail};
     use hex;
-    use once_cell::sync::Lazy;
     use reqwest;
     use sha2::{Digest, Sha256};
     use std::{
         fs::{self, File},
         io::{ErrorKind, Write},
         path::{Path, PathBuf},
+        sync::LazyLock,
         thread,
         time::Duration,
     };
 
     // Directory to store cached files.
-    static CACHE_DIR: Lazy<PathBuf> = Lazy::new(|| {
+    static CACHE_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
         let dir = PathBuf::from("target").join("test_assets_cache");
         if !dir.exists() {
             fs::create_dir_all(&dir).expect("Failed to create cache directory for test assets");
@@ -323,8 +349,8 @@ pub mod file_cache {
         let local_file_path = CACHE_DIR.join(&base_filename);
         let lock_file_path = CACHE_DIR.join(format!("{}.lock", base_filename));
 
-        const MAX_RETRIES: u32 = 60; // Approx 60 * 200ms = 12 seconds total timeout
-        const RETRY_DELAY_MS: u64 = 200;
+        const MAX_RETRIES: u32 = 60; // Approx 60 seconds total timeout
+        const RETRY_DELAY_MS: u64 = 1000;
 
         for attempt in 0..MAX_RETRIES {
             // Check 1: File exists and no lock. This is the ideal fast path.
@@ -550,14 +576,14 @@ mod tests {
 
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
         info!("GENERATING CONTEXT...");
-        let ctx = Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None)
+        let ctx = Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None, None)
             .expect("Unable to generate context");
         info!("GENERATING CONTEXT DONE...");
         let io = trace.to_verifier_io();
         info!("GENERATING Proof...");
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
             Prover::new(&ctx, &mut tr);
-        let proof = prover.prove(trace).expect("unable to generate proof");
+        let proof = prover.prove(&trace).expect("unable to generate proof");
         info!("GENERATING Proof DONE...");
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
@@ -568,7 +594,7 @@ mod tests {
     #[test]
     fn test_is_cnn() {
         let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
-        let result = is_cnn(&filepath);
+        let result = is_cnn(&load_proto_from_path(&filepath).unwrap());
 
         assert!(result.is_ok(), "Failed: {:?}", result.unwrap_err());
     }
@@ -576,7 +602,7 @@ mod tests {
     fn test_load_cnn() {
         init_test_logging_default();
         let filepath = "assets/scripts/CNN/cnn-cifar-01.onnx";
-        ModelType::CNN.validate(filepath).unwrap();
+        ModelType::CNN.validate_file(filepath).unwrap();
         let result =
             FloatOnnxLoader::new_with_scaling_strategy(&filepath, InferenceObserver::new())
                 .with_model_type(ModelType::CNN)
@@ -597,13 +623,13 @@ mod tests {
         println!("Result: {:?}", trace.outputs());
 
         let mut tr: BasicTranscript<GoldilocksExt2> = BasicTranscript::new(b"m2vec");
-        let ctx = Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None)
+        let ctx = Context::<GoldilocksExt2, Pcs<GoldilocksExt2>>::generate(&model, None, None)
             .expect("Unable to generate context");
 
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
             Prover::new(&ctx, &mut tr);
         let io = trace.to_verifier_io();
-        let proof = prover.prove(trace).expect("unable to generate proof");
+        let proof = prover.prove(&trace).expect("unable to generate proof");
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
         verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).unwrap();

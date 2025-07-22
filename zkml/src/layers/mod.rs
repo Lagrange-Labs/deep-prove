@@ -35,20 +35,20 @@ use crate::{
     layers::{
         activation::{Activation, ActivationProof},
         add::{Add, AddCtx, AddProof},
-        concat_matmul::ConcatMatMul,
+        concat_matmul::{ConcatMatMul, ConcatMatMulCtx, ConcatMatMulProof},
         convolution::Convolution,
         dense::Dense,
         pooling::Pooling,
         requant::{Requant, RequantProof},
-        reshape::Reshape,
+        reshape::{Reshape, ReshapeCtx},
         transformer::{
             embeddings::Embeddings,
             layernorm::LayerNorm,
             logits::Logits,
-            mha::MhaQK,
+            mha::{Mha, MhaCtx, MhaProof},
             positional::{Positional, PositionalCtx, PositionalProof},
             qkv::{QKV, QKVCtx, QKVProof},
-            softmax::Softmax,
+            softmax::{Softmax, SoftmaxCtx, SoftmaxProof},
         },
     },
     lookup::context::LookupWitnessGen,
@@ -80,7 +80,7 @@ pub enum Layer<T> {
     // TODO: so far it's only flattening the input tensor, e.g. new_shape = vec![shape.iter().product()]
     Flatten(Flatten),
     QKV(QKV<T>),
-    MhaQK(MhaQK),
+    Mha(Mha<T>),
     ConcatMatMul(ConcatMatMul),
     LayerNorm(LayerNorm<T>),
     Softmax(Softmax<T>),
@@ -111,13 +111,13 @@ where
     Pooling(PoolingCtx),
     Table(TableCtx<E>),
     QKV(QKVCtx<E>),
-    MhaQK,
-    ConcatMatMul,
+    Mha(MhaCtx<E>),
+    ConcatMatMul(ConcatMatMulCtx<E>),
     LayerNorm,
     Flatten,
-    Softmax,
     Add(AddCtx),
-    Reshape,
+    Softmax(SoftmaxCtx),
+    Reshape(ReshapeCtx),
     Embeddings,
     Positional(PositionalCtx),
     Logits,
@@ -133,20 +133,46 @@ where
 {
     Dense(DenseProof<E>),
     MatMul(MatMulProof<E>),
-    Convolution(ConvProof<E>),
+    Convolution(Box<ConvProof<E>>),
     Activation(ActivationProof<E, PCS>),
     Requant(RequantProof<E, PCS>),
     Pooling(PoolingProof<E, PCS>),
     QKV(QKVProof<E>),
-    MhaQK,
-    ConcatMatMul,
+    Mha(MhaProof<E, PCS>),
+    ConcatMatMul(ConcatMatMulProof<E>),
     LayerNorm,
-    Softmax,
     Add(AddProof<E>),
+    Softmax(SoftmaxProof<E, PCS>),
     Embeddings,
     Positional(PositionalProof<E>),
     Logits,
     Dummy, // To be used for non-provable layers
+}
+
+impl<T> Layer<T> {
+    /// Convert a layer to a string only containing its kind
+    pub fn as_kind_str(&self) -> &'static str {
+        match self {
+            Layer::Dense(_) => "dense",
+            Layer::Convolution(_) => "convolution",
+            Layer::SchoolBookConvolution(_) => "school-book-convolution",
+            Layer::Activation(_) => "activation",
+            Layer::Requant(_) => "requant",
+            Layer::Pooling(_) => "pooling",
+            Layer::Flatten(_) => "flatten",
+            Layer::QKV(_) => "qkv",
+            Layer::Mha(_) => "mha-qk",
+            Layer::MatMul(_) => "mat-mul",
+            Layer::ConcatMatMul(_) => "concat-mat-mul",
+            Layer::LayerNorm(_) => "layer-norm",
+            Layer::Softmax(_) => "softmax",
+            Layer::Add(_) => "add",
+            Layer::Reshape(_) => "reshape",
+            Layer::Embeddings(_) => "embeddings",
+            Layer::Positional(_) => "positional",
+            Layer::Logits(_) => "logits",
+        }
+    }
 }
 
 impl<E> LayerCtx<E>
@@ -159,13 +185,13 @@ where
             Self::Dense(_) => "Dense".to_string(),
             Self::MatMul(_) => "Matrix Multiplication".to_string(),
             Self::QKV(_) => "QKV".to_string(),
-            Self::MhaQK => "MHA_QK".to_string(),
-            Self::ConcatMatMul => "ConcatMatMul".to_string(),
+            Self::Mha(_) => "MHA".to_string(),
+            Self::ConcatMatMul(_) => "ConcatMatMul".to_string(),
             Self::LayerNorm => "LayerNorm".to_string(),
-            Self::Softmax => "Softmax".to_string(),
+            Self::Softmax(_) => "Softmax".to_string(),
             Self::Add(_) => "Add".to_string(),
             Self::Logits => "Logits".to_string(),
-            Self::Reshape => "Reshape".to_string(),
+            Self::Reshape(_) => "Reshape".to_string(),
             Self::Embeddings => "Embeddings".to_string(),
             Self::Positional(_) => "Positional".to_string(),
             Self::SchoolBookConvolution(_) => "Traditional Convolution".to_string(),
@@ -179,10 +205,10 @@ where
     }
 
     pub fn has_proof(&self) -> bool {
-        match self {
-            Self::Flatten | Self::Table(_) | Self::SchoolBookConvolution(_) => false,
-            _ => true,
-        }
+        !matches!(
+            self,
+            Self::Flatten | Self::Table(_) | Self::SchoolBookConvolution(_)
+        )
     }
 
     pub fn next_shape_step(&self, last_step: &ShapeStep) -> ShapeStep {
@@ -260,7 +286,7 @@ impl<N: Number> OpInfo for Layer<N> {
                 convolution.output_shapes(input_shapes, padding_mode)
             }
             Layer::MatMul(mat) => mat.output_shapes(input_shapes, padding_mode),
-            Layer::MhaQK(mha) => mha.output_shapes(input_shapes, padding_mode),
+            Layer::Mha(mha) => mha.output_shapes(input_shapes, padding_mode),
             Layer::ConcatMatMul(concat_matmul) => {
                 concat_matmul.output_shapes(input_shapes, padding_mode)
             }
@@ -288,7 +314,7 @@ impl<N: Number> OpInfo for Layer<N> {
             Layer::Convolution(convolution) => convolution.num_outputs(num_inputs),
             Layer::MatMul(mat) => mat.num_outputs(num_inputs),
             Layer::QKV(qkv) => qkv.num_outputs(num_inputs),
-            Layer::MhaQK(mha) => mha.num_outputs(num_inputs),
+            Layer::Mha(mha) => mha.num_outputs(num_inputs),
             Layer::ConcatMatMul(concat_matmul) => concat_matmul.num_outputs(num_inputs),
             Layer::LayerNorm(layernorm) => layernorm.num_outputs(num_inputs),
             Layer::Softmax(softmax) => softmax.num_outputs(num_inputs),
@@ -311,7 +337,7 @@ impl<N: Number> OpInfo for Layer<N> {
             Layer::Convolution(convolution) => convolution.describe(),
             Layer::MatMul(mat) => mat.describe(),
             Layer::QKV(qkv) => qkv.describe(),
-            Layer::MhaQK(mha) => mha.describe(),
+            Layer::Mha(mha) => mha.describe(),
             Layer::ConcatMatMul(concat_matmul) => concat_matmul.describe(),
             Layer::LayerNorm(layernorm) => layernorm.describe(),
             Layer::Softmax(softmax) => softmax.describe(),
@@ -334,7 +360,7 @@ impl<N: Number> OpInfo for Layer<N> {
             Layer::Convolution(convolution) => convolution.is_provable(),
             Layer::MatMul(mat) => mat.is_provable(),
             Layer::QKV(qkv) => qkv.is_provable(),
-            Layer::MhaQK(mha) => mha.is_provable(),
+            Layer::Mha(mha) => mha.is_provable(),
             Layer::ConcatMatMul(concat_matmul) => concat_matmul.is_provable(),
             Layer::LayerNorm(layernorm) => layernorm.is_provable(),
             Layer::Softmax(softmax) => softmax.is_provable(),
@@ -363,7 +389,7 @@ impl Evaluate<f32> for Layer<f32> {
             Layer::Convolution(convolution) => convolution.evaluate(inputs, unpadded_input_shapes),
             Layer::MatMul(mat) => mat.evaluate(inputs, unpadded_input_shapes),
             Layer::QKV(qkv) => qkv.evaluate(inputs, unpadded_input_shapes),
-            Layer::MhaQK(mha) => mha.evaluate(inputs, unpadded_input_shapes),
+            Layer::Mha(mha) => mha.evaluate(inputs, unpadded_input_shapes),
             Layer::ConcatMatMul(concat_matmul) => {
                 concat_matmul.evaluate(inputs, unpadded_input_shapes)
             }
@@ -391,12 +417,12 @@ impl Evaluate<Element> for Layer<Element> {
         inputs: &[&Tensor<Element>],
         unpadded_input_shapes: Vec<Shape>,
     ) -> Result<LayerOut<Element, E>> {
-        match self {
+        let output = match self {
             Layer::Dense(dense) => dense.evaluate(inputs, unpadded_input_shapes),
             Layer::Convolution(convolution) => convolution.evaluate(inputs, unpadded_input_shapes),
             Layer::MatMul(mat) => mat.evaluate(inputs, unpadded_input_shapes),
             Layer::QKV(qkv) => qkv.evaluate(inputs, unpadded_input_shapes),
-            Layer::MhaQK(mha) => mha.evaluate(inputs, unpadded_input_shapes),
+            Layer::Mha(mha) => mha.evaluate(inputs, unpadded_input_shapes),
             Layer::ConcatMatMul(concat_matmul) => {
                 concat_matmul.evaluate(inputs, unpadded_input_shapes)
             }
@@ -414,7 +440,18 @@ impl Evaluate<Element> for Layer<Element> {
             Layer::Requant(requant) => requant.evaluate(inputs, unpadded_input_shapes),
             Layer::Pooling(pooling) => pooling.evaluate(inputs, unpadded_input_shapes),
             Layer::Flatten(reshape) => reshape.evaluate(inputs, unpadded_input_shapes),
+        };
+
+        #[cfg(feature = "capture-layers-quant")]
+        {
+            if let Ok(output) = output.as_ref() {
+                let layer_kind = self.as_kind_str();
+                let out_dir = std::path::PathBuf::from("layers-quant").join(layer_kind);
+                crate::capture::store(&out_dir, &(self, inputs), &output.outputs);
+            }
         }
+
+        output
     }
 }
 
@@ -427,21 +464,19 @@ where
         match self {
             Layer::Dense(dense) => dense.step_info(id, aux),
             Layer::QKV(qkv) => qkv.step_info(id, aux),
-            Layer::MhaQK(_mha) => unimplemented!("MHA_QK proving layer not implemented"),
-            Layer::ConcatMatMul(_concat_matmul) => {
-                unimplemented!("ConcatMatMul proving layer not implemented")
-            }
+            Layer::Mha(mha) => mha.step_info(id, aux),
+            Layer::ConcatMatMul(concat_matmul) => concat_matmul.step_info(id, aux),
             Layer::LayerNorm(_layernorm) => {
                 unimplemented!("LayerNorm proving layer not implemented")
             }
-            Layer::Softmax(_softmax) => unimplemented!("Softmax proving layer not implemented"),
             Layer::Add(add) => add.step_info(id, aux),
+            Layer::Softmax(softmax) => softmax.step_info(id, aux),
             Layer::Logits(_logits) => unimplemented!("Logits proving layer not implemented"),
             Layer::Positional(positional) => positional.step_info(id, aux),
             Layer::Embeddings(_embeddings) => {
                 unimplemented!("Embeddings proving layer not implemented")
             }
-            Layer::Reshape(_reshape) => Ok((LayerCtx::Reshape, aux)),
+            Layer::Reshape(reshape) => reshape.step_info(id, aux),
             Layer::MatMul(mat) => mat.step_info(id, aux),
             Layer::Convolution(conv) => conv.step_info(id, aux),
             Layer::SchoolBookConvolution(conv) => conv.step_info(id, aux),
@@ -462,13 +497,11 @@ impl PadOp for Layer<Element> {
             Layer::Dense(dense) => Layer::Dense(dense.pad_node(si)?),
             Layer::Convolution(convolution) => Layer::Convolution(convolution.pad_node(si)?),
             Layer::QKV(qkv) => Layer::QKV(qkv.pad_node(si)?),
-            Layer::MhaQK(_mha) => unimplemented!("MHA_QK layer not implemented"),
-            Layer::ConcatMatMul(_concat_matmul) => {
-                unimplemented!("ConcatMatMul layer not implemented")
-            }
+            Layer::Mha(mha) => Layer::Mha(mha.pad_node(si)?),
+            Layer::ConcatMatMul(concat_matmul) => Layer::ConcatMatMul(concat_matmul.pad_node(si)?),
             Layer::LayerNorm(_layernorm) => unimplemented!("LayerNorm layer not implemented"),
-            Layer::Softmax(_softmax) => unimplemented!("Softmax layer not implemented"),
             Layer::Add(add) => Layer::Add(add.pad_node(si)?),
+            Layer::Softmax(softmax) => Layer::Softmax(softmax.pad_node(si)?),
             Layer::Logits(_logits) => unimplemented!("Logits layer not implemented"),
             Layer::Positional(positional) => Layer::Positional(positional.pad_node(si)?),
             Layer::Embeddings(_embeddings) => unimplemented!("Embeddings layer not implemented"),
@@ -480,7 +513,7 @@ impl PadOp for Layer<Element> {
             Layer::Requant(requant) => Layer::Requant(requant.pad_node(si)?),
             Layer::Pooling(pooling) => Layer::Pooling(pooling.pad_node(si)?),
             Layer::Flatten(flatten) => Layer::Flatten(flatten.pad_node(si)?),
-            Layer::Reshape(_reshape) => unimplemented!("Reshape layer not implemented"),
+            Layer::Reshape(reshape) => Layer::Reshape(reshape.pad_node(si)?),
         })
     }
 }
@@ -514,11 +547,11 @@ where
             (Layer::QKV(qkv), LayerCtx::QKV(info)) => {
                 qkv.prove(node_id, info, last_claims, step_data, prover)
             }
-            (Layer::MhaQK(_mha), LayerCtx::MhaQK) => {
-                unimplemented!("MHA_QK layer not implemented")
+            (Layer::Mha(mha), LayerCtx::Mha(info)) => {
+                mha.prove(node_id, info, last_claims, step_data, prover)
             }
-            (Layer::ConcatMatMul(_concat_matmul), LayerCtx::ConcatMatMul) => {
-                unimplemented!("ConcatMatMul layer not implemented")
+            (Layer::ConcatMatMul(concat_matmul), LayerCtx::ConcatMatMul(info)) => {
+                concat_matmul.prove(node_id, info, last_claims, step_data, prover)
             }
             (Layer::Embeddings(_embeddings), LayerCtx::Embeddings) => {
                 unimplemented!("Embeddings layer not implemented")
@@ -547,6 +580,9 @@ where
             (Layer::Flatten(_), LayerCtx::Flatten) => {
                 unreachable!("prove cannot be called for reshape")
             }
+            (Layer::Softmax(softmax), LayerCtx::Softmax(info)) => {
+                softmax.prove(node_id, info, last_claims, step_data, prover)
+            }
             _ => bail!(
                 "Incompatible layer {} and ctx {} found for node id {}",
                 self.describe(),
@@ -559,42 +595,39 @@ where
     fn gen_lookup_witness(
         &self,
         id: provable::NodeId,
-        gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> Result<()> {
+    ) -> Result<LookupWitnessGen<E, PCS>> {
         match self {
-            Layer::Dense(dense) => dense.gen_lookup_witness(id, gen, ctx, step_data),
-            Layer::Convolution(convolution) => {
-                convolution.gen_lookup_witness(id, gen, ctx, step_data)
-            }
-            Layer::MatMul(m) => m.gen_lookup_witness(id, gen, ctx, step_data),
-            Layer::QKV(qkv) => qkv.gen_lookup_witness(id, gen, ctx, step_data),
-            Layer::MhaQK(_mha) => unimplemented!("MHA_QK layer not implemented"),
-            Layer::ConcatMatMul(_concat_matmul) => {
-                unimplemented!("ConcatMatMul layer not implemented")
+            Layer::Dense(dense) => dense.gen_lookup_witness(id, ctx, step_data),
+            Layer::Convolution(convolution) => convolution.gen_lookup_witness(id, ctx, step_data),
+            Layer::MatMul(m) => m.gen_lookup_witness(id, ctx, step_data),
+            Layer::QKV(qkv) => qkv.gen_lookup_witness(id, ctx, step_data),
+            Layer::Mha(mha) => mha.gen_lookup_witness(id, ctx, step_data),
+            Layer::ConcatMatMul(concat_matmul) => {
+                concat_matmul.gen_lookup_witness(id, ctx, step_data)
             }
             Layer::LayerNorm(_layernorm) => unimplemented!("LayerNorm layer not implemented"),
-            Layer::Softmax(_softmax) => unimplemented!("Softmax layer not implemented"),
-            Layer::Add(add) => add.gen_lookup_witness(id, gen, ctx, step_data),
+            Layer::Add(add) => add.gen_lookup_witness(id, ctx, step_data),
+            Layer::Softmax(softmax) => softmax.gen_lookup_witness(id, ctx, step_data),
             Layer::Logits(_logits) => unimplemented!("Logits layer not implemented"),
-            Layer::Positional(positional) => positional.gen_lookup_witness(id, gen, ctx, step_data),
+            Layer::Positional(positional) => positional.gen_lookup_witness(id, ctx, step_data),
             Layer::Embeddings(_embeddings) => unimplemented!("Embeddings layer not implemented"),
             Layer::SchoolBookConvolution(school_book_conv) => {
                 // check that the layer is not provable, so we don't need to call the method
                 assert!(!school_book_conv.is_provable());
-                Ok(())
+                Ok(Default::default())
             }
-            Layer::Activation(activation) => activation.gen_lookup_witness(id, gen, ctx, step_data),
-            Layer::Requant(requant) => requant.gen_lookup_witness(id, gen, ctx, step_data),
-            Layer::Pooling(pooling) => pooling.gen_lookup_witness(id, gen, ctx, step_data),
+            Layer::Activation(activation) => activation.gen_lookup_witness(id, ctx, step_data),
+            Layer::Requant(requant) => requant.gen_lookup_witness(id, ctx, step_data),
+            Layer::Pooling(pooling) => pooling.gen_lookup_witness(id, ctx, step_data),
             Layer::Reshape(r) => {
                 assert!(!r.is_provable());
-                Ok(())
+                Ok(Default::default())
             }
             Layer::Flatten(r) => {
                 assert!(!r.is_provable());
-                Ok(())
+                Ok(Default::default())
             }
         }
     }
@@ -633,9 +666,9 @@ impl QuantizeOp for Layer<f32> {
                 QuantizeOutput::new(Layer::QKV(output.quantized_op), output.output_scalings)
                     .maybe_requants(output.requant_layer)
             }
-            Layer::MhaQK(mha) => {
+            Layer::Mha(mha) => {
                 let output = mha.quantize_op::<S>(data, node_id, input_scaling)?;
-                QuantizeOutput::new(Layer::MhaQK(output.quantized_op), output.output_scalings)
+                QuantizeOutput::new(Layer::Mha(output.quantized_op), output.output_scalings)
                     .maybe_requants(output.requant_layer)
             }
             Layer::ConcatMatMul(concat_matmul) => {
@@ -720,10 +753,10 @@ where
             Self::Dense(_) => "Dense".to_string(),
             Self::MatMul(_) => "Matmul".to_string(),
             Self::QKV(_) => "QKV".to_string(),
-            Self::MhaQK => "MHA_QK".to_string(),
-            Self::ConcatMatMul => "ConcatMatMul".to_string(),
+            Self::Mha(_) => "MHA".to_string(),
+            Self::ConcatMatMul(..) => "ConcatMatMul".to_string(),
             Self::LayerNorm => "LayerNorm".to_string(),
-            Self::Softmax => "Softmax".to_string(),
+            Self::Softmax(_) => "Softmax".to_string(),
             Self::Positional(_) => "Positional".to_string(),
             Self::Add(_) => "Add".to_string(),
             Self::Logits => "Logits".to_string(),
@@ -741,11 +774,11 @@ where
             LayerProof::Dense(..) => None,
             LayerProof::MatMul(..) => None,
             LayerProof::QKV(..) => None,
-            LayerProof::MhaQK => None,
-            LayerProof::ConcatMatMul => None,
+            LayerProof::Mha(proof) => Some(proof.get_lookup_data()),
+            LayerProof::ConcatMatMul(..) => None,
             LayerProof::LayerNorm => None,
-            LayerProof::Softmax => None,
             LayerProof::Add(_) => None,
+            LayerProof::Softmax(proof) => Some(proof.get_lookup_data()),
             LayerProof::Logits => None,
             LayerProof::Positional(_) => None,
             LayerProof::Embeddings => None,

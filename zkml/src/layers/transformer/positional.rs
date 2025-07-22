@@ -115,7 +115,7 @@ impl<N> Learned<N> {
             &evaluation_point[start_extra_coordinates..]
         };
         let positional_matrix_eval = sub_matrix_evals
-            .into_iter()
+            .iter()
             .zip(eval_point)
             .fold(sub_pos_eval, |eval, (&sub_eval, &coordinate)| {
                 eval * (E::ONE - coordinate) + sub_eval * coordinate
@@ -125,6 +125,7 @@ impl<N> Learned<N> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 pub enum Positional<N> {
     Learned(Learned<N>),
     // TODO
@@ -192,7 +193,7 @@ fn output_shapes(
         PaddingMode::NoPadding => pos_matrix_unpadded_shape.clone(),
         PaddingMode::Padding => pos_matrix_unpadded_shape.next_power_of_two(),
     };
-    input_shapes.into_iter().for_each(|s| {
+    input_shapes.iter().for_each(|s| {
         assert!(s.is_matrix());
         assert!(s[0] <= pos_shape[0]);
         assert_eq!(s[1], pos_shape[1])
@@ -424,9 +425,8 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS>
                         )
                     })
                     .collect::<BTreeMap<_, _>>()
-                    .into_iter()
-                    .map(|(_, eval)| eval)
-                    .collect_vec();
+                    .into_values()
+                    .collect::<Vec<_>>();
 
                 let positional_matrix_claim = Learned::<Element>::compute_positional_matrix_claim(
                     evaluation_point,
@@ -518,7 +518,7 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> VerifiableCtx<E, PCS
 
         let mut output_claims = vec![];
         let mut common_claims = HashMap::new();
-        for (i, (output_claim, proof)) in last_claims.into_iter().zip(&proof.proofs).enumerate() {
+        for (i, (output_claim, proof)) in last_claims.iter().zip(&proof.proofs).enumerate() {
             // compute shape step for add sub-layer
             let unpadded_input_shapes = vec![shape_step.unpadded_input_shape[i].clone(); 2];
             let padded_input_shapes = vec![shape_step.padded_input_shape[i].clone(); 2];

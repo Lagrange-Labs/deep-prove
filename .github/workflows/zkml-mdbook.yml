@@ -1,0 +1,38 @@
+name: Deploy zkml mdBook
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+    paths:
+      - 'zkml/docs/src/**'  # Only trigger when docs are updated
+      - 'zkml/docs/book.toml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      discussions: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+      - uses: jontze/action-mdbook@v4
+        with:
+          token: ${{secrets.GITHUB_TOKEN}}
+          use-katex: true
+      - name: Build Book
+        run: |
+          cd zkml/docs
+          rm -rf book
+          mdbook build
+      - uses: rossjrw/pr-preview-action@v1
+        with:
+          source-dir: zkml/docs/book
+          umbrella-dir: zkml/pr-preview
+          pages-base-path: zkml

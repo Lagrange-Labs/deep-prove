@@ -17,10 +17,10 @@ pub fn compute_betas_eval<E: ExtensionField>(r: &[E]) -> Vec<E> {
         let current_size = 1 << i;
         let temp = betas[..current_size].to_vec();
         let r_elem = r[r.len() - 1 - i];
-        for j in 0..current_size {
+        for (j, item) in temp.iter().enumerate().take(current_size) {
             let idx = j << 1;
-            let t = r_elem * temp[j];
-            betas[idx] = temp[j] - t;
+            let t = r_elem * *item;
+            betas[idx] = *item - t;
             betas[idx + 1] = t;
         }
     }

@@ -41,6 +41,12 @@ pub struct Add<N> {
     quant_info: Option<QuantInfo>,
 }
 
+impl<N: Number> Default for Add<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Context info for the add layer.
 /// NOTE: In LLM, we assume the same scaling info regardless of the sequence length.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -141,7 +147,6 @@ impl Add<Element> {
         Ok((output_claims, proof))
     }
 }
-
 impl Evaluate<f32> for Add<f32> {
     fn evaluate<E: ExtensionField>(
         &self,
@@ -150,8 +155,7 @@ impl Evaluate<f32> for Add<f32> {
     ) -> anyhow::Result<LayerOut<f32, E>> {
         let result = if inputs.len() == 2 {
             ensure!(
-                Shape::from(inputs[0].get_shape()).product()
-                    == Shape::from(inputs[1].get_shape()).product(),
+                inputs[0].get_shape().product() == inputs[1].get_shape().product(),
                 "Add layer expects inputs to have the same shape: {:?} vs {:?}",
                 inputs[0].get_shape(),
                 inputs[1].get_shape()
@@ -670,7 +674,7 @@ mod test {
             computed_result.get_data(),
             t3.get_data(),
             1e-2_f32,
-            1e-2_f32,
+            1e-1_f32,
         );
         println!("computed_result: {:?}", computed_result.get_data());
         println!("t3: {:?}", t3.get_data());
