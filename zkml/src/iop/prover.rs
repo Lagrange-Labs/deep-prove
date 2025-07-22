@@ -397,13 +397,13 @@ where
 
     pub fn prove<'b>(
         mut self,
-        full_trace: &InferenceTrace<'b, E, Element>,
+        full_trace: InferenceTrace<'b, E, Element>,
     ) -> anyhow::Result<Proof<E, PCS>> {
         debug!("== Instantiate witness context ==");
 
         let metrics = Metrics::new();
         self.ctx.write_to_transcript(self.transcript)?;
-        self.instantiate_witness_ctx(full_trace)?;
+        self.instantiate_witness_ctx(&full_trace)?;
 
         let span = metrics.to_span();
         stream_metrics("Witness context", &span);
