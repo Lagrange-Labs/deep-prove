@@ -2107,6 +2107,45 @@ impl FromIterator<usize> for Shape {
     }
 }
 
+// taken from https://docs.pytorch.org/docs/stable/generated/torch.isclose.html
+/// Determines whether two slices of `f32` values are element-wise close within
+/// the specified absolute (`atol`) and relative (`rtol`) tolerances.
+///
+/// The condition checked is the same as PyTorch's `torch.isclose`:
+/// `|a - b| <= atol + rtol * |b|` for every corresponding element.
+///
+/// # Examples
+///
+/// ```
+/// use zkml::tensor::is_close_with_tolerance;
+///
+/// // For 10% relative tolerance (0.1 = 10%)
+/// let a = [1.0, 2.0, 3.0];
+/// let b = [1.1, 2.2, 3.3]; // 10% difference
+/// assert!(is_close_with_tolerance(&a, &b, 0.0, 0.1));
+///
+/// // For 1e-6 absolute tolerance
+/// let c = [1.0, 2.0, 3.0];
+/// let d = [1.000001, 2.000001, 3.000001]; // 1e-6 difference
+/// assert!(is_close_with_tolerance(&c, &d, 1e-6, 0.0));
+/// ```
+pub fn is_close_with_tolerance(a: &[f32], b: &[f32], atol: f32, rtol: f32) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+
+    a.iter().zip(b.iter()).all(|(x, y)| {
+        let diff = (*x - *y).abs();
+        diff <= atol + rtol * y.abs()
+    })
+}
+
+/// Backwards-compatible wrapper that uses the historical default tolerances
+/// (`atol = 1e-8`, `rtol = 1e-5`).
+pub fn is_close(a: &[f32], b: &[f32]) -> bool {
+    is_close_with_tolerance(a, b, 1e-8_f32, 1e-5_f32)
+}
+
 #[cfg(test)]
 mod test {
     use ark_std::rand::Rng;
