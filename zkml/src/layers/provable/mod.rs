@@ -3,8 +3,10 @@ use ff_ext::ExtensionField;
 use mpcs::PolynomialCommitmentScheme;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
+    borrow::Borrow,
     collections::{BTreeMap, HashMap},
     fmt::Debug,
+    sync::Arc,
 };
 use transcript::Transcript;
 
@@ -209,14 +211,11 @@ where
     /// Requires the input claims for the nodes of the model using the
     /// outputs of the current node, and the claims of the output
     /// tensors of the model
-    pub(crate) fn claims_for_node<'a, 'b>(
+    pub(crate) fn claims_for_node(
         &self,
-        claims_by_node: &'a HashMap<NodeId, Vec<Claim<E>>>,
-        output_claims: &'b [Claim<E>],
-    ) -> Result<Vec<&'a Claim<E>>>
-    where
-        'b: 'a,
-    {
+        claims_by_node: &HashMap<NodeId, Vec<Arc<Claim<E>>>>,
+        output_claims: &[Arc<Claim<E>>],
+    ) -> Result<Vec<Arc<Claim<E>>>> {
         self.outputs.iter().map(|out| {
             // For now, we support in proving only one edge per output wire,
             // as if an output is used as input in different nodes, we need
@@ -233,7 +232,7 @@ where
                     edge.index,
                     claims_for_node.len()
                 );
-                &claims_for_node[edge.index]
+                Arc::clone(&claims_for_node[edge.index])
             } else {
                 // it's an output node, so we use directly the claim for the corresponding output
                 ensure!(edge.index < output_claims.len(),
@@ -241,7 +240,7 @@ where
                  edge.index,
                  output_claims.len(),
                 );
-                &output_claims[edge.index]
+                Arc::clone(&output_claims[edge.index])
             })
         }).collect()
     }
@@ -252,7 +251,7 @@ where
     /// the model
     pub(crate) fn input_claims<'a, I: Iterator<Item = (&'a NodeId, &'a Self)>>(
         nodes: I,
-        claims_by_node: &HashMap<NodeId, Vec<Claim<E>>>,
+        claims_by_node: &HashMap<NodeId, Vec<Arc<Claim<E>>>>,
     ) -> Result<Vec<&Claim<E>>> {
         let mut claims = BTreeMap::new();
         for (node_id, ctx) in nodes {
@@ -276,7 +275,7 @@ where
             "Not all input claims were found"
         );
 
-        Ok(claims.into_values().collect())
+        Ok(claims.into_values().map(|v| (*v).borrow()).collect())
     }
 }
 

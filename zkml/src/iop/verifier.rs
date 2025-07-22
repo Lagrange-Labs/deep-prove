@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{borrow::Borrow, collections::HashMap, sync::Arc};
 
 use crate::{
     Claim, VectorTranscript,
@@ -121,10 +121,10 @@ where
                 let output_mle = out.get_data().to_vec().into_mle();
                 let computed_sum = output_mle.evaluate(&first_randomness);
 
-                Claim {
+                Arc::new(Claim {
                     point: first_randomness,
                     eval: computed_sum,
-                }
+                })
             })
             .collect_vec();
 
@@ -167,7 +167,7 @@ where
 
         // 4. Verify each proof sequentially, Always make sure the proof corresponds to the expected type of proof in the context.
         // We have two `HashSet`s, one for the type of table used and one for the lookup challenges used
-        let mut claims_by_layer: HashMap<NodeId, Vec<Claim<E>>> = HashMap::new();
+        let mut claims_by_layer: HashMap<NodeId, Vec<Arc<Claim<E>>>> = HashMap::new();
         for (node_id, step) in ctx.steps_info.to_backward_iterator() {
             let node_proof = if step.ctx.has_proof() {
                 proof
@@ -184,16 +184,23 @@ where
                 "Verifying proof {} for node {node_id}",
                 node_proof.variant_name(),
             );
-            let claims_for_verify = step.claims_for_node(&claims_by_layer, &out_claims)?;
+            let claims_for_verify =
+                step.claims_for_node(&claims_by_layer, out_claims.as_slice())?;
             let claims = {
                 if step.ctx.is_provable() {
                     // we verify the proof
-                    step.ctx
-                        .verify(node_proof, &claims_for_verify, &mut self, shape_step)?
+                    let claims_for_verify = claims_for_verify
+                        .iter()
+                        .map(|v| (*v).borrow())
+                        .collect_vec();
+                    let claims =
+                        step.ctx
+                            .verify(node_proof, &claims_for_verify, &mut self, shape_step)?;
+                    claims.into_iter().map(Arc::new).collect()
                 } else {
                     // we only propagate the claims, without changing them, as a non-provable layer
                     // shouldn't change the input values
-                    claims_for_verify.into_iter().cloned().collect()
+                    claims_for_verify
                 }
             };
             claims_by_layer.insert(node_id, claims);

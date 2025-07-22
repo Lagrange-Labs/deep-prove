@@ -19,7 +19,7 @@ use crate::{
 };
 use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
-use std::collections::HashMap;
+use std::{borrow::Borrow, collections::HashMap, sync::Arc};
 use tracing::trace;
 
 use itertools::Itertools;
@@ -425,14 +425,14 @@ where
                     .transcript
                     .read_challenges(out.get_data().len().ilog2() as usize);
                 let y_i = out.get_data().to_vec().into_mle().evaluate(&r_i);
-                Claim {
+                Arc::new(Claim {
                     point: r_i,
                     eval: y_i,
-                }
+                })
             })
             .collect_vec();
 
-        let mut claims_by_layer: HashMap<NodeId, Vec<Claim<E>>> = HashMap::new();
+        let mut claims_by_layer: HashMap<NodeId, Vec<Arc<Claim<E>>>> = HashMap::new();
         for (node_id, ctx) in self.ctx.steps_info.to_backward_iterator() {
             let InferenceStep {
                 op: node_operation,
@@ -444,13 +444,21 @@ where
                 "Proving node with id {node_id}: {:?}",
                 node_operation.describe()
             );
-            let claims_for_prove = ctx.claims_for_node(&claims_by_layer, &out_claims)?;
+            let claims_for_prove = ctx.claims_for_node(&claims_by_layer, out_claims.as_slice())?;
             let claims = if node_operation.is_provable() {
-                node_operation.prove(node_id, &ctx.ctx, claims_for_prove, step_data, &mut self)?
+                let claims_for_prove = claims_for_prove.iter().map(|v| (*v).borrow()).collect_vec();
+                let claims = node_operation.prove(
+                    node_id,
+                    &ctx.ctx,
+                    claims_for_prove,
+                    step_data,
+                    &mut self,
+                )?;
+                claims.into_iter().map(Arc::new).collect()
             } else {
                 // we only propagate the claims, without changing them, as a non-provable layer
                 // shouldn't change the input values
-                claims_for_prove.into_iter().cloned().collect()
+                claims_for_prove
             };
             claims_by_layer.insert(node_id, claims);
         }
