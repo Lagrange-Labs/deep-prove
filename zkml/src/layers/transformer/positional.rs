@@ -3,7 +3,7 @@ use std::{
     iter::once,
 };
 
-use anyhow::ensure;
+use anyhow::{Context, ensure};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use mpcs::PolynomialCommitmentScheme;
@@ -43,7 +43,7 @@ pub struct PositionalCtx {
 /// Data structure containing the proof data for a single
 /// input of positional encoding layer
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AtomicPositionalProof<E> {
+pub struct SinglePositionalProof<E> {
     // Evaluations of the sub-matrices required to compute the claim
     // about the positional matrix. Each sub-matrix is identified by
     // an incremental integer that corresponds to an extra variable to be processed
@@ -57,19 +57,19 @@ pub struct AtomicPositionalProof<E> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PositionalProof<E> {
     // Proofs for all the inputs of the positional encoding layer
-    proofs: Vec<AtomicPositionalProof<E>>,
+    proofs: Vec<SinglePositionalProof<E>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct LearnedPositional<N> {
-    positional_matrix: Tensor<N>,
+pub struct Learned<N> {
+    positional: Tensor<N>,
     unpadded_shape: Shape,
     add_layer: Add<N>,
 }
 
-impl<N> LearnedPositional<N> {
+impl<N> Learned<N> {
     fn num_vars(&self) -> usize {
-        let num_vars = self.positional_matrix.num_vars_2d();
+        let num_vars = self.positional.num_vars_2d();
         num_vars.0 + num_vars.1
     }
 
@@ -126,7 +126,7 @@ impl<N> LearnedPositional<N> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Positional<N> {
-    Learned(LearnedPositional<N>),
+    Learned(Learned<N>),
     // TODO
     Rope,
 }
@@ -134,15 +134,15 @@ pub enum Positional<N> {
 impl<N: Number> Positional<N> {
     pub fn get_shape(&self) -> Shape {
         match self {
-            Self::Learned(pos) => pos.positional_matrix.get_shape(),
+            Self::Learned(pos) => pos.positional.get_shape(),
             Self::Rope => unimplemented!("Rope not implemented"),
         }
     }
 
     pub fn new_learned(matrix: Tensor<N>) -> Self {
         let unpadded_shape = matrix.get_shape();
-        Self::Learned(LearnedPositional {
-            positional_matrix: matrix,
+        Self::Learned(Learned {
+            positional: matrix,
             unpadded_shape,
             add_layer: Add::new(),
         })
@@ -167,13 +167,12 @@ where
             .iter()
             .map(|x| match self {
                 Self::Learned(pos) => {
-                    let sub_pos = pos.positional_matrix.slice_2d(0, x.get_shape()[0]);
-                    Ok(pos
-                        .add_layer
+                    let sub_pos = pos.positional.slice_2d(0, x.get_shape()[0]);
+                    pos.add_layer
                         .evaluate::<E>(&[x, &sub_pos], vec![pos.unpadded_shape.clone(); 2])?
                         .outputs
                         .pop()
-                        .unwrap())
+                        .context("Expected at least 1 output from add in positional encoding layer")
                 }
                 Self::Rope => {
                     anyhow::bail!("Rope not implemented");
@@ -246,7 +245,7 @@ impl<E: ExtensionField> ProveInfo<E> for Positional<Element> {
                 .into_iter()
                 .chain(once((
                     POSITIONAL_POLY_ID.to_string(),
-                    pos.positional_matrix.pad_next_power_of_two().data,
+                    pos.positional.pad_next_power_of_two().data,
                 )))
                 .collect(),
         );
@@ -282,15 +281,15 @@ impl QuantizeOp for Positional<f32> {
         };
 
         // quantize positional matrix
-        let max = pos.positional_matrix.max_abs_output();
+        let max = pos.positional.max_abs_output();
         let pos_scaling = ScalingFactor::from_absolute_max(max, None);
 
         let quantized_add =
             pos.add_layer
                 .quantize_op::<S>(data, node_id, &[input_scaling[0], pos_scaling])?;
 
-        let quantized_pos = LearnedPositional {
-            positional_matrix: pos.positional_matrix.quantize(&pos_scaling),
+        let quantized_pos = Learned {
+            positional: pos.positional.quantize(&pos_scaling),
             unpadded_shape: pos.unpadded_shape,
             add_layer: quantized_add.quantized_op,
         };
@@ -309,9 +308,7 @@ impl PadOp for Positional<Element> {
         Self: Sized,
     {
         match &mut self {
-            Positional::Learned(pos) => {
-                pos.positional_matrix = pos.positional_matrix.pad_next_power_of_two()
-            }
+            Positional::Learned(pos) => pos.positional = pos.positional.pad_next_power_of_two(),
             Positional::Rope => (),
         }
 
@@ -351,7 +348,7 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS>
             .zip(&step_data.inputs)
             .map(|(output_claim, input)| {
                 // derive sub-matrix to be added to input. ToDo: place it in proving data
-                let matrix_slice = TensorSlice::from(&pos.positional_matrix);
+                let matrix_slice = TensorSlice::from(&pos.positional);
                 let sub_pos = matrix_slice
                     .slice_over_first_dim(0, input.get_shape()[0])
                     .to_fields();
@@ -386,7 +383,7 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS>
                 ensure!(diff_vars >= 0);
 
                 // now, we need to squeeze `diff_vars` coordinates from the transcript
-                let extra_coordinates = LearnedPositional::<Element>::sample_random_coordinates(
+                let extra_coordinates = Learned::<Element>::sample_random_coordinates(
                     diff_vars,
                     prover.transcript,
                     output_claim,
@@ -412,7 +409,7 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS>
                     .collect_vec();
 
                 // check that all the slices of `positional_matrix` have been computed
-                ensure!(slice_start == pos.positional_matrix.get_shape()[0]);
+                ensure!(slice_start == pos.positional.get_shape()[0]);
 
                 // now, evaluate the MLE of each sub-matrix
                 let sub_matrix_evals = (0..diff_vars)
@@ -431,16 +428,15 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS>
                     .map(|(_, eval)| eval)
                     .collect_vec();
 
-                let positional_matrix_claim =
-                    LearnedPositional::<Element>::compute_positional_matrix_claim(
-                        evaluation_point,
-                        sub_pos_eval,
-                        &sub_matrix_evals,
-                    );
+                let positional_matrix_claim = Learned::<Element>::compute_positional_matrix_claim(
+                    evaluation_point,
+                    sub_pos_eval,
+                    &sub_matrix_evals,
+                );
 
                 common_claims.insert(POSITIONAL_POLY_ID.to_string(), positional_matrix_claim);
 
-                Ok(AtomicPositionalProof {
+                Ok(SinglePositionalProof {
                     sub_matrix_evals,
                     add_proof,
                 })
@@ -553,7 +549,7 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> VerifiableCtx<E, PCS
             ensure!(diff_vars >= 0);
 
             // then, we sample the extra coordinates corresponding to these variables
-            let extra_coordinates = LearnedPositional::<Element>::sample_random_coordinates(
+            let extra_coordinates = Learned::<Element>::sample_random_coordinates(
                 diff_vars,
                 verifier.transcript,
                 output_claim,
@@ -568,12 +564,11 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> VerifiableCtx<E, PCS
                 .chain(extra_coordinates)
                 .collect_vec();
 
-            let positional_matrix_claim =
-                LearnedPositional::<Element>::compute_positional_matrix_claim(
-                    evaluation_point,
-                    sub_pos_eval,
-                    &proof.sub_matrix_evals,
-                );
+            let positional_matrix_claim = Learned::<Element>::compute_positional_matrix_claim(
+                evaluation_point,
+                sub_pos_eval,
+                &proof.sub_matrix_evals,
+            );
 
             common_claims.insert(POSITIONAL_POLY_ID.to_string(), positional_matrix_claim);
         }
@@ -612,7 +607,7 @@ mod tests {
             unreachable!()
         };
 
-        let padded_shape = padded_pos.positional_matrix.get_shape();
+        let padded_shape = padded_pos.positional.get_shape();
         assert_eq!(padded_pos.unpadded_shape, positional_matrix.get_shape());
         assert_eq!(
             padded_shape,
@@ -624,11 +619,11 @@ mod tests {
             for j in 0..padded_shape[1] {
                 if i < padded_pos.unpadded_shape[0] && j < padded_pos.unpadded_shape[1] {
                     assert_eq!(
-                        padded_pos.positional_matrix.get_2d(i, j),
+                        padded_pos.positional.get_2d(i, j),
                         positional_matrix.get_2d(i, j)
                     );
                 } else {
-                    assert_eq!(padded_pos.positional_matrix.get_2d(i, j), 0);
+                    assert_eq!(padded_pos.positional.get_2d(i, j), 0);
                 }
             }
         }
