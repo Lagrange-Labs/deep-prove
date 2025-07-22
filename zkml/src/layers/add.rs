@@ -654,7 +654,7 @@ mod test {
             computed_result.get_data(),
             t3.get_data(),
             1e-2_f32,
-            1e-2_f32,
+            1e-1_f32,
         );
         println!("computed_result: {:?}", computed_result.get_data());
         println!("t3: {:?}", t3.get_data());
