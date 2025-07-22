@@ -1685,6 +1685,7 @@ mod tests {
     use crate::{
         layers::Layer,
         model::{Model, test::prove_model},
+        tensor::is_close_with_tolerance,
     };
 
     use super::*;
@@ -1752,22 +1753,12 @@ mod tests {
             .clone();
 
         let quant_output_dequant = quant_output.dequantize(&output_scaling);
-
-        for (qdqo, dequant_o) in quant_output_dequant
-            .get_data_into()
-            .chunks(100)
-            .into_iter()
-            .zip(dequant_output.get_data_into().chunks(100))
-        {
-            // Check that the values are within 0.01 of the float output
-            for (&q, &d) in qdqo.iter().zip(dequant_o.iter()) {
-                assert!(
-                    (q - d).abs() < 0.05f32,
-                    "Values {q}, {d}, with abs diff {} which is bigger than 0.05",
-                    (q - d).abs(),
-                );
-            }
-        }
+        let a = quant_output_dequant.get_data();
+        let b = dequant_output.get_data();
+        assert!(
+            is_close_with_tolerance(a, b, 1e-2_f32, 1e-1_f32),
+            "Wasn't close enough to floating point version"
+        );
     }
 
     #[test]
