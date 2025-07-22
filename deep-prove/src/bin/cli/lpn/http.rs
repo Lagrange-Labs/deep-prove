@@ -1,6 +1,6 @@
 use anyhow::{Context, bail};
 use axum::http::StatusCode;
-use deep_prove::middleware::v2::DeepProveRequest as DeepProveRequestV2;
+use deep_prove::middleware::v2::ClientToGw;
 use tracing::{error, info};
 use zkml::inputs::Input;
 
@@ -26,7 +26,7 @@ pub async fn connect(executor: Executor) -> anyhow::Result<()> {
         } => {
             let input = Input::from_file(&inputs).context("loading input")?;
 
-            let request = DeepProveRequestV2 {
+            let request = ClientToGw {
                 pretty_name: pretty_name.unwrap_or_else(|| {
                     format!(
                         "{model_id}-{}",

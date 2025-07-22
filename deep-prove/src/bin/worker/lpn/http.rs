@@ -1,12 +1,9 @@
 use crate::{RunMode, StoreKind};
-use anyhow::{Context, bail};
-use deep_prove::{
-    middleware::{v1, v2},
-    store::MemStore,
-};
+use anyhow::Context;
+use deep_prove::{middleware::v2, store::MemStore};
 use exponential_backoff::Backoff;
 use serde_json::json;
-use tracing::{error, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 use url::Url;
 
 const ATTEMPTS: u32 = 5;
@@ -48,20 +45,30 @@ where
     unreachable!()
 }
 
-fn request_job(gw_url: &Url, worker_name: &str) -> anyhow::Result<(i64, v1::DeepProveRequest)> {
-    // ureq::get(gw_url.join(format!("api/v1/jobs/{worker_name}"))).call().and_then(|r| )
-    todo!()
+fn request_job(gw_url: &Url, worker_name: &str) -> anyhow::Result<v2::GwToWorker> {
+    ureq::get(
+        gw_url
+            .join(&format!("api/v1/jobs/{worker_name}"))
+            .unwrap()
+            .as_str(),
+    )
+    .call()
+    .context("fetching job from gateway")
+    .and_then(|mut r| {
+        serde_json::from_reader::<_, v2::GwToWorker>(r.body_mut().as_reader())
+            .context("deserializing job from gateway")
+    })
 }
 fn ack_job(gw_url: &Url, worker_name: &str, job_id: i64) -> anyhow::Result<()> {
     retry_operation(
         || {
-            ureq::put(
+            ureq::get(
                 gw_url
                     .join(&format!("/api/v1/jobs/{worker_name}/{job_id}/ack"))
                     .unwrap()
                     .as_str(),
             )
-            .send_empty()
+            .call()
         },
         || format!("ACK-ing job #{job_id}"),
     )?;
@@ -107,10 +114,10 @@ fn submit_error(gw_url: &Url, worker_name: &str, job_id: i64, err_msg: &str) -> 
     Ok(())
 }
 
-async fn process_job(job: v1::DeepProveRequest, store: &mut StoreKind) -> Result<Vec<u8>, String> {
+async fn process_job(job: v2::GwToWorker, store: &mut StoreKind) -> Result<Vec<u8>, String> {
     let result = match store {
-        StoreKind::S3(store) => crate::run_model_v1(job, store).await,
-        StoreKind::Mem(store) => crate::run_model_v1(job, store).await,
+        StoreKind::S3(store) => crate::run_model_v1(job.into(), store).await,
+        StoreKind::Mem(store) => crate::run_model_v1(job.into(), store).await,
     };
 
     match result {
@@ -144,20 +151,28 @@ pub async fn run(args: crate::RunMode) -> anyhow::Result<()> {
 
     loop {
         // 1. Request job to the GW
-        let (job_id, job) =
-            request_job(&gw_url, &worker_name).context("fetching job from LPM gateway")?;
+        debug!("waiting for task from gateway");
+        let job = request_job(&gw_url, &worker_name).context("fetching job from LPM gateway")?;
+        let job_id = job.job_id;
+        info!("received job #{job_id} to execute");
 
         // 2. ACK job
         match ack_job(&gw_url, &worker_name, job_id) {
-            Ok(_) => trace!("ACK-ed job"),
+            Ok(_) => debug!("ACK-ed job #{job_id}"),
             Err(err) => error!("failed to ACK job: {err:?}"),
         }
         // 3. Process job & submit proof
         match process_job(job, &mut store).await {
-            Ok(proof) => submit_proof(&gw_url, &worker_name, job_id, &proof)
-                .context("submitting proofs to gateway")?,
-            Err(err_msg) => submit_error(&gw_url, &worker_name, job_id, &err_msg)
-                .context("submitting error to gateway")?,
+            Ok(proof) => {
+                submit_proof(&gw_url, &worker_name, job_id, &proof)
+                    .context("submitting proofs to gateway")?;
+                info!("submitted proof for job #{job_id}");
+            }
+            Err(err_msg) => {
+                submit_error(&gw_url, &worker_name, job_id, &err_msg)
+                    .context("submitting error to gateway")?;
+                info!("submitted error for job #{job_id}");
+            }
         }
     }
 }

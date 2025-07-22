@@ -8,8 +8,6 @@ pub mod v2;
 pub enum DeepProveRequest {
     /// Version 1
     V1(v1::DeepProveRequest),
-    /// Version 2 (no model given, max. abs. scaling assumed)
-    V2(v2::DeepProveRequest),
 }
 
 /// A versioned enum representing a deep prove proving response

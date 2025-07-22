@@ -1,14 +1,14 @@
+use base64::{Engine, prelude::BASE64_STANDARD};
 use ff_ext::GoldilocksExt2;
 use mpcs::{Basefold, BasefoldRSParams, Hasher};
 use serde::{Deserialize, Serialize};
-use zkml::{Proof as ZkmlProof, inputs::Input};
+use zkml::{Proof as ZkmlProof, inputs::Input, quantization::ScalingStrategyKind};
 
 /// A type of the proof for the `v2` of the protocol
 pub type Proof = ZkmlProof<GoldilocksExt2, Basefold<GoldilocksExt2, BasefoldRSParams<Hasher>>>;
 
-/// The `v2` proving request
 #[derive(Serialize, Deserialize)]
-pub struct DeepProveRequest {
+pub struct ClientToGw {
     /// The user-facing name of the submitted task.
     pub pretty_name: String,
 
@@ -19,9 +19,26 @@ pub struct DeepProveRequest {
     pub input: Input,
 }
 
-/// The `v2` proofs that have been computed by the worker
 #[derive(Serialize, Deserialize)]
-pub enum DeepProveResponse {
-    Proofs(Vec<u8>),
-    Error(String),
+pub struct GwToWorker {
+    /// The job ID to use when communicating with the gateway.
+    pub job_id: i64,
+
+    /// The base64-encoded model - tests on random binary data show that base64
+    /// encoding is 30% the size of classic array-of-bytes serde_json encoding.
+    pub model: String,
+
+    /// An array of inputs to run proving for
+    pub input: Input,
+}
+impl From<GwToWorker> for super::v1::DeepProveRequest {
+    fn from(r: GwToWorker) -> Self {
+        Self {
+            // TODO: make this TryInto
+            model: BASE64_STANDARD.decode(r.model).unwrap(),
+            input: r.input,
+            scaling_strategy: ScalingStrategyKind::AbsoluteMax,
+            scaling_input_hash: None,
+        }
+    }
 }
