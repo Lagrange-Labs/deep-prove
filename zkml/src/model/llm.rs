@@ -128,13 +128,10 @@ impl Driver<f32> {
             .collect::<Vec<_>>();
         self.model.unpadded_input_shapes = vec![Shape::from(vec![numel, 1])];
         self.model.input_shapes = vec![Shape::from(vec![numel, 1]).next_power_of_two()];
-        println!("MODEL PRE QUANTIZE");
         let (quantized_model, _md) =
             InferenceObserver::new_with_representative_input(vec![representative_inputs])
                 .quantize(self.model)?;
-            println!("MODEL QUANTIZED");
         let model = pad_model(quantized_model)?;
-        println!("MODEL PADDED");
         Ok(Driver {
             model,
             config: self.config,
@@ -198,7 +195,6 @@ where
         .pad_next_power_of_two();
         // This means we're padding the input to the right size (e.g. next power of two)
         let max_window = self.max_context.unwrap_or(self.config.context_length);
-        println!("LLM INFERENCE: begin tensor shape: {:?}", tensor.get_shape());
         while unpadded_seq_len < max_window {
             trace = self.model.run::<E>(&[tensor.clone()]).context(format!(
                 "running the {} iteration loop",
@@ -222,7 +218,7 @@ where
             } else {
                 // here we need to insert the new token after the user input and newly generated tokens, but
                 // BEFORE the padding.
-                // TODO: breach of API here - tensor should do it 
+                // TODO: breach of API here - tensor should do it
                 tensor.data.insert(unpadded_seq_len, *last_token);
                 tensor.shape.set_dim(0, tensor.shape.dim(0) + 1);
             }

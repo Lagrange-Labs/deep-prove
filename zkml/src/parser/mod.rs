@@ -270,6 +270,7 @@ pub mod file_cache {
     use hex;
     use reqwest;
     use sha2::{Digest, Sha256};
+    use tracing::{debug, error};
     use std::{
         fs::{self, File},
         io::{ErrorKind, Write},
@@ -333,7 +334,7 @@ pub mod file_cache {
             if self.acquired {
                 if let Err(e) = fs::remove_file(&self.path) {
                     // Log error, but don't panic in drop.
-                    eprintln!(
+                    error!(
                         "Warning: Failed to remove lock file {}: {}",
                         self.path.display(),
                         e
@@ -346,7 +347,7 @@ pub mod file_cache {
     pub fn ensure_downloaded(url: &str) -> anyhow::Result<PathBuf> {
         let base_filename = generate_filename_from_url(url); // e.g., hash.gguf
         let local_file_path = CACHE_DIR.join(&base_filename);
-        let lock_file_path = CACHE_DIR.join(format!("{}.lock", base_filename));
+        let lock_file_path = CACHE_DIR.join(format!("{base_filename}.lock"));
 
         const MAX_RETRIES: u32 = 60; // Approx 60 seconds total timeout
         const RETRY_DELAY_MS: u64 = 1000;
@@ -362,7 +363,7 @@ pub mod file_cache {
                 if attempt == MAX_RETRIES - 1 {
                     // Last attempt, if lock is still there but main file appeared, warn and return.
                     if local_file_path.exists() {
-                        eprintln!(
+                        error!(
                             "Warning: Lock file {} still exists, but target file {} is present. Proceeding with cached file.",
                             lock_file_path.display(),
                             local_file_path.display()
@@ -393,7 +394,7 @@ pub mod file_cache {
                         return Ok(local_file_path);
                     }
 
-                    println!(
+                    debug!(
                         "Acquired lock for {}. Downloading {} to {}...",
                         base_filename,
                         url,
@@ -401,12 +402,12 @@ pub mod file_cache {
                     );
 
                     let temp_download_path =
-                        CACHE_DIR.join(format!("{}.tmp_download", base_filename));
+                        CACHE_DIR.join(format!("{base_filename}.tmp_download"));
 
                     // Perform the download. Lock_guard ensures lock removal on success or panic/error.
                     match (|| -> anyhow::Result<()> {
                         let response = reqwest::blocking::get(url)
-                            .with_context(|| format!("Download: Failed to GET URL: {}", url))?;
+                            .with_context(|| format!("Download: Failed to GET URL: {url}"))?;
 
                         if !response.status().is_success() {
                             bail!(
@@ -425,7 +426,7 @@ pub mod file_cache {
                             })?;
 
                         let content = response.bytes().with_context(|| {
-                            format!("Download: Failed to read response bytes from URL: {}", url)
+                            format!("Download: Failed to read response bytes from URL: {url}")
                         })?;
 
                         dest_file.write_all(&content).with_context(|| {
@@ -445,7 +446,7 @@ pub mod file_cache {
                         Ok(())
                     })() {
                         Ok(_) => {
-                            println!(
+                            debug!(
                                 "Successfully downloaded and cached {} to {}",
                                 url,
                                 local_file_path.display()
@@ -457,7 +458,7 @@ pub mod file_cache {
                             // Download or rename failed. Clean up temp file if it exists.
                             if temp_download_path.exists() {
                                 if let Err(remove_err) = fs::remove_file(&temp_download_path) {
-                                    eprintln!(
+                                    error!(
                                         "Error: Failed to remove temporary download file {}: {}",
                                         temp_download_path.display(),
                                         remove_err
