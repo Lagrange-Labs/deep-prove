@@ -30,6 +30,7 @@ jobs:
             zkml_src:
               - 'zkml/**'
               - '.github/workflows/tests.yml'
+              - 'rust-toolchain.toml'
 
   test:
     name: Run zkML Rust tests
