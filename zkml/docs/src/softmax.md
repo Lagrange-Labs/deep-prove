@@ -79,7 +79,7 @@ Since $`qk = 2^{2s} \cdot x_{q} \cdot x_{k}`$ in order use the same lookup table
 
 ### Diagram
 
-Below is a diagram of how everything ties together (The error range check is omitted for space). Boxes with a green Background are values calculated by the prover, yellow background indicates a lookup table, blue background indicates a claim from an already proven step and no background is information the prover and the verifier can calculate independently. In addition the boxes higlighted in orange are committed to and opening proofs are provided for them.
+Below is a diagram of how everything ties together (The error range check is omitted for space). Boxes with a green Background are values calculated by the prover, yellow background indicates a lookup table, blue background indicates a claim from an already proven step and no background is information the prover and the verifier can calculate independently. In addition the boxes highlighted in orange are committed to and opening proofs are provided for them.
 
 ![Softmax Flow](./img/Softmax-Flow.png)
 

@@ -21,7 +21,6 @@ pub use iop::{
 pub use quantization::{ScalingFactor, ScalingStrategy};
 pub mod layers;
 pub mod lookup;
-pub mod middleware;
 pub mod model;
 pub mod padding;
 mod parser;
@@ -30,7 +29,7 @@ pub mod tensor;
 pub use tensor::Tensor;
 #[cfg(feature = "capture-layers-quant")]
 pub mod capture;
-pub mod store;
+pub mod inputs;
 #[cfg(test)]
 mod testing;
 
@@ -258,7 +257,7 @@ mod test {
         let mut prover_transcript = default_transcript();
         let prover = Prover::<_, _, _>::new(&ctx, &mut prover_transcript);
         println!("[+] Run prover");
-        let proof = prover.prove(trace).expect("unable to generate proof");
+        let proof = prover.prove(&trace).expect("unable to generate proof");
 
         let mut verifier_transcript = default_transcript();
         verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).expect("invalid proof");

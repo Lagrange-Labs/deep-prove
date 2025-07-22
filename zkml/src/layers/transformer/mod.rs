@@ -52,7 +52,7 @@ pub(crate) mod test {
             json::test::{TINY_GPT2_DEBUG_NAME, TINY_GPT2_NAME},
             llm::{Attention, FeedForward, LLMConfig, LLMModel},
         },
-        tensor::{Number, Shape},
+        tensor::{Number, Shape, is_close},
     };
 
     use super::{layernorm, mha, qkv};
@@ -427,19 +427,6 @@ pub(crate) mod test {
         }
     }
 
-    // taken from https://docs.pytorch.org/docs/stable/generated/torch.isclose.html
-    fn is_close(a: &[f32], b: &[f32]) -> bool {
-        let atol = 1e-8_f32;
-        let rtol = 1e-5_f32;
-        if a.len() != b.len() {
-            return false;
-        }
-        a.iter().zip(b.iter()).all(|(x, y)| {
-            let diff = (x - y).abs();
-            diff <= atol + rtol * y.abs()
-        })
-    }
-
     use crate::parser::json;
     #[test]
     fn test_read_gpt2_pytorch_embeddings() -> anyhow::Result<()> {
@@ -459,11 +446,11 @@ pub(crate) mod test {
         let embedded = llm_model
             .embeddings
             .evaluate::<GoldilocksExt2>(&vec![&input], vec![])?;
-        let positionned = llm_model
+        let positioned = llm_model
             .positional
             .evaluate::<GoldilocksExt2>(&vec![embedded.outputs()[0]], vec![])?;
         assert!(is_close(
-            &positionned.outputs()[0].get_data(),
+            &positioned.outputs()[0].get_data(),
             &gpt2_output.inputs_embeds
         ));
         Ok(())

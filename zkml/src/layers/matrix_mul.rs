@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 
 use ff_ext::ExtensionField;
 use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::{
-    mle::{DenseMultilinearExtension, MultilinearExtension},
+    mle::{DenseMultilinearExtension, IntoMLE, MultilinearExtension},
     virtual_poly::{VPAuxInfo, VirtualPolynomial},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -49,7 +49,7 @@ pub struct WeightMatrix<T> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum OperandMatrix<T> {
     /// The matrix is a constant matrix specified in the model
-    Weigth(WeightMatrix<T>),
+    Weight(WeightMatrix<T>),
     /// The matrix is input-dependent, so there is no tensor associated to it
     Input,
 }
@@ -57,7 +57,7 @@ pub enum OperandMatrix<T> {
 impl<T> OperandMatrix<T> {
     pub fn new_weight_matrix(matrix: Tensor<T>) -> Self {
         let unpadded_shape = matrix.get_shape();
-        OperandMatrix::Weigth(WeightMatrix {
+        OperandMatrix::Weight(WeightMatrix {
             tensor: matrix,
             unpadded_shape,
         })
@@ -65,14 +65,14 @@ impl<T> OperandMatrix<T> {
 
     pub(crate) fn is_matrix(&self) -> bool {
         match self {
-            OperandMatrix::Weigth(mat) => mat.tensor.is_matrix(),
+            OperandMatrix::Weight(mat) => mat.tensor.is_matrix(),
             OperandMatrix::Input => true,
         }
     }
 
     pub(crate) fn get_shape(&self, padding_mode: PaddingMode) -> Option<Shape> {
         match self {
-            OperandMatrix::Weigth(mat) => match padding_mode {
+            OperandMatrix::Weight(mat) => match padding_mode {
                 PaddingMode::NoPadding => Some(mat.unpadded_shape.clone()),
                 PaddingMode::Padding => Some(
                     mat.tensor
@@ -89,21 +89,21 @@ impl<T> OperandMatrix<T> {
 
     pub(crate) fn get_actual_shape(&self) -> Option<Shape> {
         match self {
-            OperandMatrix::Weigth(mat) => Some(mat.tensor.get_shape()),
+            OperandMatrix::Weight(mat) => Some(mat.tensor.get_shape()),
             OperandMatrix::Input => None,
         }
     }
 
     pub(crate) fn nrows(&self) -> Option<usize> {
         match self {
-            OperandMatrix::Weigth(mat) => Some(mat.tensor.nrows_2d()),
+            OperandMatrix::Weight(mat) => Some(mat.tensor.nrows_2d()),
             OperandMatrix::Input => None,
         }
     }
 
     pub(crate) fn ncols(&self) -> Option<usize> {
         match self {
-            OperandMatrix::Weigth(mat) => Some(mat.tensor.ncols_2d()),
+            OperandMatrix::Weight(mat) => Some(mat.tensor.ncols_2d()),
             OperandMatrix::Input => None,
         }
     }
@@ -113,7 +113,7 @@ impl<T> OperandMatrix<T> {
         T: Number,
     {
         match self {
-            OperandMatrix::Weigth(mat) => OperandMatrix::Weigth(WeightMatrix {
+            OperandMatrix::Weight(mat) => OperandMatrix::Weight(WeightMatrix {
                 tensor: mat.tensor.pad_next_power_of_two(),
                 unpadded_shape: mat.unpadded_shape,
             }),
@@ -142,6 +142,8 @@ pub struct MatMulCtx<E> {
     pub(crate) left_matrix_shapes: Option<(Shape, Shape)>,
     /// Unpadded and padded shapes of the right matrix, if the right matrx is a constant matrix
     pub(crate) right_matrix_shapes: Option<(Shape, Shape)>,
+    /// True if the layer contains a final bias
+    pub(crate) with_bias: bool,
     pub(crate) config: Option<Config>,
 }
 
@@ -155,6 +157,8 @@ pub struct MatMulProof<E: ExtensionField> {
     /// sumcheck. One for each polynomial involved in the "virtual poly".
     /// Since we only support quadratic right now it's a flat list.
     individual_claims: Vec<E>,
+    /// If bias is present, there is the evaluation of the bias polynomial at the claim point.
+    bias_eval: Option<E>,
 }
 
 impl<T> MatMul<T> {
@@ -196,7 +200,7 @@ impl<T> MatMul<T> {
             );
         }
         // check that we don't have 2 weight matrix being multiplied
-        if let (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) = (&left_matrix, &right_matrix)
+        if let (OperandMatrix::Weight(_), OperandMatrix::Weight(_)) = (&left_matrix, &right_matrix)
         {
             Err(anyhow!("Pointless to have a layer with 2 constant matrices, just use the product as a parameter in 
                 another layer"))?
@@ -204,7 +208,7 @@ impl<T> MatMul<T> {
         if let Some(bt) = bias.as_ref() {
             ensure!(bt.get_shape().len() == 1, "Bias must be a 1D tensor");
             match right_matrix {
-                OperandMatrix::Weigth(ref mat) => {
+                OperandMatrix::Weight(ref mat) => {
                     ensure!(
                         mat.tensor.get_shape()[1] == bt.get_shape()[0],
                         "bias shape {:?} is incompatible with right matrix shape {:?}",
@@ -228,11 +232,11 @@ impl<T> MatMul<T> {
         T: Number,
     {
         let matmul = match (&self.left_matrix, &self.right_matrix) {
-            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => panic!(
+            (OperandMatrix::Weight(_), OperandMatrix::Weight(_)) => panic!(
                 "Found layer with 2 constant matrices, which is useless as the 
                 product can be directly used instead"
             ),
-            (OperandMatrix::Weigth(mat), OperandMatrix::Input) => {
+            (OperandMatrix::Weight(mat), OperandMatrix::Input) => {
                 let right_matrix = inputs
                     .first()
                     .ok_or(anyhow!("No matrix provided as input to MatMul"))?;
@@ -254,7 +258,7 @@ impl<T> MatMul<T> {
                 mat.tensor
                     .matmul(transposed_matrix.as_ref().unwrap_or(right_matrix))
             }
-            (OperandMatrix::Input, OperandMatrix::Weigth(mat)) => {
+            (OperandMatrix::Input, OperandMatrix::Weight(mat)) => {
                 let left_matrix = inputs
                     .first()
                     .ok_or(anyhow!("No matrix provided as input to MatMul"))?;
@@ -294,6 +298,12 @@ impl<T> MatMul<T> {
             }
         };
         if let Some(bias) = self.bias.as_ref() {
+            ensure!(
+                matmul.shape[1] == bias.shape[0],
+                "Bias shape {:?} is incompatible with matmul shape {:?}",
+                bias.shape,
+                matmul.shape
+            );
             Ok(matmul.add_dim2(bias))
         } else {
             Ok(matmul)
@@ -316,9 +326,9 @@ impl<T> MatMul<T> {
 
     pub(crate) fn num_inputs(&self) -> usize {
         match (&self.left_matrix, &self.right_matrix) {
-            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => 0,
-            (OperandMatrix::Weigth(_), OperandMatrix::Input) => 1,
-            (OperandMatrix::Input, OperandMatrix::Weigth(_)) => 1,
+            (OperandMatrix::Weight(_), OperandMatrix::Weight(_)) => 0,
+            (OperandMatrix::Weight(_), OperandMatrix::Input) => 1,
+            (OperandMatrix::Input, OperandMatrix::Weight(_)) => 1,
             (OperandMatrix::Input, OperandMatrix::Input) => 2,
         }
     }
@@ -450,7 +460,7 @@ impl<N: Number> OpInfo for MatMul<N> {
 
     fn describe(&self) -> String {
         format!(
-            "Matrix multiplication: left = {:?}, right = {:?}",
+            "Matrix multiplication: left = {:?}, right = {:?}, bias = {:?}",
             self.left_matrix.get_actual_shape(),
             self.right_matrix
                 .get_actual_shape()
@@ -459,6 +469,7 @@ impl<N: Number> OpInfo for MatMul<N> {
                 } else {
                     shape.clone()
                 }),
+            self.bias.as_ref().map(|bias| bias.shape.clone()),
         )
     }
 
@@ -484,8 +495,8 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    fn step_info(&self, id: NodeId, mut ctx_aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
-        let info = self.ctx(id, &mut ctx_aux)?;
+    fn step_info(&self, id: NodeId, ctx_aux: ContextAux) -> Result<(LayerCtx<E>, ContextAux)> {
+        let (info, ctx_aux) = self.ctx(id, ctx_aux)?;
 
         // there is only one product (i.e. quadratic sumcheck)
         let info = LayerCtx::MatMul(info);
@@ -502,14 +513,14 @@ impl MatMul<f32> {
         bias_scaling: Option<ScalingFactor>,
     ) -> MatMul<Element> {
         let left_matrix = match self.left_matrix {
-            OperandMatrix::Weigth(mat) => OperandMatrix::Weigth(WeightMatrix {
+            OperandMatrix::Weight(mat) => OperandMatrix::Weight(WeightMatrix {
                 tensor: mat.tensor.quantize(left_scaling),
                 unpadded_shape: mat.unpadded_shape,
             }),
             OperandMatrix::Input => OperandMatrix::Input, /* No need to quantize since it's an input, not a constant in the model */
         };
         let right_matrix = match self.right_matrix {
-            OperandMatrix::Weigth(mat) => OperandMatrix::Weigth(WeightMatrix {
+            OperandMatrix::Weight(mat) => OperandMatrix::Weight(WeightMatrix {
                 tensor: mat.tensor.quantize(right_scaling),
                 unpadded_shape: mat.unpadded_shape,
             }),
@@ -534,7 +545,7 @@ impl MatMul<f32> {
     ) -> anyhow::Result<QuantizeOutput<MatMul<Element>>> {
         let (left_matrix_scaling, right_matrix_scaling) =
             match (&self.left_matrix, &self.right_matrix) {
-                (OperandMatrix::Weigth(mat), OperandMatrix::Input) => {
+                (OperandMatrix::Weight(mat), OperandMatrix::Input) => {
                     ensure!(
                         input_scaling.len() == 1,
                         "Expected 1 input scaling factor for MatMul layer, found {}",
@@ -545,7 +556,7 @@ impl MatMul<f32> {
                         input_scaling[0],
                     )
                 }
-                (OperandMatrix::Input, OperandMatrix::Weigth(mat)) => {
+                (OperandMatrix::Input, OperandMatrix::Weight(mat)) => {
                     ensure!(
                         input_scaling.len() == 1,
                         "Expected 1 input scaling factor for MatMul layer, found {}",
@@ -564,7 +575,7 @@ impl MatMul<f32> {
                     );
                     (input_scaling[0], input_scaling[1])
                 }
-                (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => Err(anyhow!(
+                (OperandMatrix::Weight(_), OperandMatrix::Weight(_)) => Err(anyhow!(
                     "Trying to quantize a layer with 2 constant matrices"
                 ))?,
             };
@@ -640,6 +651,7 @@ where
 const MAX_BITS: u32 = 30;
 
 const MATRIX_POLY_ID: &str = "MatMulWeight";
+const BIAS_POLY_ID: &str = "MatMulBias";
 
 impl MatMul<Element> {
     /// Returns the maximum bit size of the output, given the provided bounds on the inputs
@@ -669,14 +681,14 @@ impl MatMul<Element> {
     // If there is no constant matrix in the layer, `None` is returned
     pub(crate) fn eval_constant_matrix(&self) -> Option<Vec<Element>> {
         match (&self.left_matrix, &self.right_matrix) {
-            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => panic!(
+            (OperandMatrix::Weight(_), OperandMatrix::Weight(_)) => panic!(
                 "Found layer with 2 constant matrices, which is useless as the 
                 product can be directly used instead"
             ),
-            (OperandMatrix::Weigth(mat), OperandMatrix::Input) => {
+            (OperandMatrix::Weight(mat), OperandMatrix::Input) => {
                 Some(mat.tensor.pad_next_power_of_two().data)
             }
-            (OperandMatrix::Input, OperandMatrix::Weigth(mat)) => {
+            (OperandMatrix::Input, OperandMatrix::Weight(mat)) => {
                 Some(mat.tensor.pad_next_power_of_two().data)
             }
             (OperandMatrix::Input, OperandMatrix::Input) => None,
@@ -698,12 +710,12 @@ impl MatMul<Element> {
         T: Transcript<E>,
         PCS: PolynomialCommitmentScheme<E>,
     {
-        if let Some(_bias) = self.bias.as_ref() {
-            bail!("Bias is not supported yet for proving");
-        }
+        let mut last_claim = last_claim.clone();
+        let mut common_claims = HashMap::new();
+
         let num_inputs = inputs.len();
         let (right_matrix, is_right_constant) = match &self.right_matrix {
-            OperandMatrix::Weigth(mat) => (&Tensor::<E>::from(&mat.tensor), true),
+            OperandMatrix::Weight(mat) => (&Tensor::<E>::from(&mat.tensor), true),
             OperandMatrix::Input => {
                 let matrix = inputs
                     .pop()
@@ -713,7 +725,7 @@ impl MatMul<Element> {
         };
         let transposed = self.is_right_transposed();
         let (left_matrix, is_left_constant) = match &self.left_matrix {
-            OperandMatrix::Weigth(mat) => (&Tensor::<E>::from(&mat.tensor), true),
+            OperandMatrix::Weight(mat) => (&Tensor::<E>::from(&mat.tensor), true),
             OperandMatrix::Input => {
                 let matrix = inputs
                     .pop()
@@ -773,7 +785,21 @@ impl MatMul<Element> {
         // construct the MLE combining the input and the matrix
         let mut right_mat_mle: DenseMultilinearExtension<E> = right_matrix.to_mle_2d();
         let mut left_mat_mle = left_matrix.to_mle_2d();
-        let (point_for_left, point_for_right) = Self::split_claim(last_claim, num_vars_2d);
+        // For a repeating matrix M like [v,v,v,...], where v is a column vector, then
+        // the trick is that M(r1,r2) = v(r1) - here we take the right split that corresponds to
+        // the number of variables that the bias has and substract its eval from the last claim.
+        // since output(r1,r2) = M1 * M2 + bias(r2)
+        let init_split = last_claim.clone();
+        let (point_for_left, point_for_right) = Self::split_claim(&init_split, num_vars_2d);
+
+        if let Some(bias) = &self.bias {
+            let bias_eval = bias.evals_flat::<E>().into_mle().evaluate(point_for_right);
+            last_claim.eval -= bias_eval;
+            common_claims.insert(
+                BIAS_POLY_ID.to_string(),
+                Claim::new(point_for_right.to_vec(), bias_eval),
+            );
+        }
         // fix the variables for the left matrix; we need to fix the variables
         // corresponding to a row, so we must fix the HIGH variables
         left_mat_mle.fix_high_variables_in_place(point_for_left);
@@ -806,11 +832,9 @@ impl MatMul<Element> {
         );
         // Note we need the _full_ input to the matrix since the matrix MLE has (row,column) vars space
         let (point_for_left, point_for_right) =
-            Self::full_points(last_claim, &proof.point, num_vars_2d, transposed);
+            Self::full_points(&last_claim, &proof.point, num_vars_2d, transposed);
         // collection of claims to be returned as output
         let mut output_claims = vec![];
-        // claims to be bound to a committed polynomial via opening proof
-        let mut common_claims = HashMap::new();
         // compute the claim for the left matrix polynomial. It will be either accumulated in the
         // evaluation claims being opened with the polynomial commitment, or returned as output,
         // depending on whether the left matrix is constant or not
@@ -835,36 +859,36 @@ impl MatMul<Element> {
             output_claims.push(right_claim);
         }
 
-        prover
-            .add_common_claims(node_id, common_claims)
-            .context("unable to add weight matrix claims")?;
-
         let proof = MatMulProof {
             sumcheck: proof,
             individual_claims: state.get_mle_final_evaluations(),
+            bias_eval: common_claims.get(BIAS_POLY_ID).map(|c| c.eval),
         };
 
+        prover
+            .add_common_claims(node_id, common_claims)
+            .context("unable to add weight matrix claims")?;
         prover.push_proof(node_id, LayerProof::MatMul(proof));
         Ok(output_claims)
     }
 
-    fn ctx<E>(&self, id: NodeId, ctx_aux: &mut ContextAux) -> Result<MatMulCtx<E>>
+    fn ctx<E>(&self, id: NodeId, mut ctx_aux: ContextAux) -> Result<(MatMulCtx<E>, ContextAux)>
     where
         E: ExtensionField + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
         let (left_shape, right_shape) = match (&self.left_matrix, &self.right_matrix) {
-            (OperandMatrix::Weigth(mat), OperandMatrix::Input) => {
+            (OperandMatrix::Weight(mat), OperandMatrix::Input) => {
                 (mat.tensor.get_shape(), ctx_aux.last_output_shape[0].clone())
             }
-            (OperandMatrix::Input, OperandMatrix::Weigth(mat)) => {
+            (OperandMatrix::Input, OperandMatrix::Weight(mat)) => {
                 (ctx_aux.last_output_shape[0].clone(), mat.tensor.get_shape())
             }
             (OperandMatrix::Input, OperandMatrix::Input) => (
                 ctx_aux.last_output_shape[0].clone(),
                 ctx_aux.last_output_shape[1].clone(),
             ),
-            (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => {
+            (OperandMatrix::Weight(_), OperandMatrix::Weight(_)) => {
                 unreachable!("Found Matmul layer with 2 constant matrices, which is useless")
             }
         };
@@ -913,6 +937,7 @@ impl MatMul<Element> {
             left_matrix_shapes,
             right_matrix_shapes,
             config: self.config.clone(),
+            with_bias: self.bias.is_some(),
         };
 
         ctx_aux.model_polys = self.eval_constant_matrix().map(|evals| {
@@ -925,8 +950,13 @@ impl MatMul<Element> {
             model_polys.insert(MATRIX_POLY_ID.to_string(), evals);
             model_polys
         });
-
-        Ok(info)
+        if let Some(bias) = self.bias.as_ref() {
+            let bias_evals = bias.get_data().to_vec();
+            let mut map = ctx_aux.model_polys.unwrap_or_default();
+            map.insert(BIAS_POLY_ID.to_string(), bias_evals);
+            ctx_aux.model_polys = Some(map);
+        }
+        Ok((info, ctx_aux))
     }
 }
 
@@ -1016,6 +1046,23 @@ where
         last_claim: &Claim<E>,
         proof: &MatMulProof<E>,
     ) -> Result<Vec<Claim<E>>> {
+        let mut last_claim = last_claim.clone();
+        // claims to be verified with opening proofs
+        let mut common_claims = HashMap::new();
+        let (_, point_for_right) =
+            MatMul::<Element>::split_claim(&last_claim, self.output_mle_num_vars);
+        if self.with_bias {
+            let bias_eval = proof
+                .bias_eval
+                .context("missing bias eval in matmul proof")?;
+            // TODO: if we insert a point of wrong length, it should fail
+            common_claims.insert(
+                BIAS_POLY_ID.to_string(),
+                Claim::new(point_for_right.to_vec(), bias_eval),
+            );
+            last_claim.eval -= bias_eval;
+        }
+
         let subclaim = IOPVerifierState::<E>::verify(
             last_claim.eval,
             &proof.sumcheck,
@@ -1029,8 +1076,6 @@ where
         // while claims about non-constant matrices are returned as output to be verified in
         // the next layer
         let mut output_claims = vec![];
-        // claims to be verified with opening proofs
-        let mut common_claims = HashMap::new();
         // check that there is at most 1 constant matrix
         ensure!(
             !(is_left_matrix_constant && is_right_matrix_constant),
@@ -1038,7 +1083,7 @@ where
         );
         let transposed = self.is_right_transposed();
         let (point_for_left, point_for_right) = MatMul::<Element>::full_points(
-            last_claim,
+            &last_claim,
             &subclaim.point_flat(),
             self.output_mle_num_vars,
             transposed,
@@ -1159,7 +1204,7 @@ mod tests {
         assert!(padded.left_matrix.get_actual_shape().is_none());
 
         // Check original values are preserved
-        let padded_matrix = if let OperandMatrix::Weigth(matrix) = &padded.right_matrix {
+        let padded_matrix = if let OperandMatrix::Weight(matrix) = &padded.right_matrix {
             &matrix.tensor
         } else {
             unreachable!()
@@ -1210,12 +1255,12 @@ mod tests {
         assert!(padded.right_matrix.get_actual_shape().is_none());
 
         // Check values are preserved
-        let padded_matrix = if let OperandMatrix::Weigth(matrix) = &padded.left_matrix {
+        let padded_matrix = if let OperandMatrix::Weight(matrix) = &padded.left_matrix {
             &matrix.tensor
         } else {
             unreachable!()
         };
-        let left_matrix = if let OperandMatrix::Weigth(matrix) = &layer.left_matrix {
+        let left_matrix = if let OperandMatrix::Weight(matrix) = &layer.left_matrix {
             &matrix.tensor
         } else {
             unreachable!()
@@ -1257,7 +1302,7 @@ mod tests {
         assert!(padded.left_matrix.get_actual_shape().is_none());
 
         // Check original values are preserved and padding is zeros
-        let padded_matrix = if let OperandMatrix::Weigth(matrix) = &padded.right_matrix {
+        let padded_matrix = if let OperandMatrix::Weight(matrix) = &padded.right_matrix {
             &matrix.tensor
         } else {
             unreachable!()
@@ -1371,7 +1416,7 @@ mod tests {
     }
 
     #[test]
-    fn test_proven_matmul_with_two_input_matrices() {
+    fn test_matmul_proving_with_two_input_matrices() {
         let first_input_shape = vec![100, 200];
         let second_input_shape = vec![200, 300];
         let matrix_shape: Shape = vec![300, 100].into();
@@ -1398,7 +1443,7 @@ mod tests {
     }
 
     #[test]
-    fn test_proven_matmul_transposed() {
+    fn test_matmul_proving_matmul_transposed() {
         let first_input_shape = vec![100, 200];
         let second_input_shape = vec![300, 200];
         let matrix_shape: Shape = vec![100, 300].into();
@@ -1426,6 +1471,51 @@ mod tests {
         .unwrap();
         model
             .add_consecutive_layer(Layer::MatMul(matmul), Some(first_matmul_id))
+            .unwrap();
+        model.route_output(None).unwrap();
+        model.describe();
+        prove_model(model).unwrap();
+    }
+
+    #[test]
+    fn test_matmul_proving_with_bias() {
+        let [a, b, d] = [10, 20, 256];
+        let first_input_shape = vec![a, b];
+        let matrix_shape: Shape = vec![b, d].into();
+        let mut model =
+            Model::new_from_input_shapes(vec![first_input_shape.into()], PaddingMode::NoPadding);
+
+        let mat = Tensor::<f32>::random(&matrix_shape);
+        let bias = Tensor::<f32>::random(&vec![d].into());
+        let matmul = MatMul::new_constant(mat, Some(bias)).unwrap();
+        let _ = model
+            .add_consecutive_layer(Layer::MatMul(matmul), None)
+            .unwrap();
+        model.route_output(None).unwrap();
+        model.describe();
+        prove_model(model).unwrap();
+    }
+
+    #[test]
+    fn test_matmul_proving_with_bias_and_transpose() {
+        let [a, b, d] = [10, 20, 256];
+        let first_input_shape = vec![a, b];
+        // since we transpose B
+        let second_input_shape = vec![d, b];
+        let mut model = Model::new_from_input_shapes(
+            vec![first_input_shape.into(), second_input_shape.into()],
+            PaddingMode::NoPadding,
+        );
+        let bias = Tensor::<f32>::random(&vec![d].into());
+        let matmul = MatMul::new_with_config(
+            OperandMatrix::Input,
+            OperandMatrix::Input,
+            Some(bias),
+            Config::TransposeB,
+        )
+        .unwrap();
+        let _ = model
+            .add_consecutive_layer(Layer::MatMul(matmul), None)
             .unwrap();
         model.route_output(None).unwrap();
         model.describe();

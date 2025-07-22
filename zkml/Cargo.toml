@@ -9,115 +9,75 @@ readme.workspace = true
 repository.workspace = true
 version.workspace = true
 
+[package.metadata.cargo-machete]
+ignored = ["prost"]
+
 [[bin]]
 name = "bench"
 path = "src/bin/bench.rs"
 
-[[bin]]
-name = "deep-prove-worker"
-path = "src/bin/worker.rs"
-
-[[bin]]
-name = "deep-prove-cli"
-path = "src/bin/cli/main.rs"
-
 [features]
-default = ["s3"]
 blake = ["mpcs/blake"]
+default = []
 # Capture layers' quatization outputs for regression tests
-capture-layers-quant = []
+capture-layers-quant = ["dep:sha2"]
 mem-track = ["utils/mem-track"]
-# Worker S3 storage
-s3 = []
 
 [dependencies]
 anyhow.workspace = true
 ark-std.workspace = true
-axum = { workspace = true }
 burn = { version = "0.17.0", features = ["ndarray"] }
 candle-core = "0.9.1"
-candle-transformers = "0.9.1"
-hex = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
-code-timing-macros = { workspace = true, features = ["tracing"] }
-csv = { workspace = true }
-derive_builder = { workspace = true }
 derive_more = { workspace = true, features = ["full"] }
 ff_ext = { version = "0.1.0", path = "../ff_ext" }
 gguf-rs = "0.1.4"
 gkr = { workspace = true }
+hex = { workspace = true }
 itertools.workspace = true
-memmap2 = { workspace = true }
 mpcs = { workspace = true }
 multilinear_extensions = { version = "0.1.0", path = "../multilinear_extensions", features = [
-    "parallel",
+  "parallel",
 ] }
-num-traits = { workspace = true }
-object_store = { workspace = true }
-once_cell = { workspace = true }
+p3-field = { workspace = true }
+p3-goldilocks = { workspace = true }
 poseidon = { version = "0.1.0", path = "../poseidon" }
+prost = { version = "0.13.3" }
+prost-tract-compat = { package = "prost", version = "0.11.9" }
 rayon.workspace = true
-reqwest = { version = "0.12.19", features = ["blocking"] }
 rmp-serde = { workspace = true }
 rust_tokenizers = "8.1.1"
-semver.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2 = "0.10.9"
-simple-frontend = { workspace = true }
+sha2 = { version = "0.10.9", optional = true }
 statrs = { workspace = true }
 sumcheck = { version = "0.1.0", path = "../sumcheck" }
-thiserror = { workspace = true }
 timed = { workspace = true }
 timed-core = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = [
-    "env-filter",
-    "fmt",
-    "json",
+  "env-filter",
+  "fmt",
+  "json",
 ] }
 tract-onnx = { workspace = true }
 transcript = { version = "0.1.0", path = "../transcript" }
-p3-field = { workspace = true }
-p3-goldilocks = { workspace = true }
-p3-poseidon2 = { workspace = true }
-p3-symmetric = { workspace = true }
 utils = { path = "../utils" }
 
-# worker-related dependencies
-alloy = { version = "1.0" }
-tonic = { version = "0.12.3", features = [
-    "transport",
-    "tls",
-    "tls-roots",
-    "tls-webpki-roots",
-    "gzip",
-] }
-tokio = { version = "1.42", features = ["rt-multi-thread", "macros", "fs"] }
-futures = { version = "0.3.30" }
-prost = { version = "0.13.3" }
-# Prost version matching tract-onnx
-prost-tract-compat = { package = "prost", version = "0.11.9" }
-prost-types = { version = "0.13.3" }
-prost-wkt-types = { version = "0.6.0" }
-rustls = { version = "0.23.16", features = ["ring"] }
-tokio-stream = { version = "0.1.17" }
-grpc-worker = { git = "https://github.com/Lagrange-Labs/grpc-worker-rs", branch = "main" }
-url = "2.5.4"
-uuid = "1.17.0"
-zstd = "0.13.3"
 
 [dev-dependencies]
+criterion = { "version" = "0.6", features = ["html_reports"] }
 ndarray = "0.16.1"
+reqwest = { version = "0.12.19", features = ["blocking"] }
+sha2 = "0.10.9"
+tempfile.workspace = true
+zstd = "0.13"
 
-[build-dependencies]
-# worker-related dependencies
-miette = { version = "7.2", features = ["fancy"] }
-protox = { version = "0.7.1" }
-tonic-build = { version = "0.12.3" }
-tiktoken-rs = "0.7.0"
+[[bench]]
+harness = false
+name = "prove-model"
 
 [lints.clippy]
-print_stdout = "deny"
-print_stderr = "deny"
 dbg_macro = "deny"
+print_stderr = "deny"
+print_stdout = "deny"

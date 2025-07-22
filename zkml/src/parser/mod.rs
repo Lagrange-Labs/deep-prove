@@ -52,14 +52,17 @@ impl<'a, S: ScalingStrategy> FloatOnnxLoader<'a, S> {
             keep_float: false,
         }
     }
+
     pub fn with_scaling_strategy(mut self, scaling_strategy: S) -> Self {
         self.scaling_strategy = scaling_strategy;
         self
     }
+
     pub fn with_model_type(mut self, model_type: ModelType) -> Self {
         self.model_type = Some(model_type);
         self
     }
+
     pub fn with_keep_float(mut self, keep_float: bool) -> Self {
         self.keep_float = keep_float;
         self
@@ -266,19 +269,19 @@ pub fn load_float_model(model: &ModelProto) -> Result<Model<f32>> {
 pub mod file_cache {
     use anyhow::{Context as _, anyhow, bail};
     use hex;
-    use once_cell::sync::Lazy;
     use reqwest;
     use sha2::{Digest, Sha256};
     use std::{
         fs::{self, File},
         io::{ErrorKind, Write},
         path::{Path, PathBuf},
+        sync::LazyLock,
         thread,
         time::Duration,
     };
 
     // Directory to store cached files.
-    static CACHE_DIR: Lazy<PathBuf> = Lazy::new(|| {
+    static CACHE_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
         let dir = PathBuf::from("target").join("test_assets_cache");
         if !dir.exists() {
             fs::create_dir_all(&dir).expect("Failed to create cache directory for test assets");
@@ -346,8 +349,8 @@ pub mod file_cache {
         let local_file_path = CACHE_DIR.join(&base_filename);
         let lock_file_path = CACHE_DIR.join(format!("{}.lock", base_filename));
 
-        const MAX_RETRIES: u32 = 60; // Approx 60 * 200ms = 12 seconds total timeout
-        const RETRY_DELAY_MS: u64 = 200;
+        const MAX_RETRIES: u32 = 60; // Approx 60 seconds total timeout
+        const RETRY_DELAY_MS: u64 = 1000;
 
         for attempt in 0..MAX_RETRIES {
             // Check 1: File exists and no lock. This is the ideal fast path.
@@ -580,7 +583,7 @@ mod tests {
         info!("GENERATING Proof...");
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
             Prover::new(&ctx, &mut tr);
-        let proof = prover.prove(trace).expect("unable to generate proof");
+        let proof = prover.prove(&trace).expect("unable to generate proof");
         info!("GENERATING Proof DONE...");
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
@@ -626,7 +629,7 @@ mod tests {
         let prover: Prover<'_, GoldilocksExt2, BasicTranscript<GoldilocksExt2>, _> =
             Prover::new(&ctx, &mut tr);
         let io = trace.to_verifier_io();
-        let proof = prover.prove(trace).expect("unable to generate proof");
+        let proof = prover.prove(&trace).expect("unable to generate proof");
         let mut verifier_transcript: BasicTranscript<GoldilocksExt2> =
             BasicTranscript::new(b"m2vec");
         verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).unwrap();

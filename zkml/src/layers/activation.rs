@@ -29,7 +29,7 @@ use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::mle::{DenseMultilinearExtension, IntoMLE};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::marker::PhantomData;
+use std::{collections::HashMap, marker::PhantomData};
 use transcript::Transcript;
 
 use crate::{quantization::BIT_LEN, tensor::Tensor};
@@ -238,10 +238,9 @@ where
     fn gen_lookup_witness(
         &self,
         id: NodeId,
-        gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> Result<()> {
+    ) -> Result<LookupWitnessGen<E, PCS>> {
         ensure!(
             step_data.inputs.len() == 1,
             "Found more than 1 input tensor in inference step of activation layer"
@@ -251,14 +250,19 @@ where
             "Found more than 1 output tensor in inference step of activation layer"
         );
 
-        // Calculate the column_evals and also the merged lookups
-        #[allow(clippy::type_complexity)]
-        let (merged_lookups, field): (Vec<Element>, Vec<(E::BaseField, E::BaseField)>) = step_data
-            .inputs[0]
-            .get_data()
-            .iter()
-            .zip(step_data.outputs.outputs()[0].get_data().iter())
-            .map(|(a, b)| {
+        let inputs = step_data.inputs[0].get_data();
+        let outputs = step_data.outputs.outputs()[0].get_data();
+        debug_assert_eq!(
+            inputs.len(),
+            outputs.len(),
+            "Input and outputs must have the same length",
+        );
+        let size = inputs.len();
+
+        let mut element_count = HashMap::<Element, u64>::new();
+        let mut col_one = Vec::<E::BaseField>::with_capacity(size);
+        let mut col_two = Vec::<E::BaseField>::with_capacity(size);
+        for (a, b) in inputs.iter().zip(outputs.iter()) {
                 let (a, a_field): (Element, E) = match self {
                     Activation::Relu(_) => (*a, a.to_field()),
                     Activation::Gelu(g) => {
@@ -270,15 +274,15 @@ where
                         (scaled, scaled.to_field())
                     }
                 };
-                let b_field: E = b.to_field();
-                (
-                    a + COLUMN_SEPARATOR * b,
-                    (a_field.as_bases()[0], b_field.as_bases()[0]),
-                )
-            })
-            .unzip();
+            // Calculate the lookup element
+            let el = a + COLUMN_SEPARATOR * b;
+            *element_count.entry(el).or_default() += 1;
 
-        let (col_one, col_two): (Vec<E::BaseField>, Vec<E::BaseField>) = field.into_iter().unzip();
+            // Calculate the column_evals
+            let b_field: E = b.to_field();
+            col_one.push(a_field.as_bases()[0]);
+            col_two.push(b_field.as_bases()[0]);
+        }
 
         let num_vars = ceil_log2(col_one.len());
 
@@ -298,6 +302,8 @@ where
             .collect::<Result<Vec<_>, anyhow::Error>>()?
             .into_iter()
             .unzip();
+
+        let mut gen = LookupWitnessGen::<E, PCS>::default();
         gen.logup_witnesses.insert(
             id,
             vec![LogUpWitness::<E, PCS>::new_lookup(
@@ -307,14 +313,9 @@ where
                 self.table_type(),
             )],
         );
+        gen.element_count.insert(self.table_type(), element_count);
 
-        let lookups = gen.new_lookups.get_mut(&self.table_type()).ok_or(anyhow!(
-            "table of type {:?} not found in lookup data",
-            self.table_type()
-        ))?;
-        lookups.extend(merged_lookups);
-
-        Ok(())
+        Ok(gen)
     }
 }
 

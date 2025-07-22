@@ -906,7 +906,9 @@ where
         assert!(other.shape.len() == 1, "Tensor is not a vector");
         assert!(
             self.shape[1] == other.shape[0],
-            "Shape mismatch for addition."
+            "Shape mismatch for addition2: {:?} != {:?}",
+            self.shape,
+            other.shape
         );
         let data = self
             .data
@@ -1086,7 +1088,7 @@ where
             .collect::<Vec<_>>();
 
         // Then move the data to its new position. Data is moved from back to the front to
-        // prevent overwritting.
+        // prevent overwriting.
         let mut original = original_shape.product();
         loop {
             original -= 1;
@@ -1721,7 +1723,7 @@ impl PartialEq for Tensor<GoldilocksExt2> {
 }
 
 impl<T: Default + Clone + Copy> Tensor<T> {
-    /// Permute a tensor, chaning its shape according to the `order` specified as input.
+    /// Permute a tensor, changing its shape according to the `order` specified as input.
     /// The `i`-th entry in the `order` vector specifies which dimension of the original
     /// tensor should become the `i`-th dimension of the output tensor.
     /// For instance, given an input tensor with shape `[7, 14, 23]` and `order = [2, 0, 1]`,
@@ -2061,7 +2063,7 @@ impl Shape {
         self.0[0]
     }
     // Compute the bitsize of the output of the matrix multiplication of a tensor with shape `self`
-    // with another matrix with a compatbile shape. It requires the optional inputs to specify the range
+    // with another matrix with a compatible shape. It requires the optional inputs to specify the range
     // of the quantized values in `self` and in the other matrix being multiplied with `self`
     pub fn matmul_output_bitsize(
         &self,
@@ -2096,6 +2098,45 @@ impl FromIterator<usize> for Shape {
     fn from_iter<T: IntoIterator<Item = usize>>(iter: T) -> Self {
         Self::new(iter.into_iter().collect::<Vec<usize>>())
     }
+}
+
+// taken from https://docs.pytorch.org/docs/stable/generated/torch.isclose.html
+/// Determines whether two slices of `f32` values are element-wise close within
+/// the specified absolute (`atol`) and relative (`rtol`) tolerances.
+///
+/// The condition checked is the same as PyTorch's `torch.isclose`:
+/// `|a - b| <= atol + rtol * |b|` for every corresponding element.
+///
+/// # Examples
+///
+/// ```
+/// use zkml::tensor::is_close_with_tolerance;
+///
+/// // For 10% relative tolerance (0.1 = 10%)
+/// let a = [1.0, 2.0, 3.0];
+/// let b = [1.1, 2.2, 3.3]; // 10% difference
+/// assert!(is_close_with_tolerance(&a, &b, 0.0, 0.1));
+///
+/// // For 1e-6 absolute tolerance
+/// let c = [1.0, 2.0, 3.0];
+/// let d = [1.000001, 2.000001, 3.000001]; // 1e-6 difference
+/// assert!(is_close_with_tolerance(&c, &d, 1e-6, 0.0));
+/// ```
+pub fn is_close_with_tolerance(a: &[f32], b: &[f32], atol: f32, rtol: f32) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+
+    a.iter().zip(b.iter()).all(|(x, y)| {
+        let diff = (*x - *y).abs();
+        diff <= atol + rtol * y.abs()
+    })
+}
+
+/// Backwards-compatible wrapper that uses the historical default tolerances
+/// (`atol = 1e-8`, `rtol = 1e-5`).
+pub fn is_close(a: &[f32], b: &[f32]) -> bool {
+    is_close_with_tolerance(a, b, 1e-8_f32, 1e-5_f32)
 }
 
 #[cfg(test)]

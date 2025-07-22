@@ -97,17 +97,6 @@ struct AllocatorMetrics {
     peak: usize,
 }
 
-impl AllocatorMetrics {
-    #[cfg(feature = "mem-track")]
-    fn with_peak_and_in_use(peak: usize, in_use: usize) -> Self {
-        AllocatorMetrics {
-            peak,
-            in_use,
-            ..Default::default()
-        }
-    }
-}
-
 /// Generates memory flame graphs for the period of time this object is alive.
 ///
 /// Data collection starts when the struct is created, and it finishes when the

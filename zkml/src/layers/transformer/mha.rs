@@ -23,6 +23,7 @@ use crate::{
             OUTPUT_SCALE_FACTOR, Softmax, SoftmaxCtx, SoftmaxData, SoftmaxProof,
         },
     },
+    lookup::context::LookupWitnessGen,
     model::StepData,
     padding::{GarbagePad, PaddingMode, ShapeInfo},
     quantization::{Fieldizer, TensorFielder},
@@ -724,16 +725,15 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS> f
     fn gen_lookup_witness(
         &self,
         id: NodeId,
-        gen: &mut crate::lookup::context::LookupWitnessGen<E, PCS>,
         ctx: &crate::Context<E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<LookupWitnessGen<E, PCS>> {
         let mha_data = step_data
             .outputs
             .try_mha_data()
             .ok_or(anyhow!("MhaData not found when proving Mha layer"))?;
         self.softmax
-            .lookup_witness(id, gen, ctx, &mha_data.softmax_out, &mha_data.softmax_data)
+            .lookup_witness(id, ctx, &mha_data.softmax_out, &mha_data.softmax_data)
     }
 }
 
@@ -820,7 +820,7 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> VerifiableCtx<E, PCS
 
         ensure!(
             claims.len() == 2,
-            "Expected 2 input claims for multiplication with V when verifiying Mha layer, found {} claims",
+            "Expected 2 input claims for multiplication with V when verifying Mha layer, found {} claims",
             claims.len(),
         );
 
@@ -887,7 +887,7 @@ pub fn infinitizer<N: Number>(
     Tensor::new(vec![num_heads, q_len, seq_len].into(), zeroified)
 }
 
-/// Method to efficienctly evaluate the MLE of the zeroifier matrix over a random
+/// Method to efficiency evaluate the MLE of the zeroifier matrix over a random
 /// point. The point is provided already split between coordinates referring to the
 /// columns and coordinates referring to the rows of the matrix.
 /// Currently, it works only for a square zeroifier matrix
@@ -900,7 +900,7 @@ pub fn eval_zeroifier_mle<F: ExtensionField>(column_point: &[F], row_point: &[F]
         })
 }
 
-/// Method to efficienctly evaluate the MLE of the infinitizer matrix over a random
+/// Method to efficiency evaluate the MLE of the infinitizer matrix over a random
 /// point. The point is provided already split between coordinates referring to the
 /// columns and coordinates referring to the rows of the matrix.
 /// Currently, it works only for a square infinitizer matrix
@@ -1470,11 +1470,11 @@ mod test {
         let embedded = llm_model
             .embeddings
             .evaluate::<GoldilocksExt2>(&vec![&input], vec![])?;
-        let positionned = llm_model
+        let positioned = llm_model
             .positional
             .evaluate::<GoldilocksExt2>(&vec![embedded.outputs()[0]], vec![])?;
 
-        let input_shape = positionned.outputs()[0].get_shape();
+        let input_shape = positioned.outputs()[0].get_shape();
 
         let mut model =
             Model::new_from_input_shapes(vec![input_shape.clone()], PaddingMode::NoPadding);
@@ -1502,7 +1502,7 @@ mod test {
 
         model.route_output(None).unwrap();
 
-        let inputs = vec![positionned.outputs()[0].clone()];
+        let inputs = vec![positioned.outputs()[0].clone()];
         let (quantized_model, inputs) =
             quantize_model(model, inputs.clone(), Some(inputs)).unwrap();
 
@@ -1577,7 +1577,7 @@ mod test {
 
         let padded_out = outputs.pop().unwrap();
 
-        // check that non-garbabe entires in padded output are the same as corresponding entries
+        // check that non-garbabe entries in padded output are the same as corresponding entries
         // in unpadded_out, i.e., the padding didn't affect the results of MHA
         let padded_out_shape = padded_out.get_shape();
 

@@ -69,7 +69,7 @@ The sum-check protocol produces the following claims for a random point $r \in \
 ### Prove Multi-Head Matrix Multiplication
 Given the padded matrices $\hat{Q} \in \mathbb{F}^{\hat{s} \times \hat{h}\hat{m}}$ and $\hat{K} \in \mathbb{F}^{\hat{s} \times \hat{h}\hat{m}}$, we simultaneously prove the product of all the $\hat{h}$ heads $\hat{Q}_i \in \mathbb{F}^{\hat{s} \times \hat{m}}$, $\hat{K}_i \in \mathbb{F}^{\hat{s} \times \hat{m}}$ as follows. 
 
-Consider the output matrix $\hat{QK} \in \mathbb{F}^{\hat{h}\hat{s} \times \hat{s}}$, given by the row-wise concatentation of the outputs of each of the $\hat{h}$ heads. In other words, considering this matrix as a 3d tensor (i.e., $\hat{QK} \in \mathbb{F}^{\hat{h} \times \hat{s} \times \hat{s}}$) then $\hat{QK}[i, j, k] = \hat{Q}_i*\hat{K}_i^T[j,k] $. 
+Consider the output matrix $\hat{QK} \in \mathbb{F}^{\hat{h}\hat{s} \times \hat{s}}$, given by the row-wise concatenation of the outputs of each of the $\hat{h}$ heads. In other words, considering this matrix as a 3d tensor (i.e., $\hat{QK} \in \mathbb{F}^{\hat{h} \times \hat{s} \times \hat{s}}$) then $\hat{QK}[i, j, k] = \hat{Q}_i*\hat{K}_i^T[j,k] $. 
 
 The proving protocol starts from a claim $y = \hat{QK}(r_1, r_2, r_3)$, where:
 
@@ -120,7 +120,7 @@ The proving starts from a claim $y_M = \hat{QK}_M(r_1, r_2, r_3)$, where:
 - $r_2 \in \mathbb{F}^{\log(\hat{s})}$ is a random point
 - $r_3 \in \mathbb{F}^{\log(\hat{s})}$ is a random point
 
-Given the claim $y_M$ and the MLE of the masking polynomial $\mathbf{m}$, the prover computes the claim $y_Z = y_M - \mathbf{m}(r_2, r_3)$. Note that the claim $\mathbf{m}(r_2, r_3)$ should be efficienctly recomputable by the verifier as well.
+Given the claim $y_M$ and the MLE of the masking polynomial $\mathbf{m}$, the prover computes the claim $y_Z = y_M - \mathbf{m}(r_2, r_3)$. Note that the claim $\mathbf{m}(r_2, r_3)$ should be efficiency recomputable by the verifier as well.
 
 The claim $y_Z$ refers now to the *zeroified* input matrix $\hat{QK}$, so now we need to prove the *zeroification* of $\hat{QK}$. Since this operation corresponds to an entry-wise multiplication of input matrix $\hat{QK}$ with the *extended* zeroifier matrix $\hat{\mathbf{z}} \in \mathbb{F}^{\log(\hat{h} \times \hat{s} \times \hat{s})}$, we can prove this computation via the following sum-check:
 $$
@@ -128,8 +128,8 @@ y_Z = \sum_{x \in \{0,1\}^{\log(\hat{h}*\hat{s}*\hat{s})}} \beta(x, r) \hat{\mat
 $$
 where $r$ is the random point given by concatenation of $r_1$, $r_2$ and $r_3$. The sum-check protocol produces the following claims for a random point $r_s \in \mathbb{F}^{\log(\hat{h}*\hat{s}*\hat{s})}$:
 
-- Claim $\beta(r_s, r)$, which can be efficienctly recomputed by the verifier
-- Claim $\hat{\mathbf{z}}(r_s)$, which can be efficienctly recomputed by the verifier: indeed, splitting $r_s$ in 3 points $r_s' \in \mathbb{F}^{\log(\hat{h})}$, $r_s'' \in \mathbb{F}^{\log(\hat{s})}$, $r_s''' \in \mathbb{F}^{\log(\hat{s})}$, we have that $\hat{\mathbf{z}}(r_s) = \hat{\mathbf{z}}(r_s', r_s'', r_s''') = \mathbf{z}(r_s'', r_s''')$, which can be efficienctly recomputed by the verifier
+- Claim $\beta(r_s, r)$, which can be efficiency recomputed by the verifier
+- Claim $\hat{\mathbf{z}}(r_s)$, which can be efficiency recomputed by the verifier: indeed, splitting $r_s$ in 3 points $r_s' \in \mathbb{F}^{\log(\hat{h})}$, $r_s'' \in \mathbb{F}^{\log(\hat{s})}$, $r_s''' \in \mathbb{F}^{\log(\hat{s})}$, we have that $\hat{\mathbf{z}}(r_s) = \hat{\mathbf{z}}(r_s', r_s'', r_s''') = \mathbf{z}(r_s'', r_s''')$, which can be efficiency recomputed by the verifier
 - Claim $\hat{QK}(r_s)$. This is the claim about the unmasked matrix $\hat{QK}$, which is the input of the protocol and can later be used as claim $y$ in the sum-check protocol in Equation (1)
 
 ### Prove Final Matrix Multiplication
@@ -151,7 +151,7 @@ y_{\hat{O}} = \sum_{x \in \{0,1\}^{\log(\hat{h})}} \sum_{y \in \{0,1\}^{\log(\ha
 \end{equation}
 The sum-check produces the following claims, for random points $r_x \in \mathbb{F}^{\log(\hat{h})}$, $r_y \in \mathbb{F}^{\log(\hat{s})}$:
 
-- Claim $\mathbf{b}(r_x, r_y)$, which can be efficienctly recomputed by the verifier
+- Claim $\mathbf{b}(r_x, r_y)$, which can be efficiency recomputed by the verifier
 - Claim $\hat{QK}(r_x, r_s, r_y)$, which can be employed as the claim $y_M$ in the masking proving protocol described [above](#prove-masking)
 - Claim $y_{\widetilde{V}} = \widetilde{V}(r_x, r_y, r_m)$, from which the verifier can get the claim $y_{\hat{V}}$ about the input matrix $\hat{V}$ as $y_{\hat{V}} = \hat{V}(r_y, r_x, r_m) = y_{\widetilde{V}}$, because of the property about MLEs of $\widetilde{V}$ and $\hat{V}$ described earlier
 

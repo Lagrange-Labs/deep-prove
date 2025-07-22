@@ -18,7 +18,9 @@ use crate::{
         transformer::mha::eval_zeroifier_mle,
     },
     lookup::{
-        context::{COLUMN_SEPARATOR, LookupWitnessGen, SoftmaxTableData, TableType},
+        context::{
+            COLUMN_SEPARATOR, LookupWitnessGen, SoftmaxTableData, TableType, count_elements,
+        },
         logup_gkr::{
             prover::batch_prove,
             structs::{LogUpProof, LogUpVerifierClaim},
@@ -64,7 +66,7 @@ pub struct Softmax<N> {
     /// In the floating point case this is the factor we multiply by before exponentiating, when thought of as a Boltzmann distribution this is
     /// often referred to as the "Temperature".
     ///
-    /// For the quantised verison this is the factor we must rescale by in order to make use of the lookup table.
+    /// For the quantised version this is the factor we must rescale by in order to make use of the lookup table.
     pub scalar: N,
     /// This is the maximum size of dimension that we will normalise over. For example in an Attention layer this would be the maximum context size.
     max_size: usize,
@@ -173,8 +175,8 @@ impl<N: Number> Softmax<N> {
         // Now we work out how many bits it takes to represent this number (it will always be less than zero so we take an abs() first)
         let min_input_bits = ceil_log2(significant_min_input.unsigned_abs() as usize);
 
-        // Now we want to work out the value "bkm" such that anything with absoloute value greater than bkm should just be mapped to zero
-        // by the exponential. We will have K total tables, L of which are used for values that are so insignficant they get mapped to 1 and M of which
+        // Now we want to work out the value "bkm" such that anything with absolute value greater than bkm should just be mapped to zero
+        // by the exponential. We will have K total tables, L of which are used for values that are so insignificant they get mapped to 1 and M of which
         // contain values that are all greater than bkm. We aim to make K - M - L = 1 because results from testing tell us that this allows
         // us to make an exp table with 17 variables which isn't too large (as it gets reused across every softmax in something like Multiheaded attention).
         let base: Element = 1 << (LOG_SCALE_FACTOR - 8);
@@ -325,7 +327,7 @@ impl Softmax<Element> {
 }
 
 /// Calculates the error as an [`f32`] when applying softmax as described in zkLLM.
-/// This functions returns the error togeter with the value `bkm` such that anything smaller
+/// This functions returns the error together with the value `bkm` such that anything smaller
 /// than `bkm` should be mapped to zero.
 pub(crate) fn calc_softmax_error(
     bl: Element,
@@ -474,7 +476,7 @@ impl Evaluate<Element> for Softmax<Element> {
         // Check that we only have one input
         ensure!(
             inputs.len() == 1,
-            "Exepected a single input to quantised softmax, got: {}",
+            "Expected a single input to quantised softmax, got: {}",
             inputs.len()
         );
 
@@ -525,7 +527,7 @@ impl Evaluate<Element> for Softmax<Element> {
         let mut softmax_outputs: Vec<Element> = Vec::<Element>::new();
 
         for input_elem in masked_input.get_data().iter() {
-            // We take the absoloute value as this is guaranteed to be negative or zero
+            // We take the absolute value as this is guaranteed to be negative or zero
             let mut rescaled = input_elem.abs();
             low_range_check.push(rescaled & bit_mask);
             rescaled >>= 8;
@@ -669,7 +671,7 @@ impl Softmax<Element> {
         let two = E::from_canonical_u64(2u64);
         let two_inv = two.inverse();
         let two_mult = E::from_canonical_u64(1u64 << extra_vars);
-        // We chain 2^-1 in all the vairables that correspond to the row, that way in the sumcheck if we multiply by 2^extra_vars we end up with
+        // We chain 2^-1 in all the variables that correspond to the row, that way in the sumcheck if we multiply by 2^extra_vars we end up with
         // a polynomial that has evaluations equal to the sum of the rows of exp_output (which should all be within the allowable error of quantised one).
         let full_error_point = std::iter::repeat_n(two_inv, extra_vars)
             .chain(error_point.iter().copied())
@@ -709,7 +711,7 @@ impl Softmax<Element> {
                     (vp_acc, bc * alpha)
                 });
 
-        // Fianlly add the error check and the last claim, for this we need the output column of the exponential lookup
+        // Finally add the error check and the last claim, for this we need the output column of the exponential lookup
         let (_, exp_output) = commits[0]
             .last()
             .ok_or(anyhow!("Exponential lookup in Softmax had no commitments"))?;
@@ -943,11 +945,10 @@ impl Softmax<Element> {
     pub(crate) fn lookup_witness<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         id: NodeId,
-        gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
         output: &Tensor<Element>,
         softmax_data: &SoftmaxData<E>,
-    ) -> Result<()> {
+    ) -> Result<LookupWitnessGen<E, PCS>> {
         // Get the data generated during quantised evaluation
         let SoftmaxData {
             shift_tensor,
@@ -985,16 +986,18 @@ impl Softmax<Element> {
             .map(|chunk| chunk.iter().sum::<Element>())
             .collect::<Vec<Element>>();
 
-        let merged_range_check = low_range_check
-            .iter()
-            .chain(high_range_check.iter())
-            .copied()
-            .collect::<Vec<Element>>();
-        let merged_softmax = exp_input
-            .iter()
-            .zip(exp_output.iter())
-            .map(|(input, output)| input + output * COLUMN_SEPARATOR)
-            .collect::<Vec<Element>>();
+        let range_elements_count = count_elements(
+            low_range_check
+                .iter()
+                .chain(high_range_check.iter())
+                .cloned(),
+        );
+        let softman_elements_count = count_elements(
+            exp_input
+                .iter()
+                .zip(exp_output.iter())
+                .map(|(input, output)| input + output * COLUMN_SEPARATOR),
+        );
 
         // We add zero table lookups if there are any
         let poly_evals_vec = if !number_zero_chunks.is_zero() {
@@ -1059,42 +1062,30 @@ impl Softmax<Element> {
                 .collect::<Vec<E::BaseField>>(),
         );
         let shift_commit = ctx.commitment_ctx.commit(&shift_mle)?;
+
+        let mut gen = LookupWitnessGen::<E, PCS>::default();
+
         // Add the looked up values to the generator so we can make multiplicity polys later
-        let lookups = gen.new_lookups.get_mut(&TableType::Range).ok_or(anyhow!(
-            "No table of type Range was expected, error occured during Softmax step"
-        ))?;
-        lookups.extend(merged_range_check);
+        gen.element_count
+            .insert(TableType::Range, range_elements_count);
 
         // Need to recreate the parameters for the Softmax table
         let float_temp_bits = inv_float_temperature.to_bits();
 
-        let lookups = gen
-            .new_lookups
-            .get_mut(&TableType::Softmax(SoftmaxTableData::new(
+        gen.element_count.insert(
+            TableType::Softmax(SoftmaxTableData::new(
                 float_temp_bits,
                 ceil_log2(lut.len()),
                 *bkm,
-            )))
-            .ok_or(anyhow!(
-                "No table of type {} was expected",
-                TableType::Softmax(SoftmaxTableData::new(
-                    float_temp_bits,
-                    ceil_log2(lut.len()),
-                    *bkm,
-                ))
-                .name()
-            ))?;
-        lookups.extend(merged_softmax);
+            )),
+            softman_elements_count,
+        );
 
         let quant_one = OUTPUT_SCALE_FACTOR as Element;
-        let lookups = gen
-            .new_lookups
-            .get_mut(&TableType::ErrorTable(quant_one, allowable_error))
-            .ok_or(anyhow!(
-                "No table of type {} was expected",
-                TableType::ErrorTable(quant_one, allowable_error).name()
-            ))?;
-        lookups.extend(normalisation_lookup);
+        gen.element_count.insert(
+            TableType::ErrorTable(quant_one, allowable_error),
+            count_elements(normalisation_lookup),
+        );
 
         let mut lookup_witnesses = vec![
             LogUpWitness::<E, PCS>::new_lookup(
@@ -1137,26 +1128,18 @@ impl Softmax<Element> {
                 .cloned()
                 .collect::<Vec<_>>();
 
-            let merged_zero_lookup = zero_in
-                .iter()
-                .zip(zero_out.iter())
-                .flat_map(|(input_vec, output_vec)| {
-                    input_vec
-                        .iter()
-                        .zip(output_vec.iter())
-                        .map(|(input, output)| input + output * COLUMN_SEPARATOR)
-                        .collect::<Vec<Element>>()
-                })
-                .collect::<Vec<Element>>();
+            let zero_table_elements_count = count_elements(
+                zero_in
+                    .iter()
+                    .zip(zero_out.iter())
+                    .flat_map(|(input, output)| input.iter().zip(output.iter()))
+                    .map(|(input, output)| input + output * COLUMN_SEPARATOR),
+            );
 
-            let lookups = gen
-                .new_lookups
-                .get_mut(&TableType::ZeroTable(*zero_table_vars))
-                .ok_or(anyhow!(
-                    "No table of type {} was expected",
-                    TableType::ZeroTable(*zero_table_vars).name()
-                ))?;
-            lookups.extend(merged_zero_lookup);
+            gen.element_count.insert(
+                TableType::ZeroTable(*zero_table_vars),
+                zero_table_elements_count,
+            );
             lookup_witnesses.push(LogUpWitness::<E, PCS>::new_lookup(
                 zero_table_lookup_commits,
                 zero_table_lookup_evals,
@@ -1166,7 +1149,7 @@ impl Softmax<Element> {
         }
 
         gen.logup_witnesses.insert(id, lookup_witnesses);
-        Ok(())
+        Ok(gen)
     }
 }
 
@@ -1201,10 +1184,9 @@ where
     fn gen_lookup_witness(
         &self,
         id: NodeId,
-        gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> Result<()> {
+    ) -> Result<LookupWitnessGen<E, PCS>> {
         ensure!(
             step_data.inputs.len() == 1,
             "Found more than 1 input in inference step of Softmax layer"
@@ -1216,7 +1198,7 @@ where
         let softmax_data = step_data.outputs.try_softmax_data().ok_or(anyhow!(
             "Softmax data not found in inference step for Sopftmax layer"
         ))?;
-        self.lookup_witness(id, gen, ctx, step_data.outputs.outputs()[0], softmax_data)
+        self.lookup_witness(id, ctx, step_data.outputs.outputs()[0], softmax_data)
     }
 }
 
@@ -1257,7 +1239,7 @@ impl QuantizeOp for Softmax<f32> {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SoftmaxCtx {
     node_id: NodeId,
-    /// The absoloute value of the allowable error
+    /// The absolute value of the allowable error
     allowable_error: Element,
     /// The value that determines when we map to zero in the exp lookup
     bkm: Element,
@@ -1274,7 +1256,7 @@ pub struct SoftmaxCtx {
 }
 
 impl SoftmaxCtx {
-    /// Getter function to retrive the [`TableType`] for the Softmax table.
+    /// Getter function to retrieve the [`TableType`] for the Softmax table.
     pub(crate) fn softmax_table(&self) -> TableType {
         TableType::Softmax(SoftmaxTableData::new(
             self.temperature_bits,
@@ -1561,7 +1543,7 @@ where
             |(subclaim_acc, bc), &claim| (subclaim_acc + range_beta_eval * claim * bc, bc * alpha),
         );
 
-        // Fianlly add the error check and the last claim, for this we need the output column of the exponential lookup
+        // Finally add the error check and the last claim, for this we need the output column of the exponential lookup
         let exp_output_claim = evaluations[1];
 
         if !self.number_zero_chunks.is_zero() {
@@ -1718,7 +1700,7 @@ impl<N: Number> Default for AttentionMask<N> {
 
 impl<N: Number> AttentionMask<N> {
     /// Creates a new mask given the unpadded input shape and the value to use for `-inf`
-    pub fn new(unpadded_shape: &[usize], negtive_inf: N) -> Result<AttentionMask<N>> {
+    pub fn new(unpadded_shape: &[usize], negative_inf: N) -> Result<AttentionMask<N>> {
         // The input shape should have length either 2 or 3 and the final 2 dimensions should be equal
         let num_dims = unpadded_shape.len();
 
@@ -1751,12 +1733,12 @@ impl<N: Number> AttentionMask<N> {
         // Make the tril and bias tensor
         let tril = Tensor::<N>::tril(shape[2], shape[0], 0);
 
-        let bias = Tensor::<N>::tri(shape[2], shape[0], 0, N::default(), negtive_inf);
+        let bias = Tensor::<N>::tri(shape[2], shape[0], 0, N::default(), negative_inf);
 
         Ok(AttentionMask {
             tril,
             bias,
-            negative_infinity: negtive_inf,
+            negative_infinity: negative_inf,
         })
     }
 
@@ -1934,7 +1916,7 @@ mod tests {
 
                     let quant_dequant_diff = (float_q - f).abs();
 
-                    // Make sure we are always withing 1/100 th of the actual value
+                    // Make sure we are always within 1/100 th of the actual value
                     assert!(
                         quant_dequant_diff < 0.01,
                         "quant dequant diff was too large got: {}",

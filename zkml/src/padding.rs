@@ -95,9 +95,9 @@ impl From<&[ShapeData]> for ShapeInfo {
 
 #[derive(Clone, Debug)]
 pub struct ShapeData {
-    input_shape_padded: Shape,
-    ignore_garbage_pad: Option<GarbagePad>,
-    input_shape_og: Shape,
+    pub(crate) input_shape_padded: Shape,
+    pub(crate) ignore_garbage_pad: Option<GarbagePad>,
+    pub(crate) input_shape_og: Shape,
 }
 
 impl ShapeData {
@@ -332,7 +332,7 @@ pub(crate) fn pad_matmul(mut mat: MatMul<Element>, si: &mut ShapeInfo) -> Result
     );
     let unpadded_output_shape = unpadded_output_shapes.pop().unwrap();
     let (left_shape, mut right_shape) = match (&mut mat.left_matrix, &mut mat.right_matrix) {
-        (OperandMatrix::Weigth(m), OperandMatrix::Input) => {
+        (OperandMatrix::Weight(m), OperandMatrix::Input) => {
             let nrows = pad_minimum(m.tensor.nrows_2d());
             let ncols = padded_input_shapes[0][0];
             m.tensor
@@ -342,7 +342,7 @@ pub(crate) fn pad_matmul(mut mat: MatMul<Element>, si: &mut ShapeInfo) -> Result
                 padded_input_shapes.pop().unwrap(), /* safe to unwrap since we checked the number of inputs at the beginning */
             )
         }
-        (OperandMatrix::Input, OperandMatrix::Weigth(m)) => {
+        (OperandMatrix::Input, OperandMatrix::Weight(m)) => {
             let nrows = padded_input_shapes[0][1];
             let ncols = pad_minimum(m.tensor.ncols_2d());
             let padded_matrix_shape = vec![nrows, ncols].into();
@@ -361,7 +361,7 @@ pub(crate) fn pad_matmul(mut mat: MatMul<Element>, si: &mut ShapeInfo) -> Result
             let left_shape = padded_input_shapes.pop().unwrap();
             (left_shape, right_shape)
         }
-        (OperandMatrix::Weigth(_), OperandMatrix::Weigth(_)) => {
+        (OperandMatrix::Weight(_), OperandMatrix::Weight(_)) => {
             unreachable!("Found MatMul layer with 2 weight matrices")
         }
     };
@@ -383,6 +383,10 @@ pub(crate) fn pad_matmul(mut mat: MatMul<Element>, si: &mut ShapeInfo) -> Result
         input_shape_padded: vec![left_shape[0], right_shape[1]].into(),
         ignore_garbage_pad: None,
     }];
+    if let Some(mut bias) = mat.bias {
+        bias.pad_to_shape(right_shape.slice(1..));
+        mat.bias = Some(bias);
+    }
     Ok(mat)
 }
 
@@ -486,7 +490,7 @@ pub(crate) fn pad_qkv(mut qkv: QKV<Element>, si: &mut ShapeInfo) -> Result<QKV<E
 
 pub(crate) fn pad_concat_mat_mul(mat: ConcatMatMul, si: &mut ShapeInfo) -> Result<ConcatMatMul> {
     // no padding is needed since we don't have constant matrices in this layer
-    // So, we check inpout shapes are padded, and we update shape info
+    // So, we check input shapes are padded, and we update shape info
     ensure!(
         si.shapes.len() == 2,
         "Expected 2 input shapes when padding ConcatMatMul layer, found {}",
