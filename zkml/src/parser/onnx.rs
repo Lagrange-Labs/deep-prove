@@ -394,7 +394,7 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
     } else if weight_shape.len() == 1 {
         // A Gemm is always a matrix - so if there's only one dimension, we need to add 1 to
         // to the output features
-        weight.shape.insert(0, 1);
+        weight.shape = weight.shape.insert(0, 1);
     }
     ensure_onnx!(
         weight.is_matrix(),
