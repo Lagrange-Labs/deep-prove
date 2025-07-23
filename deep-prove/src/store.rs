@@ -168,10 +168,10 @@ impl Store for S3Store {
                 .as_ref()
                 .map(|cache| cache.path().join(key.to_string()));
             if let Some(path) = cache_path {
-                fs::create_dir_all(&path)
-                    .await
-                    .context("create FS cache dirs")?;
                 if !fs::try_exists(&path).await.context("access FS cache")? {
+                    fs::create_dir_all(&path)
+                        .await
+                        .context("create FS cache dirs")?;
                     fs::write(&path, &value_bytes)
                         .await
                         .context("write params to FS cache")?;
@@ -253,11 +253,9 @@ impl Store for S3Store {
                         fs::create_dir_all(&path)
                             .await
                             .context("create FS cache dirs")?;
-                        if !fs::try_exists(&path).await.context("access FS cache")? {
-                            fs::write(&path, &value_bytes)
-                                .await
-                                .context("write params to FS cache")?;
-                        }
+                        fs::write(&path, &value_bytes)
+                            .await
+                            .context("write params to FS cache")?;
                     }
 
                     store
