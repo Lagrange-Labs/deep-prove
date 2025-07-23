@@ -9,7 +9,7 @@ use crate::{Command, Executor};
 pub async fn connect(executor: Executor) -> anyhow::Result<()> {
     let Executor::LpnHttp {
         gw_url,
-        private_key,
+        private_key: _,
         command,
     } = executor
     else {
