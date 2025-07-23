@@ -15,7 +15,7 @@ use ff_ext::ExtensionField;
 use mpcs::PolynomialCommitmentScheme;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::Path;
-use tracing::{debug, trace};
+use tracing::debug;
 use transcript::BasicTranscript;
 
 use crate::{
@@ -55,6 +55,7 @@ where
 {
     pub ctx: Context<E, PCS>,
     pub config: LLMConfig,
+    pub max_context: Option<usize>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
@@ -138,6 +139,21 @@ impl Driver<f32> {
             max_context: self.max_context,
         })
     }
+    pub fn run<E>(
+        &self,
+        input: Vec<Token>,
+        observer: Option<impl Observer<f32>>,
+    ) -> anyhow::Result<InferenceTrace<'_, E, f32>>
+    where
+        E: ExtensionField + Serialize + DeserializeOwned,
+        E::BaseField: Serialize + DeserializeOwned,
+    {
+        let input = Tensor::new(
+            vec![input.len()].into(),
+            input.into_iter().map(|t| t.as_number()).collect::<Vec<_>>(),
+        );
+        self.run_internal::<E>(input, observer)
+    }
 }
 
 impl<N: Number> Driver<N>
@@ -165,9 +181,9 @@ where
 
     /// Runs take the _already_ tokenized input and run the model until the maximum sequence length is reached OR until a eos token is generated.
     /// The returned trace contains the _whole_ sequence.
-    pub fn run<E>(
+    fn run_internal<E>(
         &self,
-        input: Vec<Token>,
+        mut tensor: Tensor<N>,
         observer: Option<impl Observer<N>>,
     ) -> anyhow::Result<InferenceTrace<'_, E, N>>
     where
@@ -175,7 +191,7 @@ where
         E::BaseField: Serialize + DeserializeOwned,
     {
         let eos_token: N = self.config.specific_config.eos_token().as_number();
-        let mut unpadded_seq_len = input.len();
+        let mut unpadded_seq_len = tensor.get_shape().numel();
         let user_len = unpadded_seq_len;
         // -1 because we at least want to generate ONE token
         ensure!(
@@ -183,16 +199,14 @@ where
             "Input sequence length must be less than the context length"
         );
         ensure!(
-            input.iter().all(|t| t.0 < self.config.vocab_size),
+            tensor
+                .get_data()
+                .iter()
+                .all(|t| t.to_usize() < self.config.vocab_size),
             "Input tokens must be less than the vocabulary size"
         );
         let mut trace = InferenceTrace::default();
         // convert the input to the correct number type and add a dimension to make it 2d, because the embeddings layer expects a 2d tensor
-        let mut tensor = Tensor::new(
-            vec![input.len()].into(),
-            input.into_iter().map(|t| t.as_number()).collect::<Vec<_>>(),
-        )
-        .pad_next_power_of_two();
         // This means we're padding the input to the right size (e.g. next power of two)
         let max_window = self.max_context.unwrap_or(self.config.context_length);
         while unpadded_seq_len < max_window {
@@ -227,13 +241,27 @@ where
                 obs.observe(unpadded_seq_len - user_len, &trace);
             }
         }
-        // TODO: fix the clone here - required because we need to change the shape of the model at each iteration
-        // and the `run()` method returns a trace that holds a reference to the model, thereby violating Rust safety rules
         Ok(trace)
     }
 }
 
 impl Driver<Element> {
+    pub fn run<E>(
+        &self,
+        input: Vec<Token>,
+        observer: Option<impl Observer<Element>>,
+    ) -> anyhow::Result<InferenceTrace<'_, E, Element>>
+    where
+        E: ExtensionField + Serialize + DeserializeOwned,
+        E::BaseField: Serialize + DeserializeOwned,
+    {
+        let input = Tensor::new(
+            vec![input.len()].into(),
+            input.into_iter().map(|t| t.as_number()).collect::<Vec<_>>(),
+        )
+        .pad_next_power_of_two();
+        self.run_internal::<E>(input, observer)
+    }
     pub fn context<E, PCS>(&self) -> anyhow::Result<LLMContext<E, PCS>>
     where
         E: ExtensionField + Serialize + DeserializeOwned,
@@ -244,6 +272,7 @@ impl Driver<Element> {
         Ok(LLMContext {
             ctx,
             config: self.config.clone(),
+            max_context: self.max_context,
         })
     }
     pub fn prove<E, PCS>(
@@ -276,6 +305,28 @@ where
         E::BaseField: Serialize + DeserializeOwned,
         PCS: PolynomialCommitmentScheme<E>,
     {
+        // 0. check the size of the output
+        let output = proof.io.output[0].clone();
+        let max_len = output.get_shape().numel();
+        // in any case, the output needs to be less than the max context length
+        ensure!(
+            max_len <= self.config.context_length,
+            "output length is greater than the context length"
+        );
+        // either we reached the specific may context length
+        if let Some(max_context) = self.max_context {
+            ensure!(
+                max_len <= max_context,
+                "output length is greater than the max context length"
+            );
+        } else {
+            // OR we reached the eos token
+            let eos_token = self.config.specific_config.eos_token().0;
+            ensure!(
+                output.get_data().last().unwrap().to_usize() == eos_token,
+                "output did not end with the eos token"
+            );
+        }
         // 1. verify the proof it self
         let mut tr: BasicTranscript<E> = BasicTranscript::new(b"model");
         let prover_input = proof.io.input[0].clone();
@@ -286,22 +337,20 @@ where
         // output is [seq_len] where []
         let seq_len = user_input.len();
         let max_len = prover_output.get_shape().numel();
+        ensure!(
+            prover_input.get_data()[..seq_len]
+                .iter()
+                .zip(user_input[..seq_len].iter())
+                .all(|(a, b)| a.to_usize() == b.0),
+            "user input not the same"
+        );
         #[allow(clippy::needless_range_loop)]
-        for i in 0..max_len - 1 {
-            if i < seq_len {
-                // we check that the input given by the user is the same as the input given by the prover to the model
-                ensure!(
-                    prover_input.get_data()[i] == user_input[i].as_number::<E>(),
-                    "input token at index {} is not the same as the proof",
-                    i
-                );
-            } else {
-                // we check the next input token is the one generated by this "row" of the input
-                ensure!(
-                    prover_input.get_data()[i + 1] == prover_output.get_data()[i],
-                    "next input token is not the one generated by this row"
-                );
-            }
+        for i in seq_len - 1..max_len - 1 {
+            // we check the next input token is the one generated by this "row" of the input
+            ensure!(
+                prover_input.get_data()[i + 1] == prover_output.get_data()[i],
+                "next input token is not the one generated by this row"
+            );
         }
         Ok(())
     }
@@ -343,11 +392,13 @@ pub trait LLMTokenizer {
 #[cfg(test)]
 mod test {
     use crate::{
-        init_test_logging, parser::{
+        init_test_logging,
+        parser::{
             file_cache,
             gguf::tests::GPT2_Q8_0_URL,
             llm::{Token, TokenizerData},
-        }, testing::Pcs
+        },
+        testing::Pcs,
     };
 
     use super::*;
@@ -377,7 +428,7 @@ mod test {
     #[test]
     fn test_llm_driver_inference() -> anyhow::Result<()> {
         init_test_logging("debug");
-        //const PRUNED_GPT2: &str = "https://huggingface.co/PrunaAI/gpt2-GGUF-smashed/resolve/main/gpt2.Q2_K.gguf";
+        // const PRUNED_GPT2: &str = "https://huggingface.co/PrunaAI/gpt2-GGUF-smashed/resolve/main/gpt2.Q2_K.gguf";
         const PRUNED_GPT2: &str = GPT2_Q8_0_URL;
         let model_path = file_cache::ensure_downloaded(PRUNED_GPT2)?;
         let driver = Driver::load_external_model(&model_path)?.with_max_context(6);

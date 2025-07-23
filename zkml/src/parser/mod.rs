@@ -270,7 +270,6 @@ pub mod file_cache {
     use hex;
     use reqwest;
     use sha2::{Digest, Sha256};
-    use tracing::{debug, error};
     use std::{
         fs::{self, File},
         io::{ErrorKind, Write},
@@ -279,6 +278,7 @@ pub mod file_cache {
         thread,
         time::Duration,
     };
+    use tracing::{debug, error};
 
     // Directory to store cached files.
     static CACHE_DIR: LazyLock<PathBuf> = LazyLock::new(|| {

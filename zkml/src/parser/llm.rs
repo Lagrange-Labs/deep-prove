@@ -333,7 +333,8 @@ impl TokenizerData {
         let mut merges_file = tempfile::NamedTempFile::new().unwrap();
         merges_file.write_all(merges_content.as_bytes()).unwrap();
 
-        Gpt2Tokenizer::from_file(vocab_file, merges_file, false).expect("unable to extract tokenizer")
+        Gpt2Tokenizer::from_file(vocab_file, merges_file, false)
+            .expect("unable to extract tokenizer")
     }
 }
 
