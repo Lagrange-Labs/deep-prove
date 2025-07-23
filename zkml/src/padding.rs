@@ -95,9 +95,9 @@ impl From<&[ShapeData]> for ShapeInfo {
 
 #[derive(Clone, Debug)]
 pub struct ShapeData {
-    input_shape_padded: Shape,
-    ignore_garbage_pad: Option<GarbagePad>,
-    input_shape_og: Shape,
+    pub(crate) input_shape_padded: Shape,
+    pub(crate) ignore_garbage_pad: Option<GarbagePad>,
+    pub(crate) input_shape_og: Shape,
 }
 
 impl ShapeData {
@@ -383,6 +383,10 @@ pub(crate) fn pad_matmul(mut mat: MatMul<Element>, si: &mut ShapeInfo) -> Result
         input_shape_padded: vec![left_shape[0], right_shape[1]].into(),
         ignore_garbage_pad: None,
     }];
+    if let Some(mut bias) = mat.bias {
+        bias.pad_to_shape(right_shape.slice(1..));
+        mat.bias = Some(bias);
+    }
     Ok(mat)
 }
 

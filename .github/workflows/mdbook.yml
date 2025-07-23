@@ -28,9 +28,9 @@ jobs:
           use-katex: true
       - name: Build Book
         run: |
-          cd docs
+          cd zkml/docs
           rm -rf book
           mdbook build
       - uses: rossjrw/pr-preview-action@v1
         with:
-          source-dir: docs/book
+          source-dir: zkml/docs/book

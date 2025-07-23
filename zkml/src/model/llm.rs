@@ -15,7 +15,7 @@ use ff_ext::ExtensionField;
 use mpcs::PolynomialCommitmentScheme;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::Path;
-use tracing::trace;
+use tracing::{debug, trace};
 use transcript::BasicTranscript;
 
 use crate::{
@@ -189,7 +189,7 @@ where
         let mut trace = InferenceTrace::default();
         // convert the input to the correct number type and add a dimension to make it 2d, because the embeddings layer expects a 2d tensor
         let mut tensor = Tensor::new(
-            vec![input.len(), 1].into(),
+            vec![input.len()].into(),
             input.into_iter().map(|t| t.as_number()).collect::<Vec<_>>(),
         )
         .pad_next_power_of_two();
@@ -259,7 +259,7 @@ impl Driver<Element> {
         let mut tr: BasicTranscript<E> = BasicTranscript::new(b"model");
         let prover: Prover<'_, E, _, _> = Prover::new(&ctx.ctx, &mut tr);
         let io = trace.to_verifier_io();
-        let proof = prover.prove(&trace).expect("unable to generate proof");
+        let proof = prover.prove(trace).expect("unable to generate proof");
         Ok(LLMProof { proof, io })
     }
 }
@@ -325,7 +325,7 @@ impl<'a, N: Number, T: LLMTokenizer> Observer<N> for LLMTokenizerObserver<'a, T>
                 .collect::<Vec<_>>()
                 .as_slice(),
         );
-        trace!(
+        debug!(
             "seq_len {}: new token: {:?}\n\t-{}", //\n\t-{:?}",
             step,
             &new_token,
@@ -343,12 +343,11 @@ pub trait LLMTokenizer {
 #[cfg(test)]
 mod test {
     use crate::{
-        parser::{
+        init_test_logging, parser::{
             file_cache,
             gguf::tests::GPT2_Q8_0_URL,
             llm::{Token, TokenizerData},
-        },
-        testing::Pcs,
+        }, testing::Pcs
     };
 
     use super::*;
@@ -377,8 +376,11 @@ mod test {
 
     #[test]
     fn test_llm_driver_inference() -> anyhow::Result<()> {
-        let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
-        let driver = Driver::load_external_model(&model_path)?.with_max_context(10);
+        init_test_logging("debug");
+        //const PRUNED_GPT2: &str = "https://huggingface.co/PrunaAI/gpt2-GGUF-smashed/resolve/main/gpt2.Q2_K.gguf";
+        const PRUNED_GPT2: &str = GPT2_Q8_0_URL;
+        let model_path = file_cache::ensure_downloaded(PRUNED_GPT2)?;
+        let driver = Driver::load_external_model(&model_path)?.with_max_context(6);
         let sentence = "The sky is";
 
         // Best to load the tokenizer from the gguf file if it's available.

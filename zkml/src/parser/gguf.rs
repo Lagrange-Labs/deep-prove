@@ -255,7 +255,7 @@ impl Positional<f32> {
                     c.embedding_size,
                     position_embd.get_shape()
                 );
-                Ok(Self::Learned(position_embd))
+                Ok(Self::new_learned(position_embd))
             }
         }
     }
@@ -264,7 +264,7 @@ impl Embeddings<f32> {
     // TODO: make that a trait ? or part of the Layer enum ?
     pub fn from_loader(loader: &FileTensorLoader) -> anyhow::Result<Self> {
         let emb_tensor = loader.get_tensor("token_embd.weight")?;
-        Ok(Embeddings::new(emb_tensor))
+        Embeddings::new(emb_tensor)
     }
 }
 

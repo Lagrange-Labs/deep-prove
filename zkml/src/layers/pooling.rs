@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{
     Claim, Context, Element, Prover,
     commit::compute_betas_eval,
@@ -207,20 +209,34 @@ where
     fn gen_lookup_witness(
         &self,
         id: NodeId,
-        gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> Result<()> {
+    ) -> Result<LookupWitnessGen<E, PCS>> {
         ensure!(
             step_data.inputs.len() == 1,
-            "Found more than 1 input in inference step of pooling layer"
+            "Input for pooling layer with invalid length. expected: 1 got: {}",
+            step_data.inputs.len(),
         );
         ensure!(
             step_data.outputs.outputs().len() == 1,
-            "Found more than 1 output in inference step of pooling layer"
+            "Output for pooling layer with invalid length. expected: 1 got: {}",
+            step_data.outputs.outputs().len(),
         );
 
-        let (merged_lookups, column_evals) = self.lookup_witness::<E>(&step_data.inputs[0]);
+        let mut element_count = HashMap::<Element, u64>::new();
+        let inputs = &step_data.inputs[0];
+        let column_evals = match self {
+            Pooling::Maxpool2D(maxpool2d) => {
+                let field_vecs = maxpool2d.compute_polys::<E>(inputs);
+
+                for value in field_vecs.iter().flat_map(|v| v.iter()) {
+                    let el = E::from(*value).to_element();
+                    *element_count.entry(el).or_default() += 1;
+                }
+
+                field_vecs
+            }
+        };
         // Commit to the witnes polys
         let output_poly = step_data.outputs.outputs()[0]
             .get_data()
@@ -244,6 +260,8 @@ where
                 Ok((commit, mle))
             })
             .collect::<Result<Vec<_>, anyhow::Error>>()?;
+
+        let mut gen = LookupWitnessGen::<E, PCS>::default();
         gen.logup_witnesses.insert(
             id,
             vec![LogUpWitness::<E, PCS>::new_lookup(
@@ -253,13 +271,9 @@ where
                 TableType::Range,
             )],
         );
+        gen.element_count.insert(TableType::Range, element_count);
 
-        let lookups = gen.new_lookups.get_mut(&TableType::Range).ok_or(anyhow!(
-            "No table of type Range was expected, error occurred during a MaxPool step"
-        ))?;
-        lookups.extend(merged_lookups);
-
-        Ok(())
+        Ok(gen)
     }
 }
 
@@ -330,28 +344,6 @@ impl Pooling {
         }
     }
 
-    pub fn lookup_witness<E: ExtensionField>(
-        &self,
-        input: &Tensor<Element>,
-    ) -> (Vec<Element>, Vec<Vec<E::BaseField>>) {
-        match self {
-            Pooling::Maxpool2D(maxpool2d) => {
-                let field_vecs = maxpool2d.compute_polys::<E>(input);
-
-                let merged_lookups = field_vecs
-                    .iter()
-                    .flat_map(|vector| {
-                        vector
-                            .iter()
-                            .map(|&a| E::from(a).to_element())
-                            .collect::<Vec<Element>>()
-                    })
-                    .collect::<Vec<Element>>();
-
-                (merged_lookups, field_vecs)
-            }
-        }
-    }
     #[timed::timed_instrument(name = "Prover::prove_pooling_step")]
     pub fn prove_pooling<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,

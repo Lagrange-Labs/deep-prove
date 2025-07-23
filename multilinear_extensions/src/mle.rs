@@ -109,6 +109,13 @@ impl<F: Field, E: ExtensionField> IntoMLE<DenseMultilinearExtension<E>> for Vec<
         DenseMultilinearExtension::from_evaluation_vec_smart::<F>(ceil_log2(next_pow2), self)
     }
 }
+
+impl<F: Field, E: ExtensionField> IntoMLE<DenseMultilinearExtension<E>> for &[F] {
+    fn into_mle(self) -> DenseMultilinearExtension<E> {
+        self.to_vec().into_mle()
+    }
+}
+
 pub trait IntoMLEs<T>: Sized {
     /// Converts this type into the (usually inferred) input type.
     fn into_mles(self) -> Vec<T>;
@@ -413,7 +420,7 @@ impl<'a, T> IntoInstanceIter<'a, T> for &'a [T] {
     type IntoIter = InstanceIntoIterator<'a, T>;
 
     fn into_instance_iter(&self, n_instances: usize) -> Self::IntoIter {
-        assert!(self.len() % n_instances == 0);
+        assert!(self.len().is_multiple_of(n_instances));
         let offset = self.len() / n_instances;
         InstanceIntoIterator {
             evaluations: self,
@@ -428,7 +435,7 @@ impl<'a, T: 'a> IntoInstanceIterMut<'a, T> for Vec<T> {
     type IntoIterMut = InstanceIntoIteratorMut<'a, T>;
 
     fn into_instance_iter_mut<'b>(&'a mut self, n_instances: usize) -> Self::IntoIterMut {
-        assert!(self.len() % n_instances == 0);
+        assert!(self.len().is_multiple_of(n_instances));
         let offset = self.len() / n_instances;
         let origin_len = self.len();
         InstanceIntoIteratorMut {

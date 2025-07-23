@@ -8,4 +8,6 @@ We first describe how to prove each of the major building blocks of LLMs. Then, 
 
 ## LLMs Layers
 - [QKV layer](llms-layers/qkv.md)
+- [Positional Encoding](llms-layers/positionals.md)
 - [MHA Layer](llms-layers/mha.md)
+- [Embedding Layer](llms-layers/embeddings.md)

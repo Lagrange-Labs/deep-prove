@@ -275,14 +275,14 @@ impl Positional<f32> {
             c.embedding_size,
             position_embd.get_shape()
         );
-        Ok(Self::Learned(position_embd))
+        Ok(Self::new_learned(position_embd))
     }
 }
 
 impl Embeddings<f32> {
     pub fn from_json(l: &FileTensorLoader) -> anyhow::Result<Self> {
         let emb_tensor = l.get_tensor("token_embd.weight")?;
-        Ok(Embeddings::new(emb_tensor))
+        Embeddings::new(emb_tensor)
     }
 }
 

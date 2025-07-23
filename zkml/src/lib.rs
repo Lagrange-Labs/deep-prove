@@ -50,6 +50,9 @@ impl<E> Claim<E> {
     pub fn new(point: Vec<E>, eval: E) -> Self {
         Self { point, eval }
     }
+    pub fn mle_num_vars(&self) -> usize {
+        self.point.len()
+    }
 }
 
 impl<E: ExtensionField> From<PointAndEval<E>> for Claim<E> {
@@ -257,7 +260,7 @@ mod test {
         let mut prover_transcript = default_transcript();
         let prover = Prover::<_, _, _>::new(&ctx, &mut prover_transcript);
         println!("[+] Run prover");
-        let proof = prover.prove(&trace).expect("unable to generate proof");
+        let proof = prover.prove(trace).expect("unable to generate proof");
 
         let mut verifier_transcript = default_transcript();
         verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).expect("invalid proof");

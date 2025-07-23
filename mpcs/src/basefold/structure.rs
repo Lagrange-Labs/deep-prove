@@ -203,7 +203,7 @@ impl<E: ExtensionField, H: MerkleHasher<E>> Eq for BasefoldCommitmentWithWitness
 {
 }
 
-pub trait BasefoldSpec<E: ExtensionField>: Debug + Clone {
+pub trait BasefoldSpec<E: ExtensionField>: Debug + Clone + Default {
     type EncodingScheme: EncodingScheme<E>;
     type MerkleHasher: MerkleHasher<E>;
 
@@ -220,7 +220,7 @@ pub trait BasefoldSpec<E: ExtensionField>: Debug + Clone {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct BasefoldBasecodeParams<H> {
     _p: PhantomData<H>,
 }
@@ -233,7 +233,7 @@ where
     type EncodingScheme = Basecode<BasecodeDefaultSpec>;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct BasefoldRSParams<H> {
     _p: PhantomData<H>,
 }
@@ -246,7 +246,7 @@ where
     type EncodingScheme = RSCode<RSCodeDefaultSpec>;
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Basefold<E: ExtensionField, Spec: BasefoldSpec<E>>(PhantomData<(E, Spec)>);
 
 // impl<E: ExtensionField, Spec: BasefoldSpec<E>> Serialize for Basefold<E, Spec> {

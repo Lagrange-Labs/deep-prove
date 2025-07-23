@@ -52,7 +52,7 @@ pub(crate) mod test {
             json::test::{TINY_GPT2_DEBUG_NAME, TINY_GPT2_NAME},
             llm::{Attention, FeedForward, LLMConfig, LLMModel},
         },
-        tensor::{Number, Shape},
+        tensor::{Number, Shape, is_close},
     };
 
     use super::{layernorm, mha, qkv};
@@ -427,19 +427,6 @@ pub(crate) mod test {
         }
     }
 
-    // taken from https://docs.pytorch.org/docs/stable/generated/torch.isclose.html
-    fn is_close(a: &[f32], b: &[f32]) -> bool {
-        let atol = 1e-8_f32;
-        let rtol = 1e-5_f32;
-        if a.len() != b.len() {
-            return false;
-        }
-        a.iter().zip(b.iter()).all(|(x, y)| {
-            let diff = (x - y).abs();
-            diff <= atol + rtol * y.abs()
-        })
-    }
-
     use crate::parser::json;
     #[test]
     fn test_read_gpt2_pytorch_embeddings() -> anyhow::Result<()> {
@@ -453,7 +440,7 @@ pub(crate) mod test {
                 .context(format!("failed to open file {}", debug_output_path.clone()))?,
         )?;
         let input = Tensor::new(
-            vec![gpt2_output.input_ids.len(), 1].into(),
+            vec![gpt2_output.input_ids.len()].into(),
             gpt2_output.input_ids.iter().map(|x| *x as f32).collect(),
         );
         let embedded = llm_model
@@ -534,12 +521,12 @@ pub(crate) mod test {
         let input = Tensor::new(
             // setup 1 as last dimension since embeddings iterate over last dimension
             // or call unsqueeze
-            vec![gpt2_output.input_ids.len(), 1].into(),
+            vec![gpt2_output.input_ids.len()].into(),
             gpt2_output.input_ids.iter().map(|x| *x as f32).collect(),
         );
         // also test on a single random token
-        let max_token = thread_rng().gen_range(0..llm_model.embeddings.emb.get_shape()[0]);
-        let single_input = Tensor::new(vec![1, 1].into(), vec![max_token as f32]);
+        let max_token = thread_rng().gen_range(0..llm_model.embeddings.vocab_size);
+        let single_input = Tensor::new(vec![1].into(), vec![max_token as f32]);
         let model = llm_model
             .clone()
             .into_provable_model(&config, Shape::from(single_input.get_shape()))?;

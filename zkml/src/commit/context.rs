@@ -103,7 +103,7 @@ where
             .context("collecting model commitments")?;
 
         let table_comms_map = lookup_ctx.iter().filter_map(|table_type| {
-            table_type.committed_columns().and_then(|poly| {let commit = PCS::commit(&prover_params, &poly).ok()?; Some((*table_type, (commit, poly)))})
+            table_type.committed_columns().and_then(|poly| {let commit = PCS::commit(&prover_params, &poly).ok()?; Some((table_type.clone(), (commit, poly)))})
         }).collect::<HashMap<TableType, (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>>();
 
         Ok(CommitmentContext {
@@ -148,7 +148,10 @@ where
             .context("collecting model commitments")?;
 
         let table_comms_map = lookup_ctx.iter().filter_map(|table_type| {
-            table_type.committed_columns().and_then(|poly| {let commit = PCS::commit(&prover_params, &poly).ok()?; Some((*table_type, (commit, poly)))})
+            table_type.committed_columns().and_then(|poly| {
+                let commit = PCS::commit(&prover_params, &poly).ok()?;
+                Some((table_type.clone(), (commit, poly)))
+            })
         }).collect::<HashMap<TableType, (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>>();
 
         Ok(CommitmentContext {
@@ -455,7 +458,7 @@ where
         let table_comms_map = ctx
             .table_comms_map
             .iter()
-            .map(|(table_type, (comm, _))| (*table_type, PCS::get_pure_commitment(comm)))
+            .map(|(table_type, (comm, _))| (table_type.clone(), PCS::get_pure_commitment(comm)))
             .collect::<HashMap<TableType, PCS::Commitment>>();
 
         CommitmentVerifier {

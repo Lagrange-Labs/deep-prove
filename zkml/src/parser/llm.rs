@@ -96,8 +96,7 @@ impl LLMVariant {
         // Convert gguf_file::Value to String, then get &str
         let variant_str = variant.to_string();
         match variant_str.as_str() {
-            "gpt2" => Ok(Self::GPT2),
-            "distilgpt2" => Ok(Self::GPT2),
+            "gpt2" | "Tmkrzx_X" | "distilgpt2" => Ok(Self::GPT2),
             a => bail!("unsupported architecture: {:?}", a),
         }
     }

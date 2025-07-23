@@ -906,7 +906,9 @@ where
         assert!(other.shape.len() == 1, "Tensor is not a vector");
         assert!(
             self.shape[1] == other.shape[0],
-            "Shape mismatch for addition."
+            "Shape mismatch for addition2: {:?} != {:?}",
+            self.shape,
+            other.shape
         );
         let data = self
             .data
@@ -1720,6 +1722,40 @@ impl PartialEq for Tensor<GoldilocksExt2> {
     }
 }
 
+pub struct TensorSlice<'a, T> {
+    data: &'a [T],
+    shape: Shape,
+}
+
+impl<'a, T> From<&'a Tensor<T>> for TensorSlice<'a, T> {
+    fn from(value: &'a Tensor<T>) -> Self {
+        Self {
+            data: &value.data,
+            shape: value.shape.clone(),
+        }
+    }
+}
+
+impl<'a, T> TensorSlice<'a, T> {
+    pub(crate) fn get_shape(&self) -> Shape {
+        self.shape.clone()
+    }
+
+    pub(crate) fn get_data(&self) -> &[T] {
+        self.data
+    }
+
+    pub(crate) fn slice_over_first_dim(&self, dim2_start: usize, dim2_end: usize) -> Self {
+        let range = dim2_start * self.shape[1]..dim2_end * self.shape[1];
+        let data = &self.data[range];
+        let mut new_shape = self.shape.clone();
+        new_shape[0] = dim2_end - dim2_start;
+        Self {
+            data,
+            shape: new_shape,
+        }
+    }
+}
 impl<T: Default + Clone + Copy> Tensor<T> {
     /// Permute a tensor, changing its shape according to the `order` specified as input.
     /// The `i`-th entry in the `order` vector specifies which dimension of the original
@@ -1771,6 +1807,18 @@ impl<T: Number> Tensor<T> {
     #[cfg(test)]
     pub fn random(shape: &Shape) -> Self {
         Self::random_seed(shape, Some(crate::seed_from_env_or_rng()))
+    }
+
+    pub fn try_map<F: Fn(&T) -> anyhow::Result<T>>(&self, f: F) -> anyhow::Result<Self> {
+        Ok(Self {
+            data: self
+                .data
+                .iter()
+                .map(f)
+                .collect::<anyhow::Result<Vec<_>>>()?,
+            shape: self.shape.clone(),
+            og_shape: self.og_shape.clone(),
+        })
     }
 
     /// Creates a random matrix with a given number of rows and cols.
@@ -1907,8 +1955,7 @@ impl<T> Tensor<T> {
     }
 
     pub fn unsqueeze(self, index: usize) -> Self {
-        let mut new_shape = self.shape.clone();
-        new_shape.insert(index, 1);
+        let new_shape = self.shape.insert(index, 1);
         Self {
             data: self.data,
             shape: new_shape,
@@ -2046,6 +2093,26 @@ impl Shape {
         strides
     }
 
+    /// Inserts a new dimension at the given index.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index` is larger than this shape size.
+    ///
+    /// ```
+    /// # use zkml::tensor::Shape;
+    /// let shape = Shape::new(vec![3, 5]);
+    /// let new_shape = shape.insert(1, 1);
+    /// assert_eq!(new_shape.dim(0), 3);
+    /// assert_eq!(new_shape.dim(1), 1);
+    /// assert_eq!(new_shape.dim(2), 5);
+    /// ```
+    pub fn insert(&self, index: usize, value: usize) -> Self {
+        let mut new_shape = self.0.clone();
+        new_shape.insert(index, value);
+        Self(new_shape)
+    }
+
     pub fn permute(&self, permutation: &[usize]) -> Self {
         Self(permutation.iter().map(|i| self.0[*i]).collect())
     }
@@ -2110,6 +2177,45 @@ impl FromIterator<usize> for Shape {
     fn from_iter<T: IntoIterator<Item = usize>>(iter: T) -> Self {
         Self::new(iter.into_iter().collect::<Vec<usize>>())
     }
+}
+
+// taken from https://docs.pytorch.org/docs/stable/generated/torch.isclose.html
+/// Determines whether two slices of `f32` values are element-wise close within
+/// the specified absolute (`atol`) and relative (`rtol`) tolerances.
+///
+/// The condition checked is the same as PyTorch's `torch.isclose`:
+/// `|a - b| <= atol + rtol * |b|` for every corresponding element.
+///
+/// # Examples
+///
+/// ```
+/// use zkml::tensor::is_close_with_tolerance;
+///
+/// // For 10% relative tolerance (0.1 = 10%)
+/// let a = [1.0, 2.0, 3.0];
+/// let b = [1.1, 2.2, 3.3]; // 10% difference
+/// assert!(is_close_with_tolerance(&a, &b, 0.0, 0.1));
+///
+/// // For 1e-6 absolute tolerance
+/// let c = [1.0, 2.0, 3.0];
+/// let d = [1.000001, 2.000001, 3.000001]; // 1e-6 difference
+/// assert!(is_close_with_tolerance(&c, &d, 1e-6, 0.0));
+/// ```
+pub fn is_close_with_tolerance(a: &[f32], b: &[f32], atol: f32, rtol: f32) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+
+    a.iter().zip(b.iter()).all(|(x, y)| {
+        let diff = (*x - *y).abs();
+        diff <= atol + rtol * y.abs()
+    })
+}
+
+/// Backwards-compatible wrapper that uses the historical default tolerances
+/// (`atol = 1e-8`, `rtol = 1e-5`).
+pub fn is_close(a: &[f32], b: &[f32]) -> bool {
+    is_close_with_tolerance(a, b, 1e-8_f32, 1e-5_f32)
 }
 
 #[cfg(test)]

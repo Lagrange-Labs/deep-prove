@@ -5,7 +5,7 @@ use crate::{
     commit::context::{CommitmentVerifier, PolyId},
     iop::{ChallengeStorage, context::ShapeStep},
     layers::{
-        LayerProof,
+        LayerCtx, LayerProof,
         provable::{NodeCtx, NodeId, OpInfo, VerifiableCtx},
     },
     lookup::{context::TableType, logup_gkr::verifier::verify_logup_proof},
@@ -37,6 +37,9 @@ pub struct IO<E> {
 impl<E> IO<E> {
     pub fn new(input: Vec<Tensor<E>>, output: Vec<Tensor<E>>) -> Self {
         Self { input, output }
+    }
+    pub fn inputs(&self) -> &[Tensor<E>] {
+        &self.input
     }
 }
 
@@ -217,8 +220,6 @@ where
             claims_by_layer.insert(node_id, claims);
         }
 
-        let input_claims = NodeCtx::input_claims(ctx.steps_info.nodes.iter(), &claims_by_layer)?;
-
         // 5. Verify the lookup table proofs
         proof
             .table_proofs
@@ -235,7 +236,7 @@ where
 
                 verify_table::<_, _, _>(
                     table_proof,
-                    *table_type,
+                    table_type.clone(),
                     &mut self.commit_verifier,
                     self.transcript,
                     constant_challenge,
@@ -245,30 +246,40 @@ where
                 Result::<(), anyhow::Error>::Ok(())
             })?;
 
+        // inputs are assigned at inference time using the forward iterator so we need to use the same ordering here.
+        let input_claims =
+            NodeCtx::input_claims(ctx.steps_info.to_forward_iterator(), &claims_by_layer)?;
         // 6. input verification: evaluating the input at the random evaluation point from the sumcheck
-        io.input
-            .iter()
-            .zip(input_claims)
-            .enumerate()
-            .map(|(i, (input, claim))| {
-                let input_mle = input.get_data().to_vec().into_mle();
-                let computed_randomized_input = input_mle.evaluate(&claim.point);
-                let given_randomized_input = claim.eval;
-                ensure!(
-                    computed_randomized_input == given_randomized_input,
-                    "input {} not valid from proof, computed: {:?}, given: {:?}",
-                    i,
-                    computed_randomized_input,
-                    given_randomized_input,
-                );
-                Ok(())
-            })
-            .fold_ok((), |_, _| ())?;
+        let num_inputs = io.input.len();
+        for (node_id, claims) in input_claims.into_iter() {
+            // we assume the inputs are given in the same order as the claims, "flattened"
+            let (inputs, claims): (Vec<_>, Vec<_>) = try_unzip(claims.into_iter()
+                .map(|(index, claim)| {
+                    ensure!(index < num_inputs,
+                        "Processing claim associated to input {index}, but there are only {num_inputs} inputs",
+                    );
+                    Ok((
+                        &io.input[index],
+                        claim,
+                    ))
+                }))?;
+            let node_ctx = ctx
+                .steps_info
+                .nodes
+                .get(&node_id)
+                .ok_or(anyhow!("Node {node_id} not found"))?;
+            <LayerCtx<E> as VerifiableCtx<E, PCS>>::verify_input_claim(
+                &node_ctx.ctx,
+                inputs.as_slice(),
+                &claims,
+            )?;
+        }
 
         // 7. verify the opening of the accumulation of claims
         self.commit_verifier
             .verify(&ctx.commitment_ctx, &proof.commit, self.transcript)?;
 
+        let num_len = numerators.len();
         // 8. verify that the accumulated numerator is zero and accumulated denominator is non-zero
         let (final_num, final_denom) = numerators.into_iter().zip(denominators).fold(
             (E::ZERO, E::ONE),
@@ -279,8 +290,9 @@ where
 
         ensure!(
             final_num == E::ZERO,
-            "Final numerator was non-zero, got: {:?}",
-            final_num
+            "Final numerator was non-zero, got: {:?} - numerator.len(): {}",
+            final_num,
+            num_len
         );
         ensure!(
             final_denom != E::ZERO,
@@ -355,7 +367,7 @@ where
             "If table poly claims isn't empty we should only have 1, got: {}",
             table_poly_claims.len()
         );
-        witness_verifier.add_table_claim(table_type, table_poly_claims[0].clone())?;
+        witness_verifier.add_table_claim(table_type.clone(), table_poly_claims[0].clone())?;
     }
 
     // Hard indexing is okay here because we checked above that at least one claim exists

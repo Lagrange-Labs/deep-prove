@@ -1,6 +1,6 @@
 //! File containing code for lookup witness generation.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, btree_map};
 
 use ff_ext::ExtensionField;
 use mpcs::PolynomialCommitmentScheme;
@@ -19,7 +19,7 @@ use crate::{
     Claim, Context, Element,
     iop::ChallengeStorage,
     layers::{
-        activation::Relu,
+        activation::{GELUQuantData, Relu},
         provable::{NodeId, ProvableOp},
         transformer::softmax::{LOG_SCALE_FACTOR, OUTPUT_SCALE_FACTOR, SCALE_FACTOR},
     },
@@ -31,11 +31,13 @@ pub const TABLE_POLY_ID_OFFSET: usize = 666;
 
 type LookupAndColumns<BaseField> = (Vec<Element>, (Vec<BaseField>, Vec<BaseField>));
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 /// Enum used for establishing the different table types needed to prove non-linear functions in a model.
 pub enum TableType {
     /// Table used for the Relu activation function
     Relu,
+    /// Table used for the GELU activation function
+    GELU(GELUQuantData),
     /// Table used for range checking (its size is determined by the quantisation bit size)
     Range,
     /// Table used for clamping values, the inner [`usize`] denotes the maximum bit length a value can be before clamping to use this table
@@ -104,6 +106,25 @@ impl TableType {
         column_separator: Element,
     ) -> (Vec<Element>, Vec<Vec<E::BaseField>>) {
         match self {
+            TableType::GELU(qd) => {
+                #[allow(clippy::type_complexity)]
+                let (comb, (col_one, col_two)): (
+                    Vec<Element>,
+                    (Vec<E::BaseField>, Vec<E::BaseField>),
+                    //) = (qd.min..=qd.max).zip(qd.lut.iter()).map(|(i, v)| {
+                ) = qd
+                    .table()
+                    .map(|(i, v)| {
+                        let i_field: E = (i as Element).to_field();
+                        let out_field: E = v.to_field();
+                        (
+                            i as Element + v * column_separator,
+                            (i_field.as_bases()[0], out_field.as_bases()[0]),
+                        )
+                    })
+                    .unzip();
+                (comb, vec![col_one, col_two])
+            }
             TableType::Relu => {
                 #[allow(clippy::type_complexity)]
                 let (comb, (col_one, col_two)): (
@@ -208,6 +229,7 @@ impl TableType {
     pub fn name(&self) -> String {
         match self {
             TableType::Relu => "Relu".to_string(),
+            TableType::GELU(_) => "GELU".to_string(),
             TableType::Range => "Range".to_string(),
             TableType::Clamping(size) => format!("Clamping: {size}"),
             TableType::Softmax(table_data) => {
@@ -222,6 +244,8 @@ impl TableType {
         }
     }
 
+    /// Called by the verifier to evaluate _some_ columns itself. If the verifier can't verify the table
+    /// efficiently, then it is done by regular PCS.
     pub fn evaluate_table_columns<E: ExtensionField>(
         &self,
         point: &[E],
@@ -262,6 +286,20 @@ impl TableType {
                     },
                 );
                 Ok(vec![first_column, second_column])
+            }
+            TableType::GELU(qd) => {
+                let size = qd.table_size();
+                if point.len() != size {
+                    return Err(LogUpError::VerifierError(format!(
+                        "Point was not the correct size to produce a Gelu table evaluation, point size: {}, expected: {}",
+                        point.len(),
+                        size
+                    )));
+                }
+                let first_column = point.iter().enumerate().fold(E::ZERO, |acc, (index, p)| {
+                    acc + *p * E::from_canonical_u64(1u64 << index)
+                }) - E::from_canonical_u64(1u64 << (size - 1));
+                Ok(vec![first_column])
             }
             TableType::Clamping(size) => {
                 if point.len() != *size {
@@ -340,6 +378,7 @@ impl TableType {
 
     pub fn generate_challenge<E: ExtensionField, T: Transcript<E>>(&self, transcript: &mut T) -> E {
         match self {
+            TableType::GELU(_) => transcript.get_and_append_challenge(b"GELU").elements,
             TableType::Relu => transcript.get_and_append_challenge(b"Relu").elements,
             TableType::Range | TableType::ErrorTable(..) => {
                 // Theres only one column for a range check so we don't need to generate a challenge
@@ -354,6 +393,7 @@ impl TableType {
     /// Gets the number of variables that the multiplicity polynomial will have for this table
     pub fn multiplicity_poly_vars(&self) -> usize {
         match self {
+            TableType::GELU(qd) => qd.table_size(),
             TableType::Range | TableType::Relu => *quantization::BIT_LEN,
             TableType::Clamping(bits) => *bits,
             TableType::Softmax(table_data) => table_data.size(),
@@ -365,6 +405,19 @@ impl TableType {
     /// Function that returns any MLEs that have to be committed for this [`TableType`]
     pub fn committed_columns<E: ExtensionField>(&self) -> Option<DenseMultilinearExtension<E>> {
         match self {
+            TableType::GELU(qd) => {
+                let out_column = qd
+                    .table()
+                    .map(|(_, elem)| {
+                        let out_field: E = elem.to_field();
+                        out_field.as_bases()[0]
+                    })
+                    .collect::<Vec<E::BaseField>>();
+                Some(DenseMultilinearExtension::<E>::from_evaluations_vec(
+                    qd.table_size(),
+                    out_column,
+                ))
+            }
             TableType::Softmax(table_data) => {
                 let table_size = table_data.full_table_size();
 
@@ -406,7 +459,7 @@ impl TableType {
     /// Method that takes all of the claims output by a logup table proof and outputs only those that need to be checked via commitment opening (excluding the multiplicity poly claim)
     pub fn table_claims<E: ExtensionField>(&self, claims: &[Claim<E>]) -> Vec<Claim<E>> {
         match self {
-            TableType::Softmax(..) | TableType::ErrorTable(..) => {
+            TableType::Softmax(..) | TableType::ErrorTable(..) | TableType::GELU(..) => {
                 // For Softmax and Error Table we just need the output column claim so the last of the slice
                 vec![claims.last().cloned().unwrap()]
             }
@@ -424,7 +477,7 @@ pub struct LookupContext {
 impl LookupContext {
     pub fn new(set: &BTreeSet<TableType>) -> LookupContext {
         LookupContext {
-            tables: set.iter().copied().collect(),
+            tables: set.iter().cloned().collect(),
         }
     }
 
@@ -437,31 +490,49 @@ impl LookupContext {
     }
 }
 
+pub(crate) fn count_elements<I: IntoIterator<Item = Element>>(i: I) -> HashMap<Element, u64> {
+    let mut count = HashMap::<Element, u64>::new();
+    for v in i.into_iter() {
+        *count.entry(v).or_default() += 1;
+    }
+    count
+}
+
+#[derive(Default)]
 pub struct LookupWitnessGen<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> {
-    pub(crate) new_lookups: BTreeMap<TableType, Vec<Element>>,
+    /// Contains the count of elements per table type.
+    ///
+    /// These values are later used to compute the GKR's multiplicities.
+    pub(crate) element_count: BTreeMap<TableType, HashMap<Element, u64>>,
     pub(crate) logup_witnesses: HashMap<NodeId, Vec<LogUpWitness<E, PCS>>>,
 }
 
 impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> LookupWitnessGen<E, PCS> {
-    pub fn new(lookup_ctx: &LookupContext) -> Self {
-        let new_lookups = lookup_ctx
-            .iter()
-            .map(|&table_type| (table_type, Vec::<Element>::new()))
-            .collect::<BTreeMap<TableType, Vec<Element>>>();
-        Self {
-            new_lookups,
-            logup_witnesses: HashMap::new(),
+    /// Consume the lookups and witness of `other` into this instance.
+    fn consume(&mut self, other: Self) {
+        for (table_type, elements) in other.element_count.into_iter() {
+            match self.element_count.entry(table_type) {
+                btree_map::Entry::Vacant(vacant_entry) => {
+                    vacant_entry.insert(elements);
+                }
+                btree_map::Entry::Occupied(mut occupied_entry) => {
+                    let agg_count = occupied_entry.get_mut();
+                    for (element, count) in elements.into_iter() {
+                        *agg_count.entry(element).or_default() += count;
+                    }
+                }
+            }
         }
+        self.logup_witnesses.extend(other.logup_witnesses);
     }
 }
 
 pub(crate) const COLUMN_SEPARATOR: Element = 1 << 32;
 
+#[derive(Debug, Default)]
 pub struct LookupWitness<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> {
     pub challenge_storage: ChallengeStorage<E>,
-
     pub logup_witnesses: HashMap<NodeId, Vec<LogUpWitness<E, PCS>>>,
-
     pub table_witnesses: Vec<LogUpWitness<E, PCS>>,
 }
 
@@ -477,20 +548,13 @@ where
     // If the lookup context is empty then there are no lookup witnesses to generate so we return default values
     if ctx.lookup.is_empty() {
         warn!("Lookup witness generation: no tables found, returning empty context TEST?");
-        return Ok(LookupWitness {
-            challenge_storage: ChallengeStorage {
-                constant_challenge: E::ZERO,
-                challenge_map: HashMap::new(),
-            },
-            logup_witnesses: HashMap::new(),
-            table_witnesses: vec![],
-        });
+        return Ok(LookupWitness::default());
     }
 
     // Make the witness gen struct that stores relevant table lookup data
     debug!("== Witness poly fields generation ==");
     let metrics = Metrics::new();
-    let mut witness_gen = LookupWitnessGen::<E, PCS>::new(&ctx.lookup);
+    let mut witness_gen = LookupWitnessGen::<E, PCS>::default();
 
     for (node_id, _) in ctx.steps_info.to_forward_iterator() {
         let step = trace
@@ -498,13 +562,15 @@ where
             .ok_or(LogUpError::ProvingError(format!(
                 "Node {node_id} not found in trace"
             )))?;
-        step.op
-            .gen_lookup_witness(node_id, &mut witness_gen, ctx, &step.step_data)
+        let gen = step
+            .op
+            .gen_lookup_witness(node_id, ctx, &step.step_data)
             .map_err(|e| {
                 LogUpError::ParameterError(format!(
                     "Error generating lookup witness for node {node_id} with error: {e}"
                 ))
             })?;
+        witness_gen.consume(gen);
     }
     debug!(
         "== Witness poly fields generation metrics {} ==",
@@ -515,16 +581,9 @@ where
     let metrics = Metrics::new();
     // calculate the table multiplicities
     let table_witnesses = witness_gen
-        .new_lookups
+        .element_count
         .par_iter()
-        .map(|(table_type, lookups)| {
-            let table_lookup_data =
-                lookups
-                    .iter()
-                    .fold(HashMap::<Element, u64>::new(), |mut map, elem| {
-                        *map.entry(*elem).or_insert(0) += 1;
-                        map
-                    });
+        .map(|(table_type, table_lookup_data)| {
             let (table_column, column_evals) =
                 table_type.get_merged_table_column::<E>(COLUMN_SEPARATOR);
 
@@ -581,7 +640,7 @@ where
                 (commit, mle),
                 multiplicities,
                 column_evals,
-                *table_type,
+                table_type.clone(),
             ))
         })
         .collect::<Result<Vec<LogUpWitness<E, PCS>>, LogUpError>>()?;
@@ -594,7 +653,7 @@ where
     debug!("== Challenge storage ==");
     let metrics = Metrics::new();
     let challenge_storage =
-        initialise_from_table_set::<E, T, _>(witness_gen.new_lookups.keys(), transcript);
+        initialise_from_table_set::<E, T, _>(witness_gen.element_count.keys(), transcript);
     debug!("== Challenge storage metrics {} ==", metrics.to_span());
 
     Ok(LookupWitness {

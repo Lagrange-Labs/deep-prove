@@ -18,7 +18,9 @@ use crate::{
         transformer::mha::eval_zeroifier_mle,
     },
     lookup::{
-        context::{COLUMN_SEPARATOR, LookupWitnessGen, SoftmaxTableData, TableType},
+        context::{
+            COLUMN_SEPARATOR, LookupWitnessGen, SoftmaxTableData, TableType, count_elements,
+        },
         logup_gkr::{
             prover::batch_prove,
             structs::{LogUpProof, LogUpVerifierClaim},
@@ -943,11 +945,10 @@ impl Softmax<Element> {
     pub(crate) fn lookup_witness<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         id: NodeId,
-        gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
         output: &Tensor<Element>,
         softmax_data: &SoftmaxData<E>,
-    ) -> Result<()> {
+    ) -> Result<LookupWitnessGen<E, PCS>> {
         // Get the data generated during quantised evaluation
         let SoftmaxData {
             shift_tensor,
@@ -985,16 +986,18 @@ impl Softmax<Element> {
             .map(|chunk| chunk.iter().sum::<Element>())
             .collect::<Vec<Element>>();
 
-        let merged_range_check = low_range_check
-            .iter()
-            .chain(high_range_check.iter())
-            .copied()
-            .collect::<Vec<Element>>();
-        let merged_softmax = exp_input
-            .iter()
-            .zip(exp_output.iter())
-            .map(|(input, output)| input + output * COLUMN_SEPARATOR)
-            .collect::<Vec<Element>>();
+        let range_elements_count = count_elements(
+            low_range_check
+                .iter()
+                .chain(high_range_check.iter())
+                .cloned(),
+        );
+        let softman_elements_count = count_elements(
+            exp_input
+                .iter()
+                .zip(exp_output.iter())
+                .map(|(input, output)| input + output * COLUMN_SEPARATOR),
+        );
 
         // We add zero table lookups if there are any
         let poly_evals_vec = if !number_zero_chunks.is_zero() {
@@ -1059,42 +1062,30 @@ impl Softmax<Element> {
                 .collect::<Vec<E::BaseField>>(),
         );
         let shift_commit = ctx.commitment_ctx.commit(&shift_mle)?;
+
+        let mut gen = LookupWitnessGen::<E, PCS>::default();
+
         // Add the looked up values to the generator so we can make multiplicity polys later
-        let lookups = gen.new_lookups.get_mut(&TableType::Range).ok_or(anyhow!(
-            "No table of type Range was expected, error occurred during Softmax step"
-        ))?;
-        lookups.extend(merged_range_check);
+        gen.element_count
+            .insert(TableType::Range, range_elements_count);
 
         // Need to recreate the parameters for the Softmax table
         let float_temp_bits = inv_float_temperature.to_bits();
 
-        let lookups = gen
-            .new_lookups
-            .get_mut(&TableType::Softmax(SoftmaxTableData::new(
+        gen.element_count.insert(
+            TableType::Softmax(SoftmaxTableData::new(
                 float_temp_bits,
                 ceil_log2(lut.len()),
                 *bkm,
-            )))
-            .ok_or(anyhow!(
-                "No table of type {} was expected",
-                TableType::Softmax(SoftmaxTableData::new(
-                    float_temp_bits,
-                    ceil_log2(lut.len()),
-                    *bkm,
-                ))
-                .name()
-            ))?;
-        lookups.extend(merged_softmax);
+            )),
+            softman_elements_count,
+        );
 
         let quant_one = OUTPUT_SCALE_FACTOR as Element;
-        let lookups = gen
-            .new_lookups
-            .get_mut(&TableType::ErrorTable(quant_one, allowable_error))
-            .ok_or(anyhow!(
-                "No table of type {} was expected",
-                TableType::ErrorTable(quant_one, allowable_error).name()
-            ))?;
-        lookups.extend(normalisation_lookup);
+        gen.element_count.insert(
+            TableType::ErrorTable(quant_one, allowable_error),
+            count_elements(normalisation_lookup),
+        );
 
         let mut lookup_witnesses = vec![
             LogUpWitness::<E, PCS>::new_lookup(
@@ -1137,26 +1128,18 @@ impl Softmax<Element> {
                 .cloned()
                 .collect::<Vec<_>>();
 
-            let merged_zero_lookup = zero_in
-                .iter()
-                .zip(zero_out.iter())
-                .flat_map(|(input_vec, output_vec)| {
-                    input_vec
-                        .iter()
-                        .zip(output_vec.iter())
-                        .map(|(input, output)| input + output * COLUMN_SEPARATOR)
-                        .collect::<Vec<Element>>()
-                })
-                .collect::<Vec<Element>>();
+            let zero_table_elements_count = count_elements(
+                zero_in
+                    .iter()
+                    .zip(zero_out.iter())
+                    .flat_map(|(input, output)| input.iter().zip(output.iter()))
+                    .map(|(input, output)| input + output * COLUMN_SEPARATOR),
+            );
 
-            let lookups = gen
-                .new_lookups
-                .get_mut(&TableType::ZeroTable(*zero_table_vars))
-                .ok_or(anyhow!(
-                    "No table of type {} was expected",
-                    TableType::ZeroTable(*zero_table_vars).name()
-                ))?;
-            lookups.extend(merged_zero_lookup);
+            gen.element_count.insert(
+                TableType::ZeroTable(*zero_table_vars),
+                zero_table_elements_count,
+            );
             lookup_witnesses.push(LogUpWitness::<E, PCS>::new_lookup(
                 zero_table_lookup_commits,
                 zero_table_lookup_evals,
@@ -1166,7 +1149,7 @@ impl Softmax<Element> {
         }
 
         gen.logup_witnesses.insert(id, lookup_witnesses);
-        Ok(())
+        Ok(gen)
     }
 }
 
@@ -1201,10 +1184,9 @@ where
     fn gen_lookup_witness(
         &self,
         id: NodeId,
-        gen: &mut LookupWitnessGen<E, PCS>,
         ctx: &Context<E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> Result<()> {
+    ) -> Result<LookupWitnessGen<E, PCS>> {
         ensure!(
             step_data.inputs.len() == 1,
             "Found more than 1 input in inference step of Softmax layer"
@@ -1216,7 +1198,7 @@ where
         let softmax_data = step_data.outputs.try_softmax_data().ok_or(anyhow!(
             "Softmax data not found in inference step for Sopftmax layer"
         ))?;
-        self.lookup_witness(id, gen, ctx, step_data.outputs.outputs()[0], softmax_data)
+        self.lookup_witness(id, ctx, step_data.outputs.outputs()[0], softmax_data)
     }
 }
 
@@ -1824,8 +1806,7 @@ impl<N: Number> AttentionMask<N> {
 
             Ok(input.mul(&self.tril).add(&self.bias))
         } else {
-            let mut new_shape = input.get_shape();
-            new_shape.insert(0, 1);
+            let new_shape = input.get_shape().insert(0, 1);
             let new_input = input.clone().reshape(new_shape);
 
             if !new_input

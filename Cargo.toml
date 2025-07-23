@@ -29,16 +29,16 @@ aes = "0.8"
 anyhow = { version = "1.0", default-features = false }
 ark-std = "0.5"
 axum = { version = "0.8" }
+aws-config = { version = "1.8", features = ["behavior-version-latest"] }
+aws-sdk-marketplacemetering = "1.78"
 bitvec = "1.0"
 blake3 = { version = "1.4", features = ["serde"] }
 cfg-if = "1.0"
 clap = "4"
-code-timing-macros = "0.0.6"
 criterion = { version = "0.6", features = ["html_reports"] }
 crossbeam-channel = "0.5"
 csv = "1.3.1"
 ctr = "0.9"
-derive_builder = "0.20.2"
 derive_more = "2.0.1"
 env_logger = "0.11"
 ff = "0.13"
@@ -51,16 +51,12 @@ memmap2 = "0.9"
 mpcs = { version = "0.1.0", path = "mpcs" }
 num-bigint = "0.4"
 num-integer = "0.1"
-num-traits = "0.2.19"
 object_store = { version = "0.12", features = ["aws"] }
-once_cell = "1.20.3"
 p3-challenger = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
 p3-field = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
 p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb", features = [
   "nightly-features",
 ] }
-p3-mds = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
-p3-poseidon = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
 p3-poseidon2 = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
 p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
 plonky2 = "1.1"
@@ -89,7 +85,6 @@ tracing = { version = "0.1.41", features = ["log"] }
 tracing-flame = "0.2.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tract-onnx = "0.21"
-unroll = "0.1"
 
 
 # Test must run fast, but still provides stacktraces.
@@ -103,13 +98,13 @@ overflow-checks = true
 opt-level = 3
 
 [profile.release]
-lto = "fat"
-
-[profile.release-with-debug]
-debug = true
+debug = 1
 debug-assertions = true
-inherits = "release"
 lto = "thin"
+
+[profile.fast]
+inherits = "release"
+lto = "fat"
 
 #[patch."https://github.com/nikkolasg/timed-rs"]
 #timed = { path = "/Users/nalos/prog/timed/timed" }
