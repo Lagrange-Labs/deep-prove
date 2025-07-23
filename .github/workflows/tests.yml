@@ -30,6 +30,7 @@ jobs:
             zkml_src:
               - 'zkml/**'
               - '.github/workflows/tests.yml'
+              - 'rust-toolchain.toml'
 
   test:
     name: Run zkML Rust tests
@@ -60,6 +61,12 @@ jobs:
         run: |
           echo "DEEPPROVE_CI=true" >> "$GITHUB_ENV"
           echo "DEEPPROVE_ASSET_DIR=${{ github.workspace }}/zkml/assets/scripts/llms/" >> "$GITHUB_ENV"
+
+      - name: Set RNG seed
+        run: |
+          seed="$(date +%s)"
+          echo RNG seed: "$seed"
+          echo RNG_SEED="$seed" >> "$GITHUB_ENV"
 
       - name: Install protoc via apt
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler

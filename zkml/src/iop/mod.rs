@@ -117,7 +117,7 @@ mod test {
             Context::<F, Pcs<F>>::generate(&model, None, None).expect("unable to generate context");
         let mut prover_transcript = default_transcript();
         let prover = Prover::<_, _, _>::new(&ctx, &mut prover_transcript);
-        let proof = prover.prove(&trace).expect("unable to generate proof");
+        let proof = prover.prove(trace).expect("unable to generate proof");
         let mut verifier_transcript = default_transcript();
         verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).expect("invalid proof");
     }
@@ -133,7 +133,7 @@ mod test {
             Context::<F, Pcs<F>>::generate(&model, None, None).expect("unable to generate context");
         let mut prover_transcript = default_transcript();
         let prover = Prover::<_, _, _>::new(&ctx, &mut prover_transcript);
-        let proof = prover.prove(&trace).expect("unable to generate proof");
+        let proof = prover.prove(trace).expect("unable to generate proof");
         let mut verifier_transcript = default_transcript();
         verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript).expect("invalid proof");
     }

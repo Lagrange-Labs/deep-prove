@@ -34,7 +34,7 @@ use crate::{
     iop::context::{ContextAux, ShapeStep, TableCtx},
     layers::{
         activation::{Activation, ActivationProof},
-        add::Add,
+        add::{Add, AddCtx, AddProof},
         concat_matmul::{ConcatMatMul, ConcatMatMulCtx, ConcatMatMulProof},
         convolution::Convolution,
         dense::Dense,
@@ -46,7 +46,7 @@ use crate::{
             layernorm::LayerNorm,
             logits::{Logits, LogitsCtx, LogitsProof},
             mha::{Mha, MhaCtx, MhaProof},
-            positional::Positional,
+            positional::{Positional, PositionalCtx, PositionalProof},
             qkv::{QKV, QKVCtx, QKVProof},
             softmax::{Softmax, SoftmaxCtx, SoftmaxProof},
         },
@@ -115,11 +115,11 @@ where
     ConcatMatMul(ConcatMatMulCtx<E>),
     LayerNorm,
     Flatten,
+    Add(AddCtx),
     Softmax(SoftmaxCtx),
-    Add,
     Reshape(ReshapeCtx),
     Embeddings(EmbeddingsCtx<E>),
-    Positional,
+    Positional(PositionalCtx),
     Logits(LogitsCtx<E>),
 }
 
@@ -141,11 +141,11 @@ where
     Mha(MhaProof<E, PCS>),
     ConcatMatMul(ConcatMatMulProof<E>),
     LayerNorm,
+    Add(AddProof<E>),
     Softmax(SoftmaxProof<E, PCS>),
-    Add,
     Embeddings(EmbeddingsProof<E>),
-    Positional,
     Logits(LogitsProof<E, PCS>),
+    Positional(PositionalProof<E>),
     Dummy, // To be used for non-provable layers
 }
 
@@ -189,11 +189,11 @@ where
             Self::ConcatMatMul(_) => "ConcatMatMul".to_string(),
             Self::LayerNorm => "LayerNorm".to_string(),
             Self::Softmax(_) => "Softmax".to_string(),
-            Self::Add => "Add".to_string(),
+            Self::Add(_) => "Add".to_string(),
             Self::Logits(_) => "Logits".to_string(),
             Self::Reshape(_) => "Reshape".to_string(),
+            Self::Positional(_) => "Positional".to_string(),
             Self::Embeddings(_) => "Embeddings".to_string(),
-            Self::Positional => "Positional".to_string(),
             Self::SchoolBookConvolution(_) => "Traditional Convolution".to_string(),
             Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
@@ -469,12 +469,10 @@ where
             Layer::LayerNorm(_layernorm) => {
                 unimplemented!("LayerNorm proving layer not implemented")
             }
+            Layer::Add(add) => add.step_info(id, aux),
             Layer::Softmax(softmax) => softmax.step_info(id, aux),
-            Layer::Add(_add) => unimplemented!("Add proving layer not implemented"),
             Layer::Logits(logits) => logits.step_info(id, aux),
-            Layer::Positional(_positional) => {
-                unimplemented!("Positional proving layer not implemented")
-            }
+            Layer::Positional(positional) => positional.step_info(id, aux),
             Layer::Embeddings(embeddings) => embeddings.step_info(id, aux),
             Layer::Reshape(reshape) => reshape.step_info(id, aux),
             Layer::MatMul(mat) => mat.step_info(id, aux),
@@ -500,10 +498,10 @@ impl PadOp for Layer<Element> {
             Layer::Mha(mha) => Layer::Mha(mha.pad_node(si)?),
             Layer::ConcatMatMul(concat_matmul) => Layer::ConcatMatMul(concat_matmul.pad_node(si)?),
             Layer::LayerNorm(_layernorm) => unimplemented!("LayerNorm layer not implemented"),
+            Layer::Add(add) => Layer::Add(add.pad_node(si)?),
             Layer::Softmax(softmax) => Layer::Softmax(softmax.pad_node(si)?),
-            Layer::Add(_add) => unimplemented!("Add layer not implemented"),
             Layer::Logits(logits) => Layer::Logits(logits.pad_node(si)?),
-            Layer::Positional(_positional) => unimplemented!("Positional layer not implemented"),
+            Layer::Positional(positional) => Layer::Positional(positional.pad_node(si)?),
             Layer::Embeddings(embeddings) => Layer::Embeddings(embeddings.pad_node(si)?),
             Layer::MatMul(mat) => Layer::MatMul(mat.pad_node(si)?),
             Layer::SchoolBookConvolution(school_book_conv) => {
@@ -556,11 +554,11 @@ where
             (Layer::Embeddings(embeddings), LayerCtx::Embeddings(ctx)) => {
                 embeddings.prove(node_id, ctx, last_claims, step_data, prover)
             }
-            (Layer::Positional(_positional), LayerCtx::Positional) => {
-                unimplemented!("Positional layer not implemented")
+            (Layer::Positional(positional), LayerCtx::Positional(info)) => {
+                positional.prove(node_id, info, last_claims, step_data, prover)
             }
-            (Layer::Add(_add), LayerCtx::Add) => {
-                unimplemented!("Add layer not implemented")
+            (Layer::Add(add), LayerCtx::Add(info)) => {
+                add.prove(node_id, info, last_claims, step_data, prover)
             }
             (Layer::Logits(logits), LayerCtx::Logits(info)) => {
                 logits.prove(node_id, info, last_claims, step_data, prover)
@@ -608,10 +606,10 @@ where
                 concat_matmul.gen_lookup_witness(id, ctx, step_data)
             }
             Layer::LayerNorm(_layernorm) => unimplemented!("LayerNorm layer not implemented"),
+            Layer::Add(add) => add.gen_lookup_witness(id, ctx, step_data),
             Layer::Softmax(softmax) => softmax.gen_lookup_witness(id, ctx, step_data),
-            Layer::Add(_add) => unimplemented!("Add layer not implemented"),
             Layer::Logits(logits) => logits.gen_lookup_witness(id, ctx, step_data),
-            Layer::Positional(_positional) => unimplemented!("Positional layer not implemented"),
+            Layer::Positional(positional) => positional.gen_lookup_witness(id, ctx, step_data),
             Layer::Embeddings(embeddings) => embeddings.gen_lookup_witness(id, ctx, step_data),
             Layer::SchoolBookConvolution(school_book_conv) => {
                 // check that the layer is not provable, so we don't need to call the method
@@ -702,8 +700,13 @@ impl QuantizeOp for Layer<f32> {
                 QuantizeOutput::new(Layer::Logits(output.quantized_op), output.output_scalings)
                     .maybe_requants(output.requant_layer)
             }
-            Layer::Positional(_positional) => {
-                unimplemented!("Positional layer not implemented")
+            Layer::Positional(positional) => {
+                let output = positional.quantize_op::<S>(data, node_id, input_scaling)?;
+                QuantizeOutput::new(
+                    Layer::Positional(output.quantized_op),
+                    output.output_scalings,
+                )
+                .maybe_requants(output.requant_layer)
             }
             Layer::Embeddings(embeddings) => {
                 let output = embeddings.quantize_op::<S>(data, node_id, input_scaling)?;
@@ -758,10 +761,10 @@ where
             Self::Mha(_) => "MHA".to_string(),
             Self::ConcatMatMul(..) => "ConcatMatMul".to_string(),
             Self::LayerNorm => "LayerNorm".to_string(),
-            Self::Positional => "Positional".to_string(),
             Self::Softmax(_) => "Softmax".to_string(),
-            Self::Add => "Add".to_string(),
             Self::Logits(_) => "Logits".to_string(),
+            Self::Positional(_) => "Positional".to_string(),
+            Self::Add(_) => "Add".to_string(),
             Self::Embeddings(_) => "Embeddings".to_string(),
             Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
@@ -779,10 +782,10 @@ where
             LayerProof::Mha(proof) => Some(proof.get_lookup_data()),
             LayerProof::ConcatMatMul(..) => None,
             LayerProof::LayerNorm => None,
+            LayerProof::Add(_) => None,
             LayerProof::Softmax(proof) => Some(proof.get_lookup_data()),
-            LayerProof::Add => None,
             LayerProof::Logits(proof) => Some(proof.get_lookup_data()),
-            LayerProof::Positional => None,
+            LayerProof::Positional(_) => None,
             LayerProof::Embeddings(..) => None,
             LayerProof::Convolution(..) => None,
             LayerProof::Dummy => None,

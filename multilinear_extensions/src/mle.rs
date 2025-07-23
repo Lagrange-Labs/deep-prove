@@ -420,7 +420,7 @@ impl<'a, T> IntoInstanceIter<'a, T> for &'a [T] {
     type IntoIter = InstanceIntoIterator<'a, T>;
 
     fn into_instance_iter(&self, n_instances: usize) -> Self::IntoIter {
-        assert!(self.len() % n_instances == 0);
+        assert!(self.len().is_multiple_of(n_instances));
         let offset = self.len() / n_instances;
         InstanceIntoIterator {
             evaluations: self,
@@ -435,7 +435,7 @@ impl<'a, T: 'a> IntoInstanceIterMut<'a, T> for Vec<T> {
     type IntoIterMut = InstanceIntoIteratorMut<'a, T>;
 
     fn into_instance_iter_mut<'b>(&'a mut self, n_instances: usize) -> Self::IntoIterMut {
-        assert!(self.len() % n_instances == 0);
+        assert!(self.len().is_multiple_of(n_instances));
         let offset = self.len() / n_instances;
         let origin_len = self.len();
         InstanceIntoIteratorMut {

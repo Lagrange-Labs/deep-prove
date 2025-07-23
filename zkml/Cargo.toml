@@ -68,10 +68,11 @@ utils = { path = "../utils" }
 [dev-dependencies]
 criterion = { "version" = "0.6", features = ["html_reports"] }
 ndarray = "0.16.1"
-reqwest = { version = "0.12.19", features = ["blocking"] }
+reqwest = { version = "0.12.22", features = ["blocking"] }
+rstest = "0.25.0"
 sha2 = "0.10.9"
 tempfile.workspace = true
-zstd = "0.13"
+zstd = "0.13.3"
 
 [[bench]]
 harness = false

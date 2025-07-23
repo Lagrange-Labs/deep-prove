@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{
     Claim, Context, Element, Prover, ScalingFactor, ScalingStrategy, argmax_slice,
     commit::{compute_betas_eval, identity_eval, same_poly},
@@ -511,14 +513,17 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS> f
 
                 let max_element = current_max.to_element();
                 let diff = max_element - input;
-                (
-                    diff,
-                    <Element as Fieldizer<E>>::to_field(&diff)
+                let diff_field = <Element as Fieldizer<E>>::to_field(&diff)
+
                         .as_base()
-                        .expect("Diff element overflows field"),
-                )
+                        .expect("Diff element overflows field");
+                ( diff,diff_field)
             })
             .unzip();
+        let element_count = merged_diff.iter().fold(HashMap::new(), |mut acc, diff| {
+            *acc.entry(*diff).or_default() += 1;
+            acc
+        });
 
         // commit to max values
         let commits = {
@@ -535,7 +540,7 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS> f
                 TableType::Range,
             )],
         );
-        gen.new_lookups.insert(TableType::Range, merged_diff);
+        gen.element_count.insert(TableType::Range, element_count);
 
         Ok(gen)
     }
