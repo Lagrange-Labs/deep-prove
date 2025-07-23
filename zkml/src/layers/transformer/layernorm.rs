@@ -32,7 +32,10 @@ use crate::{
         },
     },
     lookup::{
-        context::{COLUMN_SEPARATOR, CommsAndEvals, CommsAndProofs, LookupWitnessGen, TableType},
+        context::{
+            COLUMN_SEPARATOR, CommsAndEvals, CommsAndProofs, InverseSQRTTableData,
+            LookupWitnessGen, TableType,
+        },
         logup_gkr::{
             prover::batch_prove,
             structs::{LogUpProof, LogUpVerifierClaim},
@@ -78,7 +81,7 @@ pub struct LayerNorm<N> {
     pub quant_info: Option<QuantisedLayerNormData>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Copy)]
 /// This struct is used to store information used when evaluating the quantised version of [`LayerNorm`] on
 /// [`Element`]s.
 pub struct QuantisedLayerNormData {
@@ -86,8 +89,8 @@ pub struct QuantisedLayerNormData {
     input_scale_factor: ScalingFactor,
     /// This is the multiplier we have to rescale the inputs with
     multiplier: Element,
-    /// This stores the output column of the inverse square root lookup
-    lut: Vec<Element>,
+    /// This stores the [`InverseSQRTTableData`]
+    lut: InverseSQRTTableData,
     /// The size of the dimension we average over
     dim_size: usize,
     /// This is the number of bits that get range checked
@@ -159,7 +162,7 @@ impl<N: Number> LayerNorm<N> {
             + 1;
         // To get around this we use the fact that we should only have roughly `2*(*quantization::BIT_LEN -1)` bits of precision i.e. only the most significant `2*(*quantization::BIT_LEN -1)`
         // can actually be "trusted" the rest are essentially junk because they don't come from the actual inputs and are just guesses at the part that we have alread "rounded away" in quantisation.
-        // So the actual part we perform inverse square root on is size `2*(*quantization::BIT_LEN -1)` and then we rust need the discarded part to be range checked.
+        // So the actual part we perform inverse square root on is size `2*(*quantization::BIT_LEN -1)` and then we just need the discarded part to be range checked (which we do via a separate lookup).
         let range_checked_bits = full_table_bit_size - 2 * (*quantization::BIT_LEN - 1);
 
         // The final chunk might be values with fewer than *quantization::BIT_LEN bits so we work out what we need to scale the value up by in order to use our standard range check table.
@@ -174,19 +177,12 @@ impl<N: Number> LayerNorm<N> {
         let table_min = -table_max;
         // Because we don't use the same formula for the standard deviation as LayerNorm does in float we have to rescale `self.eps` in this case to be `N^2 * self.eps`
         let rescaled_eps = (dim_size * dim_size) as f32 * self.eps;
-        let lut = (table_min..table_max)
-            .map(|val| {
-                // First we have to shift by `range_checked_bits`
-                let shifted_val = val << range_checked_bits;
-                // Now we convert back to float and perform the operation
-                let float_output = 1.0f32
-                    / ((shifted_val as f32 / LAYERNORM_SCALE_FACTOR as f32) + rescaled_eps).sqrt();
-                // Now we use the output scale factor to recover the element value
-                (float_output * LAYERNORM_OUTPUT_SCALE_FACTOR as f32).round() as Element
-            })
-            .collect::<Vec<Element>>();
+        let table_data = InverseSQRTTableData::new(rescaled_eps.to_bits(), range_checked_bits);
 
-        let max_lut_value = lut.iter().map(|v| v.abs()).max().unwrap();
+        let max_lut_value = (table_min..table_max)
+            .map(|v| table_data.table_output(v).abs())
+            .max()
+            .unwrap();
         // The value is positive so we just convert to usize
         let max_lut_value_bits = ceil_log2(max_lut_value as usize);
 
@@ -194,7 +190,7 @@ impl<N: Number> LayerNorm<N> {
         let quant_info = QuantisedLayerNormData {
             input_scale_factor: input_scaling,
             multiplier,
-            lut,
+            lut: table_data,
             dim_size,
             range_check_bits: range_checked_bits,
             top_chunk_scalar_log,
@@ -305,7 +301,20 @@ pub struct LayerNormCtx {
 }
 
 impl LayerNormCtx {
-    fn calculate_lt_poly_evals<E: ExtensionField>(unpadded_shape: &Shape, point: &[E]) -> Vec<E> {
+    /// This function is used to calculate the product of the "less than" poly evals that are used to make sure
+    /// we don't add `beta` to any padding parts of the tensor. Say the input, `T`, has shape `[5, 7, 16]`, then after padding
+    /// it will have shape `[8, 8, 16]` and can be represented by an MLE with 10 variables `T(X1,...,X10)`. Expressing items in the tensor
+    /// by coordinates we write a location as `(w, y, z)` with `0 <= w < 8`, `0 <= y < 8` and `0 <= z < 16`. With this the variables `X1,...,X4`
+    /// represent the binary decomposition of `z`, `X5..X7` the binary decomposition of `y` and `X8...X10` the binary decomposition of `w`. So
+    /// if we wished to find the element `(1, 3, 5)` of `T` that is equivalent to  `T(1, 0, 1, 0, 1, 1, 0, 1, 0, 0)`.
+    ///
+    /// When we make the MLE for `beta` we simply repeat the same row however many times we need to reach the desired shape (as this means that we can commit to only the row).
+    /// So when we add element wise we only wish to add `beta` if `X5,..,X7` represents a number less than `7` and `X8,...,X10` represents a number less than `5`.
+    /// In the sumcheck you can think of this being represented by
+    ///     `eq(r1,...,r10,X1,...,X10) * LT(to_bits_le(5),X8,X9,X10) * LT(to_bits_le(7),X5,X6,X7) * Beta(X1,...,X10)`
+    /// where the `r1,...,r10` come from the `last_claim`. The output of this sumcheck is another point `s1,...,s10` and this function
+    /// returns `LT(to_bits_le(5),s8,s9,s10) * LT(to_bits_le(7),s5,s6,s7)`.
+    fn calculate_lt_poly_evals<E: ExtensionField>(unpadded_shape: &Shape, point: &[E]) -> E {
         // For each dimension we need to use the first ceil_log2(dim) elements of point to calculate the eval
         let to_bits_le_field = |d: usize, bits: usize| -> Vec<E> {
             let mut val = d - 1;
@@ -321,23 +330,25 @@ impl LayerNormCtx {
         unpadded_shape
             .iter()
             .take(unpadded_shape.len() - 1)
-            .scan(point.len(), |state, &d| {
+            .fold((E::ONE, point.len()), |(value_acc, skip_acc), &d| {
                 let log_d = ceil_log2(d);
-                *state -= log_d;
+                let skip_acc = skip_acc - log_d;
+
                 let le_bits = to_bits_le_field(d, log_d);
 
-                Some(
+                (
                     point
                         .iter()
-                        .skip(*state)
+                        .skip(skip_acc)
                         .take(log_d)
                         .zip(le_bits)
-                        .fold(E::ONE, |acc, (&x, y)| {
+                        .fold(value_acc, |acc, (&x, y)| {
                             acc * (E::ONE - x - y + E::TWO * x * y) + (E::ONE - x) * y
                         }),
+                    skip_acc,
                 )
             })
-            .collect::<Vec<E>>()
+            .0
     }
 }
 
@@ -352,7 +363,10 @@ impl OpInfo for LayerNormCtx {
     }
 
     fn describe(&self) -> String {
-        format!("LayerNorm(dimension size: {})", self.dim_size,)
+        format!(
+            "LayerNormCtx(dimension size: {}, epsilon: {})",
+            self.dim_size, self.eps
+        )
     }
 
     fn is_provable(&self) -> bool {
@@ -461,7 +475,7 @@ impl Evaluate<Element> for LayerNorm<Element> {
         ))?;
 
         let range_check_mask: Element = (1 << range_check_bits) - 1;
-        let table_max: Element = 1 << (2 * (*quantization::BIT_LEN - 1));
+
         let ((inv_sqrt_input, inv_sqrt_output), range_check): (
             (Vec<Element>, Vec<Element>),
             Vec<Element>,
@@ -475,7 +489,7 @@ impl Evaluate<Element> for LayerNorm<Element> {
                     *dim_size as Element * multiplier * sum_squares - multiplier * sum * sum;
                 let range_checked = full_value & range_check_mask;
                 let inv_sqrt = full_value >> range_check_bits;
-                let inv_sqrt_output = lut[(inv_sqrt + table_max) as usize];
+                let inv_sqrt_output = lut.table_output(inv_sqrt);
                 ((inv_sqrt, inv_sqrt_output), range_checked)
             })
             .unzip();
@@ -592,17 +606,14 @@ impl Requant {
     /// We implement a special way of formulating a [`Requant`] layer here where `s1*s2/s3 = 2^-s` where
     /// s is a positive integer (so the requant layer only needs to perform a shift rather than a shift and a rescaling)
     pub(crate) fn new_shift(
-        input_scaling: ScalingFactor,
-        output_scaling: ScalingFactor,
+        input_scale: f32,
+        output_scale: f32,
         intermediate_bit_size: usize,
     ) -> Result<Requant> {
         // First we check that we can actually use this method
-        let input_s = input_scaling.scale();
-        let output_s = output_scaling.scale();
-
-        let input_fract = input_s.log2().fract();
-        let output_fract = output_s.log2().fract();
-        let m = input_s / output_s;
+        let input_fract = input_scale.log2().fract();
+        let output_fract = output_scale.log2().fract();
+        let m = input_scale / output_scale;
         let m_log = m.log2();
         let int_part = m_log.trunc().abs();
         // We allow for a possible floating point error that results in an imperfect division
@@ -690,8 +701,11 @@ impl QuantizeOp for LayerNorm<f32> {
             observed_scaling.domain(),
         );
         // Make the requant layer
-        let requant =
-            Requant::new_shift(intermediate_scaling, output_scaling, intermediate_bit_size)?;
+        let requant = Requant::new_shift(
+            intermediate_scaling.scale(),
+            output_scaling.scale(),
+            intermediate_bit_size,
+        )?;
 
         Ok(QuantizeOutput::new(quantised_layernorm, vec![output_scaling]).with_requant(requant))
     }
@@ -709,15 +723,13 @@ where
                 dim_size,
                 range_check_bits,
                 top_chunk_scalar_log,
+                lut,
                 ..
             } = quant_info;
 
             // Add the tables that LayerNorm requires
             aux.tables.insert(TableType::Range);
-            aux.tables.insert(TableType::InverseSQRT(
-                self.eps.to_bits(),
-                *range_check_bits,
-            ));
+            aux.tables.insert(TableType::InverseSQRT(*lut));
 
             // Add the Gamma and Beta commitments
             let gamma_evals = self.gamma.pad_next_power_of_two().get_data().to_vec();
@@ -1116,7 +1128,7 @@ impl LayerNorm<Element> {
         lt_polys.insert(0, beta_poly);
         lt_polys.insert(0, last_claim_eq);
         vp.add_mle_list(lt_polys, second_batch_chal);
-
+        // This term is added to prove that we used the same `inv_sqrt_out_poly` in this sumcheck and the previous sumcheck.
         vp.add_mle_list(vec![input_eq_poly, inv_sqrt_out_poly], third_batch_chal);
         #[allow(deprecated)]
         let (io_proof, io_state) = IOPProverState::prove_parallel(vp, prover.transcript);
@@ -1141,7 +1153,7 @@ impl LayerNorm<Element> {
         let input_eq: ArcMultilinearExtension<E> = compute_betas_eval(io_point).into_mle().into();
         let input_sum_eq: ArcMultilinearExtension<E> =
             compute_betas_eval(&sum_io_point).into_mle().into();
-
+        // These terms are here to prove that `mean_poly` is `input_poly` summed along the normalisation dimension.
         vp.add_mle_list(vec![input_poly.clone(), input_eq], E::ONE - input_challenge);
         vp.add_mle_list(vec![input_poly, input_sum_eq], input_challenge * two_mul);
 
@@ -1280,6 +1292,7 @@ impl LayerNorm<Element> {
         let QuantisedLayerNormData {
             range_check_bits,
             top_chunk_scalar_log,
+            lut,
             ..
         } = self.quant_info().ok_or(anyhow!(
             "Could not prove LayerNorm because it had no quantisation data"
@@ -1360,10 +1373,8 @@ impl LayerNorm<Element> {
         gen.element_count
             .insert(TableType::Range, range_elements_count);
 
-        gen.element_count.insert(
-            TableType::InverseSQRT(self.eps.to_bits(), *range_check_bits),
-            inv_sqrt_element_count,
-        );
+        gen.element_count
+            .insert(TableType::InverseSQRT(*lut), inv_sqrt_element_count);
 
         // Insert the LogUpWitnesses
         gen.logup_witnesses.insert(
@@ -1373,7 +1384,7 @@ impl LayerNorm<Element> {
                     inv_sqrt_commits,
                     inv_sqrt_evals.to_vec(),
                     2,
-                    TableType::InverseSQRT(self.eps.to_bits(), *range_check_bits),
+                    TableType::InverseSQRT(*lut),
                 ),
                 LogUpWitness::<E, PCS>::new_lookup(commits, evals, 1, TableType::Range),
             ],
@@ -1409,7 +1420,7 @@ where
         // First we verify the LogUp proofs
         // Retrieve the challenges used in the logup proofs
         let logup_challenges: Vec<(E, E)> = [
-            TableType::InverseSQRT(self.eps, self.range_check_bits),
+            TableType::InverseSQRT(InverseSQRTTableData::new(self.eps, self.range_check_bits)),
             TableType::Range,
         ]
         .into_iter()
@@ -1576,9 +1587,7 @@ where
         let last_claim_eq = eq_xy_eval(&last_claim.point, &io_point);
 
         let lt_poly_evals =
-            LayerNormCtx::calculate_lt_poly_evals(&shape_step.unpadded_input_shape[0], &io_point)
-                .into_iter()
-                .product::<E>();
+            LayerNormCtx::calculate_lt_poly_evals(&shape_step.unpadded_input_shape[0], &io_point);
         let second_part = second_batch_chal
             * last_claim_eq
             * (inv_eval * *gamma_eval * (dim_size_field * input_io_eval - mean_io_eval)

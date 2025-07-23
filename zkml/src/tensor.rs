@@ -1808,7 +1808,7 @@ impl<T: Default + Clone + Copy> Tensor<T> {
         T: Clone,
     {
         // Check that the expanded shape has rank greater than or equal to self.shape and also that all dimensions are compatible
-        let expansion_rank = expansion_shape.len();
+        let expansion_rank = expansion_shape.rank();
         if expansion_rank < self.rank() {
             return Err(anyhow!(
                 "Cannot Expand to shape: {:?} as it has rank: {expansion_rank} which is smaller than the current rank: {}",
@@ -1817,7 +1817,7 @@ impl<T: Default + Clone + Copy> Tensor<T> {
             ));
         }
 
-        let rank_diff = expansion_shape.len() - self.rank();
+        let rank_diff = expansion_rank - self.rank();
         let padded_shape = std::iter::repeat_n(1usize, rank_diff)
             .chain(self.shape.iter().copied())
             .collect::<Vec<usize>>();
@@ -2266,9 +2266,24 @@ pub fn is_close(a: &[f32], b: &[f32]) -> bool {
 /// To be able to broadcast two [Tensors][`Tensor`] the shapes must be compatible in each dimension, this means either:
 ///     1) The two dimensions are equal
 ///     2) One of the dimensions is 1
-/// If one [`Tensor`] has fewer dimensions than the other we can prepend its shape with `1`s. For example if we have shapes
-/// `[5, 1, 2]` and `[7, 1]` then these broadcast to `[5, 7, 2]`.
-pub fn get_broadcasted_shape(shape_a: &Shape, shape_b: &Shape) -> anyhow::Result<Vec<usize>> {
+/// If one [`Tensor`] has fewer dimensions than the other we can prepend its [`Shape`] with `1`s. For example if we have shapes
+/// `[5, 7, 2]` and `[7, 1]` then let us write `[x, y, z]` for the currently unknown broadcasted shape, the broadcasting process works as follows:
+///     1) Prepend `1` to the second [`Shape`] so that we have `[5, 7, 2]` and `[1, 7, 1]`
+///     2) Compare the two shape arrays from back to front and apply our rules above:
+///         i) `2` and `1` are not equal, but one of them is `1` so we set the final dim (`z`) in the broadcasted shape to `2` giving us `[x, y, 2]`
+///         ii) Here both dims are `7` so because they are equal the broadcasted shape at `7` will also be `7` giving us `[x, 7, 2]`
+///         iii) Finally we have `5` and `1`, since one of the dims is `1` we take the larger of the two giving `x = 5`
+/// This gives us a final broadcasted shape of `[5, 7, 2]`.
+///
+/// As another example if we have a [`Tensor`] `A` with shape `[4, 1]` and values `[1, 2, 3, 4]` and we have another [`Tensor`] `B` with shape `[3]` and values `[10, 11, 12]`
+/// then brodcasting them to the same shape results in:
+/// ```
+///       A:  [1, 1, 1,       B:  [10, 11, 12
+///            2, 2, 2,            10, 11, 12
+///            3, 3, 3,            10, 11, 12
+///            4, 4, 4]            10, 11, 12]
+/// ```
+pub fn get_broadcasted_shape(shape_a: &Shape, shape_b: &Shape) -> anyhow::Result<Shape> {
     // Compare the length of both inputs and match on the result
     let rank_a = shape_a.len();
     let rank_b = shape_b.len();
@@ -2302,6 +2317,7 @@ pub fn get_broadcasted_shape(shape_a: &Shape, shape_b: &Shape) -> anyhow::Result
                 .enumerate()
                 .map(|(index, (&b_dim, &a_dim))| compatibility(a_dim, b_dim, index))
                 .collect::<Result<Vec<usize>, anyhow::Error>>()
+                .map(Shape::from)
         }
         Ordering::Equal => {
             // The ranks are equal so we just iterate over both choosing the max each time
@@ -2311,6 +2327,7 @@ pub fn get_broadcasted_shape(shape_a: &Shape, shape_b: &Shape) -> anyhow::Result
                 .enumerate()
                 .map(|(index, (&b_dim, &a_dim))| compatibility(a_dim, b_dim, index))
                 .collect::<Result<Vec<usize>, anyhow::Error>>()
+                .map(Shape::from)
         }
         Ordering::Greater => {
             // shape_a has larger rank so we prepend 1s to shape b
@@ -2326,6 +2343,7 @@ pub fn get_broadcasted_shape(shape_a: &Shape, shape_b: &Shape) -> anyhow::Result
                 .enumerate()
                 .map(|(index, (&a_dim, &b_dim))| compatibility(a_dim, b_dim, index))
                 .collect::<Result<Vec<usize>, anyhow::Error>>()
+                .map(Shape::from)
         }
     }
 }

@@ -32,21 +32,18 @@ use crate::{
 use rayon::prelude::*;
 pub const TABLE_POLY_ID_OFFSET: usize = 666;
 
+pub(crate) type ProverCommitment<PCS, E> = (
+    <PCS as PolynomialCommitmentScheme<E>>::CommitmentWithWitness,
+    DenseMultilinearExtension<E>,
+);
+
 pub(crate) type CommsAndEvals<PCS, E> = (
-    Vec<(
-        <PCS as PolynomialCommitmentScheme<E>>::CommitmentWithWitness,
-        DenseMultilinearExtension<E>,
-    )>,
+    Vec<ProverCommitment<PCS, E>>,
     Vec<Vec<<E as ExtensionField>::BaseField>>,
 );
 
 pub(crate) type CommsAndProofs<PCS, E> = (
-    Vec<
-        Vec<(
-            <PCS as PolynomialCommitmentScheme<E>>::CommitmentWithWitness,
-            DenseMultilinearExtension<E>,
-        )>,
-    >,
+    Vec<Vec<ProverCommitment<PCS, E>>>,
     Vec<crate::lookup::logup_gkr::structs::LogUpProof<E>>,
 );
 
@@ -69,8 +66,8 @@ pub enum TableType {
     ErrorTable(Element, Element),
     /// Table use to check if a value is zero or not, returns 1 if the value is zero and zero otherwise, the [`usize`] indicates how many variables the table has.
     ZeroTable(usize),
-    /// Table used to calculate inverse square root, the provided [`u32`] is the result of calling [`f32::to_bits`] on the normalisation factor epsilon. The [`usize`] is the number of bits that have been shifted away.
-    InverseSQRT(u32, usize),
+    /// Table used to calculate inverse square root, see the [`InverseSQRTTableData`] struct for more info.
+    InverseSQRT(InverseSQRTTableData),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -120,6 +117,39 @@ impl SoftmaxTableData {
             let float_exp = (-prod as f32 / (SCALE_FACTOR as f32 * float_temperature)).exp();
             (float_exp * OUTPUT_SCALE_FACTOR as f32).round() as Element
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+/// Struct used to store Softmax table data
+pub struct InverseSQRTTableData {
+    /// This is the result of calling [`f32::to_bits`] on the epsilon value.
+    eps_bits: u32,
+    /// The the number of bits to shift left by.
+    range_check_bits: usize,
+}
+
+impl InverseSQRTTableData {
+    pub(crate) fn new(eps_bits: u32, range_check_bits: usize) -> InverseSQRTTableData {
+        InverseSQRTTableData {
+            eps_bits,
+            range_check_bits,
+        }
+    }
+
+    pub(crate) fn float_epsilon(&self) -> f32 {
+        f32::from_bits(self.eps_bits)
+    }
+
+    pub(crate) fn table_output(&self, j: Element) -> Element {
+        let epsilon = self.float_epsilon();
+        // First we have to shift by `range_checked_bits`
+        let shifted_val = j << self.range_check_bits;
+        // Now we convert back to float and perform the operation
+        let float_output =
+            1.0f32 / ((shifted_val as f32 / LAYERNORM_SCALE_FACTOR as f32) + epsilon).sqrt();
+        // Now we use the output scale factor to recover the element value
+        (float_output * LAYERNORM_OUTPUT_SCALE_FACTOR as f32).round() as Element
     }
 }
 
@@ -246,23 +276,13 @@ impl TableType {
                     .unzip();
                 (merged_lookup, vec![in_column, out_column])
             }
-            TableType::InverseSQRT(epsu32, range_checked_bits) => {
-                let epsilon = f32::from_bits(*epsu32);
+            TableType::InverseSQRT(table_data) => {
                 let table_max: Element = 1 << (2 * (*quantization::BIT_LEN - 1));
                 let table_min = -table_max;
                 let (merged_lookup, (in_column, out_column)): LookupAndColumns<E::BaseField> =
                     (table_min..table_max)
                         .map(|i| {
-                            // First we have to shift by `range_checked_bits`
-                            let shifted_val = i << range_checked_bits;
-                            // Now we convert back to float and perform the operation
-                            let float_output = 1.0f32
-                                / ((shifted_val as f32 / LAYERNORM_SCALE_FACTOR as f32) + epsilon)
-                                    .sqrt();
-                            // Now we use the output scale factor to recover the element value
-                            let out = (float_output * LAYERNORM_OUTPUT_SCALE_FACTOR as f32).round()
-                                as Element;
-
+                            let out = table_data.table_output(i);
                             let merged_val = i + COLUMN_SEPARATOR * out;
                             let i_field: E = i.to_field();
                             let out_field: E = out.to_field();
@@ -289,9 +309,10 @@ impl TableType {
                 )
             }
             TableType::ZeroTable(bit_size) => format!("Zero: {bit_size}"),
-            TableType::InverseSQRT(epsbits, shift) => format!(
-                "InverseSQRT - normalisation: {}, shift: {shift}",
-                f32::from_bits(*epsbits)
+            TableType::InverseSQRT(table_data) => format!(
+                "InverseSQRT - normalisation: {}, shift: {}",
+                table_data.float_epsilon(),
+                table_data.range_check_bits
             ),
         }
     }
@@ -524,21 +545,12 @@ impl TableType {
                     num_vars, column,
                 ))
             }
-            TableType::InverseSQRT(epsu32, range_checked_bits) => {
-                let epsilon = f32::from_bits(*epsu32);
+            TableType::InverseSQRT(table_data) => {
                 let table_max: Element = 1 << (2 * (*quantization::BIT_LEN - 1));
                 let table_min = -table_max;
                 let column = (table_min..table_max)
                     .map(|i| {
-                        // First we have to shift by `range_checked_bits`
-                        let shifted_val = i << range_checked_bits;
-                        // Now we convert back to float and perform the operation
-                        let float_output = 1.0f32
-                            / ((shifted_val as f32 / LAYERNORM_SCALE_FACTOR as f32) + epsilon)
-                                .sqrt();
-                        // Now we use the output scale factor to recover the element value
-                        let out = (float_output * LAYERNORM_OUTPUT_SCALE_FACTOR as f32).round()
-                            as Element;
+                        let out = table_data.table_output(i);
                         let out_field: E = out.to_field();
                         out_field.as_bases()[0]
                     })
