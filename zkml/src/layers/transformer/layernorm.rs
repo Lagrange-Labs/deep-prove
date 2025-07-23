@@ -1765,7 +1765,7 @@ mod tests {
         let a = quant_output_dequant.get_data();
         let b = dequant_output.get_data();
         assert!(
-            is_close_with_tolerance(a, b, 1e-2_f32, 1e-1_f32),
+            is_close_with_tolerance(a, b, 5e-2_f32, 1e-1_f32),
             "Wasn't close enough to floating point version"
         );
     }

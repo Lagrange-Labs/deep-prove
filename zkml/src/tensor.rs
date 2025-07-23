@@ -2277,7 +2277,7 @@ pub fn is_close(a: &[f32], b: &[f32]) -> bool {
 ///
 /// As another example if we have a [`Tensor`] `A` with shape `[4, 1]` and values `[1, 2, 3, 4]` and we have another [`Tensor`] `B` with shape `[3]` and values `[10, 11, 12]`
 /// then brodcasting them to the same shape results in:
-/// ```
+/// ```ignore
 ///       A:  [1, 1, 1,       B:  [10, 11, 12
 ///            2, 2, 2,            10, 11, 12
 ///            3, 3, 3,            10, 11, 12
