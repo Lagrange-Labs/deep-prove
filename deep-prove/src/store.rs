@@ -16,6 +16,7 @@ use std::{
     collections::HashMap,
     env,
     future::Future,
+    path::PathBuf,
     sync::{Arc, Mutex},
 };
 use tempfile::TempDir;
@@ -82,17 +83,25 @@ pub trait Store {
 #[derive(Clone, derive_more::From)]
 pub struct S3Store {
     store: AmazonS3,
-    fs_cache: Arc<TempDir>,
+    fs_cache: Option<Arc<TempDir>>,
 }
 
 impl From<AmazonS3> for S3Store {
     fn from(store: AmazonS3) -> Self {
         S3Store {
             store,
-            fs_cache: Arc::new(
-                TempDir::new().expect("able to setup an S3 store cache in a temp dir"),
-            ),
+            fs_cache: None,
         }
+    }
+}
+
+impl S3Store {
+    pub fn with_fs_cache(mut self, fs_cache_dir: Option<PathBuf>) -> Self {
+        let fs_cache_dir = fs_cache_dir.unwrap_or_else(|| PathBuf::from("/var/cache"));
+        self.fs_cache = Some(Arc::new(
+            TempDir::new_in(fs_cache_dir).expect("able to setup an S3 store cache in a temp dir"),
+        ));
+        self
     }
 }
 
@@ -106,14 +115,17 @@ impl Store for S3Store {
             let S3Store { store, fs_cache } = self;
 
             // Try read from FS cache first
-            let path = fs_cache.path().join(key.to_string());
-            if fs::try_exists(&path).await.context("access FS cache")? {
-                let bytes = fs::read(path).await?;
-                let value = serde_json::from_slice::<Params>(&bytes)
-                    .context("decoding params value from FS cache")?;
-                return Ok(Some(value));
+            let cache_path = fs_cache
+                .as_ref()
+                .map(|cache| cache.path().join(key.to_string()));
+            if let Some(path) = &cache_path {
+                if fs::try_exists(&path).await.context("access FS cache")? {
+                    let bytes = fs::read(path).await?;
+                    let value = serde_json::from_slice::<Params>(&bytes)
+                        .context("decoding params value from FS cache")?;
+                    return Ok(Some(value));
+                }
             }
-
             match store.get(&key).await {
                 Ok(result) => {
                     let bytes = result.bytes().await?;
@@ -121,9 +133,14 @@ impl Store for S3Store {
                         .context("decoding params value from S3")?;
 
                     // Cache to FS
-                    fs::write(&path, &bytes)
-                        .await
-                        .context("write params to FS cache")?;
+                    if let Some(path) = cache_path {
+                        fs::create_dir_all(&path)
+                            .await
+                            .context("create FS cache dirs")?;
+                        fs::write(&path, &bytes)
+                            .await
+                            .context("write params to FS cache")?;
+                    }
 
                     Ok(Some(value))
                 }
@@ -147,14 +164,18 @@ impl Store for S3Store {
             let S3Store { store, fs_cache } = self;
 
             // Write to FS cache first
-            let path = fs_cache.path().join(key.to_string());
-            fs::create_dir_all(&path)
-                .await
-                .context("create FS cache dirs")?;
-            if !fs::try_exists(&path).await.context("access FS cache")? {
-                fs::write(&path, &value_bytes)
+            let cache_path = fs_cache
+                .as_ref()
+                .map(|cache| cache.path().join(key.to_string()));
+            if let Some(path) = cache_path {
+                fs::create_dir_all(&path)
                     .await
-                    .context("write params to FS cache")?;
+                    .context("create FS cache dirs")?;
+                if !fs::try_exists(&path).await.context("access FS cache")? {
+                    fs::write(&path, &value_bytes)
+                        .await
+                        .context("write params to FS cache")?;
+                }
             }
 
             if store
@@ -192,12 +213,16 @@ impl Store for S3Store {
             let S3Store { store, fs_cache } = self;
 
             // Try read from FS cache first
-            let path = fs_cache.path().join(key.to_string());
-            if fs::try_exists(&path).await.context("access FS cache")? {
-                let bytes = fs::read(path).await?;
-                let value = serde_json::from_slice::<ScaledModel>(&bytes)
-                    .context("decoding scaled model value from FS cache")?;
-                return Ok(value);
+            let cache_path = fs_cache
+                .as_ref()
+                .map(|cache| cache.path().join(key.to_string()));
+            if let Some(path) = &cache_path {
+                if fs::try_exists(&path).await.context("access FS cache")? {
+                    let bytes = fs::read(path).await?;
+                    let value = serde_json::from_slice::<ScaledModel>(&bytes)
+                        .context("decoding scaled model value from FS cache")?;
+                    return Ok(value);
+                }
             }
 
             match store.get(&key).await {
@@ -207,9 +232,14 @@ impl Store for S3Store {
                         .context("decoding scaled model value from S3")?;
 
                     // Cache to FS
-                    fs::write(&path, &bytes)
-                        .await
-                        .context("write params to FS cache")?;
+                    if let Some(path) = cache_path {
+                        fs::create_dir_all(&path)
+                            .await
+                            .context("create FS cache dirs")?;
+                        fs::write(&path, &bytes)
+                            .await
+                            .context("write params to FS cache")?;
+                    }
 
                     Ok(value)
                 }
@@ -219,14 +249,15 @@ impl Store for S3Store {
                         serde_json::to_vec(&value).context("serializing scaled model to store")?;
 
                     // Write to FS cache first
-                    let path = fs_cache.path().join(key.to_string());
-                    fs::create_dir_all(&path)
-                        .await
-                        .context("create FS cache dirs")?;
-                    if !fs::try_exists(&path).await.context("access FS cache")? {
-                        fs::write(&path, &value_bytes)
+                    if let Some(path) = cache_path {
+                        fs::create_dir_all(&path)
                             .await
-                            .context("write params to FS cache")?;
+                            .context("create FS cache dirs")?;
+                        if !fs::try_exists(&path).await.context("access FS cache")? {
+                            fs::write(&path, &value_bytes)
+                                .await
+                                .context("write params to FS cache")?;
+                        }
                     }
 
                     store
