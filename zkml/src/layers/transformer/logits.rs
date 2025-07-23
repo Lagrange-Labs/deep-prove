@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::{
-    Claim, Context, Element, Prover, ScalingFactor, ScalingStrategy, argmax_slice,
-    commit::{compute_betas_eval, identity_eval, same_poly},
+    Claim, Context, Element, Prover, ScalingFactor, ScalingStrategy,
+    commit::{compute_betas_eval, identity_eval},
     iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
@@ -19,6 +19,7 @@ use crate::{
         logup_gkr::{prover::batch_prove, structs::LogUpProof, verifier::verify_logup_proof},
         witness::LogUpWitness,
     },
+    max_in_slice,
     model::StepData,
     padding::{PaddingMode, ShapeData, ShapeInfo},
     quantization::{Fieldizer, IntoElement, TensorFielder},
@@ -27,12 +28,13 @@ use crate::{
 };
 use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
-use itertools::Itertools;
+use itertools::{Itertools, izip};
 use mpcs::PolynomialCommitmentScheme;
 use multilinear_extensions::{
     mle::{IntoMLE, MultilinearExtension},
     virtual_poly::{VPAuxInfo, VirtualPolynomial},
 };
+use p3_field::FieldAlgebra;
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
@@ -53,7 +55,6 @@ pub struct ArgmaxData<E> {
 pub struct LogitsCtx<E: ExtensionField> {
     hadamard_poly_aux: VPAuxInfo<E>,
     sumcheck_poly_aux: VPAuxInfo<E>,
-    aggregation_ctx: same_poly::Context<E>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -70,10 +71,8 @@ pub struct LogitsProof<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> {
     max_mat_eval: E,
     /// Proof of hadamard product sum-check
     hadamard_proof: IOPProof<E>,
-    /// Evaluations of the MLEs involved in the hadamard product sum-check
-    hadamard_evals: Vec<E>,
-    /// Proof to aggregate the claims about the input tensor into a single
-    aggregation_proof: same_poly::Proof<E>,
+    /// Evaluation of the input tensor MLE got from the hadamard product sum-check
+    input_eval: E,
 }
 
 impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> LogitsProof<E, PCS> {
@@ -106,8 +105,7 @@ impl Logits {
                         let (indices, maximums): (Vec<_>, Vec<_>) = input
                             .slice_last_dim()
                             .map(|row| {
-                                let argmax = argmax_slice(row).unwrap();
-                                let max = row[argmax];
+                                let (max, argmax) = max_in_slice(row).unwrap();
                                 (N::from_usize(argmax), max)
                             })
                             .unzip();
@@ -142,6 +140,19 @@ impl Logits {
         let split_item = point.len() - num_row_vars;
         let row_point = &point[split_item..];
         Ok((&point[..split_item], row_point))
+    }
+
+    /// Squeeze from the transcript `t` a challenge necessary to batch the claim about the input tensor
+    /// `input_claim` with another claim about the input
+    fn squeeze_challenge<E: ExtensionField, T: Transcript<E>>(
+        t: &mut T,
+        input_claim: &Claim<E>,
+    ) -> E {
+        // first, we add `input_claim` and `sub_pos_claim` to the transcript
+        t.append_field_element_exts(&input_claim.point);
+        t.append_field_element_ext(&input_claim.eval);
+
+        t.read_challenge().elements
     }
 }
 
@@ -227,8 +238,6 @@ impl<E: ExtensionField> ProveInfo<E> for Logits {
             .ilog2() as usize;
         let sumcheck_poly_aux = VPAuxInfo::from_mle_list_dimensions(&[vec![num_vars, num_vars]]);
 
-        let ctx = same_poly::Context::new(input_num_vars);
-
         aux.last_output_shape = self.output_shapes(&aux.last_output_shape, PaddingMode::Padding);
         aux.tables.insert(TableType::Range);
 
@@ -236,7 +245,6 @@ impl<E: ExtensionField> ProveInfo<E> for Logits {
             LayerCtx::Logits(LogitsCtx {
                 hadamard_poly_aux,
                 sumcheck_poly_aux,
-                aggregation_ctx: ctx,
             }),
             aux,
         ))
@@ -316,7 +324,11 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS> f
             step_data.outputs.outputs().len()
         );
 
-        let output = step_data.outputs.outputs()[0];
+        let output = step_data.outputs.outputs()[0]
+            .get_data()
+            .iter()
+            .map(|out| out.to_element() as usize)
+            .collect_vec();
 
         let argmax_data = step_data
             .outputs
@@ -386,11 +398,8 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS> f
 
         let beta_vec = compute_betas_eval(row_point);
         let mut reduced_m = vec![E::ZERO; input_shape.dim(input_shape.rank() - 1)];
-        beta_vec.iter().enumerate().try_for_each(|(i, beta)| {
-            let index = output.get_data()[i].to_element() as usize;
-            reduced_m[index] += *beta * max_values.get_data()[i];
-            anyhow::Ok(())
-        })?;
+        izip!(beta_vec, &output, max_values.get_data())
+            .for_each(|(beta, &out_value, &max_value)| reduced_m[out_value] += beta * max_value);
 
         let reduced_m_len = reduced_m.len();
         let reduced_mle = Tensor::new(vec![reduced_m_len, 1].into(), reduced_m).to_mle_2d();
@@ -416,10 +425,10 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS> f
         let input_mle = input.to_mle_2d();
 
         // build one-hot encoded output matrix
-        let mut one_hot_output = vec![E::ZERO; input_shape.product()];
-        output.get_data().iter().enumerate().for_each(|(i, out)| {
-            let index = i * input_shape.dim(input_shape.rank() - 1) + out.to_element() as usize;
-            one_hot_output[index] = E::ONE;
+        let mut one_hot_output = vec![E::BaseField::ZERO; input_shape.product()];
+        output.iter().enumerate().for_each(|(i, out)| {
+            let index = i * input_shape.dim(input_shape.rank() - 1) + out;
+            one_hot_output[index] = E::BaseField::ONE;
         });
         let one_hot_mle = one_hot_output.into_mle();
         let mut vp = VirtualPolynomial::new(input_mle.num_vars());
@@ -431,22 +440,21 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS> f
             ],
             E::ONE,
         );
+
+        // squeeze the challenge to include `input_claim` produced by the lookup in the hadamard product sum-check
+        let challenge = Self::squeeze_challenge(prover.transcript, &input_claim);
+
+        // compute the beta evaluations over `input_claim.point`
+        let input_eq_mle = compute_betas_eval(&input_claim.point).into_mle();
+
+        vp.add_mle_list(vec![input_eq_mle.into(), input_mle.into()], challenge);
+
         #[allow(deprecated)]
         let (hadamard_proof, state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
 
         let input_eval = state.get_mle_final_evaluations()[0];
 
-        let hadamard_input_claim = Claim::new(hadamard_proof.point.clone(), input_eval);
-
-        // aggregate the 2 input claims into a single one with the same-poly prover
-        let mut same_poly_prover = same_poly::Prover::new(input_mle);
-
-        same_poly_prover.add_claim(input_claim)?;
-        same_poly_prover.add_claim(hadamard_input_claim)?;
-
-        let same_poly_proof = same_poly_prover.prove(prover.transcript)?;
-
-        let final_input_claim = same_poly_proof.extract_claim();
+        let final_input_claim = Claim::new(hadamard_proof.point.clone(), input_eval);
 
         let proof = LogitsProof {
             logup_proof,
@@ -455,8 +463,7 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS> f
             max_mat_eval: max_matrix_eval,
             sumcheck_proof,
             hadamard_proof,
-            hadamard_evals: state.get_mle_final_evaluations()[..2].to_vec(),
-            aggregation_proof: same_poly_proof,
+            input_eval,
         };
 
         prover.push_proof(node_id, LayerProof::Logits(proof));
@@ -514,10 +521,9 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS> f
                 let max_element = current_max.to_element();
                 let diff = max_element - input;
                 let diff_field = <Element as Fieldizer<E>>::to_field(&diff)
-
-                        .as_base()
-                        .expect("Diff element overflows field");
-                ( diff,diff_field)
+                    .as_base()
+                    .expect("Diff element overflows field");
+                (diff, diff_field)
             })
             .unzip();
         let element_count = merged_diff.iter().fold(HashMap::new(), |mut acc, diff| {
@@ -640,9 +646,11 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> VerifiableCtx<E, PCS
             .cloned()
             .collect_vec();
 
+        let challenge = Logits::squeeze_challenge(verifier.transcript, &input_claim);
+
         // verify hadamard product sum-check
         let subclaim = IOPVerifierState::verify(
-            proof.max_mat_eval,
+            proof.max_mat_eval + challenge * input_claim.eval,
             &proof.hadamard_proof,
             &self.hadamard_poly_aux,
             verifier.transcript,
@@ -650,29 +658,21 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> VerifiableCtx<E, PCS
 
         let sumcheck_point = subclaim.point_flat();
         let beta_eval = identity_eval(&max_mat_claim_point, &sumcheck_point);
+        let input_eq_eval = identity_eval(&input_claim.point, &sumcheck_point);
 
-        // verify sum-check
-        ensure!(
-            subclaim.expected_evaluation
-                == proof
-                    .hadamard_evals
-                    .iter()
-                    .fold(beta_eval, |acc, e| acc * *e),
-            "Hadamard product sumcheck verification failed"
-        );
+        // get expected evaluation of the claim for the output tensor MLE computed by the sum-check; we have that
+        // `subclaim.expected_evaluation = beta_eval*proof.input_eval*expected_output_eval + challenge*proof.input_eval*input_eq_eval`,
+        // so we compute `expected_output_eval` as `(subclaim.expected_evaluation - challenge*proof.input_eval*input_eq_eval)/(beta_eval*proof.input_eval)`
 
-        let input_eval = proof.hadamard_evals[0];
-        let output_eval = proof.hadamard_evals[1];
-        Self::verify_output_evaluation(verifier, Claim::new(sumcheck_point.clone(), output_eval))?;
-        let hadamard_input_claim = Claim::new(sumcheck_point, input_eval);
+        let expected_output_eval = (subclaim.expected_evaluation
+            - challenge * proof.input_eval * input_eq_eval)
+            * (beta_eval * proof.input_eval).inverse();
 
-        let mut same_poly_verifier = same_poly::Verifier::new(&self.aggregation_ctx);
-
-        same_poly_verifier.add_claim(input_claim)?;
-        same_poly_verifier.add_claim(hadamard_input_claim)?;
-
-        let final_input_claim =
-            same_poly_verifier.verify(&proof.aggregation_proof, verifier.transcript)?;
+        Self::verify_output_evaluation(
+            verifier,
+            Claim::new(sumcheck_point.clone(), expected_output_eval),
+        )?;
+        let final_input_claim = Claim::new(sumcheck_point, proof.input_eval);
 
         Ok(vec![final_input_claim])
     }
