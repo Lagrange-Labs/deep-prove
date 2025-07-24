@@ -7,12 +7,13 @@
 use crate::{
     Context, IO, Proof, Prover,
     padding::PaddingMode,
-    quantization::{InferenceObserver, ScalingStrategy},
+    quantization::{InferenceObserver, ScalingStrategy, IntoElement},
     verify,
 };
 use anyhow::{Context as CC, ensure};
 use ark_std::rand::{Rng, thread_rng};
 use ff_ext::ExtensionField;
+use itertools::Itertools;
 use mpcs::PolynomialCommitmentScheme;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::Path;
@@ -131,7 +132,7 @@ impl Driver<f32> {
     /// Transform the model into a provable llm model with quantization and padding done.
     /// The result can be serialized and deserialized at will to serve inference+proving for this model.
     pub fn into_provable_llm(mut self) -> anyhow::Result<Driver<Element>> {
-        let numel = self.config.context_length;
+        let numel = self.max_context.unwrap_or(self.config.context_length);
         let n_inputs = 1;
         let representative_inputs = (0..n_inputs)
             .map(|_| {
@@ -209,17 +210,17 @@ where
             unpadded_seq_len < self.config.context_length - 1,
             "Input sequence length must be less than the context length"
         );
-        let tensor = Tensor::new(
+        let mut tensor = Tensor::new(
             vec![input.len()].into(),
             input
                 .into_iter()
                 .map(|t| t.as_number::<N>())
                 .collect::<Vec<_>>(),
         );
-        let mut tensor = if let PaddingMode::Padding = mode {
-            tensor.pad_next_power_of_two()
-        } else {
-            tensor
+        let max_window = self.max_context.unwrap_or(self.config.context_length);
+        let target_padded_shape = vec![max_window.next_power_of_two()].into();
+        if let PaddingMode::Padding = mode {
+            tensor.pad_to_shape(target_padded_shape)
         };
 
         ensure!(
@@ -232,8 +233,7 @@ where
         let mut trace = InferenceTrace::default();
         // convert the input to the correct number type and add a dimension to make it 2d, because the embeddings layer expects a 2d tensor
         // This means we're padding the input to the right size (e.g. next power of two)
-        let max_window = self.max_context.unwrap_or(self.config.context_length);
-        while unpadded_seq_len < max_window {
+        while unpadded_seq_len <= max_window {
             trace = self.model.run::<E>(&[tensor.clone()]).context(format!(
                 "running the {} iteration loop",
                 unpadded_seq_len - user_len
@@ -261,9 +261,6 @@ where
             tensor = tensor.insert_at_dim(0, unpadded_seq_len, *last_token);
             println!("tensor shape: {:?}", tensor.get_shape());
             println!("tensor data: {:?}", tensor.get_data());
-            if let PaddingMode::Padding = mode {
-                tensor = tensor.pad_next_power_of_two();
-            }
             if let Some(ref obs) = observer {
                 obs.observe(unpadded_seq_len - user_len, &trace);
             }
@@ -338,26 +335,28 @@ where
     {
         // 0. check the size of the output
         let output = proof.io.output[0].clone();
-        let max_len = output.get_shape().numel();
+        let padded_max_len = output.get_shape().numel();
+        let max_window = self.max_context.unwrap_or(self.config.context_length);
+
         // in any case, the output needs to be less than the max context length
         ensure!(
-            max_len <= self.config.context_length,
-            "output length is greater than the context length"
+            padded_max_len <= max_window.next_power_of_two(),
+            "output length is greater than the padded maximum context length"
         );
-        // either we reached the specific may context length
-        if let Some(max_context) = self.max_context {
-            ensure!(
-                max_len <= max_context,
-                "output length is greater than the max context length"
-            );
+        // get the actual output length: could be either `max_window`, or when an eos token is found
+        let eos_token = self.config.specific_config.eos_token().0;
+        let eos_token_found = output.get_data().iter()
+            .take(max_window) // consider only the first max_window tokens
+            .skip(user_input.len()-1) // the first user_input.len() - 1 are not meaningful
+            .find_position(|token| 
+            token.to_element() as usize == eos_token
+        );
+        let unpadded_output_len = if let Some(pos) = &eos_token_found {
+            pos.0
         } else {
-            // OR we reached the eos token
-            let eos_token = self.config.specific_config.eos_token().0;
-            ensure!(
-                output.get_data().last().unwrap().to_usize() == eos_token,
-                "output did not end with the eos token"
-            );
-        }
+            max_window
+        };
+
         // 1. verify the proof it self
         let mut tr: BasicTranscript<E> = BasicTranscript::new(b"model");
         let prover_input = proof.io.input[0].clone();
@@ -367,7 +366,6 @@ where
         // but without including the padding.
         // output is [seq_len] where []
         let seq_len = user_input.len();
-        let max_len = prover_output.get_shape().numel();
         ensure!(
             prover_input.get_data()[..seq_len]
                 .iter()
@@ -376,7 +374,7 @@ where
             "user input not the same"
         );
         #[allow(clippy::needless_range_loop)]
-        for i in seq_len - 1..max_len - 1 {
+        for i in seq_len - 1..unpadded_output_len - 1 {
             // we check the next input token is the one generated by this "row" of the input
             ensure!(
                 prover_input.get_data()[i + 1] == prover_output.get_data()[i],

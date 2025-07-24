@@ -52,7 +52,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
 
 /// The base 2 logarithm of the scale factor used in exponential lookup tables
-pub(crate) const LOG_SCALE_FACTOR: usize = 24;
+pub(crate) const LOG_SCALE_FACTOR: usize = 28;
 /// The scale factor for our fixed point arithmetic
 pub(crate) const SCALE_FACTOR: usize = 1 << LOG_SCALE_FACTOR;
 /// The scale factor of the outputs of the `exp` lookup
@@ -155,6 +155,8 @@ impl<N: Number> Softmax<N> {
         let temperature = self.scalar.to_f32()?;
         let inv_float_temperature = 1.0f32 / temperature;
         let multiplier = (SCALE_FACTOR as f32 * input_scale_factor).round() as Element;
+        println!("Softmax input scale factor: {}", input_scale_factor);
+        println!("Softmax multiplier: {}", multiplier);
 
         // We want to be able to cover all possible inputs, to do this we need to work out what the minimum quantised input is.
         // this can be calculated by taking `input_scaling.domain().0` and then subtracting the maximum possible shift for normalisation.
