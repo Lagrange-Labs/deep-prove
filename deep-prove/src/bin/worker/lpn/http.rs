@@ -157,10 +157,8 @@ pub async fn run(args: crate::RunMode) -> anyhow::Result<()> {
     info!("operator address: {address}");
     info!("worker unique name: {worker_name}");
 
-    // TODO: add S3
-    // TODO:
-    // let handshake = get_token(&gw_url, &worker_name).context("authenticating to the Gateway")?;
-    // let secret = get_token(&gw_url, &worker_name).context("authenticating to the Gateway")?;
+    // TODO: add S3 store DP-75
+    // TODO: implement auth DP-73
     let mut store = StoreKind::Mem(MemStore::default());
 
     loop {

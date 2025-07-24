@@ -158,7 +158,7 @@ pub async fn connect(gw_config: Executor) -> anyhow::Result<()> {
                             "Received proof for task {}",
                             uuid::Uuid::from_slice(&task_id.id).unwrap_or_default()
                         );
-                        // TODO: write to file or whatever
+                        // TODO: save proofs DP-76
                     }
                 }
 
