@@ -75,7 +75,9 @@ where
                         .map(|poly| poly.num_vars())
                         .collect::<Vec<_>>()
                 );
-                poly_vec.iter().fold(acc,|mut lacc, (_, poly)| lacc.max(1 << poly.num_vars()) )
+                poly_vec
+                    .iter()
+                    .fold(acc, |mut lacc, (_, poly)| lacc.max(1 << poly.num_vars()))
             })
             .next_power_of_two();
 

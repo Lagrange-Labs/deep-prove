@@ -291,7 +291,10 @@ impl Driver<Element> {
         E::BaseField: Serialize + DeserializeOwned,
         PCS: PolynomialCommitmentScheme<E>,
     {
-        debug!("Generating context for model with {} layers", self.model.nodes.len());
+        debug!(
+            "Generating context for model with {} layers",
+            self.model.nodes.len()
+        );
         self.model.describe();
         let ctx = Context::<E, PCS>::generate(&self.model, None, None)?;
         Ok(LLMContext {
@@ -462,8 +465,8 @@ mod test {
     fn test_llm_driver_inference() -> anyhow::Result<()> {
         init_test_logging("debug");
         // const PRUNED_GPT2: &str = "https://huggingface.co/PrunaAI/gpt2-GGUF-smashed/resolve/main/gpt2.Q2_K.gguf";
-        //const PRUNED_GPT2: &str = GPT2_Q8_0_URL;
-        //let model_path = file_cache::ensure_downloaded(PRUNED_GPT2)?;
+        // const PRUNED_GPT2: &str = GPT2_Q8_0_URL;
+        // let model_path = file_cache::ensure_downloaded(PRUNED_GPT2)?;
         let model_path = "assets/scripts/llms/toy_gpt2.gguf";
         let driver = Driver::load_external_model(&model_path)?.with_max_context(6);
         let sentence = "The sky is";

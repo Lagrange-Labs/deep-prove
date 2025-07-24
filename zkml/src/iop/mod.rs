@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     commit::context::ModelOpeningProof,
+    iop::prover::MergeClaimsProof,
     layers::{LayerProof, provable::NodeId},
     lookup::logup_gkr::structs::LogUpProof,
 };
@@ -24,6 +25,8 @@ where
 {
     /// The successive sumchecks proofs. From output layer to input.
     steps: HashMap<NodeId, LayerProof<E, PCS>>,
+    /// Proofs to merge output claims of a node, if any
+    merge_claim_proofs: HashMap<NodeId, MergeClaimsProof<E>>,
     /// The proofs for any lookup tables used
     table_proofs: Vec<TableProof<E, PCS>>,
     /// the commitment proofs related to the weights

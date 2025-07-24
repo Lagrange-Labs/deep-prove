@@ -1,4 +1,7 @@
-use multilinear_extensions::{mle::{IntoMLE, MultilinearExtension}, util::ceil_log2};
+use multilinear_extensions::{
+    mle::{IntoMLE, MultilinearExtension},
+    util::ceil_log2,
+};
 use serde::de::DeserializeOwned;
 use std::{cmp::Ordering, collections::HashMap};
 
@@ -9,15 +12,23 @@ use serde::{Deserialize, Serialize};
 use transcript::Transcript;
 
 use crate::{
+    Claim, Element, Prover, ScalingFactor, ScalingStrategy, Tensor,
     iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
-    }, layers::{
+    },
+    layers::{
+        LayerCtx, LayerProof,
         provable::{
             Evaluate, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, QuantizeOp, QuantizeOutput,
             VerifiableCtx,
-        }, requant::Requant, LayerCtx, LayerProof
-    }, model::StepData, padding::{PaddingMode, ShapeData, ShapeInfo}, quantization::{self, Fieldizer}, tensor::{Number, Shape}, Claim, Element, Prover, ScalingFactor, ScalingStrategy, Tensor
+        },
+        requant::Requant,
+    },
+    model::StepData,
+    padding::{PaddingMode, ShapeData, ShapeInfo},
+    quantization::{self, Fieldizer},
+    tensor::{Number, Shape},
 };
 
 use super::provable::LayerOut;
@@ -412,7 +423,7 @@ impl QuantInfo {
     /// The absoloute value of intermedaite size before addition is bounded above by `self.common_scale.log2().abs().ceil()`, so we add 2 extra to this.
     /// The first because we need an additional bit for the sign and the second because of the actual addition.
     pub fn intermediate_bit_size(&self) -> usize {
-        //self.common_scale.log2().abs().ceil() as usize + 2
+        // self.common_scale.log2().abs().ceil() as usize + 2
         *quantization::BIT_LEN
             + ceil_log2(std::cmp::max(self.left_multiplier, self.right_multiplier) as usize)
             + 1
