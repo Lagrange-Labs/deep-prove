@@ -139,7 +139,7 @@ pub enum ProvingData<E: ExtensionField> {
     /// Variant used for extra data used to prove [LayerNorm][`crate::layers::transformer::layernorm::LayerNorm`]
     LayerNorm(LayerNormData),
     /// Varient used for extra data used to prove [ArgMax][`crate::layers::transformer::logits::Logits`]
-    ArgMax(ArgmaxData<E>)
+    ArgMax(ArgmaxData<E>),
     /// Variant used when no extra data is returned.
     None,
 }
@@ -854,7 +854,9 @@ where
             LayerCtx::ConcatMatMul(concat_mat_mul_ctx) => {
                 compute_model_output_claims::<_, PCS, _, _>(concat_mat_mul_ctx, transcript, outputs)
             }
-            LayerCtx::LayerNorm => unimplemented!(),
+            LayerCtx::LayerNorm(layernorm_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(layernorm_ctx, transcript, outputs)
+            }
             LayerCtx::Flatten => compute_model_output_claims::<_, PCS, _, _>(
                 &NonProvableVerifierCtx(&Flatten),
                 transcript,
