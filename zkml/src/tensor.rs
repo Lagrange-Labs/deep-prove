@@ -1144,7 +1144,6 @@ where
                 let j = index % p;
 
                 *res = (0..n)
-                    .into_par_iter()
                     .map(|k| self.data[i * n + k] * other.data[k * p + j])
                     .sum::<T>();
             });
