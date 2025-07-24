@@ -156,8 +156,9 @@ where
         info!("Unpadded input shapes: {:?}", self.unpadded_input_shapes);
         info!("Padded input shapes: {:?}", self.padded_input_shapes());
         for (idx, layer) in self.to_forward_iterator() {
-            info!("\t- {}: {:?}", idx, layer.inputs);
             info!("\t- {}: {}", idx, layer.operation.describe());
+            info!("\t\t- {}: {:?}", idx, layer.inputs);
+            info!("\t\t- {}: {:?}", idx, layer.outputs);
         }
         info!("Output nodes:");
         for (idx, node) in self.output_nodes() {
@@ -185,20 +186,34 @@ where
             .enumerate()
             .zip(requants.into_iter())
             .map(|((i, wire), requant)| {
-                // INPUT EDGES: for each output wire, we simply copy the index i, and set the node to be input_node_id
-                let input_edges = wire
-                    .edges
-                    .iter()
-                    .map(|_| Edge::new(input_node_id, i))
-                    .collect();
+                let in_edge = Edge::new(input_node_id, i);
+                // let input_edges = wire
+                //     .edges
+                //     .iter()
+                //     .map(|_| Edge::new(input_node_id, i))
+                //     .collect();
                 // OUTPUT EDGES: We simply copy the output wires of input_node since they are the same.
                 // NOTE here we enforce that one requant  == one output wire. Later we might want to revisit that assumption if needed.
                 let output_wires = wire.clone();
                 Ok(Node::new_with_outputs(
-                    input_edges,
+                    vec![in_edge],
                     Layer::Requant(requant),
                     vec![output_wires],
                 ))
+                // INPUT EDGES: for each output wire, we simply copy the index i, and set the node to be input_node_id
+                //let input_edges = wire
+                //    .edges
+                //    .iter()
+                //    .map(|_| Edge::new(input_node_id, i))
+                //    .collect();
+                //// OUTPUT EDGES: We simply copy the output wires of input_node since they are the same.
+                //// NOTE here we enforce that one requant  == one output wire. Later we might want to revisit that assumption if needed.
+                //let output_wires = wire.clone();
+                //Ok(Node::new_with_outputs(
+                //    input_edges,
+                //    Layer::Requant(requant),
+                //    vec![output_wires],
+                //))
             })
             .collect::<Result<Vec<_>>>()?;
         debug!(

@@ -16,7 +16,7 @@ use ff_ext::ExtensionField;
 use mpcs::PolynomialCommitmentScheme;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::Path;
-use tracing::debug;
+use tracing::{debug, info};
 use transcript::BasicTranscript;
 
 use crate::{
@@ -256,15 +256,12 @@ where
             // input = input.concat(last_token);
             // We simply need to take the _last_ inference trace that would contain _everything_
             unpadded_seq_len += 1;
-            if tensor.get_shape().numel() <= unpadded_seq_len {
-                tensor.concat(Tensor::new(vec![1, 1].into(), vec![*last_token]));
-            } else {
-                // here we need to insert the new token after the user input and newly generated tokens, but
-                // BEFORE the padding.
-                // TODO: breach of API here - tensor should do it
-                tensor.data.insert(unpadded_seq_len, *last_token);
-                tensor.shape.set_dim(0, tensor.shape.dim(0) + 1);
-            }
+            // here we need to insert the new token after the user input and newly generated tokens, but
+            // BEFORE the padding.
+            // TODO: breach of API here - tensor should do it
+            tensor = tensor.insert_at_dim(0, unpadded_seq_len, *last_token);
+            println!("tensor shape: {:?}", tensor.get_shape());
+            println!("tensor data: {:?}", tensor.get_data());
             if let PaddingMode::Padding = mode {
                 tensor = tensor.pad_next_power_of_two();
             }
@@ -317,7 +314,9 @@ impl Driver<Element> {
         let mut tr: BasicTranscript<E> = BasicTranscript::new(b"model");
         let prover: Prover<'_, E, _, _> = Prover::new(&ctx.ctx, &mut tr);
         let io = trace.to_verifier_io();
+        info!("Proving the trace");
         let proof = prover.prove(trace).expect("unable to generate proof");
+        info!("Proof generated");
         Ok(LLMProof { proof, io })
     }
 }
@@ -462,8 +461,9 @@ mod test {
     fn test_llm_driver_inference() -> anyhow::Result<()> {
         init_test_logging("debug");
         // const PRUNED_GPT2: &str = "https://huggingface.co/PrunaAI/gpt2-GGUF-smashed/resolve/main/gpt2.Q2_K.gguf";
-        const PRUNED_GPT2: &str = GPT2_Q8_0_URL;
-        let model_path = file_cache::ensure_downloaded(PRUNED_GPT2)?;
+        //const PRUNED_GPT2: &str = GPT2_Q8_0_URL;
+        //let model_path = file_cache::ensure_downloaded(PRUNED_GPT2)?;
+        let model_path = "assets/scripts/llms/toy_gpt2.gguf";
         let driver = Driver::load_external_model(&model_path)?.with_max_context(6);
         let sentence = "The sky is";
 

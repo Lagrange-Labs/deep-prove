@@ -1979,6 +1979,18 @@ impl<T> Tensor<T> {
         (self.data.chunks(stride), shape)
     }
 
+    pub fn insert_at_dim(mut self, dim: usize, index: usize, value: T) -> Self {
+        if self.data.len() == index {
+            self.data.push(value);
+            *self.shape.get_mut(dim).unwrap() += 1;
+        } else if self.data.len() > index {
+            self.data[index] = value;
+        } else {
+            panic!("Cannot insert at index {index} in tensor with data length {}", self.data.len());
+        }
+        self
+    }
+
     // Concatenate the other tensor to the first one.
     // RESTRICTIOn: self shape is [a1,a2...,an] we
     // expect other shape to be [a2...,an] OR [1, a2...,an]
