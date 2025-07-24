@@ -78,6 +78,14 @@ jobs:
           # Manually configure rust-cache
           cache: false
 
+      - name: Restore model cache folder
+        uses: actions/cache@v4
+        with:
+          path: target/test_assets_cache
+          key: model-cache-${{ hashFiles('my_folder/**') }}
+          restore-keys: |
+            model-cache-
+
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2
         with:
