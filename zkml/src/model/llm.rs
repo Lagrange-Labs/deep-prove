@@ -255,7 +255,6 @@ where
             // NOTE: For now, since we are NOT using any caching for the inference, we DON'T need to concat the inferences on top of each other
             // input = input.concat(last_token);
             // We simply need to take the _last_ inference trace that would contain _everything_
-            unpadded_seq_len += 1;
             // here we need to insert the new token after the user input and newly generated tokens, but
             // BEFORE the padding.
             // TODO: breach of API here - tensor should do it
@@ -268,6 +267,7 @@ where
             if let Some(ref obs) = observer {
                 obs.observe(unpadded_seq_len - user_len, &trace);
             }
+            unpadded_seq_len += 1;
         }
         Ok(trace)
     }
