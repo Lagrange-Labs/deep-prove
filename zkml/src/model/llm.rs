@@ -7,7 +7,7 @@
 use crate::{
     Context, IO, Proof, Prover,
     padding::PaddingMode,
-    quantization::{InferenceObserver, ScalingStrategy, IntoElement},
+    quantization::{InferenceObserver, IntoElement, ScalingStrategy},
     verify,
 };
 use anyhow::{Context as CC, ensure};
@@ -345,12 +345,12 @@ where
         );
         // get the actual output length: could be either `max_window`, or when an eos token is found
         let eos_token = self.config.specific_config.eos_token().0;
-        let eos_token_found = output.get_data().iter()
+        let eos_token_found = output
+            .get_data()
+            .iter()
             .take(max_window) // consider only the first max_window tokens
-            .skip(user_input.len()-1) // the first user_input.len() - 1 are not meaningful
-            .find_position(|token| 
-            token.to_element() as usize == eos_token
-        );
+            .skip(user_input.len() - 1) // the first user_input.len() - 1 are not meaningful
+            .find_position(|token| token.to_element() as usize == eos_token);
         let unpadded_output_len = if let Some(pos) = &eos_token_found {
             pos.0
         } else {
@@ -370,7 +370,7 @@ where
             prover_input.get_data()[..seq_len]
                 .iter()
                 .zip(user_input[..seq_len].iter())
-                .all(|(a, b)| a.to_usize() == b.0),
+                .all(|(a, b)| a.to_element().to_usize() == b.0),
             "user input not the same"
         );
         #[allow(clippy::needless_range_loop)]
@@ -437,7 +437,7 @@ mod test {
     fn test_llm_driver_prove() -> anyhow::Result<()> {
         init_test_logging("debug");
         let max_context = 10;
-        let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
+        // let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
         let model_path = "assets/scripts/llms/toy_gpt2.gguf";
         let driver = Driver::load_external_model(&model_path)?.with_max_context(max_context);
         let sentence = "The sky is";
