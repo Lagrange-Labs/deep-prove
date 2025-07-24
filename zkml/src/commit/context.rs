@@ -16,6 +16,7 @@ use multilinear_extensions::mle::{DenseMultilinearExtension, MultilinearExtensio
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+use tracing::debug;
 use transcript::Transcript;
 
 pub type PolyId = String;
@@ -61,17 +62,24 @@ where
         polys: Vec<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>,
         lookup_ctx: &LookupContext,
     ) -> Result<CommitmentContext<E, PCS>> {
+        println!("WITNESS POLY SIZE: {witness_poly_size}");
         // Find the maximum size so we can generate params
         let max_poly_size = polys
             .iter()
-            .fold(witness_poly_size, |mut acc, (_, poly_vec)| {
-                poly_vec
-                    .iter()
-                    .for_each(|(_, poly)| acc = acc.max(1 << poly.num_vars()));
-                acc
+            .fold(witness_poly_size, |mut acc, (node_id, poly_vec)| {
+                debug!(
+                    "Context Commitment: node {node_id} has {} polynomials of sizes {:?}",
+                    poly_vec.len(),
+                    poly_vec
+                        .values()
+                        .map(|poly| poly.num_vars())
+                        .collect::<Vec<_>>()
+                );
+                poly_vec.iter().fold(acc,|mut lacc, (_, poly)| lacc.max(1 << poly.num_vars()) )
             })
             .next_power_of_two();
 
+        debug!("Setting up PCS params for max size {} poly", max_poly_size);
         let param = PCS::setup(max_poly_size).context("setting up params")?;
         let (prover_params, verifier_params) =
             PCS::trim(param, max_poly_size).context("trimming params")?;

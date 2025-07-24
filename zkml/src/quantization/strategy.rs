@@ -97,7 +97,10 @@ impl ScalingStrategy for InferenceObserver {
                 })
                 .collect()
         } else {
-            info!("Using the {} provided representative inputs to quantize model", self.inputs.len());
+            info!(
+                "Using the {} provided representative inputs to quantize model",
+                self.inputs.len()
+            );
             self.inputs.clone()
         };
         // 1. Run the inference multiple times with different inputs
@@ -115,7 +118,7 @@ impl ScalingStrategy for InferenceObserver {
                     input_tensor
                 })
                 .collect_vec();
-            debug!("Runnign float inference with {}-th input", nsamples);
+            debug!("Running float inference with the {}-th input", nsamples+1);
             model.run_with_tracker::<GoldilocksExt2>(&input_tensors, Some(&mut tracker))?;
             nsamples += 1;
         }

@@ -183,11 +183,13 @@ where
                         node,
                     )?;
                     max_poly_len = max_poly_len.max(ctx_aux.max_poly_len);
+                    println!("node: {id}, max_poly_len: {max_poly_len}");
                 }
                 // Check to see if we use a lookup table alrger than any of the individual polynomials
                 ctx_aux.tables.iter().for_each(|table_type| {
                     let multiplicity_vars = table_type.multiplicity_poly_vars();
-                    max_poly_len = max_poly_len.max(1 << multiplicity_vars)
+                    max_poly_len = max_poly_len.max(1 << multiplicity_vars);
+                    println!("table type: {table_type:?}, max_poly_len: {max_poly_len}");
                 });
 
                 debug!("Context : lookup generation ...");

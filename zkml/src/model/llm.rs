@@ -5,7 +5,10 @@
 //! the maximum context length is reached. It will also be used to prepend a system model correctly.
 
 use crate::{
-    padding::PaddingMode, quantization::{InferenceObserver, ScalingStrategy}, verify, Context, Proof, Prover, IO
+    Context, IO, Proof, Prover,
+    padding::PaddingMode,
+    quantization::{InferenceObserver, ScalingStrategy},
+    verify,
 };
 use anyhow::{Context as CC, ensure};
 use ark_std::rand::{Rng, thread_rng};
@@ -56,7 +59,7 @@ where
     pub max_context: Option<usize>,
 }
 
-impl<E,PCS> LLMContext<E,PCS>
+impl<E, PCS> LLMContext<E, PCS>
 where
     E: ExtensionField + Serialize + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
@@ -159,7 +162,7 @@ impl Driver<f32> {
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
-        self.run_internal::<E>(input, observer,PaddingMode::NoPadding)
+        self.run_internal::<E>(input, observer, PaddingMode::NoPadding)
     }
 }
 
@@ -208,11 +211,14 @@ where
         );
         let tensor = Tensor::new(
             vec![input.len()].into(),
-            input.into_iter().map(|t| t.as_number::<N>()).collect::<Vec<_>>(),
+            input
+                .into_iter()
+                .map(|t| t.as_number::<N>())
+                .collect::<Vec<_>>(),
         );
         let mut tensor = if let PaddingMode::Padding = mode {
             tensor.pad_next_power_of_two()
-        } else { 
+        } else {
             tensor
         };
 
@@ -232,7 +238,11 @@ where
                 "running the {} iteration loop",
                 unpadded_seq_len - user_len
             ))?;
-            ensure!(trace.output.len() == 1, "expected 1 output, got {}", trace.output.len());
+            ensure!(
+                trace.output.len() == 1,
+                "expected 1 output, got {}",
+                trace.output.len()
+            );
             let output = trace.output.last().unwrap();
             // We take the last token before the padding
             let last_token = output
@@ -284,6 +294,8 @@ impl Driver<Element> {
         E::BaseField: Serialize + DeserializeOwned,
         PCS: PolynomialCommitmentScheme<E>,
     {
+        debug!("Generating context for model with {} layers", self.model.nodes.len());
+        self.model.describe();
         let ctx = Context::<E, PCS>::generate(&self.model, None, None)?;
         Ok(LLMContext {
             ctx,
@@ -431,7 +443,9 @@ mod test {
         let tokenizer = TokenizerData::load_tokenizer_from_gguf(&model_path)?;
         let user_tokens = tokenizer.tokenize(sentence);
         let driver = driver.into_provable_llm()?;
-        let ctx = driver.context::<GoldilocksExt2, Pcs<GoldilocksExt2>>()?.with_max_context(max_context);
+        let ctx = driver
+            .context::<GoldilocksExt2, Pcs<GoldilocksExt2>>()?
+            .with_max_context(max_context);
         let trace = driver.run::<GoldilocksExt2>(
             user_tokens.clone(),
             Some(LLMTokenizerObserver {
