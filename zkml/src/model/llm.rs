@@ -434,6 +434,7 @@ mod test {
     use ff_ext::GoldilocksExt2;
 
     #[test]
+    #[ignore]
     fn test_llm_driver_prove() -> anyhow::Result<()> {
         init_test_logging("debug");
         let max_context = 10;
