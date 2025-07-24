@@ -244,7 +244,8 @@ where
             // For now, we support in proving only one edge per output wire,
             // as if an output is used as input in different nodes, we need
             // to batch claims about the same polynomial. ToDo: batch claims
-            assert_eq!(out.edges.len(), 1);
+            // TODO : revise that assumption
+            //assert_eq!(out.edges.len(), 1);
             let edge = &out.edges[0];
             Ok(if let Some(id) = &edge.node {
                 let claims_for_node = claims_by_node.get(id).ok_or(

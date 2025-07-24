@@ -239,7 +239,11 @@ impl<N: Number> LayerNorm<N> {
         let lhs_bit_size =
             2 * (*quantization::BIT_LEN - 1) + ceil_log2(dim_size) + 1 + max_lut_value_bits;
 
-        let intermediate_bit_size = lhs_bit_size.max(ceil_log2(quant_bias_max as usize)) + 1;
+        let intermediate_bit_size = if quant_bias_max > 0 {
+            lhs_bit_size.max(ceil_log2(quant_bias_max as usize)) + 1
+        } else {
+            lhs_bit_size + 1
+        };
 
         Ok((
             LayerNorm::<Element> {

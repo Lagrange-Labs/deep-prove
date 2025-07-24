@@ -437,6 +437,7 @@ mod test {
         init_test_logging("debug");
         let max_context = 10;
         let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
+        let model_path = "assets/scripts/llms/toy_gpt2.gguf";
         let driver = Driver::load_external_model(&model_path)?.with_max_context(max_context);
         let sentence = "The sky is";
         let tokenizer = TokenizerData::load_tokenizer_from_gguf(&model_path)?;

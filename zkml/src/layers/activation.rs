@@ -39,7 +39,7 @@ use super::provable::{
 };
 
 use anyhow::{Result, anyhow, bail, ensure};
-const GELU_SCALE_EXP: usize = 12;
+const GELU_SCALE_EXP: usize = 14;
 const GELU_SCALE_FACTOR: usize = 1 << GELU_SCALE_EXP;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -638,6 +638,8 @@ impl GELU<f32> {
         // During lookup, we basically scale down back to the original
         // float value, apply GELU and multiply by 128 which is right now the output maximum range.
         let multiplier = (GELU_SCALE_FACTOR as f32 * input_scaling.scale()).round() as Element;
+        println!("GELU SCALE FACTOR: {}", input_scaling.scale());
+        println!("GELU SCALE: {multiplier}");
         let table_min = -2i32.pow(7 + ceil_log2(multiplier as usize) as u32);
         let table_max = 2i32.pow(7 + ceil_log2(multiplier as usize) as u32);
         let table_size = table_max - table_min;
