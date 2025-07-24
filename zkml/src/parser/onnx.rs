@@ -446,7 +446,7 @@ fn load_gemm<'a, I: Iterator<Item = &'a usize> + Sized>(
     }
     ensure_onnx!(
         weight.is_matrix(),
-        "Weight for Gemm must be a matrix: {:?}",
+        "Weight for Gemm must be a matrix 2: {:?}",
         weight.get_shape()
     );
 

@@ -3,11 +3,10 @@
 use anyhow::{Result, anyhow};
 use ff_ext::ExtensionField;
 use mpcs::PolynomialCommitmentScheme;
-use multilinear_extensions::mle::DenseMultilinearExtension;
 use serde::{Serialize, de::DeserializeOwned};
 use transcript::Transcript;
 
-use crate::iop::ChallengeStorage;
+use crate::{iop::ChallengeStorage, lookup::context::ProverCommitment};
 
 use super::{
     context::TableType,
@@ -19,14 +18,14 @@ use super::{
 pub enum LogUpWitness<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> {
     /// Lookup variant can have multiple instances in one [`LogUpInput::Lookup`], `columns_per_instance` is used to work out how many batches we need to prove.
     Lookup {
-        commits: Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
+        commits: Vec<ProverCommitment<PCS, E>>,
         column_evals: Vec<Vec<E::BaseField>>,
         columns_per_instance: usize,
         table_type: TableType,
     },
     /// Input for a Table proof.
     Table {
-        multiplicity_commit: (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>),
+        multiplicity_commit: ProverCommitment<PCS, E>,
         multiplicity_evals: Vec<E::BaseField>,
         column_evals: Vec<Vec<E::BaseField>>,
         table_type: TableType,
@@ -42,7 +41,7 @@ where
 {
     /// Creates a new lookup witness
     pub fn new_lookup(
-        commits: Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
+        commits: Vec<ProverCommitment<PCS, E>>,
         column_evals: Vec<Vec<E::BaseField>>,
         columns_per_instance: usize,
         table_type: TableType,
@@ -57,7 +56,7 @@ where
 
     /// Creates a new table witness
     pub fn new_table(
-        multiplicity_commit: (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>),
+        multiplicity_commit: ProverCommitment<PCS, E>,
         multiplicity_evals: Vec<E::BaseField>,
         column_evals: Vec<Vec<E::BaseField>>,
         table_type: TableType,
@@ -145,9 +144,7 @@ where
     }
 
     /// Retrieves commitments from the witness.
-    pub fn get_commitments(
-        &self,
-    ) -> Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)> {
+    pub fn get_commitments(&self) -> Vec<ProverCommitment<PCS, E>> {
         match self {
             LogUpWitness::Lookup { commits, .. } => commits.to_vec(),
             LogUpWitness::Table {

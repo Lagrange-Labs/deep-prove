@@ -4,7 +4,7 @@ use crate::{
     NextPowerOfTwo, ScalingFactor,
     quantization::{self, MAX_FLOAT, MIN_FLOAT},
 };
-use anyhow::{bail, ensure};
+use anyhow::{Result, anyhow, bail, ensure};
 use ark_std::rand::Rng;
 use ff_ext::{ExtensionField, GoldilocksExt2};
 use itertools::Itertools;
@@ -735,6 +735,11 @@ impl<T> Tensor<T> {
     pub fn get_shape(&self) -> Shape {
         assert!(!self.is_empty(), "Empty tensor");
         self.shape.clone()
+    }
+
+    /// Returns the number of dimensions the [`Tensor`] has
+    pub fn rank(&self) -> usize {
+        self.shape.len()
     }
 
     /// Get the input shape of the tensor
@@ -1794,6 +1799,72 @@ impl<T: Default + Clone + Copy> Tensor<T> {
             og_shape: self.shape.clone(),
         }
     }
+
+    /// Expands a [`Tensor`] to the provided shape. In order for the expansion to be valid we require that
+    /// all dimensions in the provided shape are greater than or equal to the original shape. Additionally in all cases where
+    /// the provided shape dimension is larger we require the original shape dimension to be 1.
+    pub fn expand(&self, expansion_shape: &Shape) -> Result<Tensor<T>>
+    where
+        T: Clone,
+    {
+        // Check that the expanded shape has rank greater than or equal to self.shape and also that all dimensions are compatible
+        let expansion_rank = expansion_shape.rank();
+        if expansion_rank < self.rank() {
+            return Err(anyhow!(
+                "Cannot Expand to shape: {:?} as it has rank: {expansion_rank} which is smaller than the current rank: {}",
+                expansion_shape,
+                self.rank()
+            ));
+        }
+
+        let rank_diff = expansion_rank - self.rank();
+        let padded_shape = std::iter::repeat_n(1usize, rank_diff)
+            .chain(self.shape.iter().copied())
+            .collect::<Vec<usize>>();
+        expansion_shape.iter().zip(padded_shape.iter()).try_for_each(|(&new_dim, &dim)|{
+            // Check new_dim isn't zero 
+            if new_dim == 0 {
+                Err(anyhow!("Cannot expand to new shape, new shape dim: {new_dim} was zero"))
+            } else if dim != 1 {
+                // In this case we need both to be equal
+                if dim != new_dim {
+                    Err(anyhow!("Cannot expand to new shape, new shape dim: {new_dim} was not equal to current dim: {dim}"))
+                } else {
+                    Ok(())
+                }
+            } else {
+                Ok(())
+            }
+        })?;
+
+        // Now that we know everything checks out we expand appropriately
+        let new_data = expansion_shape
+            .iter()
+            .zip(padded_shape.iter())
+            .rev()
+            .fold(
+                (self.data.clone(), 1usize),
+                |(data_acc, chunk_size), (&exp_dim, &current_dim)| {
+                    if current_dim == exp_dim {
+                        // Nothing to do in this case just update chunk_size
+                        (data_acc, chunk_size * exp_dim)
+                    } else {
+                        // We should split the current data_acc into chunk_size pieces and then repeat each chunk exp_dim times
+                        (
+                            data_acc
+                                .chunks(chunk_size)
+                                .flat_map(|chunk| vec![chunk; exp_dim].concat())
+                                .collect::<Vec<T>>(),
+                            chunk_size * exp_dim,
+                        )
+                    }
+                },
+            )
+            .0;
+
+        // Now that we have the expanded data make the tensor
+        Ok(Tensor::<T>::new(expansion_shape.clone(), new_data))
+    }
 }
 
 impl<T: Number> Tensor<T> {
@@ -2190,6 +2261,91 @@ pub fn is_close_with_tolerance(a: &[f32], b: &[f32], atol: f32, rtol: f32) -> bo
 /// (`atol = 1e-8`, `rtol = 1e-5`).
 pub fn is_close(a: &[f32], b: &[f32]) -> bool {
     is_close_with_tolerance(a, b, 1e-8_f32, 1e-5_f32)
+}
+/// Function used to get the broadcasted shape of two [Tensors][`Tensor`].
+/// To be able to broadcast two [Tensors][`Tensor`] the shapes must be compatible in each dimension, this means either:
+///     1) The two dimensions are equal
+///     2) One of the dimensions is 1
+/// If one [`Tensor`] has fewer dimensions than the other we can prepend its [`Shape`] with `1`s. For example if we have shapes
+/// `[5, 7, 2]` and `[7, 1]` then let us write `[x, y, z]` for the currently unknown broadcasted shape, the broadcasting process works as follows:
+///     1) Prepend `1` to the second [`Shape`] so that we have `[5, 7, 2]` and `[1, 7, 1]`
+///     2) Compare the two shape arrays from back to front and apply our rules above:
+///         i) `2` and `1` are not equal, but one of them is `1` so we set the final dim (`z`) in the broadcasted shape to `2` giving us `[x, y, 2]`
+///         ii) Here both dims are `7` so because they are equal the broadcasted shape at `7` will also be `7` giving us `[x, 7, 2]`
+///         iii) Finally we have `5` and `1`, since one of the dims is `1` we take the larger of the two giving `x = 5`
+/// This gives us a final broadcasted shape of `[5, 7, 2]`.
+///
+/// As another example if we have a [`Tensor`] `A` with shape `[4, 1]` and values `[1, 2, 3, 4]` and we have another [`Tensor`] `B` with shape `[3]` and values `[10, 11, 12]`
+/// then brodcasting them to the same shape results in:
+/// ```ignore
+///       A:  [1, 1, 1,       B:  [10, 11, 12
+///            2, 2, 2,            10, 11, 12
+///            3, 3, 3,            10, 11, 12
+///            4, 4, 4]            10, 11, 12]
+/// ```
+pub fn get_broadcasted_shape(shape_a: &Shape, shape_b: &Shape) -> anyhow::Result<Shape> {
+    // Compare the length of both inputs and match on the result
+    let rank_a = shape_a.len();
+    let rank_b = shape_b.len();
+
+    let compatibility = |a: usize, b: usize, index: usize| -> anyhow::Result<usize> {
+        match (a, b) {
+            // One of a or b is 1 so we return the value that is not 1
+            (1, dim) | (dim, 1) => Ok(dim),
+            // Both dims are the same so we return that value
+            (dim_a, dim_b) if dim_a == dim_b => Ok(dim_a),
+            // Any other case returns an error
+            _ => Err(anyhow::anyhow!(
+                "Cannot broadcast shapes as dimensions (a:{a}, b:{b}) were incompatible at index: {index}"
+            )),
+        }
+    };
+
+    match rank_a.cmp(&rank_b) {
+        Ordering::Less => {
+            // shape_a is shorter so we work out the difference and prepend with that many 1s
+            let diff = rank_b - rank_a;
+
+            let padded_shape_a = std::iter::repeat_n(1usize, diff)
+                .chain(shape_a.iter().copied())
+                .collect::<Vec<usize>>();
+
+            // Now we iterate over both choosing the maximum each time
+            shape_b
+                .iter()
+                .zip(padded_shape_a.iter())
+                .enumerate()
+                .map(|(index, (&b_dim, &a_dim))| compatibility(a_dim, b_dim, index))
+                .collect::<Result<Vec<usize>, anyhow::Error>>()
+                .map(Shape::from)
+        }
+        Ordering::Equal => {
+            // The ranks are equal so we just iterate over both choosing the max each time
+            shape_b
+                .iter()
+                .zip(shape_a.iter())
+                .enumerate()
+                .map(|(index, (&b_dim, &a_dim))| compatibility(a_dim, b_dim, index))
+                .collect::<Result<Vec<usize>, anyhow::Error>>()
+                .map(Shape::from)
+        }
+        Ordering::Greater => {
+            // shape_a has larger rank so we prepend 1s to shape b
+            let diff = rank_a - rank_b;
+
+            let padded_shape_b = std::iter::repeat_n(1usize, diff)
+                .chain(shape_b.iter().copied())
+                .collect::<Vec<usize>>();
+            // Now we iterate over both choosing the maximum each time
+            shape_a
+                .iter()
+                .zip(padded_shape_b.iter())
+                .enumerate()
+                .map(|(index, (&a_dim, &b_dim))| compatibility(a_dim, b_dim, index))
+                .collect::<Result<Vec<usize>, anyhow::Error>>()
+                .map(Shape::from)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3050,5 +3206,66 @@ mod test {
         let tensor = Tensor::<Element>::tril(4, 1, -1);
         let real_value: Vec<Element> = vec![0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0];
         assert_eq!(tensor.get_data(), real_value);
+    }
+
+    #[test]
+    fn test_expand() {
+        let mut rng = rng_from_env_or_random();
+
+        for _ in 0..10 {
+            let dim = rng.gen_range(1usize..11);
+            let initial_shape: Shape = vec![dim].into();
+
+            let tensor = Tensor::<f32>::random(&initial_shape);
+            let data = tensor.get_data().to_vec();
+            let expanded_shape: Shape = vec![7, dim].into();
+
+            let expanded_tensor_res = tensor.expand(&expanded_shape);
+
+            // Check the result is OK
+            assert!(
+                expanded_tensor_res.is_ok(),
+                "error: {:?}",
+                expanded_tensor_res
+            );
+
+            // Now check that the data is correct
+            let expanded_tensor = expanded_tensor_res.unwrap();
+            // We expect the tensor to have repeated each element 7 times
+            let correct_data = vec![data; 7].concat();
+
+            assert_eq!(expanded_tensor.data, correct_data);
+        }
+
+        // Now we check it expands along dimensions properly
+        let shape: Shape = vec![3, 1, 2].into();
+        #[rustfmt::skip]
+        let data = vec![
+            1.0, 2.0,
+
+            3.0, 4.0, 
+                                  
+            5.0, 6.0];
+
+        let expansion_shape: Shape = vec![3, 3, 2].into();
+        #[rustfmt::skip]
+        let expansion_data = vec![
+            1.0, 2.0, 
+            1.0, 2.0, 
+            1.0, 2.0, 
+            
+            3.0, 4.0, 
+            3.0, 4.0, 
+            3.0, 4.0, 
+            
+            5.0, 6.0, 
+            5.0, 6.0, 
+            5.0, 6.0,
+        ];
+
+        let expanded_tensor = Tensor::<f64>::new(shape, data.clone())
+            .expand(&expansion_shape)
+            .unwrap();
+        assert_eq!(expanded_tensor.data, expansion_data);
     }
 }

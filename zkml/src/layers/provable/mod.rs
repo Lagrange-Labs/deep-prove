@@ -23,8 +23,12 @@ use crate::{
 };
 
 use super::{
-    Layer, LayerCtx, LayerProof, convolution::ConvCtx, dense::DenseCtx, flatten::Flatten,
-    requant::Requant, transformer::softmax::SoftmaxData,
+    Layer, LayerCtx, LayerProof,
+    convolution::ConvCtx,
+    dense::DenseCtx,
+    flatten::Flatten,
+    requant::Requant,
+    transformer::{layernorm::LayerNormData, softmax::SoftmaxData},
 };
 
 pub(crate) type NodeId = usize;
@@ -128,11 +132,13 @@ impl<N: Number> Node<N> {
 pub enum ProvingData<E: ExtensionField> {
     /// Variant for extra data used in proving that we compute during evalaution of quantised convolution.
     Convolution(ConvData<E>),
-    /// Variant for extra data used to prove [`Softmax`] that we compute anyway during quantised evaluation.
+    /// Variant for extra data used to prove [Softmax][`crate::layers::transformer::softmax::Softmax`] that we compute anyway during quantised evaluation.
     Softmax(SoftmaxData<E>),
     /// Variant for extra data used to prove Mha layer, computed during quantised evaluation
     Mha(MhaData<E>),
-    /// Variant for extra data used to prove Argmax in Logits layer, computed during quantised evaluation
+    /// Variant used for extra data used to prove [LayerNorm][`crate::layers::transformer::layernorm::LayerNorm`]
+    LayerNorm(LayerNormData),
+    /// Varient used for extra data used to prove [ArgMax][`crate::layers::transformer::logits::Logits`]
     ArgMax(ArgmaxData<E>),
     /// Variant used when no extra data is returned.
     None,
@@ -192,6 +198,13 @@ impl<T, E: ExtensionField> LayerOut<T, E> {
     pub fn try_argmax_data(&self) -> Option<&ArgmaxData<E>> {
         match self.proving_data {
             ProvingData::ArgMax(ref argmax_data) => Some(argmax_data),
+            _ => None,
+        }
+    }
+
+    pub fn try_layernorm_data(&self) -> Option<&LayerNormData> {
+        match self.proving_data {
+            ProvingData::LayerNorm(ref layernorm_data) => Some(layernorm_data),
             _ => None,
         }
     }
@@ -631,9 +644,9 @@ where
             LayerCtx::QKV(qkv_ctx) => qkv_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Mha(mha_ctx) => mha_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::ConcatMatMul(ctx) => ctx.output_shapes(input_shapes, padding_mode),
-            LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Positional(ctx) => ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Add(ctx) => ctx.output_shapes(input_shapes, padding_mode),
+            LayerCtx::LayerNorm(ctx) => ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Softmax(softmax_ctx) => softmax_ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Logits(ctx) => ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Embeddings(ctx) => ctx.output_shapes(input_shapes, padding_mode),
@@ -658,9 +671,9 @@ where
             LayerCtx::QKV(qkv_ctx) => qkv_ctx.num_outputs(num_inputs),
             LayerCtx::Mha(mha_ctx) => mha_ctx.num_outputs(num_inputs),
             LayerCtx::ConcatMatMul(ctx) => ctx.num_outputs(num_inputs),
-            LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Positional(ctx) => ctx.num_outputs(num_inputs),
             LayerCtx::Add(ctx) => ctx.num_outputs(num_inputs),
+            LayerCtx::LayerNorm(ctx) => ctx.num_outputs(num_inputs),
             LayerCtx::Softmax(softmax_ctx) => softmax_ctx.num_outputs(num_inputs),
             LayerCtx::Logits(ctx) => ctx.num_outputs(num_inputs),
             LayerCtx::Embeddings(ctx) => ctx.num_outputs(num_inputs),
@@ -681,9 +694,9 @@ where
             LayerCtx::QKV(qkv_ctx) => qkv_ctx.describe(),
             LayerCtx::Mha(mha_ctx) => mha_ctx.describe(),
             LayerCtx::ConcatMatMul(ctx) => ctx.describe(),
-            LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Add(ctx) => ctx.describe(),
             LayerCtx::Positional(ctx) => ctx.describe(),
+            LayerCtx::LayerNorm(ctx) => ctx.describe(),
             LayerCtx::Softmax(softmax_ctx) => softmax_ctx.describe(),
             LayerCtx::Logits(ctx) => ctx.describe(),
             LayerCtx::Embeddings(ctx) => ctx.describe(),
@@ -705,9 +718,9 @@ where
             LayerCtx::Mha(mha_ctx) => mha_ctx.is_provable(),
             LayerCtx::ConcatMatMul(ctx) => ctx.is_provable(),
             LayerCtx::Activation(activation_ctx) => activation_ctx.is_provable(),
-            LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Positional(ctx) => ctx.is_provable(),
             LayerCtx::Add(ctx) => ctx.is_provable(),
+            LayerCtx::LayerNorm(ctx) => ctx.is_provable(),
             LayerCtx::Softmax(softmax_ctx) => softmax_ctx.is_provable(),
             LayerCtx::Logits(ctx) => ctx.is_provable(),
             LayerCtx::Embeddings(ctx) => ctx.is_provable(),
@@ -780,8 +793,8 @@ where
             (LayerCtx::Activation(activation_ctx), LayerProof::Activation(proof)) => {
                 activation_ctx.verify(proof, last_claims, verifier, shape_step)
             }
-            (LayerCtx::LayerNorm, LayerProof::LayerNorm) => {
-                unimplemented!("LayerNorm layer not implemented")
+            (LayerCtx::LayerNorm(layernorm_ctx), LayerProof::LayerNorm(proof)) => {
+                layernorm_ctx.verify(proof, last_claims, verifier, shape_step)
             }
             (LayerCtx::Requant(requant_ctx), LayerProof::Requant(proof)) => {
                 requant_ctx.verify(proof, last_claims, verifier, shape_step)
@@ -841,7 +854,9 @@ where
             LayerCtx::ConcatMatMul(concat_mat_mul_ctx) => {
                 compute_model_output_claims::<_, PCS, _, _>(concat_mat_mul_ctx, transcript, outputs)
             }
-            LayerCtx::LayerNorm => unimplemented!(),
+            LayerCtx::LayerNorm(layernorm_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(layernorm_ctx, transcript, outputs)
+            }
             LayerCtx::Flatten => compute_model_output_claims::<_, PCS, _, _>(
                 &NonProvableVerifierCtx(&Flatten),
                 transcript,
@@ -893,7 +908,7 @@ where
             LayerCtx::Activation(activation_ctx) => {
                 verify_input_claim::<E, PCS, _, A>(activation_ctx, inputs, claims)
             }
-            LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
+            LayerCtx::LayerNorm(ctx) => verify_input_claim::<E, PCS, _, _>(ctx, inputs, claims),
             LayerCtx::Softmax(ctx) => verify_input_claim::<E, PCS, _, _>(ctx, inputs, claims),
             LayerCtx::Logits(ctx) => verify_input_claim::<E, PCS, _, _>(ctx, inputs, claims),
             LayerCtx::Embeddings(ctx) => verify_input_claim::<E, PCS, _, _>(ctx, inputs, claims),

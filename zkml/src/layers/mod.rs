@@ -43,7 +43,7 @@ use crate::{
         reshape::{Reshape, ReshapeCtx},
         transformer::{
             embeddings::{Embeddings, EmbeddingsCtx, EmbeddingsProof},
-            layernorm::LayerNorm,
+            layernorm::{LayerNorm, LayerNormCtx, LayerNormProof},
             logits::{Logits, LogitsCtx, LogitsProof},
             mha::{Mha, MhaCtx, MhaProof},
             positional::{Positional, PositionalCtx, PositionalProof},
@@ -113,7 +113,7 @@ where
     QKV(QKVCtx<E>),
     Mha(MhaCtx<E>),
     ConcatMatMul(ConcatMatMulCtx<E>),
-    LayerNorm,
+    LayerNorm(LayerNormCtx),
     Flatten,
     Add(AddCtx),
     Softmax(SoftmaxCtx),
@@ -140,8 +140,8 @@ where
     QKV(QKVProof<E>),
     Mha(MhaProof<E, PCS>),
     ConcatMatMul(ConcatMatMulProof<E>),
-    LayerNorm,
     Add(AddProof<E>),
+    LayerNorm(LayerNormProof<E, PCS>),
     Softmax(SoftmaxProof<E, PCS>),
     Embeddings(EmbeddingsProof<E>),
     Logits(LogitsProof<E, PCS>),
@@ -187,7 +187,7 @@ where
             Self::QKV(_) => "QKV".to_string(),
             Self::Mha(_) => "MHA".to_string(),
             Self::ConcatMatMul(_) => "ConcatMatMul".to_string(),
-            Self::LayerNorm => "LayerNorm".to_string(),
+            Self::LayerNorm(_) => "LayerNorm".to_string(),
             Self::Softmax(_) => "Softmax".to_string(),
             Self::Add(_) => "Add".to_string(),
             Self::Logits(_) => "Logits".to_string(),
@@ -466,10 +466,8 @@ where
             Layer::QKV(qkv) => qkv.step_info(id, aux),
             Layer::Mha(mha) => mha.step_info(id, aux),
             Layer::ConcatMatMul(concat_matmul) => concat_matmul.step_info(id, aux),
-            Layer::LayerNorm(_layernorm) => {
-                unimplemented!("LayerNorm proving layer not implemented")
-            }
             Layer::Add(add) => add.step_info(id, aux),
+            Layer::LayerNorm(layernorm) => layernorm.step_info(id, aux),
             Layer::Softmax(softmax) => softmax.step_info(id, aux),
             Layer::Logits(logits) => logits.step_info(id, aux),
             Layer::Positional(positional) => positional.step_info(id, aux),
@@ -497,8 +495,8 @@ impl PadOp for Layer<Element> {
             Layer::QKV(qkv) => Layer::QKV(qkv.pad_node(si)?),
             Layer::Mha(mha) => Layer::Mha(mha.pad_node(si)?),
             Layer::ConcatMatMul(concat_matmul) => Layer::ConcatMatMul(concat_matmul.pad_node(si)?),
-            Layer::LayerNorm(_layernorm) => unimplemented!("LayerNorm layer not implemented"),
             Layer::Add(add) => Layer::Add(add.pad_node(si)?),
+            Layer::LayerNorm(layernorm) => Layer::LayerNorm(layernorm.pad_node(si)?),
             Layer::Softmax(softmax) => Layer::Softmax(softmax.pad_node(si)?),
             Layer::Logits(logits) => Layer::Logits(logits.pad_node(si)?),
             Layer::Positional(positional) => Layer::Positional(positional.pad_node(si)?),
@@ -581,6 +579,10 @@ where
             (Layer::Softmax(softmax), LayerCtx::Softmax(info)) => {
                 softmax.prove(node_id, info, last_claims, step_data, prover)
             }
+            (Layer::LayerNorm(layernorm), LayerCtx::LayerNorm(info)) => {
+                layernorm.prove(node_id, info, last_claims, step_data, prover)
+            }
+
             _ => bail!(
                 "Incompatible layer {} and ctx {} found for node id {}",
                 self.describe(),
@@ -605,10 +607,10 @@ where
             Layer::ConcatMatMul(concat_matmul) => {
                 concat_matmul.gen_lookup_witness(id, ctx, step_data)
             }
-            Layer::LayerNorm(_layernorm) => unimplemented!("LayerNorm layer not implemented"),
             Layer::Add(add) => add.gen_lookup_witness(id, ctx, step_data),
             Layer::Softmax(softmax) => softmax.gen_lookup_witness(id, ctx, step_data),
             Layer::Logits(logits) => logits.gen_lookup_witness(id, ctx, step_data),
+            Layer::LayerNorm(layernorm) => layernorm.gen_lookup_witness(id, ctx, step_data),
             Layer::Positional(positional) => positional.gen_lookup_witness(id, ctx, step_data),
             Layer::Embeddings(embeddings) => embeddings.gen_lookup_witness(id, ctx, step_data),
             Layer::SchoolBookConvolution(school_book_conv) => {
@@ -760,7 +762,7 @@ where
             Self::QKV(_) => "QKV".to_string(),
             Self::Mha(_) => "MHA".to_string(),
             Self::ConcatMatMul(..) => "ConcatMatMul".to_string(),
-            Self::LayerNorm => "LayerNorm".to_string(),
+            Self::LayerNorm(_) => "LayerNorm".to_string(),
             Self::Softmax(_) => "Softmax".to_string(),
             Self::Logits(_) => "Logits".to_string(),
             Self::Positional(_) => "Positional".to_string(),
@@ -781,8 +783,8 @@ where
             LayerProof::QKV(..) => None,
             LayerProof::Mha(proof) => Some(proof.get_lookup_data()),
             LayerProof::ConcatMatMul(..) => None,
-            LayerProof::LayerNorm => None,
             LayerProof::Add(_) => None,
+            LayerProof::LayerNorm(proof) => Some(proof.get_lookup_data()),
             LayerProof::Softmax(proof) => Some(proof.get_lookup_data()),
             LayerProof::Logits(proof) => Some(proof.get_lookup_data()),
             LayerProof::Positional(_) => None,
