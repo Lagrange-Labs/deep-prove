@@ -39,7 +39,7 @@ use super::provable::{
 };
 
 use anyhow::{Result, anyhow, bail, ensure};
-const GELU_SCALE_EXP: usize = 14;
+const GELU_SCALE_EXP: usize = 12;
 const GELU_SCALE_FACTOR: usize = 1 << GELU_SCALE_EXP;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

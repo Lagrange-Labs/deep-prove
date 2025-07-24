@@ -437,8 +437,8 @@ mod test {
     fn test_llm_driver_prove() -> anyhow::Result<()> {
         init_test_logging("debug");
         let max_context = 10;
-        // let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
-        let model_path = "assets/scripts/llms/toy_gpt2.gguf";
+        let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
+        // let model_path = "assets/scripts/llms/toy_gpt2.gguf";
         let driver = Driver::load_external_model(&model_path)?.with_max_context(max_context);
         let sentence = "The sky is";
         let tokenizer = TokenizerData::load_tokenizer_from_gguf(&model_path)?;
@@ -463,9 +463,9 @@ mod test {
     fn test_llm_driver_inference() -> anyhow::Result<()> {
         init_test_logging("debug");
         // const PRUNED_GPT2: &str = "https://huggingface.co/PrunaAI/gpt2-GGUF-smashed/resolve/main/gpt2.Q2_K.gguf";
-        // const PRUNED_GPT2: &str = GPT2_Q8_0_URL;
-        // let model_path = file_cache::ensure_downloaded(PRUNED_GPT2)?;
-        let model_path = "assets/scripts/llms/toy_gpt2.gguf";
+        const PRUNED_GPT2: &str = GPT2_Q8_0_URL;
+        let model_path = file_cache::ensure_downloaded(PRUNED_GPT2)?;
+        // let model_path = "assets/scripts/llms/toy_gpt2.gguf";
         let driver = Driver::load_external_model(&model_path)?.with_max_context(6);
         let sentence = "The sky is";
 
