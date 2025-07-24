@@ -482,7 +482,7 @@ impl Requant {
     /// API for performing this op on a quantised tensor.
     pub fn op(&self, input: &Tensor<Element>) -> Result<Tensor<Element>> {
         // We use this value to determine if any of the inputs are too large to be requantised (i.e. they fall outside the clamping table)
-        let max_abs_val: Element = 1 << (self.intermediate_bit_size - 1);
+        let max_abs_val: Element = 1 << self.intermediate_bit_size;
         let res = input
             .get_data()
             .iter().enumerate()
