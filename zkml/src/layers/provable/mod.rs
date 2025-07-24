@@ -10,12 +10,12 @@ use std::{
 use transcript::Transcript;
 
 use crate::{
-    Claim, Context, Element, Prover, ScalingFactor, ScalingStrategy, Tensor,
+    Claim, Context, Element, Prover, ScalingFactor, ScalingStrategy, Tensor, VectorTranscript,
     iop::{
         context::{ContextAux, ShapeStep},
         verifier::Verifier,
     },
-    layers::transformer::mha::MhaData,
+    layers::transformer::{logits::ArgmaxData, mha::MhaData},
     lookup::context::LookupWitnessGen,
     model::trace::StepData,
     padding::{PaddingMode, ShapeInfo},
@@ -132,6 +132,8 @@ pub enum ProvingData<E: ExtensionField> {
     Softmax(SoftmaxData<E>),
     /// Variant for extra data used to prove Mha layer, computed during quantised evaluation
     Mha(MhaData<E>),
+    /// Variant for extra data used to prove Argmax in Logits layer, computed during quantised evaluation
+    ArgMax(ArgmaxData<E>),
     /// Variant used when no extra data is returned.
     None,
 }
@@ -183,6 +185,13 @@ impl<T, E: ExtensionField> LayerOut<T, E> {
     pub fn try_mha_data(&self) -> Option<&MhaData<E>> {
         match self.proving_data {
             ProvingData::Mha(ref mha_data) => Some(mha_data),
+            _ => None,
+        }
+    }
+
+    pub fn try_argmax_data(&self) -> Option<&ArgmaxData<E>> {
+        match self.proving_data {
+            ProvingData::ArgMax(ref argmax_data) => Some(argmax_data),
             _ => None,
         }
     }
@@ -283,6 +292,42 @@ where
             "Not all input claims were found"
         );
         Ok(claims)
+    }
+
+    pub(crate) fn bind_outputs_to_node<'a, I: Iterator<Item = (NodeId, &'a Self)>>(
+        nodes: I,
+        num_outputs: usize,
+    ) -> anyhow::Result<HashMap<NodeId, Vec<usize>>> {
+        let mut out_nodes = HashMap::new();
+        let mut outputs = BTreeSet::new(); // set employed to check that we found all outputs
+        for (node_id, ctx) in nodes {
+            for out in ctx.outputs.iter() {
+                let out_indexes = out
+                    .edges
+                    .iter()
+                    .filter(|edge| edge.node.is_none())
+                    .map(|edge| {
+                        ensure!(
+                            outputs.insert(edge.index),
+                            "Output index {} found twice in the nodes of the model",
+                            edge.index
+                        );
+                        Ok(edge.index)
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                if !out_indexes.is_empty() {
+                    out_nodes.insert(node_id, out_indexes);
+                }
+            }
+            if outputs.len() == num_outputs {
+                // we already found all the outputs, so we can stop here
+                break;
+            }
+        }
+
+        ensure!(outputs.len() == num_outputs);
+
+        Ok(out_nodes)
     }
 }
 
@@ -452,6 +497,30 @@ where
         shape_step: &ShapeStep,
     ) -> Result<Vec<Claim<E>>>;
 
+    fn compute_model_output_claims<T: Transcript<E>>(
+        &self,
+        transcript: &mut T,
+        outputs: &[&Tensor<E>],
+    ) -> Vec<Claim<E>> {
+        outputs
+            .iter()
+            .map(|out| {
+                // Derive the first randomness
+                let first_randomness =
+                    transcript.read_challenges(out.get_data().len().ilog2() as usize);
+                // For the output, we manually evaluate the MLE and check if it's the same as what prover
+                // gave. Note prover could ellude that but it's simpler to avoid that special check right
+                // now.
+                let output_mle = out.get_data().to_vec().into_mle();
+                let computed_sum = output_mle.evaluate(&first_randomness);
+
+                Claim {
+                    point: first_randomness,
+                    eval: computed_sum,
+                }
+            })
+            .collect()
+    }
     /// Verify the claim about the input of the model. Sometimes
     /// the input needs to be processed in a certain way before being evaluated.
     /// For example, Embeddings use one hot encoding of the input before
@@ -492,6 +561,19 @@ where
     A: AsRef<Tensor<E>>,
 {
     <V as VerifiableCtx<E, PCS>>::verify_input_claim(ctx, inputs, claims)
+}
+
+pub(crate) fn compute_model_output_claims<
+    E: ExtensionField,
+    PCS: PolynomialCommitmentScheme<E>,
+    T: Transcript<E>,
+    V: VerifiableCtx<E, PCS>,
+>(
+    ctx: &V,
+    transcript: &mut T,
+    outputs: &[&Tensor<E>],
+) -> Vec<Claim<E>> {
+    <V as VerifiableCtx<E, PCS>>::compute_model_output_claims(ctx, transcript, outputs)
 }
 
 #[derive(Clone, Debug)]
@@ -553,7 +635,7 @@ where
             LayerCtx::Positional(ctx) => ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Add(ctx) => ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Softmax(softmax_ctx) => softmax_ctx.output_shapes(input_shapes, padding_mode),
-            LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
+            LayerCtx::Logits(ctx) => ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Embeddings(ctx) => ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Reshape(ctx) => ctx.output_shapes(input_shapes, padding_mode),
             LayerCtx::Activation(activation_ctx) => {
@@ -580,7 +662,7 @@ where
             LayerCtx::Positional(ctx) => ctx.num_outputs(num_inputs),
             LayerCtx::Add(ctx) => ctx.num_outputs(num_inputs),
             LayerCtx::Softmax(softmax_ctx) => softmax_ctx.num_outputs(num_inputs),
-            LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
+            LayerCtx::Logits(ctx) => ctx.num_outputs(num_inputs),
             LayerCtx::Embeddings(ctx) => ctx.num_outputs(num_inputs),
             LayerCtx::Reshape(ctx) => ctx.num_outputs(num_inputs),
             LayerCtx::Activation(activation_ctx) => activation_ctx.num_outputs(num_inputs),
@@ -603,7 +685,7 @@ where
             LayerCtx::Add(ctx) => ctx.describe(),
             LayerCtx::Positional(ctx) => ctx.describe(),
             LayerCtx::Softmax(softmax_ctx) => softmax_ctx.describe(),
-            LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
+            LayerCtx::Logits(ctx) => ctx.describe(),
             LayerCtx::Embeddings(ctx) => ctx.describe(),
             LayerCtx::Reshape(ctx) => ctx.describe(),
             LayerCtx::Activation(activation_ctx) => activation_ctx.describe(),
@@ -627,7 +709,7 @@ where
             LayerCtx::Positional(ctx) => ctx.is_provable(),
             LayerCtx::Add(ctx) => ctx.is_provable(),
             LayerCtx::Softmax(softmax_ctx) => softmax_ctx.is_provable(),
-            LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
+            LayerCtx::Logits(ctx) => ctx.is_provable(),
             LayerCtx::Embeddings(ctx) => ctx.is_provable(),
             LayerCtx::Reshape(ctx) => ctx.is_provable(),
             LayerCtx::Requant(requant_ctx) => requant_ctx.is_provable(),
@@ -692,8 +774,8 @@ where
             (LayerCtx::Add(ctx), LayerProof::Add(proof)) => {
                 ctx.verify(proof, last_claims, verifier, shape_step)
             }
-            (LayerCtx::Logits, LayerProof::Logits) => {
-                unimplemented!("Logits layer not implemented")
+            (LayerCtx::Logits(ctx), LayerProof::Logits(proof)) => {
+                ctx.verify(proof, last_claims, verifier, shape_step)
             }
             (LayerCtx::Activation(activation_ctx), LayerProof::Activation(proof)) => {
                 activation_ctx.verify(proof, last_claims, verifier, shape_step)
@@ -724,6 +806,72 @@ where
         }
     }
 
+    fn compute_model_output_claims<T: Transcript<E>>(
+        &self,
+        transcript: &mut T,
+        outputs: &[&Tensor<E>],
+    ) -> Vec<Claim<E>> {
+        match self {
+            LayerCtx::Dense(dense_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(dense_ctx, transcript, outputs)
+            }
+            LayerCtx::MatMul(mat_mul_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(mat_mul_ctx, transcript, outputs)
+            }
+            LayerCtx::Convolution(conv_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(conv_ctx, transcript, outputs)
+            }
+            LayerCtx::SchoolBookConvolution(_) => unreachable!(),
+            LayerCtx::Activation(activation_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(activation_ctx, transcript, outputs)
+            }
+            LayerCtx::Requant(requant_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(requant_ctx, transcript, outputs)
+            }
+            LayerCtx::Pooling(pooling_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(pooling_ctx, transcript, outputs)
+            }
+            LayerCtx::Table(_) => unreachable!(),
+            LayerCtx::QKV(qkvctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(qkvctx, transcript, outputs)
+            }
+            LayerCtx::Mha(mha_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(mha_ctx, transcript, outputs)
+            }
+            LayerCtx::ConcatMatMul(concat_mat_mul_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(concat_mat_mul_ctx, transcript, outputs)
+            }
+            LayerCtx::LayerNorm => unimplemented!(),
+            LayerCtx::Flatten => compute_model_output_claims::<_, PCS, _, _>(
+                &NonProvableVerifierCtx(&Flatten),
+                transcript,
+                outputs,
+            ),
+            LayerCtx::Softmax(softmax_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(softmax_ctx, transcript, outputs)
+            }
+            LayerCtx::Add(ctx) => compute_model_output_claims::<_, PCS, _, _>(
+                &NonProvableVerifierCtx(ctx),
+                transcript,
+                outputs,
+            ),
+            LayerCtx::Reshape(reshape_ctx) => compute_model_output_claims::<_, PCS, _, _>(
+                &NonProvableVerifierCtx(reshape_ctx),
+                transcript,
+                outputs,
+            ),
+            LayerCtx::Embeddings(embeddings_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(embeddings_ctx, transcript, outputs)
+            }
+            LayerCtx::Positional(positional_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(positional_ctx, transcript, outputs)
+            }
+            LayerCtx::Logits(logits_ctx) => {
+                compute_model_output_claims::<_, PCS, _, _>(logits_ctx, transcript, outputs)
+            }
+        }
+    }
+
     fn verify_input_claim<A: AsRef<Tensor<E>>>(
         &self,
         inputs: &[A],
@@ -747,9 +895,9 @@ where
             }
             LayerCtx::LayerNorm => unimplemented!("LayerNorm layer not implemented"),
             LayerCtx::Softmax(ctx) => verify_input_claim::<E, PCS, _, _>(ctx, inputs, claims),
-            LayerCtx::Add(ctx) => verify_input_claim::<E, PCS, _, _>(ctx, inputs, claims),
-            LayerCtx::Logits => unimplemented!("Logits layer not implemented"),
+            LayerCtx::Logits(ctx) => verify_input_claim::<E, PCS, _, _>(ctx, inputs, claims),
             LayerCtx::Embeddings(ctx) => verify_input_claim::<E, PCS, _, _>(ctx, inputs, claims),
+            LayerCtx::Add(ctx) => verify_input_claim::<E, PCS, _, _>(ctx, inputs, claims),
             LayerCtx::Positional(ctx) => verify_input_claim::<E, PCS, _, _>(ctx, inputs, claims),
             LayerCtx::Reshape(ctx) => {
                 verify_input_claim::<E, PCS, _, _>(&NonProvableVerifierCtx(ctx), inputs, claims)

@@ -23,6 +23,8 @@ use transcript::Transcript;
 
 use super::{aggregated_rlc, compute_betas_eval};
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct Context<E: ExtensionField> {
     vp_info: VPAuxInfo<E>,
 }

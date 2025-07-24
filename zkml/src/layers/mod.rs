@@ -44,7 +44,7 @@ use crate::{
         transformer::{
             embeddings::{Embeddings, EmbeddingsCtx, EmbeddingsProof},
             layernorm::LayerNorm,
-            logits::Logits,
+            logits::{Logits, LogitsCtx, LogitsProof},
             mha::{Mha, MhaCtx, MhaProof},
             positional::{Positional, PositionalCtx, PositionalProof},
             qkv::{QKV, QKVCtx, QKVProof},
@@ -118,9 +118,9 @@ where
     Add(AddCtx),
     Softmax(SoftmaxCtx),
     Reshape(ReshapeCtx),
-    Positional(PositionalCtx),
     Embeddings(EmbeddingsCtx<E>),
-    Logits,
+    Positional(PositionalCtx),
+    Logits(LogitsCtx<E>),
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -143,9 +143,9 @@ where
     LayerNorm,
     Add(AddProof<E>),
     Softmax(SoftmaxProof<E, PCS>),
-    Positional(PositionalProof<E>),
     Embeddings(EmbeddingsProof<E>),
-    Logits,
+    Logits(LogitsProof<E, PCS>),
+    Positional(PositionalProof<E>),
     Dummy, // To be used for non-provable layers
 }
 
@@ -190,7 +190,7 @@ where
             Self::LayerNorm => "LayerNorm".to_string(),
             Self::Softmax(_) => "Softmax".to_string(),
             Self::Add(_) => "Add".to_string(),
-            Self::Logits => "Logits".to_string(),
+            Self::Logits(_) => "Logits".to_string(),
             Self::Reshape(_) => "Reshape".to_string(),
             Self::Positional(_) => "Positional".to_string(),
             Self::Embeddings(_) => "Embeddings".to_string(),
@@ -471,7 +471,7 @@ where
             }
             Layer::Add(add) => add.step_info(id, aux),
             Layer::Softmax(softmax) => softmax.step_info(id, aux),
-            Layer::Logits(_logits) => unimplemented!("Logits proving layer not implemented"),
+            Layer::Logits(logits) => logits.step_info(id, aux),
             Layer::Positional(positional) => positional.step_info(id, aux),
             Layer::Embeddings(embeddings) => embeddings.step_info(id, aux),
             Layer::Reshape(reshape) => reshape.step_info(id, aux),
@@ -500,7 +500,7 @@ impl PadOp for Layer<Element> {
             Layer::LayerNorm(_layernorm) => unimplemented!("LayerNorm layer not implemented"),
             Layer::Add(add) => Layer::Add(add.pad_node(si)?),
             Layer::Softmax(softmax) => Layer::Softmax(softmax.pad_node(si)?),
-            Layer::Logits(_logits) => unimplemented!("Logits layer not implemented"),
+            Layer::Logits(logits) => Layer::Logits(logits.pad_node(si)?),
             Layer::Positional(positional) => Layer::Positional(positional.pad_node(si)?),
             Layer::Embeddings(embeddings) => Layer::Embeddings(embeddings.pad_node(si)?),
             Layer::MatMul(mat) => Layer::MatMul(mat.pad_node(si)?),
@@ -560,8 +560,8 @@ where
             (Layer::Add(add), LayerCtx::Add(info)) => {
                 add.prove(node_id, info, last_claims, step_data, prover)
             }
-            (Layer::Logits(_logits), LayerCtx::Logits) => {
-                unimplemented!("Logits layer not implemented")
+            (Layer::Logits(logits), LayerCtx::Logits(info)) => {
+                logits.prove(node_id, info, last_claims, step_data, prover)
             }
             (Layer::SchoolBookConvolution(_), LayerCtx::SchoolBookConvolution(_)) => {
                 unreachable!("prove cannot be called for school book convolution")
@@ -608,7 +608,7 @@ where
             Layer::LayerNorm(_layernorm) => unimplemented!("LayerNorm layer not implemented"),
             Layer::Add(add) => add.gen_lookup_witness(id, ctx, step_data),
             Layer::Softmax(softmax) => softmax.gen_lookup_witness(id, ctx, step_data),
-            Layer::Logits(_logits) => unimplemented!("Logits layer not implemented"),
+            Layer::Logits(logits) => logits.gen_lookup_witness(id, ctx, step_data),
             Layer::Positional(positional) => positional.gen_lookup_witness(id, ctx, step_data),
             Layer::Embeddings(embeddings) => embeddings.gen_lookup_witness(id, ctx, step_data),
             Layer::SchoolBookConvolution(school_book_conv) => {
@@ -695,8 +695,10 @@ impl QuantizeOp for Layer<f32> {
                 QuantizeOutput::new(Layer::Add(output.quantized_op), output.output_scalings)
                     .maybe_requants(output.requant_layer)
             }
-            Layer::Logits(_logits) => {
-                unimplemented!("Logits layer not implemented")
+            Layer::Logits(logits) => {
+                let output = logits.quantize_op::<S>(data, node_id, input_scaling)?;
+                QuantizeOutput::new(Layer::Logits(output.quantized_op), output.output_scalings)
+                    .maybe_requants(output.requant_layer)
             }
             Layer::Positional(positional) => {
                 let output = positional.quantize_op::<S>(data, node_id, input_scaling)?;
@@ -760,9 +762,9 @@ where
             Self::ConcatMatMul(..) => "ConcatMatMul".to_string(),
             Self::LayerNorm => "LayerNorm".to_string(),
             Self::Softmax(_) => "Softmax".to_string(),
+            Self::Logits(_) => "Logits".to_string(),
             Self::Positional(_) => "Positional".to_string(),
             Self::Add(_) => "Add".to_string(),
-            Self::Logits => "Logits".to_string(),
             Self::Embeddings(_) => "Embeddings".to_string(),
             Self::Convolution(_) => "Convolution".to_string(),
             Self::Activation(_) => "Activation".to_string(),
@@ -782,7 +784,7 @@ where
             LayerProof::LayerNorm => None,
             LayerProof::Add(_) => None,
             LayerProof::Softmax(proof) => Some(proof.get_lookup_data()),
-            LayerProof::Logits => None,
+            LayerProof::Logits(proof) => Some(proof.get_lookup_data()),
             LayerProof::Positional(_) => None,
             LayerProof::Embeddings(..) => None,
             LayerProof::Convolution(..) => None,
