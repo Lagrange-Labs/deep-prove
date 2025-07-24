@@ -95,6 +95,8 @@ pub async fn run(args: crate::RunMode) -> anyhow::Result<()> {
         s3_timeout_secs,
         s3_access_key_id,
         s3_secret_access_key,
+        fs_cache,
+        fs_cache_dir,
     } = args
     else {
         unreachable!()
@@ -123,7 +125,13 @@ pub async fn run(args: crate::RunMode) -> anyhow::Result<()> {
             )
             .build()
             .context("AWS S3 builder")?;
-        StoreKind::S3(S3Store::from(s3))
+        let s3 = S3Store::from(s3);
+        let s3 = if fs_cache || fs_cache_dir.is_some() {
+            s3.with_fs_cache(fs_cache_dir)
+        } else {
+            s3
+        };
+        StoreKind::S3(s3)
     } else {
         warn!("Running with in-memory store. Specify S3 args to use S3 instead");
         StoreKind::Mem(MemStore::default())

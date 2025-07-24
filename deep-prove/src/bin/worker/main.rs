@@ -238,6 +238,12 @@ enum RunMode {
         s3_access_key_id: Option<String>,
         #[arg(env, requires = "s3_store")]
         s3_secret_access_key: Option<String>,
+        #[arg(long, env, requires = "s3_store")]
+        /// Enable local file-system cache for S3 data
+        fs_cache: bool,
+        /// Set the dir for local file-system cache for S3 data. If not set, defaults to `/var/cache`.
+        #[arg(long, env, requires = "s3_store")]
+        fs_cache_dir: Option<PathBuf>,
     },
     /// Prove inference on local files
     Local {
