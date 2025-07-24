@@ -257,7 +257,7 @@ where
         let range_check_bit_size = *quantization::BIT_LEN;
         let range_mask: Element = (1 << range_check_bit_size) - 1;
 
-        // We need to calculate how many cunks we are splitting into, there should never be any remainder from this division.
+        // We need to calculate how many chunks we are splitting into, there should never be any remainder from this division.
         let no_chunks = shift / range_check_bit_size;
 
         let shifted_chunks = (0..no_chunks)
@@ -482,7 +482,7 @@ impl Requant {
     /// API for performing this op on a quantised tensor.
     pub fn op(&self, input: &Tensor<Element>) -> Result<Tensor<Element>> {
         // We use this value to determine if any of the inputs are too large to be requantised (i.e. they fall outside the clamping table)
-        let max_abs_val: Element = 1 << (self.intermediate_bit_size - 1);
+        let max_abs_val: Element = 1 << self.intermediate_bit_size;
         let res = input
             .get_data()
             .iter().enumerate()

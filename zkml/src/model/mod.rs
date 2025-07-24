@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use ff_ext::{ExtensionField, GoldilocksExt2};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use trace::Trace;
@@ -456,7 +456,9 @@ impl<N: Number> Model<N> {
             let output_shapes = node
                 .operation
                 .output_shapes(&shapes, PaddingMode::NoPadding);
-            let output = node.run(inputs.as_slice(), shapes)?;
+            let output = node
+                .run(inputs.as_slice(), shapes)
+                .context(format!("Error occured at node ID: {node_id}"))?;
             // add output tensors to tracker, if any
             if let Some(tracker) = &mut tracker {
                 for (i, out) in output.outputs().into_iter().enumerate() {

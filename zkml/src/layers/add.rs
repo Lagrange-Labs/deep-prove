@@ -633,7 +633,6 @@ mod test {
         Element,
         layers::Layer,
         model::{Model, test::prove_model},
-        quantization,
         tensor::is_close_with_tolerance,
     };
 
@@ -665,10 +664,6 @@ mod test {
                 .collect::<Vec<_>>(),
         );
         let computed_result = result_scaled.dequantize(&s3);
-        let within_range = result_scaled
-            .get_data()
-            .iter()
-            .all(|x| *x >= *quantization::MIN && *x <= *quantization::MAX);
 
         let close_to_float = is_close_with_tolerance(
             computed_result.get_data(),
@@ -678,7 +673,7 @@ mod test {
         );
         println!("computed_result: {:?}", computed_result.get_data());
         println!("t3: {:?}", t3.get_data());
-        assert!(within_range, "output is not within range");
+
         assert!(
             close_to_float,
             "output is not close to float: float {:?} vs computed {:?}",

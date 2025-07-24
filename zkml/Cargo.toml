@@ -41,7 +41,7 @@ hex = { workspace = true }
 itertools.workspace = true
 mpcs = { workspace = true }
 multilinear_extensions = { version = "0.1.0", path = "../multilinear_extensions", features = [
-  "parallel",
+    "parallel",
 ] }
 p3-field = { workspace = true }
 p3-goldilocks = { workspace = true }
@@ -60,9 +60,9 @@ timed = { workspace = true }
 timed-core = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = [
-  "env-filter",
-  "fmt",
-  "json",
+    "env-filter",
+    "fmt",
+    "json",
 ] }
 tract-onnx = { workspace = true }
 transcript = { version = "0.1.0", path = "../transcript" }

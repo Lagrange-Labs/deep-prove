@@ -97,7 +97,7 @@ impl ScalingStrategy for InferenceObserver {
                 })
                 .collect()
         } else {
-            debug!("Using provided representative inputs");
+            info!("Using the {} provided representative inputs to quantize model", self.inputs.len());
             self.inputs.clone()
         };
         // 1. Run the inference multiple times with different inputs
@@ -115,10 +115,11 @@ impl ScalingStrategy for InferenceObserver {
                     input_tensor
                 })
                 .collect_vec();
+            debug!("Runnign float inference with {}-th input", nsamples);
             model.run_with_tracker::<GoldilocksExt2>(&input_tensors, Some(&mut tracker))?;
             nsamples += 1;
         }
-        info!("InferenceObserver: {} samples observed", nsamples);
+        info!("InferenceObserver: {} total samples observed", nsamples);
         // 2. get the scaling factor of the input
         let num_model_inputs = input_not_padded_shapes.len();
         let input_scaling = (0..num_model_inputs)
@@ -292,5 +293,6 @@ fn quantize_model<S: ScalingStrategy>(
     }
     let out_nodes = model.output_nodes();
     let md = md.build(out_nodes)?;
+    info!("Quantized model with {} layers", model.nodes.len());
     Ok((model, md))
 }

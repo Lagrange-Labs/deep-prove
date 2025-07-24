@@ -5,9 +5,7 @@
 //! the maximum context length is reached. It will also be used to prepend a system model correctly.
 
 use crate::{
-    Context, IO, Proof, Prover,
-    quantization::{InferenceObserver, ScalingStrategy},
-    verify,
+    padding::PaddingMode, quantization::{InferenceObserver, ScalingStrategy}, verify, Context, Proof, Prover, IO
 };
 use anyhow::{Context as CC, ensure};
 use ark_std::rand::{Rng, thread_rng};
@@ -57,6 +55,19 @@ where
     pub config: LLMConfig,
     pub max_context: Option<usize>,
 }
+
+impl<E,PCS> LLMContext<E,PCS>
+where
+    E: ExtensionField + Serialize + DeserializeOwned,
+    E::BaseField: Serialize + DeserializeOwned,
+    PCS: PolynomialCommitmentScheme<E>,
+{
+    pub fn with_max_context(mut self, max_context: usize) -> Self {
+        self.max_context = Some(max_context);
+        self
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct LLMProof<E, PCS>
@@ -118,7 +129,7 @@ impl Driver<f32> {
     /// The result can be serialized and deserialized at will to serve inference+proving for this model.
     pub fn into_provable_llm(mut self) -> anyhow::Result<Driver<Element>> {
         let numel = self.config.context_length;
-        let n_inputs = 10;
+        let n_inputs = 1;
         let representative_inputs = (0..n_inputs)
             .map(|_| {
                 self.random_sequence(numel)
@@ -127,7 +138,7 @@ impl Driver<f32> {
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
-        self.model.unpadded_input_shapes = vec![Shape::from(vec![numel, 1])];
+        self.model.unpadded_input_shapes = vec![Shape::from(vec![numel])];
         self.model.input_shapes = vec![Shape::from(vec![numel, 1]).next_power_of_two()];
         let (quantized_model, _md) =
             InferenceObserver::new_with_representative_input(vec![representative_inputs])
@@ -148,11 +159,7 @@ impl Driver<f32> {
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
-        let input = Tensor::new(
-            vec![input.len()].into(),
-            input.into_iter().map(|t| t.as_number()).collect::<Vec<_>>(),
-        );
-        self.run_internal::<E>(input, observer)
+        self.run_internal::<E>(input, observer,PaddingMode::NoPadding)
     }
 }
 
@@ -183,21 +190,32 @@ where
     /// The returned trace contains the _whole_ sequence.
     fn run_internal<E>(
         &self,
-        mut tensor: Tensor<N>,
+        input: Vec<Token>,
         observer: Option<impl Observer<N>>,
+        mode: PaddingMode,
     ) -> anyhow::Result<InferenceTrace<'_, E, N>>
     where
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
         let eos_token: N = self.config.specific_config.eos_token().as_number();
-        let mut unpadded_seq_len = tensor.get_shape().numel();
+        let mut unpadded_seq_len = input.len();
         let user_len = unpadded_seq_len;
         // -1 because we at least want to generate ONE token
         ensure!(
             unpadded_seq_len < self.config.context_length - 1,
             "Input sequence length must be less than the context length"
         );
+        let tensor = Tensor::new(
+            vec![input.len()].into(),
+            input.into_iter().map(|t| t.as_number::<N>()).collect::<Vec<_>>(),
+        );
+        let mut tensor = if let PaddingMode::Padding = mode {
+            tensor.pad_next_power_of_two()
+        } else { 
+            tensor
+        };
+
         ensure!(
             tensor
                 .get_data()
@@ -214,6 +232,7 @@ where
                 "running the {} iteration loop",
                 unpadded_seq_len - user_len
             ))?;
+            ensure!(trace.output.len() == 1, "expected 1 output, got {}", trace.output.len());
             let output = trace.output.last().unwrap();
             // We take the last token before the padding
             let last_token = output
@@ -236,7 +255,9 @@ where
                 tensor.data.insert(unpadded_seq_len, *last_token);
                 tensor.shape.set_dim(0, tensor.shape.dim(0) + 1);
             }
-            tensor = tensor.pad_next_power_of_two();
+            if let PaddingMode::Padding = mode {
+                tensor = tensor.pad_next_power_of_two();
+            }
             if let Some(ref obs) = observer {
                 obs.observe(unpadded_seq_len - user_len, &trace);
             }
@@ -255,12 +276,7 @@ impl Driver<Element> {
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
-        let input = Tensor::new(
-            vec![input.len()].into(),
-            input.into_iter().map(|t| t.as_number()).collect::<Vec<_>>(),
-        )
-        .pad_next_power_of_two();
-        self.run_internal::<E>(input, observer)
+        self.run_internal::<E>(input, observer, PaddingMode::Padding)
     }
     pub fn context<E, PCS>(&self) -> anyhow::Result<LLMContext<E, PCS>>
     where
@@ -272,7 +288,8 @@ impl Driver<Element> {
         Ok(LLMContext {
             ctx,
             config: self.config.clone(),
-            max_context: self.max_context,
+            // The verifier should put itself the max context here
+            max_context: None,
         })
     }
     pub fn prove<E, PCS>(
@@ -406,13 +423,15 @@ mod test {
 
     #[test]
     fn test_llm_driver_prove() -> anyhow::Result<()> {
+        init_test_logging("debug");
+        let max_context = 10;
         let model_path = file_cache::ensure_downloaded(GPT2_Q8_0_URL)?;
-        let driver = Driver::load_external_model(&model_path)?.with_max_context(10);
+        let driver = Driver::load_external_model(&model_path)?.with_max_context(max_context);
         let sentence = "The sky is";
         let tokenizer = TokenizerData::load_tokenizer_from_gguf(&model_path)?;
         let user_tokens = tokenizer.tokenize(sentence);
         let driver = driver.into_provable_llm()?;
-        let ctx = driver.context::<GoldilocksExt2, Pcs<GoldilocksExt2>>()?;
+        let ctx = driver.context::<GoldilocksExt2, Pcs<GoldilocksExt2>>()?.with_max_context(max_context);
         let trace = driver.run::<GoldilocksExt2>(
             user_tokens.clone(),
             Some(LLMTokenizerObserver {

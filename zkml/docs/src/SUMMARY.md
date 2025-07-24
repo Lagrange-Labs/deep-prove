@@ -13,3 +13,4 @@
     - [Embeddings](./llms-layers/embeddings.md)
     - [MHA Layer](./llms-layers/mha.md)
     - [softmax](./softmax.md)
+    - [LayerNorm](./llms-layers/layernorm.md)

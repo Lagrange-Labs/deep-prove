@@ -19,7 +19,8 @@ use crate::{
     },
     lookup::{
         context::{
-            COLUMN_SEPARATOR, LookupWitnessGen, SoftmaxTableData, TableType, count_elements,
+            COLUMN_SEPARATOR, CommsAndEvals, CommsAndProofs, LookupWitnessGen, SoftmaxTableData,
+            TableType, count_elements,
         },
         logup_gkr::{
             prover::batch_prove,
@@ -74,14 +75,14 @@ pub struct Softmax<N> {
     quant_info: Option<QuantisedSoftmaxData>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Copy)]
 /// This struct is used to store information used when evaluating the quantised version of [`Softmax`] on
 /// [`Element`]s.
 struct QuantisedSoftmaxData {
     /// The [`ScalingFactor`] of the inputs
     input_scale_factor: ScalingFactor,
-    /// This stores the output column of the `exp` lookup
-    lut: Vec<Element>,
+    /// This stores the [`SoftmaxTableData`]
+    lut: SoftmaxTableData,
     /// The error bound as calculated by the formulae given in the zkLLM paper
     error_bound: f32,
     /// This is the inverse of the float temperature for calculating row normalisation
@@ -208,25 +209,14 @@ impl<N: Number> Softmax<N> {
             (0usize, 0usize)
         };
 
-        let table_size: Element = 1 << softmax_table_size;
         // Make the exp lookup table
-        let lut = (0..table_size)
-            .map(|j| {
-                let prod = base * j;
-                if prod >= bkm {
-                    0
-                } else {
-                    let float_exp =
-                        (-prod as f32 / (SCALE_FACTOR as f32 * inv_float_temperature)).exp();
-                    (float_exp * OUTPUT_SCALE_FACTOR as f32).round() as Element
-                }
-            })
-            .collect::<Vec<Element>>();
+        let table_data =
+            SoftmaxTableData::new(inv_float_temperature.to_bits(), softmax_table_size, bkm);
 
         // Store all the quantised info for quantised evaluation
         let quant_info = QuantisedSoftmaxData {
             input_scale_factor: input_scaling,
-            lut,
+            lut: table_data,
             error_bound: float_error,
             inv_float_temperature,
             bkm,
@@ -423,7 +413,6 @@ impl<N: Number> OpInfo for Softmax<N> {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 /// Struct containing data useful for proving correctness of [`Softmax`]. This is data that we compute anyway
 /// during quantised evaluation.
 pub struct SoftmaxData<E>
@@ -534,7 +523,7 @@ impl Evaluate<Element> for Softmax<Element> {
             high_range_check.push(rescaled & bit_mask);
             rescaled >>= 8;
             let lookup = rescaled & softmax_table_mask;
-            let exp_output = lut[lookup as usize];
+            let exp_output = lut.table_output(lookup);
             outputs.push(exp_output);
             lookups.push(lookup);
             rescaled >>= softmax_table_vars;
@@ -577,24 +566,6 @@ impl Evaluate<Element> for Softmax<Element> {
 }
 
 impl PadOp for Softmax<Element> {}
-
-type CommsAndEvals<PCS, E> = (
-    Vec<(
-        <PCS as PolynomialCommitmentScheme<E>>::CommitmentWithWitness,
-        DenseMultilinearExtension<E>,
-    )>,
-    Vec<Vec<<E as ExtensionField>::BaseField>>,
-);
-
-type CommsAndProofs<PCS, E> = (
-    Vec<
-        Vec<(
-            <PCS as PolynomialCommitmentScheme<E>>::CommitmentWithWitness,
-            DenseMultilinearExtension<E>,
-        )>,
-    >,
-    Vec<LogUpProof<E>>,
-);
 
 impl Softmax<Element> {
     #[allow(clippy::type_complexity)]
@@ -963,8 +934,6 @@ impl Softmax<Element> {
         // We need to work out how many chunks to split the normalisation into to be range checked.
         let QuantisedSoftmaxData {
             error_bound,
-            inv_float_temperature,
-            bkm,
             lut,
             zero_table_vars,
             number_zero_chunks,
@@ -1070,16 +1039,8 @@ impl Softmax<Element> {
             .insert(TableType::Range, range_elements_count);
 
         // Need to recreate the parameters for the Softmax table
-        let float_temp_bits = inv_float_temperature.to_bits();
-
-        gen.element_count.insert(
-            TableType::Softmax(SoftmaxTableData::new(
-                float_temp_bits,
-                ceil_log2(lut.len()),
-                *bkm,
-            )),
-            softman_elements_count,
-        );
+        gen.element_count
+            .insert(TableType::Softmax(*lut), softman_elements_count);
 
         let quant_one = OUTPUT_SCALE_FACTOR as Element;
         gen.element_count.insert(
@@ -1092,11 +1053,7 @@ impl Softmax<Element> {
                 exp_commits.to_vec(),
                 exp_evals.to_vec(),
                 2,
-                TableType::Softmax(SoftmaxTableData::new(
-                    float_temp_bits,
-                    ceil_log2(lut.len()),
-                    *bkm,
-                )),
+                TableType::Softmax(*lut),
             ),
             LogUpWitness::<E, PCS>::new_lookup(
                 range_commits.to_vec(),
@@ -1305,15 +1262,10 @@ where
             let float_temp_bits = inv_float_temperature.to_bits();
             // Calculate the allowable error in normalisation as an Element
             let allowable_error = (*error_bound * OUTPUT_SCALE_FACTOR as f32).round() as Element;
-            // Calculate the lookup table number of variables
-            let size = ceil_log2(lut.len());
+
             // Add the tables that Softmax requires
             aux.tables.insert(TableType::Range);
-            aux.tables.insert(TableType::Softmax(SoftmaxTableData::new(
-                float_temp_bits,
-                size,
-                *bkm,
-            )));
+            aux.tables.insert(TableType::Softmax(*lut));
             aux.tables.insert(TableType::ErrorTable(
                 OUTPUT_SCALE_FACTOR as Element,
                 allowable_error,
@@ -1341,7 +1293,7 @@ where
                     allowable_error,
                     bkm: *bkm,
                     temperature_bits: float_temp_bits,
-                    size,
+                    size: lut.full_table_size() as usize,
                     scalar: self.scalar,
                     number_zero_chunks: *number_zero_chunks,
                     zero_table_vars: *zero_table_vars,

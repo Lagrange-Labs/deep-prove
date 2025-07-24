@@ -174,19 +174,25 @@ pub fn argmax<T: PartialOrd>(v: &[T]) -> Option<usize> {
     Some(max_index)
 }
 
-pub fn argmax_slice<N: Number>(v: &[N]) -> Option<usize> {
+/// Returns the maximum element in the slice `v`, and the position in `v`
+/// where such maximum element is located; in other words, it returns
+/// (max(v), argmax(v))
+pub fn max_in_slice<N: Number>(v: &[N]) -> Option<(N, usize)> {
     if v.is_empty() {
         return None;
     }
     Some(
         v.iter()
             .enumerate()
-            .fold((0, N::MIN), |acc, x| match acc.1.compare(x.1) {
-                Ordering::Less => (x.0, *x.1),
+            .fold((N::MIN, 0), |acc, x| match acc.0.compare(x.1) {
+                Ordering::Less => (*x.1, x.0),
                 _ => acc,
-            })
-            .0,
+            }),
     )
+}
+
+pub fn argmax_slice<N: Number>(v: &[N]) -> Option<usize> {
+    max_in_slice(v).map(|m| m.1)
 }
 
 pub trait NextPowerOfTwo {
