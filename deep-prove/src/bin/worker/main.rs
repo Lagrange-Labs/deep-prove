@@ -191,6 +191,28 @@ struct Args {
     run_mode: RunMode,
 }
 
+#[derive(clap::Args)]
+struct S3Args {
+    #[arg(long, env, default_value = "us-east-2", requires = "s3_store")]
+    s3_region: Option<String>,
+    #[arg(long, env, requires = "s3_store")]
+    s3_bucket: Option<String>,
+    #[arg(long, env, requires = "s3_store")]
+    s3_endpoint: Option<String>,
+    #[arg(long, env, default_value = "1000", requires = "s3_store")]
+    s3_timeout_secs: Option<u64>,
+    #[arg(env, requires = "s3_store")]
+    s3_access_key_id: Option<String>,
+    #[arg(env, requires = "s3_store")]
+    s3_secret_access_key: Option<String>,
+    /// Enable local file-system cache for S3 data
+    #[arg(long, env, requires = "s3_store")]
+    fs_cache: bool,
+    /// Set the path of the S3 store local cache.
+    #[arg(long, env, requires = "s3_store", default_value = "/var/cache")]
+    fs_cache_dir: PathBuf,
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum RunMode {
@@ -229,24 +251,9 @@ enum RunMode {
         #[arg(long, env)]
         json: bool,
 
-        #[arg(long, env, default_value = "us-east-2", requires = "s3_store")]
-        s3_region: Option<String>,
-        #[arg(long, env, requires = "s3_store")]
-        s3_bucket: Option<String>,
-        #[arg(long, env, requires = "s3_store")]
-        s3_endpoint: Option<String>,
-        #[arg(long, env, default_value = "1000", requires = "s3_store")]
-        s3_timeout_secs: Option<u64>,
-        #[arg(env, requires = "s3_store")]
-        s3_access_key_id: Option<String>,
-        #[arg(env, requires = "s3_store")]
-        s3_secret_access_key: Option<String>,
-        #[arg(long, env, requires = "s3_store")]
-        /// Enable local file-system cache for S3 data
-        fs_cache: bool,
-        /// Set the dir for local file-system cache for S3 data. If not set, defaults to `/var/cache`.
-        #[arg(long, env, requires = "s3_store")]
-        fs_cache_dir: Option<PathBuf>,
+        /// If set, use S3 to store & fetch PPs, otherwise use memory.
+        #[command(flatten)]
+        s3_args: S3Args,
     },
     /// Connect to a LPN gateway to receive inference tasks.
     Http {
@@ -265,6 +272,10 @@ enum RunMode {
         /// Print the logs in JSON format.
         #[arg(long, env)]
         json: bool,
+
+        /// If set, use S3 to store & fetch PPs, otherwise use memory.
+        #[command(flatten)]
+        s3_args: S3Args,
     },
     /// Prove inference on local files
     Local {

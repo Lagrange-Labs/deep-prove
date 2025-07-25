@@ -1,7 +1,8 @@
+use super::instantiate_store;
 use crate::{RunMode, StoreKind};
 use anyhow::{Context, anyhow};
 use base64::{Engine, prelude::BASE64_STANDARD};
-use deep_prove::{middleware::v2, store::MemStore};
+use deep_prove::middleware::v2;
 use exponential_backoff::Backoff;
 use serde_json::json;
 use tracing::{debug, error, info, warn};
@@ -182,6 +183,7 @@ pub async fn run(args: crate::RunMode) -> anyhow::Result<()> {
         address,
         json,
         worker_name,
+        s3_args,
     } = args
     else {
         unreachable!()
@@ -196,8 +198,7 @@ pub async fn run(args: crate::RunMode) -> anyhow::Result<()> {
     info!("operator address: {address}");
     info!("worker unique name: {worker_name}");
 
-    // TODO: add S3 store DP-75
-    let mut store = StoreKind::Mem(MemStore::default());
+    let mut store = instantiate_store(s3_args).context("instantiating PPs store")?;
     let conn = ConnContext::new(gw_url, worker_name, address);
 
     loop {
