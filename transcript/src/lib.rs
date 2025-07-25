@@ -2,6 +2,8 @@
 //! This repo is not properly implemented
 //! Transcript APIs are placeholders; the actual logic is to be implemented later.
 
+// TEMP
+
 pub mod basic;
 pub mod blake;
 mod statistics;
