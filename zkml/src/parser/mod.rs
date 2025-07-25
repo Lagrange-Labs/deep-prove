@@ -349,8 +349,8 @@ pub mod file_cache {
         let local_file_path = CACHE_DIR.join(&base_filename);
         let lock_file_path = CACHE_DIR.join(format!("{}.lock", base_filename));
 
-        const MAX_RETRIES: u32 = 60; // Approx 60 seconds total timeout
-        const RETRY_DELAY_MS: u64 = 1000;
+        const MAX_RETRIES: u32 = 60; // Approx 120 seconds total timeout
+        const RETRY_DELAY_MS: u64 = 2000;
 
         for attempt in 0..MAX_RETRIES {
             // Check 1: File exists and no lock. This is the ideal fast path.
