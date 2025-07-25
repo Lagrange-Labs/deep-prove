@@ -100,7 +100,10 @@ enum Command {
     },
 
     /// Fetch a generated proof, if any are available.
-    Fetch {},
+    Fetch {
+        /// The file to write the proof to - if empty, use the proof ID.
+        filename: Option<String>,
+    },
 }
 
 #[tokio::main]

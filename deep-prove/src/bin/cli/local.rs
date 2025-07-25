@@ -62,7 +62,8 @@ pub async fn connect(executor: Executor) -> anyhow::Result<()> {
                 }
             }
         }
-        Command::Fetch {} => {
+        Command::Fetch { filename } => {
+            const DEFAULT_PREFIX: &str = "proof-";
             // Build the endpoint URL
             let mut resp = ureq::get(worker_url.join("/proofs")?.as_str()).call()?;
 
@@ -70,7 +71,7 @@ pub async fn connect(executor: Executor) -> anyhow::Result<()> {
                 StatusCode::OK => {
                     // create a file to write the proofs to
                     let mut file = tempfile::Builder::new()
-                        .prefix("proof-")
+                        .prefix(filename.as_deref().unwrap_or(DEFAULT_PREFIX))
                         .suffix(".json")
                         .rand_bytes(10)
                         .disable_cleanup(true)

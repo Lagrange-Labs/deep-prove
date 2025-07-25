@@ -256,6 +256,12 @@ enum RunMode {
         s3_args: S3Args,
     },
     /// Connect to a LPN gateway to receive inference tasks.
+    #[command(
+        group(ArgGroup::new("s3_store")
+        .multiple(true)
+        .args(&["s3_region", "s3_bucket", "s3_endpoint", "s3_access_key_id", "s3_secret_access_key"])
+        .requires_all(&["s3_region", "s3_bucket", "s3_endpoint", "s3_access_key_id", "s3_secret_access_key"])
+    ))]
     Http {
         #[arg(long, env, default_value = "http://localhost:4000")]
         gw_url: Url,

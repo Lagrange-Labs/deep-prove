@@ -1,3 +1,4 @@
+use anyhow::Context;
 use base64::{Engine, prelude::BASE64_STANDARD};
 use ff_ext::GoldilocksExt2;
 use mpcs::{Basefold, BasefoldRSParams, Hasher};
@@ -31,14 +32,17 @@ pub struct GwToWorker {
     /// An array of inputs to run proving for
     pub input: Input,
 }
-impl From<GwToWorker> for super::v1::DeepProveRequest {
-    fn from(r: GwToWorker) -> Self {
-        Self {
-            // TODO: make this TryInto
-            model: BASE64_STANDARD.decode(r.model).unwrap(),
+impl TryFrom<GwToWorker> for super::v1::DeepProveRequest {
+    type Error = anyhow::Error;
+
+    fn try_from(r: GwToWorker) -> anyhow::Result<Self> {
+        Ok(Self {
+            model: BASE64_STANDARD
+                .decode(r.model)
+                .context("failed to base64-decode the model")?,
             input: r.input,
             scaling_strategy: ScalingStrategyKind::AbsoluteMax,
             scaling_input_hash: None,
-        }
+        })
     }
 }

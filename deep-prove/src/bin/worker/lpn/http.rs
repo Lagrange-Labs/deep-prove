@@ -1,6 +1,6 @@
 use super::instantiate_store;
 use crate::{RunMode, StoreKind};
-use anyhow::{Context, anyhow};
+use anyhow::{Context, anyhow, bail};
 use base64::{Engine, prelude::BASE64_STANDARD};
 use deep_prove::middleware::v2;
 use exponential_backoff::Backoff;
@@ -160,19 +160,21 @@ impl ConnContext {
     }
 }
 
-async fn process_job(job: v2::GwToWorker, store: &mut StoreKind) -> Result<Vec<u8>, String> {
+async fn process_job(job: v2::GwToWorker, store: &mut StoreKind) -> anyhow::Result<Vec<u8>> {
     let result = match store {
-        StoreKind::S3(store) => crate::run_model_v1(job.into(), store).await,
-        StoreKind::Mem(store) => crate::run_model_v1(job.into(), store).await,
+        StoreKind::S3(store) => {
+            crate::run_model_v1(job.try_into().context("parsing job")?, store).await
+        }
+        StoreKind::Mem(store) => {
+            crate::run_model_v1(job.try_into().context("parsing job")?, store).await
+        }
     };
 
     match result {
         Ok(proofs) => Ok(rmp_serde::to_vec(&proofs).unwrap()),
 
         Err(err) => {
-            error!("failed to run model: {err:?}");
-
-            Err(err.to_string())
+            bail!("failed to run model: {err:?}");
         }
     }
 }
@@ -220,8 +222,8 @@ pub async fn run(args: crate::RunMode) -> anyhow::Result<()> {
                     .context("submitting proofs to gateway")?;
                 info!("submitted proof for job #{job_id}");
             }
-            Err(err_msg) => {
-                conn.submit_error(job_id, &err_msg)
+            Err(err) => {
+                conn.submit_error(job_id, &format!("{err:?}"))
                     .context("submitting error to gateway")?;
                 info!("submitted error for job #{job_id}");
             }
