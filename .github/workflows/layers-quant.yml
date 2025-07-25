@@ -18,7 +18,7 @@ jobs:
       - name: Restore model cache folder
         uses: actions/cache@v4
         with:
-          path: zkml/target/test_assets_cache
+          path: ${{ github.workspace }}/zkml/target/test_assets_cache
           key: model-cache-v1
           restore-keys: |
             model-cache-v1
