@@ -14,11 +14,11 @@ use crate::{
 };
 use anyhow::{Result, ensure};
 use ff_ext::ExtensionField;
-use gkr::util::ceil_log2;
 use itertools::Itertools;
-use mpcs::PolynomialCommitmentScheme;
+use mpcs_lg::PolynomialCommitmentScheme;
 use multilinear_extensions::{
     mle::{IntoMLE, MultilinearExtension},
+    util::ceil_log2,
     virtual_poly::{VPAuxInfo, VirtualPolynomial},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -208,7 +208,7 @@ where
         // there is only one product (i.e. quadratic sumcheck)
         let dense_info = LayerCtx::Dense(DenseCtx {
             node_id: id,
-            matrix_poly_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
+            matrix_poly_aux: crate::util::from_mle_list_dimensions(&[vec![
                 matrix_num_vars,
                 vector_num_vars,
             ]]),
@@ -467,22 +467,22 @@ impl Dense<Element> {
             .into_mle()
             .evaluate(&last_claim.point);
         // construct the MLE combining the input and the matrix
-        let mut mat_mle = matrix.to_2d_mle();
+        let mut mat_mle: MultilinearExtension<'_, E> = matrix.to_2d_mle();
         // fix the variables from the random input
         // NOTE: here we must fix the HIGH variables because the MLE is addressing in little
         // endian so (rows,cols) is actually given in (cols, rows)
         // mat_mle.fix_variables_in_place_parallel(partial_point);
-        mat_mle.fix_high_variables_in_place(&last_claim.point);
-        let input_mle = input.get_data().to_vec().into_mle();
+        // mat_mle.fix_high_variables_in_place(&last_claim.point);
+        let input_mle: MultilinearExtension<'_, E> = input.get_data().to_vec().into_mle();
 
         assert_eq!(mat_mle.num_vars(), input_mle.num_vars());
         let num_vars = input_mle.num_vars();
         let mut vp = VirtualPolynomial::<E>::new(num_vars);
         // TODO: remove the clone once prover+verifier are working
-        vp.add_mle_list(
-            vec![mat_mle.clone().into(), input_mle.clone().into()],
-            E::ONE,
-        );
+        // vp.add_mle_list(
+        // vec![mat_mle.clone().into(), input_mle.clone().into()],
+        // E::ONE,
+        // );
         let tmp_transcript = prover.transcript.clone();
         #[allow(deprecated)]
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
@@ -491,7 +491,7 @@ impl Dense<Element> {
             let mut t = tmp_transcript;
             // just construct manually here instead of cloning in the non debug code
             let mut vp = VirtualPolynomial::<E>::new(num_vars);
-            vp.add_mle_list(vec![mat_mle.into(), input_mle.into()], E::ONE);
+            // vp.add_mle_list(vec![mat_mle.into(), input_mle.into()], E::ONE);
             // asserted_sum in this case is the output MLE evaluated at the random point
             let mle_output = output.get_data().to_vec().into_mle();
             let claimed_sum = mle_output.evaluate(&last_claim.point);
@@ -510,13 +510,22 @@ impl Dense<Element> {
             // is equal to last small poly sent by prover (`subclaim.expected_evaluation`). This
             // step can be done via PCS opening proofs for all steps but first (output of
             // inference) and last (input of inference)
-            let computed_point = vp.evaluate(subclaim.point_flat().as_ref());
+            let computed_point = vp.evaluate(
+                subclaim
+                    .point
+                    .iter()
+                    .map(|p| p.elements)
+                    .collect_vec()
+                    .as_ref(),
+            );
 
+            /*
             let final_prover_point = state
                 .get_mle_final_evaluations()
                 .into_iter()
                 .fold(E::ONE, |acc, eval| acc * eval);
             assert_eq!(computed_point, final_prover_point);
+            */
 
             // NOTE: this expected_evaluation is computed by the verifier on the "reduced"
             // last polynomial of the sumcheck protocol. It's easy to compute since it's a degree
@@ -527,37 +536,39 @@ impl Dense<Element> {
 
         // PCS part: here we need to create an opening proof for the final evaluation of the matrix poly
         // Note we need the _full_ input to the matrix since the matrix MLE has (row,column) vars space
-        let point = [proof.point.as_slice(), last_claim.point.as_slice()].concat();
-        let eval = state.get_mle_final_evaluations()[0];
+        // let point = [proof.point.as_slice(), last_claim.point.as_slice()].concat();
+        let eval = state.get_mle_final_evaluations()[0].clone();
         // add the bias claim over the last claim input, since that is what is needed to "remove" the bias
         // to only verify the matrix2vec product via the sumcheck proof.
         let bias_claim = Claim::new(last_claim.point.clone(), bias_eval);
-        let weights_claim = Claim::new(point, eval);
+        // let weights_claim = Claim::new(point, eval);
 
         // Add common commitment claims to be proven
-        let common_claims = {
-            let mut claims = HashMap::new();
-            claims.insert(WEIGHT_POLY_ID.to_string(), weights_claim);
-            claims.insert(BIAS_POLY_ID.to_string(), bias_claim);
-            claims
-        };
-        prover.add_common_claims(id, common_claims)?;
+        // let common_claims = {
+        // let mut claims = HashMap::new();
+        // claims.insert(WEIGHT_POLY_ID.to_string(), weights_claim);
+        // claims.insert(BIAS_POLY_ID.to_string(), bias_claim);
+        // claims
+        // };
+        // prover.add_common_claims(id, common_claims)?;
 
         // the claim that this proving step outputs is the claim about not the matrix but the vector poly.
         // at next step, that claim will be proven over this vector poly (either by the next dense layer proving, or RELU etc).
-        let claim = Claim {
-            point: proof.point.clone(),
-            eval: state.get_mle_final_evaluations()[1],
-        };
-        prover.push_proof(
-            id,
-            LayerProof::Dense(DenseProof {
-                sumcheck: proof,
-                bias_eval,
-                individual_claims: state.get_mle_final_evaluations(),
-            }),
-        );
-        Ok(claim)
+        // let claim = Claim {
+        // point: proof.point.clone(),
+        // eval: state.get_mle_final_evaluations()[1],
+        // };
+        // prover.push_proof(
+        // id,
+        // LayerProof::Dense(DenseProof {
+        // sumcheck: proof,
+        // bias_eval,
+        // individual_claims: state.get_mle_final_evaluations(),
+        // }),
+        // );
+        // Ok(claim)
+
+        todo!()
     }
 }
 
@@ -592,8 +603,12 @@ where
 
         // MATRIX OPENING PART
         // pcs_eval means this evaluation should come from a PCS opening proof
+        // TODO: no collecting should be done here
         let pcs_eval_input = subclaim
-            .point_flat()
+            .point
+            .iter()
+            .map(|p| p.elements)
+            .collect_vec()
             .iter()
             .chain(last_claim.point.iter())
             .cloned()
@@ -635,7 +650,7 @@ where
         // the output claim for this step that is going to be verified at next step
         Ok(Claim {
             // the new randomness to fix at next layer is the randomness from the sumcheck !
-            point: subclaim.point_flat(),
+            point: subclaim.point.iter().map(|p| p.elements).collect_vec(),
             // the claimed sum for the next sumcheck is MLE of the current vector evaluated at the
             // random point. 1 because vector is secondary.
             eval: proof.individual_claims[1],

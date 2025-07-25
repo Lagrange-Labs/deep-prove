@@ -5,7 +5,10 @@ pub mod parallel;
 pub mod plonky2_util;
 use ff_ext::{ExtensionField, SmallField};
 use itertools::{Either, Itertools, izip};
-use multilinear_extensions::mle::{DenseMultilinearExtension, FieldType};
+use multilinear_extensions::{
+    mle::{FieldType, MultilinearExtension},
+    smart_slice::SmartSlice,
+};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 pub mod merkle_tree;
@@ -82,13 +85,13 @@ macro_rules! impl_index {
         );
     };
     ($name:ident, $field:tt) => {
-        impl_index!(@ $name<E>, $field);
+        impl_index!(@ $name<'_, E>, $field);
     };
 }
 
 pub(crate) use impl_index;
 
-pub fn poly_index_ext<E: ExtensionField>(poly: &DenseMultilinearExtension<E>, index: usize) -> E {
+pub fn poly_index_ext<E: ExtensionField>(poly: &MultilinearExtension<E>, index: usize) -> E {
     match &poly.evaluations {
         FieldType::Ext(coeffs) => coeffs[index],
         FieldType::Base(coeffs) => E::from(coeffs[index]),
@@ -148,15 +151,15 @@ pub fn field_type_index_set_ext<E: ExtensionField>(
     }
 }
 
-pub fn poly_iter_ext<E: ExtensionField>(
-    poly: &DenseMultilinearExtension<E>,
-) -> impl Iterator<Item = E> + '_ {
+pub fn poly_iter_ext<'a, E: ExtensionField>(
+    poly: &'a MultilinearExtension<'a, E>,
+) -> impl Iterator<Item = E> + 'a {
     field_type_iter_ext(&poly.evaluations)
 }
 
-pub fn field_type_iter_ext<E: ExtensionField>(
-    evaluations: &FieldType<E>,
-) -> impl Iterator<Item = E> + '_ {
+pub fn field_type_iter_ext<'a, E: ExtensionField>(
+    evaluations: &'a FieldType<'a, E>,
+) -> impl Iterator<Item = E> + 'a {
     match evaluations {
         FieldType::Ext(coeffs) => Either::Left(coeffs.iter().copied()),
         FieldType::Base(coeffs) => Either::Right(coeffs.iter().map(|x| (*x).into())),
@@ -164,9 +167,9 @@ pub fn field_type_iter_ext<E: ExtensionField>(
     }
 }
 
-pub fn field_type_par_iter_ext<E: ExtensionField>(
-    evaluations: &FieldType<E>,
-) -> impl IndexedParallelIterator<Item = E> + '_ {
+pub fn field_type_par_iter_ext<'a, E: ExtensionField>(
+    evaluations: &'a FieldType<'a, E>,
+) -> impl IndexedParallelIterator<Item = E> + 'a {
     match evaluations {
         FieldType::Ext(coeffs) => Either::Left(coeffs.par_iter().copied()),
         FieldType::Base(coeffs) => Either::Right(coeffs.par_iter().map(|x| (*x).into())),
@@ -182,7 +185,9 @@ pub fn field_type_to_ext_vec<E: ExtensionField>(evaluations: &FieldType<E>) -> V
     }
 }
 
-pub fn field_type_as_ext<E: ExtensionField>(values: &FieldType<E>) -> &Vec<E> {
+pub fn field_type_as_ext<'a, E: ExtensionField>(
+    values: &'a FieldType<'a, E>,
+) -> &'a SmartSlice<'a, E> {
     match values {
         FieldType::Ext(coeffs) => coeffs,
         FieldType::Base(_) => panic!("Expected ext field"),
@@ -190,9 +195,9 @@ pub fn field_type_as_ext<E: ExtensionField>(values: &FieldType<E>) -> &Vec<E> {
     }
 }
 
-pub fn field_type_iter_base<E: ExtensionField>(
-    values: &FieldType<E>,
-) -> impl Iterator<Item = &E::BaseField> + '_ {
+pub fn field_type_iter_base<'a, E: ExtensionField>(
+    values: &'a FieldType<'a, E>,
+) -> impl Iterator<Item = &'a E::BaseField> + 'a {
     match values {
         FieldType::Ext(coeffs) => Either::Left(coeffs.iter().flat_map(|x| x.as_bases())),
         FieldType::Base(coeffs) => Either::Right(coeffs.iter()),
@@ -200,7 +205,7 @@ pub fn field_type_iter_base<E: ExtensionField>(
     }
 }
 
-pub fn multiply_poly<E: ExtensionField>(poly: &mut DenseMultilinearExtension<E>, scalar: &E) {
+pub fn multiply_poly<E: ExtensionField>(poly: &mut MultilinearExtension<E>, scalar: &E) {
     match &mut poly.evaluations {
         FieldType::Ext(coeffs) => {
             for coeff in coeffs.iter_mut() {
@@ -208,7 +213,7 @@ pub fn multiply_poly<E: ExtensionField>(poly: &mut DenseMultilinearExtension<E>,
             }
         }
         FieldType::Base(coeffs) => {
-            *poly = DenseMultilinearExtension::<E>::from_evaluations_ext_vec(
+            *poly = MultilinearExtension::<E>::from_evaluations_ext_vec(
                 poly.num_vars,
                 coeffs.iter().map(|x| E::from(*x) * *scalar).collect(),
             );
@@ -219,24 +224,25 @@ pub fn multiply_poly<E: ExtensionField>(poly: &mut DenseMultilinearExtension<E>,
 
 /// Resize to the new number of variables, which must be greater than or equal to
 /// the current number of variables.
-pub fn resize_num_vars<E: ExtensionField>(
-    poly: &mut DenseMultilinearExtension<E>,
-    num_vars: usize,
-) {
+pub fn resize_num_vars<E: ExtensionField>(poly: &mut MultilinearExtension<E>, num_vars: usize) {
     assert!(num_vars >= poly.num_vars);
     if num_vars == poly.num_vars {
         return;
     }
     match &mut poly.evaluations {
         FieldType::Base(evaluations) => {
-            evaluations.resize(1 << num_vars, E::BaseField::ZERO);
+            let mut tmp_vec = evaluations.to_vec();
+            tmp_vec.resize(1 << num_vars, E::BaseField::ZERO);
+            *evaluations = SmartSlice::Owned(tmp_vec);
             // When evaluate a multilinear polynomial outside of its original interpolated hypercube,
             // the evaluations are just repetitions of the original evaluations
             (1 << poly.num_vars..1 << num_vars)
                 .for_each(|i| evaluations[i] = evaluations[i & ((1 << poly.num_vars) - 1)]);
         }
         FieldType::Ext(evaluations) => {
-            evaluations.resize(1 << num_vars, E::ZERO);
+            let mut tmp_vec = evaluations.to_vec();
+            tmp_vec.resize(1 << num_vars, E::ZERO);
+            *evaluations = SmartSlice::Owned(tmp_vec);
             (1 << poly.num_vars..1 << num_vars)
                 .for_each(|i| evaluations[i] = evaluations[i & ((1 << poly.num_vars) - 1)])
         }
@@ -245,9 +251,9 @@ pub fn resize_num_vars<E: ExtensionField>(
     poly.num_vars = num_vars;
 }
 
-pub fn add_polynomial_with_coeff<E: ExtensionField>(
-    lhs: &mut DenseMultilinearExtension<E>,
-    rhs: &DenseMultilinearExtension<E>,
+pub fn add_polynomial_with_coeff<'a, 'b: 'a, E: ExtensionField>(
+    lhs: &mut MultilinearExtension<'a, E>,
+    rhs: &MultilinearExtension<'b, E>,
     coeff: &E,
 ) {
     match (lhs.num_vars == 0, rhs.num_vars == 0) {
@@ -274,7 +280,7 @@ pub fn add_polynomial_with_coeff<E: ExtensionField>(
                         });
                     }
                     FieldType::Base(ref mut lhs_evals) => {
-                        *lhs = DenseMultilinearExtension::<E>::from_evaluations_ext_vec(
+                        *lhs = MultilinearExtension::<E>::from_evaluations_ext_vec(
                             lhs.num_vars,
                             lhs_evals
                                 .iter()
@@ -299,7 +305,7 @@ pub fn add_polynomial_with_coeff<E: ExtensionField>(
                         });
                     }
                     FieldType::Base(ref mut lhs_evals) => {
-                        *lhs = DenseMultilinearExtension::<E>::from_evaluations_ext_vec(
+                        *lhs = MultilinearExtension::<E>::from_evaluations_ext_vec(
                             lhs.num_vars,
                             lhs_evals
                                 .iter()

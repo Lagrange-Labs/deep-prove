@@ -11,7 +11,7 @@ pub enum DeepProveRequest {
 
 /// A versioned enum representing a deep prove proving response
 #[derive(Serialize, Deserialize)]
-pub enum DeepProveResponse {
+pub enum DeepProveResponse<'a> {
     /// Version 1
-    V1(v1::DeepProveResponse),
+    V1(v1::DeepProveResponse<'a>),
 }

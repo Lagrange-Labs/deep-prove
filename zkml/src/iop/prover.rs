@@ -23,11 +23,8 @@ use std::collections::HashMap;
 use tracing::trace;
 
 use itertools::Itertools;
-use mpcs::PolynomialCommitmentScheme;
-use multilinear_extensions::{
-    mle::{IntoMLE, MultilinearExtension},
-    virtual_poly::VirtualPolynomial,
-};
+use mpcs_lg::PolynomialCommitmentScheme;
+use multilinear_extensions::{mle::IntoMLE, virtual_poly::VirtualPolynomial};
 use serde::{Serialize, de::DeserializeOwned};
 
 use sumcheck::structs::IOPProverState;
@@ -42,17 +39,17 @@ where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
 {
-    ctx: &'a Context<E, PCS>,
+    ctx: &'a Context<'a, E, PCS>,
     // proofs for each layer being filled
     proofs: HashMap<NodeId, LayerProof<E, PCS>>,
     table_proofs: Vec<TableProof<E, PCS>>,
     pub(crate) transcript: &'a mut T,
     /// Proves commitment openings
-    pub(crate) commit_prover: context::CommitmentProver<E, PCS>,
+    pub(crate) commit_prover: context::CommitmentProver<'a, E, PCS>,
     /// The lookup witnesses
-    pub(crate) lookup_witness: HashMap<NodeId, Vec<LogUpWitness<E, PCS>>>,
+    pub(crate) lookup_witness: HashMap<NodeId, Vec<LogUpWitness<'a, E, PCS>>>,
     /// The Lookup table witness
-    pub(crate) table_witness: Vec<LogUpWitness<E, PCS>>,
+    pub(crate) table_witness: Vec<LogUpWitness<'a, E, PCS>>,
     /// Stores all the challenges for the different lookup/table types
     pub(crate) challenge_storage: ChallengeStorage<E>,
 }
@@ -60,7 +57,9 @@ where
 pub struct BatchFFTProof<E: ExtensionField> {
     pub proof: sumcheck::structs::IOPProof<E>,
     pub claims: Vec<E>,
+    pub point: Vec<E>,
     pub matrix_eval: (Vec<sumcheck::structs::IOPProof<E>>, Vec<Vec<E>>),
+    pub delegation_points: Vec<Vec<E>>,
 }
 
 impl<'a, E, T, PCS> Prover<'a, E, T, PCS>
@@ -71,7 +70,7 @@ where
     E: Serialize + DeserializeOwned,
     PCS: PolynomialCommitmentScheme<E>,
 {
-    pub fn new(ctx: &'a Context<E, PCS>, transcript: &'a mut T) -> Self {
+    pub fn new(ctx: &'a Context<'a, E, PCS>, transcript: &'a mut T) -> Self {
         Self {
             ctx,
             transcript,
@@ -96,7 +95,7 @@ where
     pub(crate) fn lookup_witness(
         &mut self,
         id: NodeId,
-    ) -> anyhow::Result<Vec<LogUpWitness<E, PCS>>> {
+    ) -> anyhow::Result<Vec<LogUpWitness<'a, E, PCS>>> {
         self.lookup_witness
             .remove(&id)
             .ok_or(anyhow!("No lookup witness found for node {id}!"))
@@ -107,7 +106,7 @@ where
     }
 
     #[timed::timed_instrument(level = "debug")]
-    fn prove_tables(&mut self) -> anyhow::Result<()> {
+    fn prove_tables(&'a mut self) -> anyhow::Result<()> {
         self.table_witness.iter().try_for_each(|table_witness| {
             let logup_input = table_witness.get_logup_input(&self.challenge_storage)?;
             let comm_with_wit = table_witness
@@ -161,15 +160,20 @@ where
     pub fn delegate_matrix_evaluation(
         &mut self,
         f_middle: &mut [Vec<E>],
-        r1: Vec<E>,
+        r1: &[E],
         mut r2: Vec<E>,
         is_fft: bool,
-    ) -> (Vec<sumcheck::structs::IOPProof<E>>, Vec<Vec<E>>) {
+    ) -> (
+        Vec<sumcheck::structs::IOPProof<E>>,
+        Vec<Vec<E>>,
+        Vec<Vec<E>>,
+    ) {
         let mut omegas = vec![E::ZERO; 1 << r1.len()];
-        self.phi_pow_init(&mut omegas, r1.len(), is_fft);
+        Self::phi_pow_init(&mut omegas, r1.len(), is_fft);
 
         let mut proofs: Vec<sumcheck::structs::IOPProof<E>> = Vec::new();
         let mut claims: Vec<Vec<E>> = Vec::new();
+        let mut points: Vec<Vec<E>> = Vec::new();
 
         for l in (0..(r1.len() - 1)).rev() {
             let mut phi = vec![E::ZERO; f_middle[l].len()];
@@ -200,16 +204,22 @@ where
             );
             #[allow(deprecated)]
             let (proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
-            let claim: Vec<E> = state.get_mle_final_evaluations();
-            r2 = proof.point.clone();
+            let claim: Vec<E> = state
+                .get_mle_final_evaluations()
+                .into_iter()
+                .flatten()
+                .collect();
+            let point = state.collect_raw_challenges();
+            r2 = point.clone();
             proofs.push(proof);
             claims.push(claim);
+            points.push(point);
         }
-        (proofs, claims)
+        (proofs, claims, points)
     }
 
     // Compute powers of roots of unity
-    pub fn phi_pow_init(&mut self, phi_mul: &mut [E], n: usize, is_fft: bool) {
+    pub fn phi_pow_init(phi_mul: &mut [E], n: usize, is_fft: bool) {
         let length = 1 << n;
         let rou: E = get_root_of_unity(n);
 
@@ -226,7 +236,6 @@ where
     // Efficiently compute the omegas of FFT/iFFT matrix reduced at rx
     // This is a copy-paste implementation from zkCNN paper
     pub fn phi_g_init(
-        &mut self,
         phi_g: &mut [E],
         mid_phi_g: &mut [Vec<E>],
         rx: Vec<E>,
@@ -235,7 +244,7 @@ where
         is_fft: bool,
     ) {
         let mut phi_mul = vec![E::ZERO; 1 << n];
-        self.phi_pow_init(&mut phi_mul, n, is_fft);
+        Self::phi_pow_init(&mut phi_mul, n, is_fft);
         if is_fft {
             phi_g[0] = scale;
             phi_g[1] = scale;
@@ -301,7 +310,7 @@ where
         // compute W(r1,i)
         let mut w_red: Vec<E> = vec![E::ZERO; x[0].len()];
         let mut f_middle: Vec<Vec<E>> = vec![Vec::new(); r1.len() - 1];
-        self.phi_g_init(
+        Self::phi_g_init(
             &mut w_red,
             &mut f_middle,
             r1.clone(),
@@ -323,17 +332,20 @@ where
         #[allow(deprecated)]
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
 
-        let claims = state.get_mle_final_evaluations();
-        let out_point = proof.point.clone();
+        let claims = state
+            .get_mle_final_evaluations()
+            .into_iter()
+            .flatten()
+            .collect();
+        let out_point = state.collect_raw_challenges();
+        let (matrix_proofs, matrix_claims, delegation_points) =
+            self.delegate_matrix_evaluation(&mut f_middle, &r1, out_point.clone(), false);
         BatchFFTProof {
             proof,
             claims,
-            matrix_eval: self.delegate_matrix_evaluation(
-                &mut f_middle,
-                r1.clone(),
-                out_point,
-                false,
-            ),
+            point: out_point,
+            matrix_eval: (matrix_proofs, matrix_claims),
+            delegation_points,
         }
     }
 
@@ -356,7 +368,7 @@ where
         // compute W(r1,i)
         let mut w_red: Vec<E> = vec![E::ZERO; prod[0].len()];
         let mut f_middle: Vec<Vec<E>> = vec![Vec::new(); r1.len() - 1];
-        self.phi_g_init(
+        Self::phi_g_init(
             &mut w_red,
             &mut f_middle,
             r1.clone(),
@@ -380,25 +392,29 @@ where
         #[allow(deprecated)]
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, self.transcript);
 
-        let claims = state.get_mle_final_evaluations();
+        let claims = state
+            .get_mle_final_evaluations()
+            .into_iter()
+            .flatten()
+            .collect();
 
-        let out_point = proof.point.clone();
+        let out_point = state.collect_raw_challenges();
+        let (proofs, matrix_claims, points) =
+            self.delegate_matrix_evaluation(&mut f_middle, &r1, out_point.clone(), true);
+
         BatchFFTProof {
             proof,
             claims,
-            matrix_eval: self.delegate_matrix_evaluation(
-                &mut f_middle,
-                r1.clone(),
-                out_point,
-                true,
-            ),
+            point: out_point,
+            matrix_eval: (proofs, matrix_claims),
+            delegation_points: points,
         }
     }
 
-    pub fn prove<'b>(
+    pub fn prove<'b: 'a>(
         mut self,
-        full_trace: &InferenceTrace<'b, E, Element>,
-    ) -> anyhow::Result<Proof<E, PCS>> {
+        full_trace: &'a InferenceTrace<'b, E, Element>,
+    ) -> anyhow::Result<Proof<'b, E, PCS>> {
         debug!("== Instantiate witness context ==");
 
         let metrics = Metrics::new();
@@ -446,7 +462,10 @@ where
             );
             let claims_for_prove = ctx.claims_for_node(&claims_by_layer, &out_claims)?;
             let claims = if node_operation.is_provable() {
-                node_operation.prove(node_id, &ctx.ctx, claims_for_prove, step_data, &mut self)?
+                // node_operation
+                // .prove(node_id, &ctx.ctx, claims_for_prove, step_data, &mut self)?
+                // .clone()
+                todo!("no idea")
             } else {
                 // we only propagate the claims, without changing them, as a non-provable layer
                 // shouldn't change the input values
@@ -463,30 +482,30 @@ where
         // Now we have to make the table proofs
         debug!("== Generate proof ==");
         let metrics = Metrics::new();
-        self.prove_tables()?;
+        // self.prove_tables()?;
 
         // now provide opening proofs for all claims accumulated during the proving steps
-        let commit_proof = self
-            .commit_prover
-            .prove(&self.ctx.commitment_ctx, self.transcript)?;
-        let output_proof = Proof {
-            steps: self.proofs,
-            table_proofs: self.table_proofs,
-            commit: commit_proof,
-        };
-
-        let span = metrics.to_span();
-        stream_metrics("Proof", &span);
-        debug!("== Generate proof metrics {} ==", span);
-
-        Ok(output_proof)
+        // let mut prover = self.commit_prover.clone();
+        // let commit_proof = prover.prove(&self.ctx.commitment_ctx, self.transcript)?;
+        // let output_proof = Proof {
+        // steps: self.proofs,
+        // table_proofs: self.table_proofs,
+        // commit: commit_proof,
+        // };
+        //
+        // let span = metrics.to_span();
+        // stream_metrics("Proof", &span);
+        // debug!("== Generate proof metrics {} ==", span);
+        //
+        // Ok(output_proof)
+        todo!()
     }
 
     /// Looks at all the individual polys to accumulate from the witnesses and create the context from that.
     #[timed_instrument]
-    fn instantiate_witness_ctx<'b>(
+    fn instantiate_witness_ctx<'b: 'a>(
         &mut self,
-        trace: &InferenceTrace<'b, E, Element>,
+        trace: &'b InferenceTrace<'b, E, Element>,
     ) -> anyhow::Result<()> {
         let LookupWitness {
             challenge_storage,

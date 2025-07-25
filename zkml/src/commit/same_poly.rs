@@ -13,7 +13,7 @@ use anyhow::{Ok, ensure};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use multilinear_extensions::{
-    mle::{DenseMultilinearExtension, IntoMLE, MultilinearExtension},
+    mle::{IntoMLE, MultilinearExtension},
     virtual_poly::{VPAuxInfo, VirtualPolynomial},
 };
 use rayon::iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator};
@@ -31,7 +31,7 @@ impl<E: ExtensionField> Context<E> {
     /// number of variables of the poly in question
     pub fn new(num_vars: usize) -> Self {
         Self {
-            vp_info: VPAuxInfo::from_mle_list_dimensions(&[vec![num_vars, num_vars]]),
+            vp_info: crate::util::from_mle_list_dimensions(&[vec![num_vars, num_vars]]),
         }
     }
 }
@@ -39,6 +39,7 @@ impl<E: ExtensionField> Context<E> {
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 pub struct Proof<E: ExtensionField> {
     sumcheck: IOPProof<E>,
+    point: Vec<E>,
     // [0] about the betas, [1] about the poly
     evals: Vec<E>,
 }
@@ -46,18 +47,18 @@ pub struct Proof<E: ExtensionField> {
 impl<E: ExtensionField> Proof<E> {
     pub fn extract_claim(&self) -> Claim<E> {
         Claim {
-            point: self.sumcheck.point.clone(),
+            point: self.point.clone(),
             eval: self.evals[1],
         }
     }
 }
 
-pub struct Prover<E: ExtensionField> {
+pub struct Prover<'a, E: ExtensionField> {
     claims: Vec<Claim<E>>,
-    poly: DenseMultilinearExtension<E>,
+    poly: MultilinearExtension<'a, E>,
 }
 
-impl<E> Prover<E>
+impl<'a, E> Prover<'a, E>
 where
     E: ExtensionField,
     E::BaseField: Serialize + DeserializeOwned,
@@ -65,7 +66,7 @@ where
 {
     /// The polynomial over which the claims are to be accumulated and proven
     /// Note the prover also _commits_ to this polynomial.
-    pub fn new(poly: DenseMultilinearExtension<E>) -> Self {
+    pub fn new(poly: MultilinearExtension<'a, E>) -> Self {
         Self {
             claims: Default::default(),
             poly,
@@ -115,7 +116,12 @@ where
 
         Ok(Proof {
             sumcheck: sumcheck_proof,
-            evals: state.get_mle_final_evaluations(),
+            evals: state
+                .get_mle_final_evaluations()
+                .into_iter()
+                .flatten()
+                .collect(),
+            point: state.collect_raw_challenges(),
         })
     }
 }
@@ -164,7 +170,7 @@ where
             .into_iter()
             .zip(rs)
             .fold(E::ZERO, |acc, (a_i, r_i)| {
-                acc + a_i * identity_eval(&r_i, &proof.sumcheck.point)
+                acc + a_i * identity_eval(&r_i, &proof.point)
             });
         let given_y = proof.evals[0];
         ensure!(computed_y == given_y, "beta evaluation do not match");
@@ -184,8 +190,8 @@ where
 #[cfg(test)]
 mod test {
     use ff_ext::GoldilocksExt2;
-    use mpcs::PolynomialCommitmentScheme;
-    use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
+    use mpcs_lg::PolynomialCommitmentScheme;
+    use multilinear_extensions::mle::IntoMLE;
 
     use crate::{
         Claim, default_transcript,

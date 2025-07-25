@@ -19,7 +19,9 @@ use itertools::Itertools;
 use serde::{Serialize, de::DeserializeOwned};
 use transcript::Transcript;
 
-use multilinear_extensions::{mle::FieldType, virtual_poly::build_eq_x_r_vec};
+use multilinear_extensions::{
+    mle::FieldType, smart_slice::SmartSlice, virtual_poly::build_eq_x_r_vec,
+};
 
 use crate::util::plonky2_util::reverse_index_bits_in_place;
 use rayon::prelude::*;
@@ -27,7 +29,7 @@ use rayon::prelude::*;
 use super::structure::BasefoldCommitmentWithWitness;
 
 // outputs (trees, sumcheck_oracles, oracles, bh_evals, eq, eval)
-pub fn commit_phase<E: ExtensionField, Spec: BasefoldSpec<E>>(
+pub fn commit_phase<'a, E: ExtensionField, Spec: BasefoldSpec<E>>(
     pp: &<Spec::EncodingScheme as EncodingScheme<E>>::ProverParameters,
     point: &[E],
     comm: &BasefoldCommitmentWithWitness<E, Spec::MerkleHasher>,
@@ -35,7 +37,7 @@ pub fn commit_phase<E: ExtensionField, Spec: BasefoldSpec<E>>(
     num_vars: usize,
     num_rounds: usize,
 ) -> (
-    Vec<MerkleTree<E, Spec::MerkleHasher>>,
+    Vec<MerkleTree<'a, E, Spec::MerkleHasher>>,
     BasefoldCommitPhaseProof<E, <Spec::MerkleHasher as MerkleHasher<E>>::Digest>,
 )
 where
@@ -70,7 +72,7 @@ where
     assert_eq!(last_sumcheck_message.len(), 3);
 
     let mut running_evals = match running_evals {
-        FieldType::Ext(evals) => evals,
+        FieldType::Ext(evals) => evals.to_vec(),
         FieldType::Base(evals) => evals.iter().map(|x| E::from(*x)).collect_vec(),
         _ => unreachable!(),
     };
@@ -87,7 +89,7 @@ where
         transcript.append_field_element_exts(&last_sumcheck_message);
         sumcheck_messages.push(last_sumcheck_message);
 
-        let challenge = transcript.get_and_append_challenge(b"commit round");
+        let challenge = transcript.sample_and_append_challenge(b"commit round");
 
         // Fold the current oracle for FRI
         let new_running_oracle = basefold_one_round_by_interpolation_weights::<E, Spec>(
@@ -100,7 +102,7 @@ where
         if i > 0 {
             let running_tree = MerkleTree::<E, Spec::MerkleHasher>::from_inner_leaves(
                 running_tree_inner,
-                FieldType::Ext(running_oracle),
+                FieldType::Ext(SmartSlice::Owned(running_oracle)),
             );
             trees.push(running_tree);
         }
@@ -156,7 +158,7 @@ where
                 }
                 let basecode = <Spec::EncodingScheme as EncodingScheme<E>>::encode(
                     pp,
-                    &FieldType::Ext(coeffs),
+                    &FieldType::Ext(SmartSlice::Owned(coeffs)),
                 );
                 let basecode = match basecode {
                     FieldType::Ext(b) => b,
@@ -165,7 +167,7 @@ where
 
                 let mut new_running_oracle = new_running_oracle;
                 reverse_index_bits_in_place(&mut new_running_oracle);
-                assert_eq!(basecode, new_running_oracle);
+                assert_eq!(basecode, SmartSlice::Owned(new_running_oracle));
             }
         }
         end_timer!(sumcheck_timer);
@@ -184,7 +186,7 @@ where
 
 // outputs (trees, sumcheck_oracles, oracles, bh_evals, eq, eval)
 #[allow(clippy::too_many_arguments)]
-pub fn batch_commit_phase<E: ExtensionField, Spec: BasefoldSpec<E>>(
+pub fn batch_commit_phase<'a, E: ExtensionField, Spec: BasefoldSpec<E>>(
     pp: &<Spec::EncodingScheme as EncodingScheme<E>>::ProverParameters,
     point: &[E],
     comms: &[BasefoldCommitmentWithWitness<E, Spec::MerkleHasher>],
@@ -193,7 +195,7 @@ pub fn batch_commit_phase<E: ExtensionField, Spec: BasefoldSpec<E>>(
     num_rounds: usize,
     coeffs: &[E],
 ) -> (
-    Vec<MerkleTree<E, Spec::MerkleHasher>>,
+    Vec<MerkleTree<'a, E, Spec::MerkleHasher>>,
     BasefoldCommitPhaseProof<E, <Spec::MerkleHasher as MerkleHasher<E>>::Digest>,
 )
 where
@@ -258,13 +260,13 @@ where
         transcript.append_field_element_exts(&last_sumcheck_message);
 
         let challenge = transcript
-            .get_and_append_challenge(b"commit round")
+            .sample_and_append_challenge(b"commit round")
             .elements;
 
         if i > 0 {
             let running_tree = MerkleTree::<E, Spec::MerkleHasher>::from_inner_leaves(
                 running_tree_inner,
-                FieldType::Ext(new_running_oracle.clone()),
+                FieldType::Ext(SmartSlice::Owned(new_running_oracle.clone())),
             );
             trees.push(running_tree);
 
@@ -334,7 +336,7 @@ where
                 interpolate_over_boolean_hypercube(&mut coeffs);
                 let basecode = <Spec::EncodingScheme as EncodingScheme<E>>::encode(
                     pp,
-                    &FieldType::Ext(coeffs),
+                    &FieldType::Ext(SmartSlice::Borrowed(&coeffs)),
                 );
                 let basecode = match basecode {
                     FieldType::Ext(x) => x,
@@ -342,7 +344,7 @@ where
                 };
 
                 reverse_index_bits_in_place(&mut new_running_oracle);
-                assert_eq!(basecode, new_running_oracle);
+                assert_eq!(basecode.to_vec(), new_running_oracle);
             }
         }
         end_timer!(sumcheck_timer);
@@ -360,7 +362,7 @@ where
 
 // outputs (trees, sumcheck_oracles, oracles, bh_evals, eq, eval)
 #[allow(clippy::too_many_arguments)]
-pub fn simple_batch_commit_phase<E: ExtensionField, Spec: BasefoldSpec<E>>(
+pub fn simple_batch_commit_phase<'a, E: ExtensionField, Spec: BasefoldSpec<E>>(
     pp: &<Spec::EncodingScheme as EncodingScheme<E>>::ProverParameters,
     point: &[E],
     batch_coeffs: &[E],
@@ -369,7 +371,7 @@ pub fn simple_batch_commit_phase<E: ExtensionField, Spec: BasefoldSpec<E>>(
     num_vars: usize,
     num_rounds: usize,
 ) -> (
-    Vec<MerkleTree<E, Spec::MerkleHasher>>,
+    Vec<MerkleTree<'a, E, Spec::MerkleHasher>>,
     BasefoldCommitPhaseProof<E, <Spec::MerkleHasher as MerkleHasher<E>>::Digest>,
 )
 where
@@ -421,7 +423,7 @@ where
         sumcheck_messages.push(last_sumcheck_message);
 
         let challenge = transcript
-            .get_and_append_challenge(b"commit round")
+            .sample_and_append_challenge(b"commit round")
             .elements;
 
         // Fold the current oracle for FRI
@@ -435,7 +437,7 @@ where
         if i > 0 {
             let running_tree = MerkleTree::<E, Spec::MerkleHasher>::from_inner_leaves(
                 running_tree_inner,
-                FieldType::Ext(running_oracle),
+                FieldType::Ext(SmartSlice::Owned(running_oracle.clone())),
             );
             trees.push(running_tree);
         }
@@ -483,7 +485,7 @@ where
                 interpolate_over_boolean_hypercube(&mut coeffs);
                 let basecode = <Spec::EncodingScheme as EncodingScheme<E>>::encode(
                     pp,
-                    &FieldType::Ext(coeffs),
+                    &FieldType::Ext(SmartSlice::Borrowed(&coeffs)),
                 );
                 let basecode = match basecode {
                     FieldType::Ext(basecode) => basecode,
@@ -492,7 +494,7 @@ where
 
                 let mut new_running_oracle = new_running_oracle;
                 reverse_index_bits_in_place(&mut new_running_oracle);
-                assert_eq!(basecode, new_running_oracle);
+                assert_eq!(basecode.to_vec(), new_running_oracle);
             }
         }
         end_timer!(sumcheck_timer);

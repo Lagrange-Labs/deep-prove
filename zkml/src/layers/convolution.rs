@@ -20,8 +20,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use ff_ext::ExtensionField;
-use gkr::util::ceil_log2;
-use mpcs::PolynomialCommitmentScheme;
+use mpcs_lg::PolynomialCommitmentScheme;
 // use itertools::assert_equal;
 use crate::{
     Element,
@@ -29,7 +28,8 @@ use crate::{
     tensor::{Tensor, fft},
 };
 use multilinear_extensions::{
-    mle::{IntoMLE, MultilinearExtension},
+    mle::IntoMLE,
+    util::ceil_log2,
     virtual_poly::{VPAuxInfo, VirtualPolynomial},
 };
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -98,21 +98,28 @@ pub struct ConvProof<E: ExtensionField> {
     // Sumcheck proof for the FFT layer
     fft_proof: IOPProof<E>,
     fft_proof_weights: IOPProof<E>,
+    fft_point: Vec<E>,
     // Proof for the evaluation delegation of the omegas matrix
     // It consists of multiple sumcheck proofs
     fft_delegation_proof: Vec<IOPProof<E>>,
     fft_delegation_proof_weights: Vec<IOPProof<E>>,
     // Likewise for fft, we define ifft proofs
     ifft_proof: IOPProof<E>,
+    ifft_point: Vec<E>,
     ifft_delegation_proof: Vec<IOPProof<E>>,
+    ifft_delegation_points: Vec<Vec<E>>,
     // Sumcheck proof for the hadamard product
     hadamard_proof: IOPProof<E>,
+    hadamard_point: Vec<E>,
     // The evaluation claims produced by the corresponding sumchecks
     fft_claims: Vec<E>,
     fft_weight_claims: Vec<E>,
     ifft_claims: Vec<E>,
     fft_delegation_claims: Vec<Vec<E>>,
+    fft_delegation_points: Vec<Vec<E>>,
     fft_delegation_weights_claims: Vec<Vec<E>>,
+    fft_delegation_weights_points: Vec<Vec<E>>,
+    fft_weight_point: Vec<E>,
     ifft_delegation_claims: Vec<Vec<E>>,
     partial_evals: Vec<E>,
     hadamard_clams: Vec<E>,
@@ -390,7 +397,7 @@ impl Convolution<Element> {
         let mut w_red: Vec<E> = vec![E::ZERO; padded_rows];
         let mut f_middle: Vec<Vec<E>> = vec![Vec::new(); r1.len() - 1];
         let beta = compute_betas_eval(&r2);
-        prover.phi_g_init(
+        Prover::<E, T, PCS>::phi_g_init(
             &mut w_red,
             &mut f_middle,
             r1.clone(),
@@ -439,19 +446,22 @@ impl Convolution<Element> {
         #[allow(deprecated)]
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
 
-        let claims = state.get_mle_final_evaluations();
+        let claims = state
+            .get_mle_final_evaluations()
+            .into_iter()
+            .flatten()
+            .collect();
 
-        let out_point = proof.point.clone();
+        let out_point = state.collect_raw_challenges();
+        let (matrix_proofs, matrix_claims, matrix_evaluation_points) =
+            prover.delegate_matrix_evaluation(&mut f_middle, &r1, out_point.clone(), false);
         BatchFFTWeightsProof {
             proof,
             claims,
             partial_evals,
-            matrix_evaluation: prover.delegate_matrix_evaluation(
-                &mut f_middle,
-                r1.clone(),
-                out_point,
-                false,
-            ),
+            point: out_point,
+            matrix_evaluation: (matrix_proofs, matrix_claims),
+            matrix_evaluation_points,
         }
     }
 }
@@ -459,8 +469,10 @@ impl Convolution<Element> {
 pub struct BatchFFTWeightsProof<E: ExtensionField> {
     pub proof: sumcheck::structs::IOPProof<E>,
     pub claims: Vec<E>,
+    pub point: Vec<E>,
     pub partial_evals: Vec<E>,
     pub matrix_evaluation: (Vec<sumcheck::structs::IOPProof<E>>, Vec<Vec<E>>),
+    pub matrix_evaluation_points: Vec<Vec<E>>,
 }
 
 const FILTER_POLY_ID: &str = "ConvFilter";
@@ -482,17 +494,17 @@ where
         let mut delegation_fft_weights: Vec<VPAuxInfo<E>> = Vec::new();
         let mut delegation_ifft: Vec<VPAuxInfo<E>> = Vec::new();
         for i in (0..(self.filter_size().ilog2() as usize)).rev() {
-            delegation_fft.push(VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
+            delegation_fft.push(crate::util::from_mle_list_dimensions(&[vec![
                 i + 1,
                 i + 1,
                 i + 1,
             ]]));
-            delegation_fft_weights.push(VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
+            delegation_fft_weights.push(crate::util::from_mle_list_dimensions(&[vec![
                 i + 1,
                 i + 1,
                 i + 1,
             ]]));
-            delegation_ifft.push(VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
+            delegation_ifft.push(crate::util::from_mle_list_dimensions(&[vec![
                 i + 1,
                 i + 1,
                 i + 1,
@@ -501,19 +513,19 @@ where
 
         let conv_info = LayerCtx::Convolution(ConvCtx {
             node_id: id,
-            ifft_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
+            ifft_aux: crate::util::from_mle_list_dimensions(&[vec![
                 ((self.filter_size()).ilog2() as usize) + 1,
                 ((self.filter_size()).ilog2() as usize) + 1,
             ]]),
-            fft_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
+            fft_aux: crate::util::from_mle_list_dimensions(&[vec![
                 ((self.filter_size()).ilog2() as usize) + 1,
                 ((self.filter_size()).ilog2() as usize) + 1,
             ]]),
-            fft_weights_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
+            fft_weights_aux: crate::util::from_mle_list_dimensions(&[vec![
                 ((self.filter_size()).ilog2() as usize) + 1,
                 ((self.filter_size()).ilog2() as usize) + 1,
             ]]),
-            hadamard: VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
+            hadamard: crate::util::from_mle_list_dimensions(&[vec![
                 ((self.kx() * self.filter_size()).ilog2() as usize) + 1,
                 ((self.kx() * self.filter_size()).ilog2() as usize) + 1,
                 ((self.kx() * self.filter_size()).ilog2() as usize) + 1,
@@ -802,13 +814,15 @@ impl Convolution<Element> {
         let mut temp_t = prover.transcript.clone();
         let BatchFFTProof {
             proof: ifft_proof,
+            point: ifft_proof_point,
             claims: ifft_claim,
             matrix_eval: ifft_del_proof,
+            delegation_points: ifft_delegation_points,
         } = prover.prove_batch_ifft(r.clone(), &proving_data.prod);
 
         assert_eq!(
             filter.filter_size().ilog2() as usize + 1,
-            ifft_proof.point.len(),
+            ifft_proof_point.len(),
             "Error in ifft sumceck"
         );
         debug_assert!({
@@ -829,7 +843,7 @@ impl Convolution<Element> {
         // For this let r1 be the last log(k_w) elements of r and r2 the first log(n_x^2) elements
         // Compute the arrays beta1,beta2 such that beta1[i] = beta(i,r1) and beta2[i] = beta(i,r2)
 
-        let mut r_ifft: Vec<E> = ifft_proof.point.clone();
+        let mut r_ifft: Vec<E> = ifft_proof_point.clone();
         for item in r.iter().skip(proving_data.output[0].len().ilog2() as usize) {
             r_ifft.push(*item);
         }
@@ -925,33 +939,39 @@ impl Convolution<Element> {
         );
         #[allow(deprecated)]
         let (hadamard_proof, state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
-        let hadamard_claims = state.get_mle_final_evaluations();
+        let hadamard_claims = state
+            .get_mle_final_evaluations()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        let hadamard_point = state.collect_raw_challenges();
 
-        let point = [hadamard_proof.point.as_slice(), r1].concat();
-        // let eval = hadamard_claims[0];
+        let point = [hadamard_point.as_slice(), r1].concat();
+        let eval = hadamard_claims[0];
 
         // Finally prove the correct computation of the x_fft and get an evaluation claim of the input
         let BatchFFTProof {
             proof: fft_proof,
             claims: fft_claim,
+            point: fft_point,
             matrix_eval: fft_del_proof,
-        } = prover.prove_batch_fft(
-            hadamard_proof.point.clone(),
-            &mut proving_data.input.clone(),
-        );
+            delegation_points: fft_delegation_points,
+        } = prover.prove_batch_fft(hadamard_point.clone(), &mut proving_data.input.clone());
 
         let BatchFFTWeightsProof {
             proof: fft_proof_weights,
             claims: fft_weight_claims,
+            point: fft_weight_point,
             partial_evals,
             matrix_evaluation: fft_weights_del_proof,
+            matrix_evaluation_points: fft_delegation_weights_points,
         } = self.prove_batch_fft_weights(prover, point.clone());
 
         let weights_rand: Vec<E> = prover
             .transcript
             .read_challenges((self.filter.real_nw() * self.filter.real_nw()).ilog2() as usize);
         debug_assert!({
-            let mut weights_point = fft_proof_weights.point.clone();
+            let mut weights_point = fft_weight_point.clone();
             let mut v_weights = weights_point.pop().unwrap();
             v_weights = (E::ONE - v_weights).inverse();
 
@@ -1014,16 +1034,23 @@ impl Convolution<Element> {
             LayerProof::Convolution(Box::new(ConvProof {
                 fft_proof: fft_proof.clone(),
                 fft_claims: fft_claim.clone(),
+                fft_point: fft_point.clone(),
                 fft_proof_weights,
                 ifft_proof,
+                ifft_point: ifft_proof_point,
                 fft_delegation_proof: fft_del_proof.0,
                 fft_delegation_proof_weights: fft_weights_del_proof.0,
                 ifft_delegation_proof: ifft_del_proof.0,
+                ifft_delegation_points,
                 hadamard_proof: hadamard_proof.clone(),
+                hadamard_point: hadamard_point.clone(),
                 ifft_claims: ifft_claim,
                 fft_weight_claims,
+                fft_weight_point,
                 fft_delegation_claims: fft_del_proof.1,
+                fft_delegation_points,
                 fft_delegation_weights_claims: fft_weights_del_proof.1,
+                fft_delegation_weights_points,
                 ifft_delegation_claims: ifft_del_proof.1,
                 hadamard_clams: hadamard_claims,
                 bias_claim: bias_eval,
@@ -1031,13 +1058,13 @@ impl Convolution<Element> {
                 clearing_proof,
             })),
         );
-        let mut input_point = fft_proof.point.clone();
+        let mut input_point = fft_point.clone();
         let mut v = input_point.pop().unwrap();
         v = (E::ONE - v).inverse();
         debug_assert!({
             let mut p = [
                 input_point.clone(),
-                hadamard_proof.point[((filter.filter_size() * 2).ilog2() as usize)..].to_vec(),
+                hadamard_point[((filter.filter_size() * 2).ilog2() as usize)..].to_vec(),
             ]
             .concat();
             // println!("({},{}), {}",proving_data.input.len(),proving_data.input[0].len(),p.len());
@@ -1066,7 +1093,7 @@ impl Convolution<Element> {
         let final_claim = Claim {
             point: [
                 input_point.clone(),
-                hadamard_proof.point[((filter.filter_size() * 2).ilog2() as usize)..].to_vec(),
+                hadamard_point[((filter.filter_size() * 2).ilog2() as usize)..].to_vec(),
             ]
             .concat(),
             eval: fft_claim[0] * v,
@@ -1094,6 +1121,7 @@ where
         proof: &ConvProof<E>,
         delegation_proof: &[IOPProof<E>],
         delegation_claims: &[Vec<E>],
+        delegation_points: &[Vec<E>],
         mut prev_r: Vec<E>,
     ) {
         let iter = delegation_proof.len();
@@ -1108,20 +1136,17 @@ where
             );
 
             assert_eq!(
-                identity_eval(
-                    delegation_proof[i].point.clone().as_slice(),
-                    prev_r.clone().as_slice()
-                ),
+                identity_eval(delegation_points[i].as_slice(), prev_r.clone().as_slice()),
                 delegation_claims[i][0],
                 "Error in identity evaluation fft delegation iter : {i}"
             );
 
             assert_eq!(
                 phi_eval(
-                    delegation_proof[i].point.clone(),
-                    proof.hadamard_proof.point[i],
+                    &delegation_points[i],
+                    proof.hadamard_point[i],
                     prev_r[prev_r.len() - 1],
-                    exponents.clone(),
+                    &exponents,
                     i == 0
                 ),
                 delegation_claims[i][1],
@@ -1129,12 +1154,11 @@ where
             );
 
             claim = delegation_claims[i][2];
-            prev_r = delegation_proof[i].point.clone();
+            prev_r = delegation_points[i].clone();
         }
         assert_eq!(
             claim,
-            (E::ONE - E::from_canonical_u64(2) * proof.hadamard_proof.point[iter]) * prev_r[0]
-                + E::ONE
+            (E::ONE - E::from_canonical_u64(2) * proof.hadamard_point[iter]) * prev_r[0] + E::ONE
                 - prev_r[0],
             "Error in final FFT delegation step"
         );
@@ -1202,7 +1226,7 @@ where
         let iter = proof.ifft_delegation_proof.len();
         let mut claim = proof.ifft_claims[1];
         let exponents = pow_two_omegas(iter + 1, true);
-        let mut prev_r = proof.ifft_proof.point.clone();
+        let mut prev_r = proof.ifft_point.clone();
         for i in 0..iter {
             IOPVerifierState::<E>::verify(
                 claim,
@@ -1212,7 +1236,7 @@ where
             );
             assert_eq!(
                 identity_eval(
-                    proof.ifft_delegation_proof[i].point.clone().as_slice(),
+                    proof.ifft_delegation_points[i].as_slice(),
                     prev_r.clone().as_slice()
                 ),
                 proof.ifft_delegation_claims[i][0],
@@ -1220,17 +1244,17 @@ where
             );
             assert_eq!(
                 phi_eval(
-                    proof.ifft_delegation_proof[i].point.clone(),
+                    proof.ifft_delegation_points[i].as_slice(),
                     E::ONE - last_claim.point[i],
                     prev_r[prev_r.len() - 1],
-                    exponents.clone(),
+                    &exponents,
                     false
                 ),
                 proof.ifft_delegation_claims[i][1],
                 "Error in phi computation ifft delegation iter : {i}"
             );
 
-            prev_r = proof.ifft_delegation_proof[i].point.clone();
+            prev_r = proof.ifft_delegation_points[i].clone();
             claim = proof.ifft_delegation_claims[i][2];
         }
         let scale = E::from_canonical_u64(1 << (iter + 1)).inverse();
@@ -1249,7 +1273,7 @@ where
         );
         assert_eq!(
             proof.hadamard_clams[2],
-            identity_eval(&proof.ifft_proof.point, &proof.hadamard_proof.point),
+            identity_eval(&proof.ifft_point, &proof.hadamard_point),
             "Error in Beta evaluation"
         );
 
@@ -1275,7 +1299,8 @@ where
             proof,
             &proof.fft_delegation_proof,
             &proof.fft_delegation_claims,
-            proof.fft_proof.point.clone(),
+            &proof.fft_delegation_points,
+            proof.fft_point.clone(),
         );
 
         IOPVerifierState::<E>::verify(
@@ -1291,12 +1316,13 @@ where
             proof,
             &proof.fft_delegation_proof_weights,
             &proof.fft_delegation_weights_claims,
-            proof.fft_proof_weights.point.clone(),
+            &proof.fft_delegation_weights_points,
+            proof.fft_weight_point.clone(),
         );
 
         // Validate the correctness of the padded weights claim
         // using the partial_evals provided by the prover
-        let mut weights_point = proof.fft_proof_weights.point.clone();
+        let mut weights_point = proof.fft_weight_point.clone();
         let mut v = weights_point.pop().unwrap();
         v = (E::ONE - v).inverse();
 
@@ -1321,7 +1347,7 @@ where
             .read_challenges((self.real_nw * self.real_nw).ilog2() as usize);
 
         let point = [
-            proof.hadamard_proof.point.as_slice(),
+            proof.hadamard_point.as_slice(),
             &last_claim.point[((self.filter_size).ilog2() as usize)..],
         ]
         .concat();
@@ -1352,7 +1378,7 @@ where
         };
         verifier.add_common_claims(self.node_id, common_claims)?;
 
-        let mut input_point = proof.fft_proof.point.clone();
+        let mut input_point = proof.fft_point.clone();
         v = input_point.pop().unwrap();
         v = (E::ONE - v).inverse();
         for point in &mut input_point {
@@ -1363,7 +1389,7 @@ where
             // the new randomness to fix at next layer is the randomness from the sumcheck !
             point: [
                 input_point.clone(),
-                proof.hadamard_proof.point[((self.filter_size * 2).ilog2() as usize)..].to_vec(),
+                proof.hadamard_point[((self.filter_size * 2).ilog2() as usize)..].to_vec(),
             ]
             .concat(),
             // the claimed sum for the next sumcheck is MLE of the current vector evaluated at the
@@ -1461,10 +1487,10 @@ pub fn pow_two_omegas<E: ExtensionField>(n: usize, is_fft: bool) -> Vec<E> {
 }
 
 pub fn phi_eval<E: ExtensionField>(
-    r: Vec<E>,
+    r: &[E],
     rand1: E,
     rand2: E,
-    exponents: Vec<E>,
+    exponents: &[E],
     first_iter: bool,
 ) -> E {
     let mut eval = E::ONE;

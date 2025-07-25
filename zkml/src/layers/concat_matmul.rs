@@ -17,9 +17,9 @@ use std::borrow::Borrow;
 use anyhow::{Result, ensure};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use mpcs::PolynomialCommitmentScheme;
+use mpcs_lg::PolynomialCommitmentScheme;
 use multilinear_extensions::{
-    mle::{DenseMultilinearExtension, IntoMLE, MultilinearExtension},
+    mle::{IntoMLE, MultilinearExtension},
     virtual_poly::{VPAuxInfo, VirtualPolynomial},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -133,11 +133,11 @@ impl InputMatrixDimensions {
 
     /// Compute the MLE for the input tensor, checking if the tensor needs to be permuted for the sum-check
     /// employed in proving
-    fn input_mle_for_proving<E: ExtensionField>(
+    fn input_mle_for_proving<'a, E: ExtensionField>(
         &self,
-        input: &Tensor<E>,
+        input: &'a Tensor<E>,
         partial_point: &[E],
-    ) -> DenseMultilinearExtension<E> {
+    ) -> MultilinearExtension<'a, E> {
         // determine if we need to permute the matrix for sum-check
         if self.concat_dimension > self.mat_mul_dimension || self.output_dimension == 1 {
             // we need to permute the matrix; for simplicity, we alwayes permute in order to get
@@ -542,12 +542,16 @@ impl ConcatMatMul {
         #[allow(deprecated)]
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
 
-        let evals = state.get_mle_final_evaluations();
+        let evals = state
+            .get_mle_final_evaluations()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
 
         let left_eval = evals[1];
         let right_eval = evals[2];
 
-        let proof_point = &proof.point;
+        let proof_point = &state.collect_raw_challenges();
         let (point_for_concat_dim, point_for_mat_mul_dim) = self
             .permutations
             .split_sumcheck_point(proof_point, &input_shapes)?;
@@ -710,7 +714,7 @@ where
 
         let num_vars = (num_columns_left * num_chunks).ilog2() as usize;
 
-        let vp_aux = VPAuxInfo::from_mle_list_dimensions(&[vec![num_vars, num_vars, num_vars]]);
+        let vp_aux = crate::util::from_mle_list_dimensions(&[vec![num_vars, num_vars, num_vars]]);
 
         aux.last_output_shape = self.output_shapes(&aux.last_output_shape, PaddingMode::Padding);
 
@@ -836,7 +840,11 @@ where
                 &last_claims[0].point,
             )?;
 
-        let sumcheck_point = subclaim.point_flat();
+        let sumcheck_point = subclaim
+            .point
+            .iter()
+            .map(|p| p.elements)
+            .collect::<Vec<_>>();
 
         let (point_for_concat_dim, point_for_mat_mul_dim) = self
             .permutations

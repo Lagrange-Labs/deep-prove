@@ -7,7 +7,7 @@
 use anyhow::{Result, ensure};
 use ff_ext::ExtensionField;
 use multilinear_extensions::{
-    mle::{IntoMLE, MultilinearExtension},
+    mle::IntoMLE,
     virtual_poly::{VPAuxInfo, VirtualPolynomial},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -29,7 +29,7 @@ impl<F: ExtensionField> HadamardCtx<F> {
             v1.get_data().len().next_power_of_two().ilog2() as usize
         };
         Self {
-            sumcheck_aux: VPAuxInfo::from_mle_list_dimensions(&[vec![
+            sumcheck_aux: crate::util::from_mle_list_dimensions(&[vec![
                 // v1, v2, beta
                 num_vars, num_vars, num_vars,
             ]]),
@@ -39,7 +39,7 @@ impl<F: ExtensionField> HadamardCtx<F> {
         let num_vars = vector_len.next_power_of_two().ilog2() as usize;
         Self {
             // v1, v2, beta
-            sumcheck_aux: VPAuxInfo::from_mle_list_dimensions(&[vec![
+            sumcheck_aux: crate::util::from_mle_list_dimensions(&[vec![
                 num_vars, num_vars, num_vars,
             ]]),
         }
@@ -51,12 +51,13 @@ impl<F: ExtensionField> HadamardCtx<F> {
 pub struct HadamardProof<E: ExtensionField> {
     sumcheck: IOPProof<E>,
     individual_claim: Vec<E>,
+    point: Vec<E>,
 }
 
 impl<F: ExtensionField> HadamardProof<F> {
     #[allow(unused)]
     pub fn random_point(&self) -> &[F] {
-        &self.sumcheck.point
+        &self.point
     }
     #[allow(unused)]
     pub fn v1_eval(&self) -> F {
@@ -120,7 +121,13 @@ pub fn prove<F: ExtensionField, T: Transcript<F>>(
     });
     HadamardProof {
         sumcheck: proof,
-        individual_claim: state.get_mle_final_evaluations()[..2].to_vec(),
+        individual_claim: state
+            .get_mle_final_evaluations()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()[..2]
+            .to_vec(),
+        point: state.collect_raw_challenges(),
     }
 }
 
@@ -140,7 +147,7 @@ pub fn verify<F: ExtensionField, T: Transcript<F>>(
     );
     // TODO: closed formula for beta evaluation
     let beta = compute_betas_eval(&output_claim.point).into_mle();
-    let beta_eval = beta.evaluate(&proof.sumcheck.point);
+    let beta_eval = beta.evaluate(&proof.point);
     // [v1,v2,beta]
     ensure!(
         expected_v2_eval == proof.v2_eval(),
@@ -153,7 +160,7 @@ pub fn verify<F: ExtensionField, T: Transcript<F>>(
         product == subclaim.expected_evaluation,
         "Hadamard verification failed for product eval"
     );
-    Ok(Claim::new(proof.sumcheck.point.clone(), proof.v1_eval()))
+    Ok(Claim::new(proof.point.clone(), proof.v1_eval()))
 }
 
 #[cfg(test)]

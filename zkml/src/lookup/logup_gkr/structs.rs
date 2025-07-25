@@ -7,7 +7,7 @@ use std::{
 };
 
 use ff_ext::ExtensionField;
-use multilinear_extensions::mle::DenseMultilinearExtension;
+use multilinear_extensions::mle::MultilinearExtension;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sumcheck::structs::IOPProof;
 use transcript::Transcript;
@@ -278,13 +278,13 @@ impl<E: ExtensionField> LogUpInput<E> {
         }
     }
 
-    pub fn base_mles(&self) -> Vec<DenseMultilinearExtension<E>> {
+    pub fn base_mles(&self) -> Vec<MultilinearExtension<'_, E>> {
         match self {
             LogUpInput::Lookup { column_evals, .. } => column_evals
                 .iter()
                 .map(|evaluations| {
                     let num_vars = evaluations.len().ilog2() as usize;
-                    DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, evaluations)
+                    MultilinearExtension::<E>::from_evaluations_slice(num_vars, evaluations)
                 })
                 .collect(),
             LogUpInput::Table {
@@ -295,7 +295,7 @@ impl<E: ExtensionField> LogUpInput<E> {
                 .chain(column_evals.iter())
                 .map(|evaluations| {
                     let num_vars = evaluations.len().ilog2() as usize;
-                    DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, evaluations)
+                    MultilinearExtension::<E>::from_evaluations_slice(num_vars, evaluations)
                 })
                 .collect(),
         }

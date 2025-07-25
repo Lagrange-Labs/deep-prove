@@ -8,8 +8,8 @@ use anyhow::{bail, ensure};
 use ark_std::rand::Rng;
 use ff_ext::{ExtensionField, GoldilocksExt2};
 use itertools::Itertools;
-use mpcs::util::plonky2_util::log2_ceil;
-use multilinear_extensions::{mle::DenseMultilinearExtension, util::ceil_log2};
+use mpcs_lg::util::plonky2_util::log2_ceil;
+use multilinear_extensions::{mle::MultilinearExtension, util::ceil_log2};
 use p3_field::{FieldAlgebra, TwoAdicField};
 use p3_goldilocks::Goldilocks;
 use rayon::{
@@ -590,12 +590,13 @@ impl Tensor<Element> {
         self.data.par_iter().map(|e| e.to_field()).collect()
     }
 
-    pub fn to_2d_mle<F: ExtensionField>(&self) -> DenseMultilinearExtension<F> {
-        Tensor::<F>::from(self).to_mle_2d()
+    pub fn to_2d_mle<'a, F: ExtensionField>(&'a self) -> MultilinearExtension<'a, F> {
+        let tensor = Tensor::<F>::from(self);
+        tensor.to_mle_2d()
     }
 
-    pub fn to_mle_flat<F: ExtensionField>(&self) -> DenseMultilinearExtension<F> {
-        DenseMultilinearExtension::from_evaluations_ext_vec(
+    pub fn to_mle_flat<F: ExtensionField>(&self) -> MultilinearExtension<'_, F> {
+        MultilinearExtension::from_evaluations_ext_vec(
             self.data.len().ilog2() as usize,
             self.evals_flat(),
         )
@@ -613,29 +614,22 @@ impl<F: ExtensionField> From<&Tensor<Element>> for Tensor<F> {
 }
 
 impl<F: ExtensionField> Tensor<F> {
-    pub fn to_mle_2d(&self) -> DenseMultilinearExtension<F> {
-        tensor_to_mle_2d(self, self.data.clone())
+    pub fn to_mle_2d<'b>(&self) -> MultilinearExtension<'b, F> {
+        assert!(self.is_matrix(), "Tensor is not a matrix");
+        assert!(
+            self.nrows_2d().is_power_of_two(),
+            "number of rows {} is not a power of two",
+            self.nrows_2d()
+        );
+        assert!(
+            self.ncols_2d().is_power_of_two(),
+            "number of columns {} is not a power of two",
+            self.ncols_2d()
+        );
+        // N variable to address 2^N rows and M variables to address 2^M columns
+        let num_vars = self.nrows_2d().ilog2() + self.ncols_2d().ilog2();
+        MultilinearExtension::from_evaluations_ext_vec(num_vars as usize, self.data.clone())
     }
-}
-
-fn tensor_to_mle_2d<T, F: ExtensionField>(
-    tensor: &Tensor<T>,
-    evals: Vec<F>,
-) -> DenseMultilinearExtension<F> {
-    assert!(tensor.is_matrix(), "Tensor is not a matrix");
-    assert!(
-        tensor.nrows_2d().is_power_of_two(),
-        "number of rows {} is not a power of two",
-        tensor.nrows_2d()
-    );
-    assert!(
-        tensor.ncols_2d().is_power_of_two(),
-        "number of columns {} is not a power of two",
-        tensor.ncols_2d()
-    );
-    // N variable to address 2^N rows and M variables to address 2^M columns
-    let num_vars = tensor.nrows_2d().ilog2() + tensor.ncols_2d().ilog2();
-    DenseMultilinearExtension::from_evaluations_ext_vec(num_vars as usize, evals)
 }
 
 impl Tensor<f32> {

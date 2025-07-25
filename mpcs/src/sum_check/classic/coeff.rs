@@ -11,9 +11,12 @@ use crate::{
 };
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use multilinear_extensions::mle::{FieldType, MultilinearExtension};
+use multilinear_extensions::{
+    mle::{FieldType, MultilinearExtension},
+    smart_slice::SmartSlice,
+};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{fmt::Debug, iter, ops::AddAssign};
+use std::{fmt::Debug, iter, marker::PhantomData, ops::AddAssign};
 use transcript::Transcript;
 
 macro_rules! zip_self {
@@ -36,9 +39,9 @@ macro_rules! zip_self {
     serialize = "E::BaseField: Serialize",
     deserialize = "E::BaseField: DeserializeOwned"
 ))]
-pub struct Coefficients<E: ExtensionField>(FieldType<E>);
+pub struct Coefficients<'a, E: ExtensionField>(FieldType<'a, E>);
 
-impl<E: ExtensionField> ClassicSumCheckRoundMessage<E> for Coefficients<E> {
+impl<'a, E: ExtensionField> ClassicSumCheckRoundMessage<E> for Coefficients<'a, E> {
     type Auxiliary = ();
 
     fn write(&self, transcript: &mut impl Transcript<E>) -> Result<(), Error> {
@@ -61,8 +64,8 @@ impl<E: ExtensionField> ClassicSumCheckRoundMessage<E> for Coefficients<E> {
     }
 }
 
-impl<'rhs, E: ExtensionField> AddAssign<&'rhs E> for Coefficients<E> {
-    fn add_assign(&mut self, rhs: &'rhs E) {
+impl<E: ExtensionField> AddAssign<&E> for Coefficients<'_, E> {
+    fn add_assign(&mut self, rhs: &E) {
         match &mut self.0 {
             FieldType::Ext(coeffs) => coeffs[0] += *rhs,
             FieldType::Base(_) => panic!("Cannot add extension element to base coefficients"),
@@ -71,8 +74,8 @@ impl<'rhs, E: ExtensionField> AddAssign<&'rhs E> for Coefficients<E> {
     }
 }
 
-impl<'rhs, E: ExtensionField> AddAssign<(&'rhs E, &'rhs Coefficients<E>)> for Coefficients<E> {
-    fn add_assign(&mut self, (scalar, rhs): (&'rhs E, &'rhs Coefficients<E>)) {
+impl<E: ExtensionField> AddAssign<(&E, &Coefficients<'_, E>)> for Coefficients<'_, E> {
+    fn add_assign(&mut self, (scalar, rhs): (&E, &Coefficients<E>)) {
         match (&mut self.0, &rhs.0) {
             (FieldType::Ext(lhs), FieldType::Ext(rhs)) => {
                 if scalar == &E::ONE {
@@ -95,9 +98,13 @@ impl_index!(Coefficients, 0);
 /// A CoefficientsProver is represented as a polynomial of the form c + sum_i c_i poly_i, where
 /// poly_i are represented as product of polynomial expressions.
 #[derive(Clone, Debug)]
-pub struct CoefficientsProver<E: ExtensionField>(E, Vec<(E, Vec<Expression<E>>)>);
+pub struct CoefficientsProver<'a, E: ExtensionField>(
+    E,
+    Vec<(E, Vec<Expression<E>>)>,
+    PhantomData<&'a E>,
+);
 
-impl<E: ExtensionField> CoefficientsProver<E> {
+impl<E: ExtensionField> CoefficientsProver<'_, E> {
     fn evals(&self, state: &ProverState<E>) -> Vec<E> {
         let mut result = vec![self.0; 1 << state.num_vars];
         // Next, for every product of polynomials, where each product is assumed to be exactly 2
@@ -133,8 +140,8 @@ impl<E: ExtensionField> CoefficientsProver<E> {
     }
 }
 
-impl<E: ExtensionField> ClassicSumCheckProver<E> for CoefficientsProver<E> {
-    type RoundMessage = Coefficients<E>;
+impl<'a, E: ExtensionField> ClassicSumCheckProver<E> for CoefficientsProver<'a, E> {
+    type RoundMessage = Coefficients<'a, E>;
 
     fn new(state: &ProverState<E>) -> Self {
         let (constant, flattened) = state.expression.evaluate(
@@ -192,14 +199,21 @@ impl<E: ExtensionField> ClassicSumCheckProver<E> for CoefficientsProver<E> {
                 (constant * rhs, products)
             },
         );
-        Self(constant, flattened)
+        Self(constant, flattened, PhantomData)
     }
 
     fn prove_round(&self, state: &ProverState<E>) -> Self::RoundMessage {
         // Initialize h(X) to zero
-        let mut coeffs = Coefficients(FieldType::Ext(vec![E::ZERO; state.expression.degree() + 1]));
+        let mut coeffs = Coefficients(FieldType::Ext(SmartSlice::Owned(vec![
+            E::ZERO;
+            state
+                .expression
+                .degree()
+                + 1
+        ])));
         // First, sum the constant over the hypercube and add to h(X)
-        coeffs += &(E::from_canonical_u64(state.size() as u64) * self.0);
+        let tmp = E::from_canonical_u64(state.size() as u64) * self.0;
+        coeffs += &tmp;
         // Next, for every product of polynomials, where each product is assumed to be exactly 2
         // put this into h(X).
         if self.1.iter().all(|(_, products)| products.len() == 2) {
@@ -207,9 +221,11 @@ impl<E: ExtensionField> ClassicSumCheckProver<E> for CoefficientsProver<E> {
                 let [lhs, rhs] = [0, 1].map(|idx| &products[idx]);
                 if cfg!(feature = "sanity-check") {
                     // When LAZY = false, coeffs[1] will also be computed during the process
-                    coeffs += (scalar, &self.karatsuba::<false>(state, lhs, rhs));
+                    let tmp1 = self.karatsuba::<false>(state, lhs, rhs);
+                    coeffs += (scalar, &tmp1);
                 } else {
-                    coeffs += (scalar, &self.karatsuba::<true>(state, lhs, rhs));
+                    let tmp1 = self.karatsuba::<true>(state, lhs, rhs);
+                    coeffs += (scalar, &tmp1);
                 }
             }
             if cfg!(feature = "sanity-check") {
@@ -229,7 +245,7 @@ impl<E: ExtensionField> ClassicSumCheckProver<E> for CoefficientsProver<E> {
     }
 }
 
-impl<E: ExtensionField> CoefficientsProver<E> {
+impl<'a, E: ExtensionField> CoefficientsProver<'a, E> {
     /// Given two polynomials, represented as polynomial expressions, compute the coefficients
     /// of their product, with certain variables fixed and other variables summed according to
     /// the state.
@@ -341,6 +357,6 @@ impl<E: ExtensionField> CoefficientsProver<E> {
             }
             _ => unimplemented!(),
         }
-        Coefficients(FieldType::Ext(coeffs.to_vec()))
+        Coefficients(FieldType::Ext(SmartSlice::Owned(coeffs.to_vec())))
     }
 }

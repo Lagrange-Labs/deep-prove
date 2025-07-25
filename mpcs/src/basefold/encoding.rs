@@ -1,5 +1,5 @@
 use ff_ext::ExtensionField;
-use multilinear_extensions::mle::FieldType;
+use multilinear_extensions::{mle::FieldType, smart_slice::SmartSlice};
 
 mod utils;
 
@@ -40,11 +40,14 @@ pub trait EncodingScheme<E: ExtensionField>: std::fmt::Debug + Clone {
         max_msg_size_log: usize,
     ) -> Result<(Self::ProverParameters, Self::VerifierParameters), Error>;
 
-    fn encode(pp: &Self::ProverParameters, coeffs: &FieldType<E>) -> FieldType<E>;
+    fn encode<'a>(pp: &Self::ProverParameters, coeffs: &FieldType<'a, E>) -> FieldType<'a, E>;
 
     /// Encodes a message of small length, such that the verifier is also able
     /// to execute the encoding.
-    fn encode_small(vp: &Self::VerifierParameters, coeffs: &FieldType<E>) -> FieldType<E>;
+    fn encode_small<'a>(
+        vp: &Self::VerifierParameters,
+        coeffs: &FieldType<'a, E>,
+    ) -> FieldType<'a, E>;
 
     fn get_number_queries() -> usize;
 
@@ -135,7 +138,7 @@ pub trait EncodingScheme<E: ExtensionField>: std::fmt::Debug + Clone {
     }
 }
 
-fn concatenate_field_types<E: ExtensionField>(coeffs: &[FieldType<E>]) -> FieldType<E> {
+fn concatenate_field_types<'a, E: ExtensionField>(coeffs: &[FieldType<'a, E>]) -> FieldType<'a, E> {
     match coeffs[0] {
         FieldType::Ext(_) => {
             let res = coeffs
@@ -145,7 +148,7 @@ fn concatenate_field_types<E: ExtensionField>(coeffs: &[FieldType<E>]) -> FieldT
                     _ => unreachable!(),
                 })
                 .collect::<Vec<_>>();
-            FieldType::Ext(res)
+            FieldType::Ext(SmartSlice::Owned(res))
         }
         FieldType::Base(_) => {
             let res = coeffs
@@ -155,7 +158,7 @@ fn concatenate_field_types<E: ExtensionField>(coeffs: &[FieldType<E>]) -> FieldT
                     _ => unreachable!(),
                 })
                 .collect::<Vec<_>>();
-            FieldType::Base(res)
+            FieldType::Base(SmartSlice::Owned(res))
         }
         _ => unreachable!(),
     }
@@ -164,7 +167,7 @@ fn concatenate_field_types<E: ExtensionField>(coeffs: &[FieldType<E>]) -> FieldT
 #[cfg(test)]
 pub(crate) mod test_util {
     use ff_ext::ExtensionField;
-    use multilinear_extensions::mle::FieldType;
+    use multilinear_extensions::{mle::FieldType, smart_slice::SmartSlice};
     use rand::rngs::OsRng;
 
     use crate::util::plonky2_util::reverse_index_bits_in_place_field_type;
@@ -177,7 +180,7 @@ pub(crate) mod test_util {
         let poly: Vec<E> = (0..(1 << num_vars))
             .map(|i| E::from_canonical_u64(i))
             .collect();
-        let mut poly = FieldType::Ext(poly);
+        let mut poly = FieldType::Ext(SmartSlice::Owned(poly));
 
         let pp: Code::PublicParameters = Code::setup(num_vars);
         let (pp, _) = Code::trim(pp, num_vars).unwrap();
@@ -188,7 +191,8 @@ pub(crate) mod test_util {
         }
         let challenge = E::random(&mut OsRng);
         let folded_codeword = Code::fold_bitreversed_codeword(&pp, &codeword, challenge);
-        let mut folded_message = FieldType::Ext(Code::fold_message(&poly, challenge));
+        let mut folded_message =
+            FieldType::Ext(SmartSlice::Owned(Code::fold_message(&poly, challenge)));
         if Code::message_is_left_and_right_folding() {
             // Reverse the message back before encoding if it has been
             // bit-reversed
@@ -208,7 +212,7 @@ pub(crate) mod test_util {
             assert_eq!(a, b, "Failed at index {}", i);
         }
 
-        let mut folded_codeword = FieldType::Ext(folded_codeword);
+        let mut folded_codeword = FieldType::Ext(SmartSlice::Owned(folded_codeword));
         for round in 0..4 {
             let folded_codeword_vec =
                 Code::fold_bitreversed_codeword(&pp, &folded_codeword, challenge);
@@ -216,7 +220,10 @@ pub(crate) mod test_util {
             if Code::message_is_left_and_right_folding() {
                 reverse_index_bits_in_place_field_type(&mut folded_message);
             }
-            folded_message = FieldType::Ext(Code::fold_message(&folded_message, challenge));
+            folded_message = FieldType::Ext(SmartSlice::Owned(Code::fold_message(
+                &folded_message,
+                challenge,
+            )));
             if Code::message_is_left_and_right_folding() {
                 reverse_index_bits_in_place_field_type(&mut folded_message);
             }
@@ -233,7 +240,7 @@ pub(crate) mod test_util {
             {
                 assert_eq!(a, b, "Failed at index {} in round {}", i, round);
             }
-            folded_codeword = FieldType::Ext(folded_codeword_vec);
+            folded_codeword = FieldType::Ext(SmartSlice::Owned(folded_codeword_vec));
         }
     }
 }

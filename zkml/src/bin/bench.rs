@@ -11,7 +11,7 @@ use zkml::{
 use anyhow::{Context as CC, Result, bail, ensure};
 use clap::Parser;
 use ff_ext::GoldilocksExt2;
-use mpcs::{Basefold, BasefoldRSParams, Hasher};
+use mpcs_lg::{Basefold, BasefoldRSParams, Hasher};
 use tracing::{debug, info};
 use tracing_subscriber::{EnvFilter, fmt};
 use zkml::FloatOnnxLoader;

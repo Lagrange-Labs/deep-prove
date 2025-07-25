@@ -9,8 +9,8 @@ use crate::{
 };
 use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
-use mpcs::{BasefoldCommitment, PolynomialCommitmentScheme};
-use multilinear_extensions::{mle::DenseMultilinearExtension, util::ceil_log2};
+use mpcs_lg::{BasefoldCommitment, PolynomialCommitmentScheme};
+use multilinear_extensions::{mle::MultilinearExtension, util::ceil_log2};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeSet, HashMap};
 use tracing::{debug, trace};
@@ -34,7 +34,7 @@ pub const RESHAPE_FS_ID: u64 = 0xdeadbeef;
 /// Common information between prover and verifier
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
-pub struct Context<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>
+pub struct Context<'a, E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>
 where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
@@ -44,7 +44,7 @@ where
     /// in REVERSED order already since proving goes from last layer to first layer.
     pub steps_info: ModelCtx<E>,
     /// The commitment context used to generate both model commitments and witness commitments
-    pub commitment_ctx: CommitmentContext<E, PCS>,
+    pub commitment_ctx: CommitmentContext<'a, E, PCS>,
     /// Context holding all the different table types we use in lookups
     pub lookup: LookupContext,
     /// unpadded shape of the first initial input
@@ -98,7 +98,7 @@ pub struct ContextAux {
     pub max_poly_len: usize,
 }
 
-impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> Context<E, PCS>
+impl<'a, E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> Context<'a, E, PCS>
 where
     E::BaseField: Serialize + DeserializeOwned,
     E: Serialize + DeserializeOwned,
@@ -138,7 +138,7 @@ where
         let (step_infos, commitment_ctx, lookup) = match params {
             Some((prover_params, verifier_params)) => {
                 let mut model_polys =
-                    Vec::<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>::new();
+                    Vec::<(NodeId, HashMap<PolyId, MultilinearExtension<'_, E>>)>::new();
                 let mut step_infos = HashMap::new();
                 let mut shapes: HashMap<NodeId, Vec<Shape>> = HashMap::new();
                 debug!("Context : layer info generation ...");
@@ -155,20 +155,21 @@ where
                 }
 
                 debug!("Context : lookup generation ...");
-                let lookup_ctx = LookupContext::new(&ctx_aux.tables);
-
-                debug!("Context : commitment generating ...");
-                let commitment_ctx = CommitmentContext::<E, PCS>::new_with_params(
-                    model_polys,
-                    &lookup_ctx,
-                    prover_params,
-                    verifier_params,
-                )?;
-                (step_infos, commitment_ctx, lookup_ctx)
+                // let lookup_ctx = LookupContext::new(&ctx_aux.tables);
+                //
+                // debug!("Context : commitment generating ...");
+                // let commitment_ctx = CommitmentContext::<E, PCS>::new_with_params(
+                // model_polys,
+                // &lookup_ctx,
+                // prover_params,
+                // verifier_params,
+                // )?;
+                // (step_infos, commitment_ctx, lookup_ctx)
+                todo!()
             }
             None => {
                 let mut model_polys =
-                    Vec::<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>::new();
+                    Vec::<(NodeId, HashMap<PolyId, MultilinearExtension<'a, E>>)>::new();
                 let mut step_infos = HashMap::new();
                 let mut shapes: HashMap<NodeId, Vec<Shape>> = HashMap::new();
                 debug!("Context : layer info generation ...");
@@ -191,12 +192,13 @@ where
                 });
 
                 debug!("Context : lookup generation ...");
-                let lookup_ctx = LookupContext::new(&ctx_aux.tables);
-
-                debug!("Context : commitment generating ...");
-                let commitment_ctx =
-                    CommitmentContext::<E, PCS>::new(max_poly_len, model_polys, &lookup_ctx)?;
-                (step_infos, commitment_ctx, lookup_ctx)
+                // let lookup_ctx = LookupContext::new(&ctx_aux.tables);
+                //
+                // debug!("Context : commitment generating ...");
+                // let commitment_ctx =
+                // CommitmentContext::<E, PCS>::new(max_poly_len, model_polys, &lookup_ctx)?;
+                // (step_infos, commitment_ctx, lookup_ctx)
+                todo!()
             }
         };
 
@@ -216,7 +218,7 @@ where
 
 fn compute_node_shape<E: ExtensionField>(
     mut ctx_aux: ContextAux,
-    model_polys: &mut Vec<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>,
+    model_polys: &mut Vec<(NodeId, HashMap<PolyId, MultilinearExtension<'_, E>>)>,
     step_infos: &mut HashMap<NodeId, NodeCtx<E>>,
     shapes: &mut HashMap<NodeId, Vec<Shape>>,
     input_shapes: &[Shape],
@@ -281,7 +283,7 @@ fn compute_node_shape<E: ExtensionField>(
                     let num_vars = ceil_log2(evals.len());
                     (
                         poly_id,
-                        DenseMultilinearExtension::<E>::from_evaluations_vec(
+                        MultilinearExtension::<E>::from_evaluations_vec(
                             num_vars,
                             evals
                                 .iter()
@@ -293,7 +295,7 @@ fn compute_node_shape<E: ExtensionField>(
                         ),
                     )
                 })
-                .collect::<HashMap<PolyId, DenseMultilinearExtension<E>>>(),
+                .collect::<HashMap<PolyId, MultilinearExtension<'_, E>>>(),
         ));
     }
     step_infos.insert(

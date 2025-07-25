@@ -2,7 +2,7 @@ use anyhow::ensure;
 use ff_ext::ExtensionField;
 use itertools::Itertools;
 use multilinear_extensions::{
-    mle::{IntoMLE, MultilinearExtension},
+    mle::IntoMLE,
     virtual_poly::{VPAuxInfo, VirtualPolynomial},
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -45,7 +45,7 @@ impl<T: Number> MatVec<T> {
     pub fn aux_info<E: ExtensionField>(&self) -> VPAuxInfo<E> {
         // we fix the rows variables during sumcheck so we only consider the columns
         let num_vars = self.matrix.ncols_2d().ilog2() as usize;
-        VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![num_vars, num_vars]])
+        crate::util::from_mle_list_dimensions(&[vec![num_vars, num_vars]])
     }
 }
 
@@ -101,15 +101,23 @@ impl MatVec<Element> {
             "invalid sumcheck proof for matvec?"
         );
         let claim = Claim {
-            point: proof.point.clone(),
+            point: state.collect_raw_challenges(),
             // [mat, vec] -> we want the vector evaluation for the next layer
-            eval: state.get_mle_final_evaluations()[1],
+            eval: state
+                .get_mle_final_evaluations()
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()[1],
         };
         let proof = MatVecProof {
             sumcheck: proof,
-            evaluations: state.get_mle_final_evaluations(),
+            evaluations: state
+                .get_mle_final_evaluations()
+                .into_iter()
+                .flatten()
+                .collect(),
         };
-        Ok((proof, claim))
+        Ok((proof, claim.into()))
     }
 
     pub fn evaluate_matrix_at<E: ExtensionField>(&self, point: &[E]) -> E {
@@ -134,7 +142,10 @@ where
     let subclaim =
         IOPVerifierState::<E>::verify(last_claim.eval, &proof.sumcheck, aux_info, transcript);
     let matrix_point = subclaim
-        .point_flat()
+        .point
+        .iter()
+        .map(|p| p.elements)
+        .collect_vec()
         .iter()
         .chain(last_claim.point.iter())
         .cloned()
@@ -142,7 +153,7 @@ where
     let matrix_eval = eval_matrix_at(&matrix_point);
     ensure!(proof.matrix_eval() == matrix_eval);
     Ok(Claim {
-        point: subclaim.point_flat(),
+        point: subclaim.point.iter().map(|p| p.elements).collect_vec(),
         eval: proof.vec_eval(),
     })
 }

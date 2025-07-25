@@ -16,7 +16,7 @@ use crate::{
 use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use mpcs::PolynomialCommitmentScheme;
+use mpcs_lg::PolynomialCommitmentScheme;
 use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
 use tracing::trace;
 

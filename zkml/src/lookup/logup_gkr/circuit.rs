@@ -3,10 +3,11 @@
 use ark_std::Zero;
 use ff_ext::ExtensionField;
 
-use std::sync::Arc;
-
 use itertools::izip;
-use multilinear_extensions::{mle::DenseMultilinearExtension, util::ceil_log2};
+use multilinear_extensions::{
+    mle::{ArcMultilinearExtension, MultilinearExtension},
+    util::ceil_log2,
+};
 
 use super::structs::Fraction;
 
@@ -30,7 +31,7 @@ pub enum LogUpLayer<E: ExtensionField> {
 }
 
 impl<E: ExtensionField> LogUpLayer<E> {
-    /// Returns the number of variables that the [`DenseMultilinearExtension`]s at this layer have
+    /// Returns the number of variables that the [`MultilinearExtension`]s at this layer have
     pub fn num_vars(&self) -> usize {
         // We right shift the denominator length by 1 because at each level of the GKR circuit the polynomials we run the sumcheck over have half the length
         match self {
@@ -134,7 +135,7 @@ impl<E: ExtensionField> LogUpLayer<E> {
     /// Gets the Densemultlinear extensions for this [`LogUpLayer`] in the order
     /// numerator low part, numerator high part, denominator low part, denominator high part.
     /// In the initial lookup case it is just the two denominator MLEs.
-    pub fn get_mles(&self) -> Vec<Arc<DenseMultilinearExtension<E>>> {
+    pub fn get_mles(&self) -> Vec<ArcMultilinearExtension<E>> {
         let num_vars = self.num_vars();
         let half_layer_size = 1 << num_vars;
         match self {
@@ -148,31 +149,24 @@ impl<E: ExtensionField> LogUpLayer<E> {
             } => {
                 let (num_low, num_high) = numerator.split_at(half_layer_size);
                 let (denom_low, denom_high) = denominator.split_at(half_layer_size);
-                let num_low_mle = Arc::new(
-                    DenseMultilinearExtension::<E>::from_evaluations_ext_slice(num_vars, num_low),
-                );
-                let num_high_mle = Arc::new(
-                    DenseMultilinearExtension::<E>::from_evaluations_ext_slice(num_vars, num_high),
-                );
-                let denom_low_mle = Arc::new(
-                    DenseMultilinearExtension::<E>::from_evaluations_ext_slice(num_vars, denom_low),
-                );
+                let num_low_mle =
+                    MultilinearExtension::from_evaluations_ext_slice(num_vars, num_low).into();
+                let num_high_mle =
+                    MultilinearExtension::from_evaluations_ext_slice(num_vars, num_high).into();
+                let denom_low_mle =
+                    MultilinearExtension::from_evaluations_ext_slice(num_vars, denom_low).into();
                 let denom_high_mle =
-                    Arc::new(DenseMultilinearExtension::<E>::from_evaluations_ext_slice(
-                        num_vars, denom_high,
-                    ));
+                    MultilinearExtension::from_evaluations_ext_slice(num_vars, denom_high).into();
 
                 vec![num_low_mle, num_high_mle, denom_low_mle, denom_high_mle]
             }
             LogUpLayer::InitialLookup { denominator } => {
                 let (denom_low, denom_high) = denominator.split_at(half_layer_size);
-                let denom_low_mle = Arc::new(
-                    DenseMultilinearExtension::<E>::from_evaluations_ext_slice(num_vars, denom_low),
-                );
+                let denom_low_mle =
+                    MultilinearExtension::from_evaluations_ext_slice(num_vars, denom_low).into();
+
                 let denom_high_mle =
-                    Arc::new(DenseMultilinearExtension::<E>::from_evaluations_ext_slice(
-                        num_vars, denom_high,
-                    ));
+                    MultilinearExtension::from_evaluations_ext_slice(num_vars, denom_high).into();
 
                 vec![denom_low_mle, denom_high_mle]
             }

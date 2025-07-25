@@ -15,7 +15,7 @@ use itertools::Itertools;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use transcript::Transcript;
 
-use multilinear_extensions::mle::FieldType;
+use multilinear_extensions::{mle::FieldType, smart_slice::SmartSlice};
 
 use crate::util::plonky2_util::reverse_index_bits_in_place;
 use rayon::{
@@ -40,7 +40,7 @@ where
     let queries: Vec<_> = (0..num_verifier_queries)
         .map(|_| {
             transcript
-                .get_and_append_challenge(b"query indices")
+                .sample_and_append_challenge(b"query indices")
                 .elements
         })
         .collect();
@@ -77,7 +77,7 @@ where
     let queries: Vec<_> = (0..num_verifier_queries)
         .map(|_| {
             transcript
-                .get_and_append_challenge(b"query indices")
+                .sample_and_append_challenge(b"query indices")
                 .elements
         })
         .collect();
@@ -113,7 +113,7 @@ where
     let queries: Vec<_> = (0..num_verifier_queries)
         .map(|_| {
             transcript
-                .get_and_append_challenge(b"query indices")
+                .sample_and_append_challenge(b"query indices")
                 .elements
         })
         .collect();
@@ -162,8 +162,10 @@ pub fn verifier_query_phase<E: ExtensionField, Spec: BasefoldSpec<E>>(
     if <Spec::EncodingScheme as EncodingScheme<E>>::message_is_even_and_odd_folding() {
         reverse_index_bits_in_place(&mut message);
     }
-    let final_codeword =
-        <Spec::EncodingScheme as EncodingScheme<E>>::encode_small(vp, &FieldType::Ext(message));
+    let final_codeword = <Spec::EncodingScheme as EncodingScheme<E>>::encode_small(
+        vp,
+        &FieldType::Ext(SmartSlice::Owned(message)),
+    );
     let mut final_codeword = match final_codeword {
         FieldType::Ext(final_codeword) => final_codeword,
         _ => panic!("Final codeword must be extension field"),
@@ -237,8 +239,10 @@ pub fn batch_verifier_query_phase<E: ExtensionField, Spec: BasefoldSpec<E>>(
         reverse_index_bits_in_place(&mut message);
     }
     interpolate_over_boolean_hypercube(&mut message);
-    let final_codeword =
-        <Spec::EncodingScheme as EncodingScheme<E>>::encode_small(vp, &FieldType::Ext(message));
+    let final_codeword = <Spec::EncodingScheme as EncodingScheme<E>>::encode_small(
+        vp,
+        &FieldType::Ext(SmartSlice::Owned(message)),
+    );
     let mut final_codeword = match final_codeword {
         FieldType::Ext(final_codeword) => final_codeword,
         _ => panic!("Final codeword must be extension field"),
@@ -317,8 +321,10 @@ pub fn simple_batch_verifier_query_phase<E: ExtensionField, Spec: BasefoldSpec<E
         reverse_index_bits_in_place(&mut message);
     }
     interpolate_over_boolean_hypercube(&mut message);
-    let final_codeword =
-        <Spec::EncodingScheme as EncodingScheme<E>>::encode_small(vp, &FieldType::Ext(message));
+    let final_codeword = <Spec::EncodingScheme as EncodingScheme<E>>::encode_small(
+        vp,
+        &FieldType::Ext(SmartSlice::Owned(message)),
+    );
     let mut final_codeword = match final_codeword {
         FieldType::Ext(final_codeword) => final_codeword,
         _ => panic!("Final codeword must be extension field"),

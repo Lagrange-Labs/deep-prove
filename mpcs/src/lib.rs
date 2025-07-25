@@ -1,7 +1,7 @@
 #![deny(clippy::cargo)]
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use multilinear_extensions::mle::DenseMultilinearExtension;
+use multilinear_extensions::mle::MultilinearExtension;
 use serde::{Serialize, de::DeserializeOwned};
 use std::fmt::Debug;
 use transcript::{BasicTranscript, Transcript};
@@ -11,8 +11,8 @@ pub mod util;
 
 pub type Commitment<E, Pcs> = <Pcs as PolynomialCommitmentScheme<E>>::Commitment;
 pub type CommitmentChunk<E, Pcs> = <Pcs as PolynomialCommitmentScheme<E>>::CommitmentChunk;
-pub type CommitmentWithWitness<E, Pcs> =
-    <Pcs as PolynomialCommitmentScheme<E>>::CommitmentWithWitness;
+pub type CommitmentWithWitness<'a, E, Pcs> =
+    <Pcs as PolynomialCommitmentScheme<E>>::CommitmentWithWitness<'a>;
 
 pub type Param<E, Pcs> = <Pcs as PolynomialCommitmentScheme<E>>::Param;
 pub type ProverParam<E, Pcs> = <Pcs as PolynomialCommitmentScheme<E>>::ProverParam;
@@ -31,55 +31,55 @@ pub fn pcs_trim<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
     Pcs::trim(param, poly_size)
 }
 
-pub fn pcs_commit<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
+pub fn pcs_commit<'a, E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
     pp: &Pcs::ProverParam,
-    poly: &DenseMultilinearExtension<E>,
-) -> Result<Pcs::CommitmentWithWitness, Error> {
+    poly: &'a MultilinearExtension<'a, E>,
+) -> Result<Pcs::CommitmentWithWitness<'a>, Error> {
     Pcs::commit(pp, poly)
 }
 
-pub fn pcs_commit_and_write<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
+pub fn pcs_commit_and_write<'a, E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
     pp: &Pcs::ProverParam,
-    poly: &DenseMultilinearExtension<E>,
+    poly: &'a MultilinearExtension<'a, E>,
     transcript: &mut impl Transcript<E>,
-) -> Result<Pcs::CommitmentWithWitness, Error> {
+) -> Result<Pcs::CommitmentWithWitness<'a>, Error> {
     Pcs::commit_and_write(pp, poly, transcript)
 }
 
-pub fn pcs_batch_commit<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
+pub fn pcs_batch_commit<'a, E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
     pp: &Pcs::ProverParam,
-    polys: &[DenseMultilinearExtension<E>],
-) -> Result<Pcs::CommitmentWithWitness, Error> {
+    polys: &'a [MultilinearExtension<'a, E>],
+) -> Result<Pcs::CommitmentWithWitness<'a>, Error> {
     Pcs::batch_commit(pp, polys)
 }
 
-pub fn pcs_batch_commit_and_write<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
+pub fn pcs_batch_commit_and_write<'a, E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
     pp: &Pcs::ProverParam,
-    polys: &[DenseMultilinearExtension<E>],
+    polys: &'a [MultilinearExtension<'a, E>],
     transcript: &mut impl Transcript<E>,
-) -> Result<Pcs::CommitmentWithWitness, Error> {
+) -> Result<Pcs::CommitmentWithWitness<'a>, Error> {
     Pcs::batch_commit_and_write(pp, polys, transcript)
 }
 
-pub fn pcs_open<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
+pub fn pcs_open<'a, E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
     pp: &Pcs::ProverParam,
-    poly: &DenseMultilinearExtension<E>,
-    comm: &Pcs::CommitmentWithWitness,
+    poly: &'a MultilinearExtension<'a, E>,
+    comm: &Pcs::CommitmentWithWitness<'a>,
     point: &[E],
     eval: &E,
     transcript: &mut impl Transcript<E>,
-) -> Result<Pcs::Proof, Error> {
+) -> Result<Pcs::Proof<'a>, Error> {
     Pcs::open(pp, poly, comm, point, eval, transcript)
 }
 
-pub fn pcs_batch_open<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
+pub fn pcs_batch_open<'a, E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
     pp: &Pcs::ProverParam,
-    polys: &[DenseMultilinearExtension<E>],
-    comms: &[Pcs::CommitmentWithWitness],
+    polys: &'a [MultilinearExtension<'a, E>],
+    comms: &[Pcs::CommitmentWithWitness<'a>],
     points: &[Vec<E>],
     evals: &[Evaluation<E>],
     transcript: &mut impl Transcript<E>,
-) -> Result<Pcs::Proof, Error> {
+) -> Result<Pcs::Proof<'a>, Error> {
     Pcs::batch_open(pp, polys, comms, points, evals, transcript)
 }
 
@@ -88,7 +88,7 @@ pub fn pcs_verify<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
     comm: &Pcs::Commitment,
     point: &[E],
     eval: &E,
-    proof: &Pcs::Proof,
+    proof: &Pcs::Proof<'_>,
     transcript: &mut impl Transcript<E>,
 ) -> Result<(), Error> {
     Pcs::verify(vp, comm, point, eval, proof, transcript)
@@ -99,7 +99,7 @@ pub fn pcs_batch_verify<'a, E: ExtensionField, Pcs: PolynomialCommitmentScheme<E
     comms: &[Pcs::Commitment],
     points: &[Vec<E>],
     evals: &[Evaluation<E>],
-    proof: &Pcs::Proof,
+    proof: &Pcs::Proof<'_>,
     transcript: &mut impl Transcript<E>,
 ) -> Result<(), Error>
 where
@@ -112,10 +112,10 @@ pub trait PolynomialCommitmentScheme<E: ExtensionField>: Clone + Debug + Default
     type Param: Clone + Debug + Serialize + DeserializeOwned + Send + Sync;
     type ProverParam: Clone + Debug + Serialize + DeserializeOwned + Send + Sync;
     type VerifierParam: Clone + Debug + Serialize + DeserializeOwned + Send + Sync;
-    type CommitmentWithWitness: Clone + Debug + Serialize + DeserializeOwned + Send + Sync;
+    type CommitmentWithWitness<'a>: Clone + Debug + Serialize + DeserializeOwned + Send + Sync;
     type Commitment: Clone + Debug + Default + Serialize + DeserializeOwned + Send + Sync;
     type CommitmentChunk: Clone + Debug + Default;
-    type Proof: Clone + Debug + Serialize + DeserializeOwned + Send + Sync;
+    type Proof<'a>: Clone + Debug + Serialize + DeserializeOwned + Send + Sync;
 
     fn setup(poly_size: usize) -> Result<Self::Param, Error>;
 
@@ -124,16 +124,16 @@ pub trait PolynomialCommitmentScheme<E: ExtensionField>: Clone + Debug + Default
         poly_size: usize,
     ) -> Result<(Self::ProverParam, Self::VerifierParam), Error>;
 
-    fn commit(
+    fn commit<'b>(
         pp: &Self::ProverParam,
-        poly: &DenseMultilinearExtension<E>,
-    ) -> Result<Self::CommitmentWithWitness, Error>;
+        poly: &MultilinearExtension<'b, E>,
+    ) -> Result<Self::CommitmentWithWitness<'b>, Error>;
 
-    fn commit_and_write(
+    fn commit_and_write<'b>(
         pp: &Self::ProverParam,
-        poly: &DenseMultilinearExtension<E>,
+        poly: &MultilinearExtension<'b, E>,
         transcript: &mut impl Transcript<E>,
-    ) -> Result<Self::CommitmentWithWitness, Error> {
+    ) -> Result<Self::CommitmentWithWitness<'b>, Error> {
         let comm = Self::commit(pp, poly)?;
         Self::write_commitment(&Self::get_pure_commitment(&comm), transcript)?;
         Ok(comm)
@@ -144,65 +144,65 @@ pub trait PolynomialCommitmentScheme<E: ExtensionField>: Clone + Debug + Default
         transcript: &mut impl Transcript<E>,
     ) -> Result<(), Error>;
 
-    fn get_pure_commitment(comm: &Self::CommitmentWithWitness) -> Self::Commitment;
+    fn get_pure_commitment(comm: &Self::CommitmentWithWitness<'_>) -> Self::Commitment;
     /// Method used to determine if a polynomial large enough that opening it with `open` method is more efficient than just sending the polynomial.
     /// Defaults to `1`.
     fn trivial_num_vars() -> usize {
         1
     }
 
-    fn batch_commit(
+    fn batch_commit<'b>(
         pp: &Self::ProverParam,
-        polys: &[DenseMultilinearExtension<E>],
-    ) -> Result<Self::CommitmentWithWitness, Error>;
+        polys: &[MultilinearExtension<'b, E>],
+    ) -> Result<Self::CommitmentWithWitness<'b>, Error>;
 
-    fn batch_commit_and_write(
+    fn batch_commit_and_write<'b>(
         pp: &Self::ProverParam,
-        polys: &[DenseMultilinearExtension<E>],
+        polys: &[MultilinearExtension<'b, E>],
         transcript: &mut impl Transcript<E>,
-    ) -> Result<Self::CommitmentWithWitness, Error> {
+    ) -> Result<Self::CommitmentWithWitness<'b>, Error> {
         let comm = Self::batch_commit(pp, polys)?;
         Self::write_commitment(&Self::get_pure_commitment(&comm), transcript)?;
         Ok(comm)
     }
 
-    fn open(
+    fn open<'b>(
         pp: &Self::ProverParam,
-        poly: &DenseMultilinearExtension<E>,
-        comm: &Self::CommitmentWithWitness,
+        poly: &MultilinearExtension<'b, E>,
+        comm: &Self::CommitmentWithWitness<'b>,
         point: &[E],
         eval: &E,
         transcript: &mut impl Transcript<E>,
-    ) -> Result<Self::Proof, Error>;
+    ) -> Result<Self::Proof<'b>, Error>;
 
-    fn batch_open(
+    fn batch_open<'b>(
         pp: &Self::ProverParam,
-        polys: &[DenseMultilinearExtension<E>],
-        comms: &[Self::CommitmentWithWitness],
+        polys: &[MultilinearExtension<'b, E>],
+        comms: &[Self::CommitmentWithWitness<'b>],
         points: &[Vec<E>],
         evals: &[Evaluation<E>],
         transcript: &mut impl Transcript<E>,
-    ) -> Result<Self::Proof, Error>;
+    ) -> Result<Self::Proof<'b>, Error>;
 
     /// This is a simple version of batch open:
     /// 1. Open at one point
     /// 2. All the polynomials share the same commitment.
     /// 3. The point is already a random point generated by a sum-check.
-    fn simple_batch_open(
+    fn simple_batch_open<'b>(
         pp: &Self::ProverParam,
         polys: &[ArcMultilinearExtension<E>],
-        comm: &Self::CommitmentWithWitness,
+        comm: &Self::CommitmentWithWitness<'b>,
         point: &[E],
         evals: &[E],
         transcript: &mut impl Transcript<E>,
-    ) -> Result<Self::Proof, Error>;
+    ) -> Result<Self::Proof<'b>, Error>;
 
     fn verify(
         vp: &Self::VerifierParam,
         comm: &Self::Commitment,
         point: &[E],
         eval: &E,
-        proof: &Self::Proof,
+        proof: &Self::Proof<'_>,
         transcript: &mut impl Transcript<E>,
     ) -> Result<(), Error>;
 
@@ -211,7 +211,7 @@ pub trait PolynomialCommitmentScheme<E: ExtensionField>: Clone + Debug + Default
         comms: &[Self::Commitment],
         points: &[Vec<E>],
         evals: &[Evaluation<E>],
-        proof: &Self::Proof,
+        proof: &Self::Proof<'_>,
         transcript: &mut impl Transcript<E>,
     ) -> Result<(), Error>;
 
@@ -220,7 +220,7 @@ pub trait PolynomialCommitmentScheme<E: ExtensionField>: Clone + Debug + Default
         comm: &Self::Commitment,
         point: &[E],
         evals: &[E],
-        proof: &Self::Proof,
+        proof: &Self::Proof<'_>,
         transcript: &mut impl Transcript<E>,
     ) -> Result<(), Error>;
 }
@@ -229,34 +229,34 @@ pub trait NoninteractivePCS<E: ExtensionField>: PolynomialCommitmentScheme<E>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
-    fn ni_open(
+    fn ni_open<'a>(
         pp: &Self::ProverParam,
-        poly: &DenseMultilinearExtension<E>,
-        comm: &Self::CommitmentWithWitness,
+        poly: &MultilinearExtension<'a, E>,
+        comm: &Self::CommitmentWithWitness<'a>,
         point: &[E],
         eval: &E,
-    ) -> Result<Self::Proof, Error> {
+    ) -> Result<Self::Proof<'a>, Error> {
         let mut transcript = BasicTranscript::<E>::new(b"BaseFold");
         Self::open(pp, poly, comm, point, eval, &mut transcript)
     }
 
-    fn ni_batch_open(
+    fn ni_batch_open<'a>(
         pp: &Self::ProverParam,
-        polys: &[DenseMultilinearExtension<E>],
-        comms: &[Self::CommitmentWithWitness],
+        polys: &[MultilinearExtension<'a, E>],
+        comms: &[Self::CommitmentWithWitness<'a>],
         points: &[Vec<E>],
         evals: &[Evaluation<E>],
-    ) -> Result<Self::Proof, Error> {
+    ) -> Result<Self::Proof<'a>, Error> {
         let mut transcript = BasicTranscript::new(b"BaseFold");
         Self::batch_open(pp, polys, comms, points, evals, &mut transcript)
     }
 
-    fn ni_verify(
+    fn ni_verify<'a>(
         vp: &Self::VerifierParam,
         comm: &Self::Commitment,
         point: &[E],
         eval: &E,
-        proof: &Self::Proof,
+        proof: &Self::Proof<'a>,
     ) -> Result<(), Error> {
         let mut transcript = BasicTranscript::new(b"BaseFold");
         Self::verify(vp, comm, point, eval, proof, &mut transcript)
@@ -267,7 +267,7 @@ where
         comms: &[Self::Commitment],
         points: &[Vec<E>],
         evals: &[Evaluation<E>],
-        proof: &Self::Proof,
+        proof: &Self::Proof<'a>,
     ) -> Result<(), Error>
     where
         Self::Commitment: 'a,
@@ -334,7 +334,7 @@ pub use basefold::{
     EncodingScheme, RSCode, RSCodeDefaultSpec, coset_fft, fft, fft_root_table, one_level_eval_hc,
     one_level_interp_hc,
 };
-use multilinear_extensions::virtual_poly::ArcMultilinearExtension;
+use multilinear_extensions::mle::ArcMultilinearExtension;
 
 #[cfg(feature = "blake")]
 pub use crate::util::hash::BlakeHasher as Hasher;
@@ -344,7 +344,7 @@ pub use crate::util::hash::PoseidonHasher as Hasher;
 fn validate_input<E: ExtensionField>(
     function: &str,
     param_num_vars: usize,
-    polys: &[DenseMultilinearExtension<E>],
+    polys: &[MultilinearExtension<'_, E>],
     points: &[Vec<E>],
 ) -> Result<(), Error> {
     let polys = polys.iter().collect_vec();
@@ -393,11 +393,9 @@ pub mod test_util {
     use itertools::Itertools;
     #[cfg(test)]
     use itertools::chain;
-    use multilinear_extensions::mle::DenseMultilinearExtension;
     #[cfg(test)]
-    use multilinear_extensions::{
-        mle::MultilinearExtension, virtual_poly::ArcMultilinearExtension,
-    };
+    use multilinear_extensions::mle::ArcMultilinearExtension;
+    use multilinear_extensions::mle::MultilinearExtension;
     use rand::rngs::OsRng;
     #[cfg(test)]
     use transcript::BasicTranscript;
@@ -411,12 +409,16 @@ pub mod test_util {
         Pcs::trim(param, poly_size).unwrap()
     }
 
-    pub fn gen_rand_poly_base<E: ExtensionField>(num_vars: usize) -> DenseMultilinearExtension<E> {
-        DenseMultilinearExtension::random(num_vars, &mut OsRng)
+    pub fn gen_rand_poly_base<'a, E: ExtensionField>(
+        num_vars: usize,
+    ) -> MultilinearExtension<'a, E> {
+        MultilinearExtension::random(num_vars, &mut OsRng)
     }
 
-    pub fn gen_rand_poly_ext<E: ExtensionField>(num_vars: usize) -> DenseMultilinearExtension<E> {
-        DenseMultilinearExtension::from_evaluations_ext_vec(
+    pub fn gen_rand_poly_ext<'a, E: ExtensionField>(
+        num_vars: usize,
+    ) -> MultilinearExtension<'a, E> {
+        MultilinearExtension::from_evaluations_ext_vec(
             num_vars,
             (0..(1 << num_vars))
                 .map(|_| E::random(&mut OsRng))
@@ -424,11 +426,11 @@ pub mod test_util {
         )
     }
 
-    pub fn gen_rand_polys<E: ExtensionField>(
+    pub fn gen_rand_polys<'a, E: ExtensionField>(
         num_vars: impl Fn(usize) -> usize,
         batch_size: usize,
-        gen_rand_poly: fn(usize) -> DenseMultilinearExtension<E>,
-    ) -> Vec<DenseMultilinearExtension<E>> {
+        gen_rand_poly: fn(usize) -> MultilinearExtension<'a, E>,
+    ) -> Vec<MultilinearExtension<'a, E>> {
         (0..batch_size)
             .map(|i| gen_rand_poly(num_vars(i)))
             .collect_vec()
@@ -438,10 +440,9 @@ pub mod test_util {
         num_vars: usize,
         transcript: &mut impl Transcript<E>,
     ) -> Vec<E> {
-        (0..num_vars)
-            .map(|_| transcript.get_and_append_challenge(b"Point").elements)
-            .collect()
+        transcript.sample_and_append_vec(b"Point", num_vars)
     }
+
     pub fn get_points_from_challenge<E: ExtensionField>(
         num_vars: impl Fn(usize) -> usize,
         num_points: usize,
@@ -452,11 +453,11 @@ pub mod test_util {
             .collect()
     }
 
-    pub fn commit_polys_individually<E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
+    pub fn commit_polys_individually<'a, E: ExtensionField, Pcs: PolynomialCommitmentScheme<E>>(
         pp: &Pcs::ProverParam,
-        polys: &[DenseMultilinearExtension<E>],
+        polys: &[MultilinearExtension<'a, E>],
         transcript: &mut impl Transcript<E>,
-    ) -> Vec<Pcs::CommitmentWithWitness> {
+    ) -> Vec<Pcs::CommitmentWithWitness<'a>> {
         polys
             .iter()
             .map(|poly| Pcs::commit_and_write(pp, poly, transcript).unwrap())
@@ -464,8 +465,8 @@ pub mod test_util {
     }
 
     #[cfg(test)]
-    pub fn run_commit_open_verify<E: ExtensionField, Pcs>(
-        gen_rand_poly: fn(usize) -> DenseMultilinearExtension<E>,
+    pub fn run_commit_open_verify<'a, E: ExtensionField, Pcs>(
+        gen_rand_poly: fn(usize) -> MultilinearExtension<'a, E>,
         num_vars_start: usize,
         num_vars_end: usize,
     ) where
@@ -505,8 +506,8 @@ pub mod test_util {
     }
 
     #[cfg(test)]
-    pub fn run_batch_commit_open_verify<E, Pcs>(
-        gen_rand_poly: fn(usize) -> DenseMultilinearExtension<E>,
+    pub fn run_batch_commit_open_verify<'a, E, Pcs>(
+        gen_rand_poly: fn(usize) -> MultilinearExtension<'a, E>,
         num_vars_start: usize,
         num_vars_end: usize,
     ) where
@@ -586,8 +587,8 @@ pub mod test_util {
     }
 
     #[cfg(test)]
-    pub fn run_batch_commit_open_verify_multiple_sizes<E, Pcs>(
-        gen_rand_poly: fn(usize) -> DenseMultilinearExtension<E>,
+    pub fn run_batch_commit_open_verify_multiple_sizes<'a, E, Pcs>(
+        gen_rand_poly: fn(usize) -> MultilinearExtension<'a, E>,
         num_vars_start: usize,
         num_vars_end: usize,
     ) where
@@ -599,7 +600,7 @@ pub mod test_util {
         let mut transcript = BasicTranscript::new(b"BaseFold");
         let polys = (num_vars_start..num_vars_end)
             .flat_map(|num_vars| gen_rand_polys(|_| num_vars, 2, gen_rand_poly))
-            .collect::<Vec<DenseMultilinearExtension<E>>>();
+            .collect::<Vec<MultilinearExtension<'a, E>>>();
 
         let comms = commit_polys_individually::<E, Pcs>(&pp, polys.as_slice(), &mut transcript);
 
@@ -674,8 +675,8 @@ pub mod test_util {
     }
 
     #[cfg(test)]
-    pub(super) fn run_simple_batch_commit_open_verify<E, Pcs>(
-        gen_rand_poly: fn(usize) -> DenseMultilinearExtension<E>,
+    pub(super) fn run_simple_batch_commit_open_verify<'a, E, Pcs>(
+        gen_rand_poly: fn(usize) -> MultilinearExtension<'a, E>,
         num_vars_start: usize,
         num_vars_end: usize,
         batch_size: usize,

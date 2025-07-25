@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use multilinear_extensions::mle::FieldType;
+use multilinear_extensions::{mle::FieldType, smart_slice::SmartSlice};
 use rayon::{
     iter::{
         IndexedParallelIterator, IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
@@ -20,16 +20,16 @@ use ark_std::{end_timer, start_timer};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
-pub struct MerkleTree<E: ExtensionField, H: MerkleHasher<E>>
+pub struct MerkleTree<'a, E: ExtensionField, H: MerkleHasher<E>>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
     inner: Vec<Vec<H::Digest>>,
-    leaves: Vec<FieldType<E>>,
+    leaves: Vec<FieldType<'a, E>>,
     _phantom: PhantomData<H>,
 }
 
-impl<E: ExtensionField, H: MerkleHasher<E>> MerkleTree<E, H>
+impl<'a, E: ExtensionField, H: MerkleHasher<E>> MerkleTree<'a, E, H>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
@@ -49,7 +49,7 @@ where
         inner.last().unwrap()[0].clone()
     }
 
-    pub fn from_inner_leaves(inner: Vec<Vec<H::Digest>>, leaves: FieldType<E>) -> Self {
+    pub fn from_inner_leaves(inner: Vec<Vec<H::Digest>>, leaves: FieldType<'a, E>) -> Self {
         Self {
             inner,
             leaves: vec![leaves],
@@ -57,7 +57,7 @@ where
         }
     }
 
-    pub fn from_leaves(leaves: FieldType<E>) -> Self {
+    pub fn from_leaves(leaves: FieldType<'a, E>) -> Self {
         Self {
             inner: Self::compute_inner(&leaves),
             leaves: vec![leaves],
@@ -65,7 +65,7 @@ where
         }
     }
 
-    pub fn from_batch_leaves(leaves: Vec<FieldType<E>>) -> Self {
+    pub fn from_batch_leaves(leaves: Vec<FieldType<'a, E>>) -> Self {
         Self {
             inner: merkelize::<E, H>(&leaves.iter().collect_vec()),
             leaves,
@@ -202,7 +202,7 @@ where
     ) {
         authenticate_merkle_path_root::<E, H>(
             &self.inner,
-            FieldType::Ext(vec![left, right]),
+            FieldType::Ext(SmartSlice::Owned(vec![left, right])),
             index,
             root,
         )
@@ -217,7 +217,7 @@ where
     ) {
         authenticate_merkle_path_root::<E, H>(
             &self.inner,
-            FieldType::Base(vec![left, right]),
+            FieldType::Base(SmartSlice::Owned(vec![left, right])),
             index,
             root,
         )
@@ -232,8 +232,8 @@ where
     ) {
         authenticate_merkle_path_root_batch::<E, H>(
             &self.inner,
-            FieldType::Ext(left),
-            FieldType::Ext(right),
+            FieldType::Ext(SmartSlice::Owned(left)),
+            FieldType::Ext(SmartSlice::Owned(right)),
             index,
             root,
         )
@@ -248,8 +248,8 @@ where
     ) {
         authenticate_merkle_path_root_batch::<E, H>(
             &self.inner,
-            FieldType::Base(left),
-            FieldType::Base(right),
+            FieldType::Base(SmartSlice::Owned(left)),
+            FieldType::Base(SmartSlice::Owned(right)),
             index,
             root,
         )

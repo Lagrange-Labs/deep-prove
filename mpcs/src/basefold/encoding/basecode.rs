@@ -11,7 +11,7 @@ use crate::{
 use aes::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
 use ark_std::{end_timer, start_timer};
 use ff_ext::ExtensionField;
-use multilinear_extensions::mle::FieldType;
+use multilinear_extensions::{mle::FieldType, smart_slice::SmartSlice};
 use p3_field::{Field, FieldAlgebra, batch_multiplicative_inverse};
 use rand::SeedableRng;
 use rayon::prelude::{ParallelIterator, ParallelSlice, ParallelSliceMut};
@@ -150,7 +150,7 @@ where
         ))
     }
 
-    fn encode(pp: &Self::ProverParameters, coeffs: &FieldType<E>) -> FieldType<E> {
+    fn encode<'a>(pp: &Self::ProverParameters, coeffs: &FieldType<'a, E>) -> FieldType<'a, E> {
         // Split the input into chunks of message size, encode each message, and return the codewords
         let basecode = encode_field_type_rs_basecode(
             coeffs,
@@ -169,7 +169,10 @@ where
         )
     }
 
-    fn encode_small(_vp: &Self::VerifierParameters, coeffs: &FieldType<E>) -> FieldType<E> {
+    fn encode_small<'a>(
+        _vp: &Self::VerifierParameters,
+        coeffs: &FieldType<'a, E>,
+    ) -> FieldType<'a, E> {
         let mut basecodes =
             encode_field_type_rs_basecode(coeffs, 1 << Spec::get_rate_log(), coeffs.len());
         assert_eq!(basecodes.len(), 1);
@@ -218,19 +221,19 @@ where
     }
 }
 
-fn encode_field_type_rs_basecode<E: ExtensionField>(
-    poly: &FieldType<E>,
+fn encode_field_type_rs_basecode<'a, E: ExtensionField>(
+    poly: &FieldType<'a, E>,
     rate: usize,
     message_size: usize,
-) -> Vec<FieldType<E>> {
+) -> Vec<FieldType<'a, E>> {
     match poly {
         FieldType::Ext(poly) => get_basecode(poly, rate, message_size)
             .iter()
-            .map(|x| FieldType::Ext(x.clone()))
+            .map(|x| FieldType::Ext(SmartSlice::Owned(x.clone())))
             .collect(),
         FieldType::Base(poly) => get_basecode(poly, rate, message_size)
             .iter()
-            .map(|x| FieldType::Base(x.clone()))
+            .map(|x| FieldType::Base(SmartSlice::Owned(x.clone())))
             .collect(),
         _ => panic!("Unsupported field type"),
     }
@@ -261,13 +264,13 @@ fn get_basecode<F: Field>(poly: &[F], rate: usize, message_size: usize) -> Vec<V
 }
 
 // this function assumes all codewords in base_codeword has equivalent length
-pub fn evaluate_over_foldable_domain_generic_basecode<E: ExtensionField>(
+pub fn evaluate_over_foldable_domain_generic_basecode<'a, E: ExtensionField>(
     base_message_length: usize,
     num_coeffs: usize,
     log_rate: usize,
-    base_codewords: Vec<FieldType<E>>,
+    base_codewords: Vec<FieldType<'a, E>>,
     table: &[Vec<E::BaseField>],
-) -> FieldType<E> {
+) -> FieldType<'a, E> {
     let timer = start_timer!(|| "evaluate over foldable domain");
     let k = num_coeffs;
     let logk = log2_strict(k);
@@ -411,13 +414,13 @@ mod tests {
 
     use super::*;
     use ff_ext::GoldilocksExt2;
-    use multilinear_extensions::mle::DenseMultilinearExtension;
+    use multilinear_extensions::mle::MultilinearExtension;
 
     #[test]
     fn time_rs_code() {
         use rand::rngs::OsRng;
 
-        let poly = DenseMultilinearExtension::random(20, &mut OsRng);
+        let poly = MultilinearExtension::random(20, &mut OsRng);
 
         encode_field_type_rs_basecode::<GoldilocksExt2>(&poly.evaluations, 2, 64);
     }

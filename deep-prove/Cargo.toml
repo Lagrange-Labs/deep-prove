@@ -13,7 +13,7 @@ version.workspace = true
 ignored = ["prost", "prost-types"]
 
 [features]
-blake = ["mpcs/blake"]
+blake = ["mpcs-lg/blake"]
 default = []
 
 [[bin]]
@@ -30,11 +30,11 @@ anyhow.workspace = true
 axum = { workspace = true, features = ["http1", "json"] }
 clap = { workspace = true, features = ["derive", "env"] }
 derive_more = { workspace = true, features = ["from"] }
-ff_ext = { version = "0.1.0", path = "../ff_ext" }
+ff_ext = { workspace = true }
 futures = { version = "0.3.30" }
 grpc-worker = { git = "https://github.com/Lagrange-Labs/grpc-worker-rs", branch = "main" }
 memmap2.workspace = true
-mpcs.workspace = true
+mpcs-lg.workspace = true
 object_store.workspace = true
 prost = { version = "0.13.3" }
 prost-tract-compat = { package = "prost", version = "0.11.9" }

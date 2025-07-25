@@ -37,11 +37,11 @@ use anyhow::{Result, anyhow, ensure};
 use ark_std::Zero;
 use ff_ext::ExtensionField;
 use itertools::{Itertools, izip};
-use mpcs::{PolynomialCommitmentScheme, sum_check::eq_xy_eval};
+use mpcs_lg::{PolynomialCommitmentScheme, sum_check::eq_xy_eval};
 use multilinear_extensions::{
-    mle::{DenseMultilinearExtension, IntoMLE, MultilinearExtension},
+    mle::{ArcMultilinearExtension, IntoMLE, MultilinearExtension},
     util::ceil_log2,
-    virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial},
+    virtual_poly::VirtualPolynomial,
 };
 use p3_field::FieldAlgebra;
 use rayon::prelude::*;
@@ -576,19 +576,19 @@ impl Evaluate<Element> for Softmax<Element> {
 
 impl PadOp for Softmax<Element> {}
 
-type CommsAndEvals<PCS, E> = (
+type CommsAndEvals<'a, PCS, E> = (
     Vec<(
-        <PCS as PolynomialCommitmentScheme<E>>::CommitmentWithWitness,
-        DenseMultilinearExtension<E>,
+        <PCS as PolynomialCommitmentScheme<E>>::CommitmentWithWitness<'a>,
+        MultilinearExtension<'a, E>,
     )>,
     Vec<Vec<<E as ExtensionField>::BaseField>>,
 );
 
-type CommsAndProofs<PCS, E> = (
+type CommsAndProofs<'a, PCS, E> = (
     Vec<
         Vec<(
-            <PCS as PolynomialCommitmentScheme<E>>::CommitmentWithWitness,
-            DenseMultilinearExtension<E>,
+            <PCS as PolynomialCommitmentScheme<E>>::CommitmentWithWitness<'a>,
+            MultilinearExtension<'a, E>,
         )>,
     >,
     Vec<LogUpProof<E>>,
@@ -678,7 +678,7 @@ impl Softmax<Element> {
         // Squeeze a batching cahllenge from the transcript
         let alpha = prover
             .transcript
-            .get_and_append_challenge(b"batching_challenge")
+            .sample_and_append_challenge(b"batching_challenge")
             .elements;
 
         let exp_beta: ArcMultilinearExtension<E> = compute_betas_eval(exp_point).into_mle().into();
@@ -696,7 +696,7 @@ impl Softmax<Element> {
         let (vp, batch_challenge) = commits[0].iter().fold(
             (VirtualPolynomial::<E>::new(exp_point.len()), E::ONE),
             |(mut vp_acc, bc), (_, poly)| {
-                vp_acc.add_mle_list(vec![poly.clone().into(), exp_beta.clone()], bc);
+                // vp_acc.add_mle_list(vec![poly.clone().into(), exp_beta.clone()], bc);
                 (vp_acc, bc * alpha)
             },
         );
@@ -705,7 +705,8 @@ impl Softmax<Element> {
             commits[1]
                 .iter()
                 .fold((vp, batch_challenge), |(mut vp_acc, bc), (_, poly)| {
-                    vp_acc.add_mle_list(vec![poly.clone().into(), range_beta.clone()], bc);
+                    // TODO: change accordingly to removed `add_mle_list` api in https://github.com/scroll-tech/ceno/pull/940
+                    // vp_acc.add_mle_list(vec![poly.clone().into(), range_beta.clone()], bc);
                     (vp_acc, bc * alpha)
                 });
 
@@ -733,7 +734,7 @@ impl Softmax<Element> {
             let batch_challenge = commits[3]
                 .iter()
                 .fold(batch_challenge, |chal_acc, (_, poly)| {
-                    vp.add_mle_list(vec![zero_table_beta.clone(), poly.clone().into()], chal_acc);
+                    // vp.add_mle_list(vec![zero_table_beta.clone(), poly.clone().into()], chal_acc);
                     chal_acc * alpha
                 });
 
@@ -749,10 +750,11 @@ impl Softmax<Element> {
             layer_out_prod.push(last_claim_beta);
             error_poly.push(error_beta);
 
-            vp.add_mle_list(error_poly, batch_challenge * two_mult);
-            vp.add_mle_list(layer_out_prod, batch_challenge * alpha);
+            // vp.add_mle_list(error_poly, batch_challenge * two_mult);
+            // vp.add_mle_list(layer_out_prod, batch_challenge * alpha);
         } else {
             // In this case the layer output is just the exp table output
+            /*
             vp.add_mle_list(
                 vec![exp_output.clone().into(), error_beta.clone()],
                 batch_challenge * two_mult,
@@ -761,14 +763,19 @@ impl Softmax<Element> {
                 vec![exp_output.clone().into(), last_claim_beta],
                 batch_challenge * alpha,
             );
+            */
         }
 
         // Run the sumcheck proof
         #[allow(deprecated)]
         let (sumcheck_proof, state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
         // We need the point and all the poly evals (excluding beta polys)
-        let sumcheck_point = &sumcheck_proof.point;
-        let all_evals = state.get_mle_final_evaluations();
+        let sumcheck_point = &sumcheck_proof.proofs[0].evaluations;
+        let all_evals = state
+            .get_mle_final_evaluations()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
         let exp_evals = &[all_evals[0], all_evals[2]];
         let range_evals = &[all_evals[3], all_evals[5]];
 
@@ -820,28 +827,35 @@ impl Softmax<Element> {
         let mut vp = VirtualPolynomial::<E>::new(tril_mle.num_vars());
         vp.add_mle_list(vec![shifted_input_mle, tril_mle], E::ONE);
         vp.add_mle_list(vec![bias_mle], E::ONE);
-        vp.mul_by_mle(mask_eq, E::BaseField::ONE);
+        // TODO: removed in https://github.com/scroll-tech/ceno/pull/791
+        // vp.mul_by_mle(mask_eq, E::BaseField::ONE);
         // Run the sumcheck proof for masking
         #[allow(deprecated)]
         let (mask_proof, mask_state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
 
-        let shifted_input_eval = mask_state.get_mle_final_evaluations()[0];
+        let shifted_input_eval = mask_state
+            .get_mle_final_evaluations()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()[0];
 
         // Work out the difference in length between the mask proof point and the number of variables for the shift commitment.
-        let mask_point_len = mask_proof.point.len();
+        let mask_point_len = mask_proof.proofs[0].evaluations.len();
         let initial_shift = &commits[2];
         let shift_vars = initial_shift[0].1.num_vars;
         let vars_diff = mask_point_len - shift_vars;
-        let shift_point = mask_proof
-            .point
+        let shift_point = mask_proof.proofs[0]
+            .evaluations
             .iter()
             .skip(vars_diff)
             .copied()
             .collect::<Vec<E>>();
         let shift_eval = initial_shift[0].1.evaluate(&shift_point);
 
-        let input_claim =
-            Claim::<E>::new(mask_proof.point.clone(), shifted_input_eval - shift_eval);
+        let input_claim = Claim::<E>::new(
+            mask_state.collect_raw_challenges(),
+            shifted_input_eval - shift_eval,
+        );
         // Add the commitments to be opened to the commitment prover
         let exp_commits = commits[0]
             .iter()
@@ -940,13 +954,13 @@ impl Softmax<Element> {
         Ok((vec![input_claim], proof))
     }
 
-    pub(crate) fn lookup_witness<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>(
+    pub(crate) fn lookup_witness<'a, E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         id: NodeId,
-        ctx: &Context<E, PCS>,
+        ctx: &'a Context<'a, E, PCS>,
         output: &Tensor<Element>,
         softmax_data: &SoftmaxData<E>,
-    ) -> Result<LookupWitnessGen<E, PCS>> {
+    ) -> Result<LookupWitnessGen<'a, E, PCS>> {
         // Get the data generated during quantised evaluation
         let SoftmaxData {
             shift_tensor,
@@ -1018,7 +1032,7 @@ impl Softmax<Element> {
                     })
                     .collect::<Vec<E::BaseField>>();
                 let mle =
-                    DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, &evaluations);
+                    MultilinearExtension::<E>::from_evaluations_vec(num_vars, evaluations.clone());
                 let commit = ctx.commitment_ctx.commit(&mle)?;
                 Ok(((commit, mle), evaluations))
             })
@@ -1047,7 +1061,7 @@ impl Softmax<Element> {
 
         let shift_data = shift_tensor.get_data();
 
-        let shift_mle = DenseMultilinearExtension::<E>::from_evaluations_vec(
+        let shift_mle = MultilinearExtension::<E>::from_evaluations_vec(
             ceil_log2(shift_data.len()),
             shift_data
                 .iter()
@@ -1178,12 +1192,12 @@ where
         Ok(claims)
     }
 
-    fn gen_lookup_witness(
+    fn gen_lookup_witness<'a>(
         &self,
         id: NodeId,
-        ctx: &Context<E, PCS>,
+        ctx: &'a Context<'a, E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> Result<LookupWitnessGen<E, PCS>> {
+    ) -> Result<LookupWitnessGen<'a, E, PCS>> {
         ensure!(
             step_data.inputs.len() == 1,
             "Found more than 1 input in inference step of Softmax layer"
@@ -1453,7 +1467,7 @@ where
         // Now we squeeze the batching challenge
         let alpha = verifier
             .transcript
-            .get_and_append_challenge(b"batching_challenge")
+            .sample_and_append_challenge(b"batching_challenge")
             .elements;
 
         // Recreate the initial evaluation of the sumcheck
@@ -1499,12 +1513,12 @@ where
 
         // Verify the sumcheck proof
         let aux_info = if logup_claims.len() == 4 {
-            VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
+            crate::util::from_mle_list_dimensions(&[vec![
                 exp_point.len();
                 self.number_zero_chunks + 2
             ]])
         } else {
-            VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![exp_point.len(); 2]])
+            crate::util::from_mle_list_dimensions(&[vec![exp_point.len(); 2]])
         };
 
         let sumcheck_subclaim = IOPVerifierState::<E>::verify(
@@ -1513,7 +1527,11 @@ where
             &aux_info,
             verifier.transcript,
         );
-        let sumcheck_point = sumcheck_subclaim.point_flat();
+        let sumcheck_point = sumcheck_subclaim
+            .point
+            .iter()
+            .map(|p| p.elements)
+            .collect_vec();
 
         let last_claim_beta_eval = eq_xy_eval(&last_claim.point, &sumcheck_point);
         let exp_beta_eval = eq_xy_eval(exp_point, &sumcheck_point);
@@ -1598,7 +1616,7 @@ where
         };
 
         // Run verification for the masking sumcheck
-        let aux_info = VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![sumcheck_point.len(); 3]]);
+        let aux_info = crate::util::from_mle_list_dimensions(&[vec![sumcheck_point.len(); 3]]);
 
         let sumcheck_subclaim = IOPVerifierState::<E>::verify(
             -mask_input_eval,
@@ -1607,7 +1625,11 @@ where
             verifier.transcript,
         );
 
-        let mask_point = sumcheck_subclaim.point_flat();
+        let mask_point = sumcheck_subclaim
+            .point
+            .iter()
+            .map(|p| p.elements)
+            .collect_vec();
         let eq_eval = eq_xy_eval(&mask_point, &sumcheck_point);
         // Compute the tril and bias evaluation, to do this we need the number of columns and rows
         let padded_shape = &shape_step.padded_output_shape[0];

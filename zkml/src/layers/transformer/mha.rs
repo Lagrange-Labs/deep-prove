@@ -32,10 +32,10 @@ use crate::{
 use anyhow::{anyhow, ensure};
 use ff_ext::{ExtensionField, FieldFrom, SmallField};
 use itertools::Itertools;
-use mpcs::PolynomialCommitmentScheme;
+use mpcs_lg::PolynomialCommitmentScheme;
 use p3_field::FieldAlgebra;
 use p3_goldilocks::Goldilocks;
-use poseidon::poseidon_hash::PoseidonHash;
+// use poseidon::poseidon_hash::PoseidonHash;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use transcript::Transcript;
@@ -202,7 +202,8 @@ impl<N: Number> Mha<N> {
                     .map(|b| Goldilocks::from_canonical_u8(*b)),
             )
             .collect_vec();
-        PoseidonHash::hash_or_noop(&payload).0[0].to_canonical_u64() as usize
+        // PoseidonHash::hash_or_noop(&payload).0[0].to_canonical_u64() as usize
+        todo!()
     }
 
     fn qk_node_id(node_id: NodeId) -> NodeId {
@@ -722,12 +723,12 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS> f
         Ok(input_claims)
     }
 
-    fn gen_lookup_witness(
+    fn gen_lookup_witness<'a>(
         &self,
         id: NodeId,
-        ctx: &crate::Context<E, PCS>,
+        ctx: &'a crate::Context<'a, E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> anyhow::Result<LookupWitnessGen<E, PCS>> {
+    ) -> anyhow::Result<LookupWitnessGen<'a, E, PCS>> {
         let mha_data = step_data
             .outputs
             .try_mha_data()

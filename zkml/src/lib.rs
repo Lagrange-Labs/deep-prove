@@ -4,8 +4,8 @@
 
 use ark_std::rand::{self, SeedableRng, rngs::StdRng};
 use ff_ext::ExtensionField;
-use gkr::structs::PointAndEval;
 use itertools::Itertools;
+use multilinear_extensions::mle::PointAndEval;
 use rayon::iter::ParallelIterator;
 use serde::{Deserialize, Serialize};
 use std::{env, str::FromStr};
@@ -32,6 +32,7 @@ pub mod capture;
 pub mod inputs;
 #[cfg(test)]
 mod testing;
+pub(crate) mod util;
 
 /// We allow higher range to account for overflow. Since we do a requant after each layer, we
 /// can support with i128 with 8 bits quant:

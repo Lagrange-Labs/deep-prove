@@ -17,7 +17,7 @@ name = "bench"
 path = "src/bin/bench.rs"
 
 [features]
-blake = ["mpcs/blake"]
+blake = ["mpcs-lg/blake"]
 default = []
 # Capture layers' quatization outputs for regression tests
 capture-layers-quant = ["dep:sha2"]
@@ -30,18 +30,15 @@ burn = { version = "0.17.0", features = ["ndarray"] }
 candle-core = "0.9.1"
 clap = { workspace = true, features = ["derive", "env"] }
 derive_more = { workspace = true, features = ["full"] }
-ff_ext = { version = "0.1.0", path = "../ff_ext" }
+ff_ext = { workspace = true }
 gguf-rs = "0.1.4"
-gkr = { workspace = true }
 hex = { workspace = true }
 itertools.workspace = true
-mpcs = { workspace = true }
-multilinear_extensions = { version = "0.1.0", path = "../multilinear_extensions", features = [
-  "parallel",
-] }
+mpcs-lg = { workspace = true }
+multilinear_extensions = { workspace = true, features = ["parallel"] }
 p3-field = { workspace = true }
 p3-goldilocks = { workspace = true }
-poseidon = { version = "0.1.0", path = "../poseidon" }
+poseidon = { workspace = true }
 prost = { version = "0.13.3" }
 prost-tract-compat = { package = "prost", version = "0.11.9" }
 rayon.workspace = true
@@ -51,7 +48,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2 = { version = "0.10.9", optional = true }
 statrs = { workspace = true }
-sumcheck = { version = "0.1.0", path = "../sumcheck" }
+sumcheck = { workspace = true }
 timed = { workspace = true }
 timed-core = { workspace = true }
 tracing = { workspace = true }
@@ -61,7 +58,7 @@ tracing-subscriber = { workspace = true, features = [
   "json",
 ] }
 tract-onnx = { workspace = true }
-transcript = { version = "0.1.0", path = "../transcript" }
+transcript = { workspace = true }
 utils = { path = "../utils" }
 
 

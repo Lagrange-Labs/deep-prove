@@ -10,7 +10,7 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
-ff_ext = { path = "../ff_ext" }
+ff_ext = { workspace = true }
 itertools.workspace = true
 p3-field.workspace = true
 serde.workspace = true

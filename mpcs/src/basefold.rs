@@ -27,7 +27,8 @@ pub use encoding::{
     RSCodeDefaultSpec,
 };
 use ff_ext::ExtensionField;
-use multilinear_extensions::mle::MultilinearExtension;
+use multilinear_extensions::{mle::MultilinearExtension, smart_slice::SmartSlice};
+use p3::field::FieldAlgebra;
 use query_phase::{
     BatchedQueriesResultWithMerklePath, QueriesResultWithMerklePath,
     SimpleBatchQueriesResultWithMerklePath, batch_prover_query_phase, batch_verifier_query_phase,
@@ -42,16 +43,13 @@ use transcript::Transcript;
 use itertools::Itertools;
 use serde::{Serialize, de::DeserializeOwned};
 
-use multilinear_extensions::{
-    mle::{DenseMultilinearExtension, FieldType},
-    virtual_poly::build_eq_x_r_vec,
-};
+use multilinear_extensions::{mle::FieldType, virtual_poly::build_eq_x_r_vec};
 
 use rayon::{iter::IntoParallelIterator, prelude::*};
 use std::borrow::Cow;
 pub use sumcheck::{one_level_eval_hc, one_level_interp_hc};
 
-type SumCheck<F> = ClassicSumCheck<CoefficientsProver<F>>;
+type SumCheck<'a, F> = ClassicSumCheck<CoefficientsProver<'a, F>>;
 
 mod structure;
 pub use structure::{
@@ -63,30 +61,30 @@ mod commit_phase;
 use commit_phase::{batch_commit_phase, commit_phase, simple_batch_commit_phase};
 mod encoding;
 pub use encoding::{coset_fft, fft, fft_root_table};
-use multilinear_extensions::virtual_poly::ArcMultilinearExtension;
+use multilinear_extensions::mle::ArcMultilinearExtension;
 
 mod query_phase;
 // This sumcheck module is different from the mpcs::sumcheck module, in that
 // it deals only with the special case of the form \sum eq(r_i)f_i().
 mod sumcheck;
 
-enum PolyEvalsCodeword<E: ExtensionField> {
-    Normal((FieldType<E>, FieldType<E>)),
-    TooSmall(FieldType<E>), // The polynomial is too small to apply FRI
+enum PolyEvalsCodeword<'a, E: ExtensionField> {
+    Normal((FieldType<'a, E>, FieldType<'a, E>)),
+    TooSmall(FieldType<'a, E>), // The polynomial is too small to apply FRI
     TooBig(usize),
 }
 
-impl<E: ExtensionField, Spec: BasefoldSpec<E>> Basefold<E, Spec>
+impl<E: ExtensionField, Spec: BasefoldSpec<E>> Basefold<'_, E, Spec>
 where
     E: Serialize + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
 {
     /// Converts a polynomial to a code word, also returns the evaluations over the boolean hypercube
     /// for said polynomial
-    fn get_poly_bh_evals_and_codeword(
+    fn get_poly_bh_evals_and_codeword<'a>(
         pp: &BasefoldProverParams<E, Spec>,
-        poly: &DenseMultilinearExtension<E>,
-    ) -> PolyEvalsCodeword<E> {
+        poly: &MultilinearExtension<'a, E>,
+    ) -> PolyEvalsCodeword<'a, E> {
         // bh_evals is just a copy of poly.evals().
         // Note that this function implicitly assumes that the size of poly.evals() is a
         // power of two. Otherwise, the function crashes with index out of bound.
@@ -154,9 +152,9 @@ where
     }
 
     /// Transpose a matrix of field elements, generic over the type of field element
-    pub fn transpose_field_type<T: Send + Sync + Copy>(
-        matrix: &[FieldType<E>],
-    ) -> Result<Vec<FieldType<E>>, Error> {
+    pub fn transpose_field_type<'a, T: Send + Sync + Copy>(
+        matrix: &[FieldType<'a, E>],
+    ) -> Result<Vec<FieldType<'a, E>>, Error> {
         let transpose_fn = match matrix[0] {
             FieldType::Ext(_) => Self::get_column_ext,
             FieldType::Base(_) => Self::get_column_base,
@@ -170,11 +168,11 @@ where
             .collect()
     }
 
-    fn get_column_base(
-        matrix: &[FieldType<E>],
+    fn get_column_base<'a>(
+        matrix: &[FieldType<'a, E>],
         column_index: usize,
-    ) -> Result<FieldType<E>, Error> {
-        Ok(FieldType::Base(
+    ) -> Result<FieldType<'a, E>, Error> {
+        Ok(FieldType::Base(SmartSlice::Owned(
             matrix
                 .par_iter()
                 .map(|row| match row {
@@ -184,11 +182,14 @@ where
                     )),
                 })
                 .collect::<Result<Vec<E::BaseField>, Error>>()?,
-        ))
+        )))
     }
 
-    fn get_column_ext(matrix: &[FieldType<E>], column_index: usize) -> Result<FieldType<E>, Error> {
-        Ok(FieldType::Ext(
+    fn get_column_ext<'a>(
+        matrix: &[FieldType<'a, E>],
+        column_index: usize,
+    ) -> Result<FieldType<'a, E>, Error> {
+        Ok(FieldType::Ext(SmartSlice::Owned(
             matrix
                 .par_iter()
                 .map(|row| match row {
@@ -198,7 +199,7 @@ where
                     )),
                 })
                 .collect::<Result<Vec<E>, Error>>()?,
-        ))
+        )))
     }
 }
 
@@ -262,7 +263,8 @@ where
 ///     positions are (i >> k) and (i >> k) XOR 1.
 /// (c) The verifier checks that the folding has been correctly computed
 ///     at these positions.
-impl<E: ExtensionField, Spec: BasefoldSpec<E>> PolynomialCommitmentScheme<E> for Basefold<E, Spec>
+impl<'a, E: ExtensionField + p3_field::Field, Spec: BasefoldSpec<E>> PolynomialCommitmentScheme<E>
+    for Basefold<'a, E, Spec>
 where
     E: Serialize + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,
@@ -270,10 +272,10 @@ where
     type Param = BasefoldParams<E, Spec>;
     type ProverParam = BasefoldProverParams<E, Spec>;
     type VerifierParam = BasefoldVerifierParams<E, Spec>;
-    type CommitmentWithWitness = BasefoldCommitmentWithWitness<E, Spec::MerkleHasher>;
+    type CommitmentWithWitness<'b> = BasefoldCommitmentWithWitness<'b, E, Spec::MerkleHasher>;
     type Commitment = BasefoldCommitment<<Spec::MerkleHasher as MerkleHasher<E>>::Digest>;
     type CommitmentChunk = <Spec::MerkleHasher as MerkleHasher<E>>::Digest;
-    type Proof = BasefoldProof<E, <Spec::MerkleHasher as MerkleHasher<E>>::Digest>;
+    type Proof<'b> = BasefoldProof<'b, E, <Spec::MerkleHasher as MerkleHasher<E>>::Digest>;
 
     fn setup(poly_size: usize) -> Result<Self::Param, Error> {
         let pp = <Spec::EncodingScheme as EncodingScheme<E>>::setup(log2_strict(poly_size));
@@ -301,10 +303,10 @@ where
         )
     }
 
-    fn commit(
+    fn commit<'b>(
         pp: &Self::ProverParam,
-        poly: &DenseMultilinearExtension<E>,
-    ) -> Result<Self::CommitmentWithWitness, Error> {
+        poly: &MultilinearExtension<'b, E>,
+    ) -> Result<Self::CommitmentWithWitness<'b>, Error> {
         let timer = start_timer!(|| "Basefold::commit");
 
         let is_base = match poly.evaluations {
@@ -353,10 +355,10 @@ where
         ret
     }
 
-    fn batch_commit(
+    fn batch_commit<'b>(
         pp: &Self::ProverParam,
-        polys: &[DenseMultilinearExtension<E>],
-    ) -> Result<Self::CommitmentWithWitness, Error> {
+        polys: &[MultilinearExtension<'b, E>],
+    ) -> Result<Self::CommitmentWithWitness<'b>, Error> {
         // assumptions
         // 1. there must be at least one polynomial
         // 2. all polynomials must exist in the same field type
@@ -456,21 +458,21 @@ where
         Ok(())
     }
 
-    fn get_pure_commitment(comm: &Self::CommitmentWithWitness) -> Self::Commitment {
+    fn get_pure_commitment(comm: &Self::CommitmentWithWitness<'_>) -> Self::Commitment {
         comm.to_commitment()
     }
 
     /// Open a single polynomial commitment at one point. If the given
     /// commitment with data contains more than one polynomial, this function
     /// will panic.
-    fn open(
+    fn open<'b>(
         pp: &Self::ProverParam,
-        poly: &DenseMultilinearExtension<E>,
-        comm: &Self::CommitmentWithWitness,
+        poly: &MultilinearExtension<'b, E>,
+        comm: &Self::CommitmentWithWitness<'_>,
         point: &[E],
         _eval: &E, // Opening does not need eval, except for sanity check
         transcript: &mut impl Transcript<E>,
-    ) -> Result<Self::Proof, Error> {
+    ) -> Result<BasefoldProof<'b, E, <Spec::MerkleHasher as MerkleHasher<E>>::Digest>, Error> {
         let timer = start_timer!(|| "Basefold::open");
 
         // The encoded polynomial should at least have the number of
@@ -479,7 +481,7 @@ where
         // the protocol won't work, and saves no verifier work anyway.
         // In this case, simply return the evaluations as trivial proof.
         if comm.is_trivial::<Spec>() {
-            return Ok(Self::Proof::trivial(vec![poly.evaluations.clone()]));
+            return Ok(Self::Proof::trivial(vec![poly.evaluations.to_owned()]));
         }
 
         assert!(comm.num_vars >= Spec::get_basecode_msg_size_log());
@@ -543,14 +545,14 @@ where
     /// Because otherwise it is complex to match the polynomials and
     /// the commitments, and because currently this high flexibility is
     /// not very useful in ceno.
-    fn batch_open(
+    fn batch_open<'b>(
         pp: &Self::ProverParam,
-        polys: &[DenseMultilinearExtension<E>],
-        comms: &[Self::CommitmentWithWitness],
+        polys: &[MultilinearExtension<'b, E>],
+        comms: &[Self::CommitmentWithWitness<'b>],
         points: &[Vec<E>],
         evals: &[Evaluation<E>],
         transcript: &mut impl Transcript<E>,
-    ) -> Result<Self::Proof, Error> {
+    ) -> Result<Self::Proof<'b>, Error> {
         let timer = start_timer!(|| "Basefold::batch_open");
         // If we aren't provided with any commitments, polynomials, points or evaluations just return an empty proof
         if polys.is_empty() && comms.is_empty() && points.is_empty() && evals.is_empty() {
@@ -566,7 +568,7 @@ where
         );
 
         comms.iter().for_each(|comm| {
-            assert!(comm.num_polys == 1);
+            assert_eq!(comm.num_polys, 1);
             assert!(!comm.is_trivial::<Spec>());
         });
 
@@ -587,7 +589,7 @@ where
         let t = (0..batch_size_log)
             .map(|_| {
                 transcript
-                    .get_and_append_challenge(b"batch coeffs")
+                    .sample_and_append_challenge(b"batch coeffs")
                     .elements
             })
             .collect::<Vec<_>>();
@@ -596,7 +598,7 @@ where
         // Note that this is a small polynomial (only batch_size) compared to the polynomials
         // to open.
         let eq_xt =
-            DenseMultilinearExtension::<E>::from_evaluations_ext_vec(t.len(), build_eq_x_r_vec(&t));
+            MultilinearExtension::<E>::from_evaluations_ext_vec(t.len(), build_eq_x_r_vec(&t));
         // When this polynomial is smaller, it will be repeatedly summed over the cosets of the hypercube
         let target_sum = inner_product_three(
             evals.iter().map(Evaluation::value),
@@ -611,7 +613,7 @@ where
         let merged_polys = evals.iter().zip(poly_iter_ext(&eq_xt)).fold(
             // This folding will generate a vector of |points| pairs of (scalar, polynomial)
             // The polynomials are initialized to zero, and the scalars are initialized to one
-            vec![(E::ONE, Cow::<DenseMultilinearExtension<E>>::default()); points.len()],
+            vec![(E::ONE, Cow::<MultilinearExtension<E>>::default()); points.len()],
             |mut merged_polys, (eval, eq_xt_i)| {
                 // For each polynomial to open, eval.point() specifies which point it is to be opened at.
                 if merged_polys[eval.point()].1.num_vars == 0 {
@@ -674,7 +676,7 @@ where
                     * scalar
             })
             .sum();
-        let sumcheck_polys: Vec<&DenseMultilinearExtension<E>> = merged_polys
+        let sumcheck_polys: Vec<&MultilinearExtension<'_, E>> = merged_polys
             .iter()
             .map(|(_, poly)| poly.deref())
             .collect_vec();
@@ -774,14 +776,14 @@ where
     /// 2. All the polynomials share the same commitment and have the same
     ///    number of variables.
     /// 3. The point is already a random point generated by a sum-check.
-    fn simple_batch_open(
+    fn simple_batch_open<'b>(
         pp: &Self::ProverParam,
         polys: &[ArcMultilinearExtension<E>],
-        comm: &Self::CommitmentWithWitness,
+        comm: &Self::CommitmentWithWitness<'b>,
         point: &[E],
         evals: &[E],
         transcript: &mut impl Transcript<E>,
-    ) -> Result<Self::Proof, Error> {
+    ) -> Result<Self::Proof<'b>, Error> {
         let timer = start_timer!(|| "Basefold::batch_open");
         let num_vars = polys[0].num_vars();
 
@@ -807,7 +809,7 @@ where
         let t = (0..batch_size_log)
             .map(|_| {
                 transcript
-                    .get_and_append_challenge(b"batch coeffs")
+                    .sample_and_append_challenge(b"batch coeffs")
                     .elements
             })
             .collect::<Vec<_>>();
@@ -865,7 +867,7 @@ where
         comm: &Self::Commitment,
         point: &[E],
         eval: &E,
-        proof: &Self::Proof,
+        proof: &Self::Proof<'_>,
         transcript: &mut impl Transcript<E>,
     ) -> Result<(), Error> {
         let timer = start_timer!(|| "Basefold::verify");
@@ -875,7 +877,7 @@ where
             let merkle_tree =
                 MerkleTree::<E, Spec::MerkleHasher>::from_batch_leaves(trivial_proof.clone());
             if comm.root() == merkle_tree.root() {
-                let computed_eval = DenseMultilinearExtension::<E> {
+                let computed_eval = MultilinearExtension::<'_, E> {
                     evaluations: trivial_proof[0].clone(),
                     num_vars: trivial_proof[0].len().ilog2() as usize,
                 }
@@ -907,7 +909,7 @@ where
             transcript.append_field_element_exts(sumcheck_messages[i].as_slice());
             fold_challenges.push(
                 transcript
-                    .get_and_append_challenge(b"commit round")
+                    .sample_and_append_challenge(b"commit round")
                     .elements,
             );
             if i < num_rounds - 1 {
@@ -924,7 +926,7 @@ where
             .map(|_| {
                 ext_to_usize(
                     &transcript
-                        .get_and_append_challenge(b"query indices")
+                        .sample_and_append_challenge(b"query indices")
                         .elements,
                 ) % (1 << (num_vars + Spec::get_rate_log()))
             })
@@ -966,7 +968,7 @@ where
         comms: &[Self::Commitment],
         points: &[Vec<E>],
         evals: &[Evaluation<E>],
-        proof: &Self::Proof,
+        proof: &Self::Proof<'_>,
         transcript: &mut impl Transcript<E>,
     ) -> Result<(), Error> {
         // If we have no commitments, points, evalautions or proofs then just return an Ok(())
@@ -997,13 +999,12 @@ where
         let t = (0..batch_size_log)
             .map(|_| {
                 transcript
-                    .get_and_append_challenge(b"batch coeffs")
+                    .sample_and_append_challenge(b"batch coeffs")
                     .elements
             })
             .collect::<Vec<_>>();
 
-        let eq_xt =
-            DenseMultilinearExtension::from_evaluations_ext_vec(t.len(), build_eq_x_r_vec(&t));
+        let eq_xt = MultilinearExtension::from_evaluations_ext_vec(t.len(), build_eq_x_r_vec(&t));
         let target_sum = inner_product_three(
             evals.iter().map(Evaluation::value),
             &evals
@@ -1042,7 +1043,7 @@ where
             transcript.append_field_element_exts(sumcheck_messages[i].as_slice());
             fold_challenges.push(
                 transcript
-                    .get_and_append_challenge(b"commit round")
+                    .sample_and_append_challenge(b"commit round")
                     .elements,
             );
             if i < num_rounds - 1 {
@@ -1058,7 +1059,7 @@ where
             .map(|_| {
                 ext_to_usize(
                     &transcript
-                        .get_and_append_challenge(b"query indices")
+                        .sample_and_append_challenge(b"query indices")
                         .elements,
                 ) % (1 << (num_vars + Spec::get_rate_log()))
             })
@@ -1102,7 +1103,7 @@ where
         comm: &Self::Commitment,
         point: &[E],
         evals: &[E],
-        proof: &Self::Proof,
+        proof: &Self::Proof<'_>,
         transcript: &mut impl Transcript<E>,
     ) -> Result<(), Error> {
         let timer = start_timer!(|| "Basefold::simple batch verify");
@@ -1131,13 +1132,7 @@ where
 
         // evals.len() is the batch size, i.e., how many polynomials are being opened together
         let batch_size_log = evals.len().next_power_of_two().ilog2() as usize;
-        let t = (0..batch_size_log)
-            .map(|_| {
-                transcript
-                    .get_and_append_challenge(b"batch coeffs")
-                    .elements
-            })
-            .collect::<Vec<_>>();
+        let t = transcript.sample_and_append_vec(b"batch coeffs", batch_size_log);
         let eq_xt = build_eq_x_r_vec(&t)[..evals.len()].to_vec();
 
         let mut fold_challenges: Vec<E> = Vec::with_capacity(num_vars);
@@ -1147,7 +1142,7 @@ where
             transcript.append_field_element_exts(sumcheck_messages[i].as_slice());
             fold_challenges.push(
                 transcript
-                    .get_and_append_challenge(b"commit round")
+                    .sample_and_append_challenge(b"commit round")
                     .elements,
             );
             if i < num_rounds - 1 {
@@ -1163,7 +1158,7 @@ where
             .map(|_| {
                 ext_to_usize(
                     &transcript
-                        .get_and_append_challenge(b"query indices")
+                        .sample_and_append_challenge(b"query indices")
                         .elements,
                 ) % (1 << (num_vars + Spec::get_rate_log()))
             })
@@ -1206,7 +1201,7 @@ where
     }
 }
 
-impl<E: ExtensionField, Spec: BasefoldSpec<E>> NoninteractivePCS<E> for Basefold<E, Spec>
+impl<E: ExtensionField, Spec: BasefoldSpec<E>> NoninteractivePCS<E> for Basefold<'_, E, Spec>
 where
     E: Serialize + DeserializeOwned,
     E::BaseField: Serialize + DeserializeOwned,

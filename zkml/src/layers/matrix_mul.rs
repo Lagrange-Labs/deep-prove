@@ -3,9 +3,10 @@ use std::collections::HashMap;
 use anyhow::{Context, Result, anyhow, ensure};
 
 use ff_ext::ExtensionField;
-use mpcs::PolynomialCommitmentScheme;
+use itertools::Itertools;
+use mpcs_lg::PolynomialCommitmentScheme;
 use multilinear_extensions::{
-    mle::{DenseMultilinearExtension, IntoMLE, MultilinearExtension},
+    mle::{IntoMLE, MultilinearExtension},
     virtual_poly::{VPAuxInfo, VirtualPolynomial},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -783,7 +784,7 @@ impl MatMul<Element> {
         );
 
         // construct the MLE combining the input and the matrix
-        let mut right_mat_mle: DenseMultilinearExtension<E> = right_matrix.to_mle_2d();
+        let mut right_mat_mle: MultilinearExtension<'_, E> = right_matrix.to_mle_2d();
         let mut left_mat_mle = left_matrix.to_mle_2d();
         // For a repeating matrix M like [v,v,v,...], where v is a column vector, then
         // the trick is that M(r1,r2) = v(r1) - here we take the right split that corresponds to
@@ -802,11 +803,11 @@ impl MatMul<Element> {
         }
         // fix the variables for the left matrix; we need to fix the variables
         // corresponding to a row, so we must fix the HIGH variables
-        left_mat_mle.fix_high_variables_in_place(point_for_left);
+        // left_mat_mle.fix_high_variables_in_place(point_for_left);
         if transposed {
             // fix the variables for the right matrix; since it is transposed, we need to
             // fix the variables corresponding to a row, so we must fix the high variables
-            right_mat_mle.fix_high_variables_in_place(point_for_right);
+            // right_mat_mle.fix_high_variables_in_place(point_for_right);
         } else {
             // fix the variables for the right matrix; we need to fix the variables
             // corresponding to a column, so we must fix the low variables
@@ -819,7 +820,7 @@ impl MatMul<Element> {
 
         let num_vars = left_mat_mle.num_vars();
         let mut vp = VirtualPolynomial::<E>::new(num_vars);
-        vp.add_mle_list(vec![left_mat_mle.into(), right_mat_mle.into()], E::ONE);
+        // vp.add_mle_list(vec![left_mat_mle.into(), right_mat_mle.into()], E::ONE);
         #[allow(deprecated)]
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
 
@@ -831,14 +832,22 @@ impl MatMul<Element> {
             "No need to have a layer to multiply 2 constant matrices, define a layer with the matrix product instead"
         );
         // Note we need the _full_ input to the matrix since the matrix MLE has (row,column) vars space
-        let (point_for_left, point_for_right) =
-            Self::full_points(&last_claim, &proof.point, num_vars_2d, transposed);
+        let (point_for_left, point_for_right) = Self::full_points(
+            &last_claim,
+            &state.collect_raw_challenges(),
+            num_vars_2d,
+            transposed,
+        );
         // collection of claims to be returned as output
         let mut output_claims = vec![];
         // compute the claim for the left matrix polynomial. It will be either accumulated in the
         // evaluation claims being opened with the polynomial commitment, or returned as output,
         // depending on whether the left matrix is constant or not
-        let eval = state.get_mle_final_evaluations()[0]; // The first MLE being evaluated is the left matrix poly
+        let eval = state
+            .get_mle_final_evaluations()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()[0]; // The first MLE being evaluated is the left matrix poly
         let left_claim = Claim::new(point_for_left, eval);
         if is_left_constant {
             // add a claim for the constant polynomial of the left matrix
@@ -849,7 +858,11 @@ impl MatMul<Element> {
         }
         // same for right matrix polynomial: compute the claim and either accumulated it in the evaluation
         // claims opened with the polynomial commitment, or return it as output
-        let eval = state.get_mle_final_evaluations()[1]; // The second MLE being evaluated is the right matrix poly
+        let eval = state
+            .get_mle_final_evaluations()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()[1]; // The second MLE being evaluated is the right matrix poly
         let right_claim = Claim::new(point_for_right, eval);
         if is_right_constant {
             // add a claim for the constant polynomial of the left matrix
@@ -861,7 +874,11 @@ impl MatMul<Element> {
 
         let proof = MatMulProof {
             sumcheck: proof,
-            individual_claims: state.get_mle_final_evaluations(),
+            individual_claims: state
+                .get_mle_final_evaluations()
+                .into_iter()
+                .flatten()
+                .collect(),
             bias_eval: common_claims.get(BIAS_POLY_ID).map(|c| c.eval),
         };
 
@@ -932,7 +949,7 @@ impl MatMul<Element> {
         // there is only one product (i.e. quadratic sumcheck)
         let info = MatMulCtx {
             node_id: id,
-            matrix_poly_aux: VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![num_vars, num_vars]]),
+            matrix_poly_aux: crate::util::from_mle_list_dimensions(&[vec![num_vars, num_vars]]),
             output_mle_num_vars: (nrows.ilog2() as usize, ncols.ilog2() as usize),
             left_matrix_shapes,
             right_matrix_shapes,
@@ -1084,7 +1101,7 @@ where
         let transposed = self.is_right_transposed();
         let (point_for_left, point_for_right) = MatMul::<Element>::full_points(
             &last_claim,
-            &subclaim.point_flat(),
+            &subclaim.point.iter().map(|p| p.elements).collect_vec(),
             self.output_mle_num_vars,
             transposed,
         );

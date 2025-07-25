@@ -20,7 +20,7 @@ use std::fmt::Debug;
 use anyhow::{Result, bail};
 use ff_ext::ExtensionField;
 use flatten::Flatten;
-use mpcs::PolynomialCommitmentScheme;
+use mpcs_lg::PolynomialCommitmentScheme;
 use pooling::{PoolingCtx, PoolingProof};
 use provable::{
     Evaluate, LayerOut, Node, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, QuantizeOp,
@@ -528,13 +528,13 @@ where
 {
     type Ctx = LayerCtx<E>;
 
-    fn prove<T: Transcript<E>>(
-        &self,
+    fn prove<'a, T: Transcript<E>>(
+        &'a self,
         node_id: provable::NodeId,
         ctx: &Self::Ctx,
         last_claims: Vec<&crate::Claim<E>>,
         step_data: &StepData<E, E>,
-        prover: &mut crate::Prover<E, T, PCS>,
+        prover: &'a mut crate::Prover<'a, E, T, PCS>,
     ) -> Result<Vec<crate::Claim<E>>> {
         match (self, ctx) {
             (Layer::Dense(dense), LayerCtx::Dense(info)) => {
@@ -594,12 +594,12 @@ where
         }
     }
 
-    fn gen_lookup_witness(
+    fn gen_lookup_witness<'a>(
         &self,
         id: provable::NodeId,
-        ctx: &Context<E, PCS>,
+        ctx: &'a Context<'a, E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> Result<LookupWitnessGen<E, PCS>> {
+    ) -> Result<LookupWitnessGen<'a, E, PCS>> {
         match self {
             Layer::Dense(dense) => dense.gen_lookup_witness(id, ctx, step_data),
             Layer::Convolution(convolution) => convolution.gen_lookup_witness(id, ctx, step_data),

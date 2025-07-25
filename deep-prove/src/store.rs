@@ -3,7 +3,7 @@
 
 use anyhow::{Context, bail};
 use ff_ext::GoldilocksExt2;
-use mpcs::{Basefold, BasefoldRSParams, Hasher, PolynomialCommitmentScheme};
+use mpcs_lg::{Basefold, BasefoldRSParams, Hasher, PolynomialCommitmentScheme};
 #[doc(inline)]
 pub use object_store::{
     ClientOptions,
@@ -37,12 +37,12 @@ pub struct ModelKey<'a> {
 }
 
 type F = GoldilocksExt2;
-type Pcs = Basefold<F, BasefoldRSParams<Hasher>>;
+type Pcs<'a> = Basefold<'a, F, BasefoldRSParams<Hasher>>;
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct Params {
-    pub prover: <Pcs as PolynomialCommitmentScheme<F>>::ProverParam,
-    pub verifier: <Pcs as PolynomialCommitmentScheme<F>>::VerifierParam,
+pub struct Params<'a> {
+    pub prover: <Pcs<'a> as PolynomialCommitmentScheme<F>>::ProverParam,
+    pub verifier: <Pcs<'a> as PolynomialCommitmentScheme<F>>::VerifierParam,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -51,18 +51,18 @@ pub struct ScaledModel {
     pub model_metadata: ModelMetadata,
 }
 
-pub trait Store {
+pub trait Store<'a> {
     /// Try to get the params from store.
     fn get_params(
-        &mut self,
-        key: ParamsKey<'_>,
-    ) -> impl Future<Output = anyhow::Result<Option<Params>>> + Send;
+        &'a mut self,
+        key: ParamsKey<'a>,
+    ) -> impl Future<Output = anyhow::Result<Option<Params<'a>>>> + Send;
 
     /// Store the params.
     fn insert_params(
         &mut self,
         key: ParamsKey<'_>,
-        params: Params,
+        params: Params<'a>,
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
 
     /// Try to get the model from store. If not present, initialize the value with the given function, store it and return.
@@ -80,7 +80,7 @@ pub trait Store {
 #[derive(Clone, derive_more::From)]
 pub struct S3Store(#[from] AmazonS3);
 
-impl Store for S3Store {
+impl Store<'_> for S3Store {
     fn get_params(
         &mut self,
         key: ParamsKey<'_>,
@@ -176,19 +176,19 @@ impl Store for S3Store {
 
 /// In-memory store for testing.
 #[derive(Clone, Default)]
-pub struct MemStore {
-    pps: Arc<Mutex<HashMap<Key, Params>>>,
+pub struct MemStore<'a> {
+    pps: Arc<Mutex<HashMap<Key, Params<'a>>>>,
     models: Arc<Mutex<HashMap<Key, ScaledModel>>>,
 }
 
 #[derive(Clone, Default)]
 pub struct MemStoreInner {}
 
-impl Store for MemStore {
+impl<'a> Store<'a> for MemStore<'a> {
     fn get_params(
-        &mut self,
-        key: ParamsKey<'_>,
-    ) -> impl Future<Output = anyhow::Result<Option<Params>>> + Send {
+        &'a mut self,
+        key: ParamsKey<'a>,
+    ) -> impl Future<Output = anyhow::Result<Option<Params<'a>>>> + Send {
         async move {
             let key = params_key(key);
             let guard = self.pps.lock().unwrap();
@@ -199,7 +199,7 @@ impl Store for MemStore {
     fn insert_params(
         &mut self,
         key: ParamsKey<'_>,
-        params: Params,
+        params: Params<'a>,
     ) -> impl Future<Output = anyhow::Result<()>> + Send {
         async move {
             let key = params_key(key);

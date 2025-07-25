@@ -1,11 +1,12 @@
 use ff_ext::GoldilocksExt2;
-use mpcs::{Basefold, BasefoldRSParams, Hasher};
+use mpcs_lg::{Basefold, BasefoldRSParams, Hasher};
 use serde::{Deserialize, Serialize};
 pub use zkml::inputs::Input;
 use zkml::{Proof as ProofG, quantization::ScalingStrategyKind};
 
 /// A type of the proof for the `v1` of the protocol
-pub type Proof = ProofG<GoldilocksExt2, Basefold<GoldilocksExt2, BasefoldRSParams<Hasher>>>;
+pub type Proof<'a> =
+    ProofG<'a, GoldilocksExt2, Basefold<'a, GoldilocksExt2, BasefoldRSParams<Hasher>>>;
 
 /// The `v1` proving request
 #[derive(Serialize, Deserialize)]
@@ -25,6 +26,6 @@ pub struct DeepProveRequest {
 
 /// The `v1` proofs that have been computed by the worker
 #[derive(Serialize, Deserialize)]
-pub struct DeepProveResponse {
-    pub proofs: Vec<Proof>,
+pub struct DeepProveResponse<'a> {
+    pub proofs: Vec<Proof<'a>>,
 }

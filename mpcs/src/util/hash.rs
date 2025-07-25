@@ -1,11 +1,8 @@
 use ff_ext::{ExtensionField, SmallField};
-use poseidon::poseidon_hash::PoseidonHash;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::fmt::Debug;
 
 use transcript::Transcript;
-
-pub use poseidon::digest::Digest;
 
 /// Trait for hashing elements into a digest and doing merkle trees
 pub trait MerkleHasher<E: ExtensionField>: Debug + Clone + Send + Sync + Default {
@@ -48,12 +45,16 @@ impl<E: ExtensionField> MerkleHasher<E> for PoseidonHasher
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
-    type Digest = Digest<E::BaseField>;
+    type Digest = poseidon::digest::Digest<E::BaseField>;
     fn hash_bases(elems: &[E::BaseField]) -> Self::Digest {
-        PoseidonHash::hash_or_noop(elems)
+        // PoseidonHash::hash_or_noop(elems)
+
+        todo!()
     }
     fn hash_two_digests(a: &Self::Digest, b: &Self::Digest) -> Self::Digest {
-        PoseidonHash::two_to_one(a, b)
+        // PoseidonHash::two_to_one(a, b)
+
+        todo!()
     }
     fn digest_to_transcript(digest: &Self::Digest, transcript: &mut impl Transcript<E>) {
         digest

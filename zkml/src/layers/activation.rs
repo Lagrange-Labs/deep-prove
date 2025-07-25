@@ -23,9 +23,11 @@ use crate::{
     tensor::{Number, Shape},
 };
 use ff_ext::ExtensionField;
-use gkr::util::ceil_log2;
-use mpcs::PolynomialCommitmentScheme;
-use multilinear_extensions::mle::{DenseMultilinearExtension, IntoMLE};
+use mpcs_lg::PolynomialCommitmentScheme;
+use multilinear_extensions::{
+    mle::{IntoMLE, MultilinearExtension},
+    util::ceil_log2,
+};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::marker::PhantomData;
@@ -197,13 +199,13 @@ where
 {
     type Ctx = ActivationCtx;
 
-    fn prove<T: Transcript<E>>(
+    fn prove<'a, T: Transcript<E>>(
         &self,
         id: NodeId,
         ctx: &Self::Ctx,
         last_claims: Vec<&Claim<E>>,
         step_data: &StepData<E, E>,
-        prover: &mut Prover<E, T, PCS>,
+        prover: &'a mut Prover<'a, E, T, PCS>,
     ) -> Result<Vec<Claim<E>>> {
         Ok(vec![self.prove_step(
             prover,
@@ -214,12 +216,12 @@ where
         )?])
     }
 
-    fn gen_lookup_witness(
+    fn gen_lookup_witness<'a>(
         &self,
         id: NodeId,
-        ctx: &Context<E, PCS>,
+        ctx: &'a Context<'a, E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> Result<LookupWitnessGen<E, PCS>> {
+    ) -> Result<LookupWitnessGen<'a, E, PCS>> {
         ensure!(
             step_data.inputs.len() == 1,
             "Found more than 1 input tensor in inference step of activation layer"
@@ -253,13 +255,13 @@ where
         // Add the witness polynomials that we need to commit to
         #[allow(clippy::type_complexity)]
         let (commits, column_evals): (
-            Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
+            Vec<(PCS::CommitmentWithWitness<'_>, MultilinearExtension<'_, E>)>,
             Vec<Vec<E::BaseField>>,
         ) = [col_one, col_two]
             .into_par_iter()
             .map(|evaluations| {
                 let mle =
-                    DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, &evaluations);
+                    MultilinearExtension::<E>::from_evaluations_vec(num_vars, evaluations.clone());
                 let commit = ctx.commitment_ctx.commit(&mle)?;
                 Ok(((commit, mle), evaluations))
             })
@@ -336,9 +338,9 @@ where
 
 impl<N> Activation<N> {
     #[timed::timed_instrument(name = "Prover::prove_activation_step")]
-    pub(crate) fn prove_step<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
+    pub(crate) fn prove_step<'a, E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
-        prover: &mut Prover<E, T, PCS>,
+        prover: &'a mut Prover<'a, E, T, PCS>,
         last_claim: &Claim<E>,
         output: &[E],
         _step: &ActivationCtx,

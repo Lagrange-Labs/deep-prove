@@ -16,10 +16,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{borrow::Cow, collections::HashMap, fmt::Debug, marker::PhantomData};
 use transcript::Transcript;
 mod coeff;
-use multilinear_extensions::{
-    mle::{DenseMultilinearExtension, MultilinearExtension},
-    virtual_poly::build_eq_x_r_vec,
-};
+use multilinear_extensions::{mle::MultilinearExtension, virtual_poly::build_eq_x_r_vec};
 
 pub(crate) use coeff::Coefficients;
 pub use coeff::CoefficientsProver;
@@ -33,8 +30,8 @@ pub struct ProverState<'a, E: ExtensionField> {
     sum: E,
     lagranges: HashMap<i32, (usize, E)>,
     identity: E,
-    eq_xys: Vec<DenseMultilinearExtension<E>>,
-    polys: Vec<Vec<Cow<'a, DenseMultilinearExtension<E>>>>,
+    eq_xys: Vec<MultilinearExtension<'a, E>>,
+    polys: Vec<Vec<Cow<'a, MultilinearExtension<'a, E>>>>,
     challenges: &'a [E],
     round: usize,
     bh: BooleanHypercube,
@@ -59,16 +56,14 @@ impl<'a, E: ExtensionField> ProverState<'a, E> {
         let eq_xys = virtual_poly
             .ys
             .iter()
-            .map(|y| {
-                DenseMultilinearExtension::from_evaluations_ext_vec(y.len(), build_eq_x_r_vec(y))
-            })
+            .map(|y| MultilinearExtension::from_evaluations_ext_vec(y.len(), build_eq_x_r_vec(y)))
             .collect_vec();
         let polys = virtual_poly
             .polys
             .iter()
             .map(|poly| {
                 let mut polys = vec![
-                    Cow::Owned(DenseMultilinearExtension::from_evaluations_vec(
+                    Cow::Owned(MultilinearExtension::from_evaluations_vec(
                         0,
                         vec![E::BaseField::ZERO; 1]
                     ));
@@ -127,7 +122,7 @@ impl<'a, E: ExtensionField> ProverState<'a, E> {
                     let rotated: Vec<_> = par_map_collect(&rotation_maps[&query.rotation()], |b| {
                         poly_index_ext(poly, *b)
                     });
-                    let rotated = DenseMultilinearExtension::from_evaluations_ext_vec(
+                    let rotated = MultilinearExtension::from_evaluations_ext_vec(
                         rotated.len().ilog2() as usize,
                         rotated,
                     )
@@ -267,7 +262,7 @@ where
             }
 
             let challenge = transcript
-                .get_and_append_challenge(b"sumcheck round")
+                .sample_and_append_challenge(b"sumcheck round")
                 .elements;
             challenges.push(challenge);
 
@@ -300,7 +295,7 @@ where
                 msgs.push(proof.rounds[i].clone());
                 challenges.push(
                     transcript
-                        .get_and_append_challenge(b"sumcheck round")
+                        .sample_and_append_challenge(b"sumcheck round")
                         .elements,
                 );
             }
@@ -330,7 +325,7 @@ mod tests {
     #[test]
     fn test_sum_check_protocol() {
         let polys = [
-            DenseMultilinearExtension::<E>::from_evaluations_vec(
+            MultilinearExtension::<E>::from_evaluations_vec(
                 2,
                 vec![
                     Fr::from_canonical_u64(1),
@@ -339,7 +334,7 @@ mod tests {
                     Fr::from_canonical_u64(4),
                 ],
             ),
-            DenseMultilinearExtension::from_evaluations_vec(
+            MultilinearExtension::from_evaluations_vec(
                 2,
                 vec![
                     Fr::from_canonical_u64(0),
@@ -348,7 +343,7 @@ mod tests {
                     Fr::from_canonical_u64(0),
                 ],
             ),
-            DenseMultilinearExtension::from_evaluations_vec(
+            MultilinearExtension::from_evaluations_vec(
                 1,
                 vec![Fr::from_canonical_u64(0), Fr::from_canonical_u64(1)],
             ),

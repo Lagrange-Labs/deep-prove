@@ -1,9 +1,9 @@
 use anyhow::{Result, ensure};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use mpcs::PolynomialCommitmentScheme;
+use mpcs_lg::PolynomialCommitmentScheme;
 use multilinear_extensions::{
-    mle::{IntoMLE, MultilinearExtension},
+    mle::IntoMLE,
     virtual_poly::{VPAuxInfo, VirtualPolynomial},
 };
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
@@ -429,7 +429,7 @@ where
         // the rows of weight matrices
         let num_vars = self.q.num_vars_2d().0;
 
-        let vp_aux = VPAuxInfo::from_mle_list_dimensions(&vec![vec![num_vars, num_vars]; 3]);
+        let vp_aux = crate::util::from_mle_list_dimensions(&vec![vec![num_vars, num_vars]; 3]);
 
         let ctx = QKVCtx {
             node_id: id,
@@ -565,6 +565,9 @@ where
         // get claims for all the MLEs involved in sum-check
         let sumcheck_evals = state
             .get_mle_final_evaluations()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
             .chunks(2) // each chunk refers to a pair of (input, weight matrix) MLEs in the sumcheck
             .map(|evals| (evals[0], evals[1]))
             .collect_vec();
@@ -576,8 +579,11 @@ where
                 .iter()
                 .zip(&sumcheck_evals)
                 .map(|(&claim, evals)| {
-                    let (point_for_input, point_for_weight) =
-                        Self::build_points(&claim.point, &proof.point, output_num_vars_2d)?;
+                    let (point_for_input, point_for_weight) = Self::build_points(
+                        &claim.point,
+                        &state.collect_raw_challenges(),
+                        output_num_vars_2d,
+                    )?;
                     anyhow::Ok((
                         Claim::new(point_for_input, evals.0),
                         Claim::new(point_for_weight, evals.1),
@@ -756,7 +762,7 @@ where
                 .map(|(&claim, evals)| {
                     let (point_for_input, point_for_weight) = QKV::<Element>::build_points(
                         &claim.point,
-                        &subclaim.point_flat(),
+                        &subclaim.point.iter().map(|p| p.elements).collect::<Vec<_>>(),
                         output_num_vars,
                     )?;
                     anyhow::Ok((

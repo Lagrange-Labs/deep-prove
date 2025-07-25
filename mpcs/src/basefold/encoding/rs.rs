@@ -347,13 +347,16 @@ where
         ))
     }
 
-    fn encode(pp: &Self::ProverParameters, coeffs: &FieldType<E>) -> FieldType<E> {
+    fn encode<'a>(pp: &Self::ProverParameters, coeffs: &FieldType<'a, E>) -> FieldType<'a, E> {
         assert!(log2_strict(coeffs.len()) >= Spec::get_basecode_msg_size_log());
         // Use the full message size to determine the shift factor.
         Self::encode_internal(&pp.fft_root_table, coeffs, pp.full_message_size_log)
     }
 
-    fn encode_small(vp: &Self::VerifierParameters, coeffs: &FieldType<E>) -> FieldType<E> {
+    fn encode_small<'a>(
+        vp: &Self::VerifierParameters,
+        coeffs: &FieldType<'a, E>,
+    ) -> FieldType<'a, E> {
         // Use the full message size to determine the shift factor.
         Self::encode_internal(&vp.fft_root_table, coeffs, vp.full_message_size_log)
     }
@@ -455,11 +458,11 @@ where
 }
 
 impl<Spec: RSCodeSpec> RSCode<Spec> {
-    fn encode_internal<E: ExtensionField>(
+    fn encode_internal<'a, E: ExtensionField>(
         fft_root_table: &FftRootTable<E::BaseField>,
-        coeffs: &FieldType<E>,
+        coeffs: &FieldType<'a, E>,
         full_message_size_log: usize,
-    ) -> FieldType<E>
+    ) -> FieldType<'a, E>
     where
         E::BaseField: Serialize + DeserializeOwned,
     {
@@ -545,6 +548,7 @@ fn naive_fft<E: ExtensionField>(poly: &[E], rate: usize, shift: E::BaseField) ->
 #[cfg(test)]
 mod tests {
     use ff_ext::GoldilocksExt2;
+    use multilinear_extensions::smart_slice::SmartSlice;
     use p3_goldilocks::Goldilocks;
 
     use crate::{
@@ -562,7 +566,7 @@ mod tests {
         let poly: Vec<GoldilocksExt2> = (0..(1 << num_vars))
             .map(GoldilocksExt2::from_canonical_u64)
             .collect();
-        let mut poly2 = FieldType::Ext(poly.clone());
+        let mut poly2 = FieldType::Ext(SmartSlice::Borrowed(&poly));
 
         let naive = naive_fft::<GoldilocksExt2>(&poly, 1, Goldilocks::ONE);
 
@@ -573,7 +577,7 @@ mod tests {
             FieldType::Ext(coeffs) => coeffs,
             _ => panic!("Wrong field type"),
         };
-        assert_eq!(naive, poly2);
+        assert_eq!(naive, poly2.to_vec());
     }
 
     #[test]
@@ -584,7 +588,7 @@ mod tests {
         let poly: Vec<GoldilocksExt2> = (0..(1 << num_vars))
             .map(|_| GoldilocksExt2::random(&mut OsRng))
             .collect();
-        let mut poly2 = FieldType::Ext(poly.clone());
+        let mut poly2 = FieldType::Ext(SmartSlice::Borrowed(&poly));
 
         let naive = naive_fft::<GoldilocksExt2>(&poly, 1, Goldilocks::GENERATOR);
 
@@ -595,7 +599,7 @@ mod tests {
             FieldType::Ext(coeffs) => coeffs,
             _ => panic!("Wrong field type"),
         };
-        assert_eq!(naive, poly2);
+        assert_eq!(naive, poly2.to_vec());
     }
 
     #[test]
@@ -609,7 +613,7 @@ mod tests {
             .collect();
         let mut poly2 = vec![GoldilocksExt2::ZERO; poly.len() * (1 << rate_bits)];
         poly2.as_mut_slice()[..poly.len()].copy_from_slice(poly.as_slice());
-        let mut poly2 = FieldType::Ext(poly2.clone());
+        let mut poly2 = FieldType::Ext(SmartSlice::Borrowed(&poly2));
 
         let naive = naive_fft::<GoldilocksExt2>(&poly, 1 << rate_bits, Goldilocks::GENERATOR);
 
@@ -620,7 +624,7 @@ mod tests {
             FieldType::Ext(coeffs) => coeffs,
             _ => panic!("Wrong field type"),
         };
-        assert_eq!(naive, poly2);
+        assert_eq!(naive, poly2.to_vec());
     }
 
     #[test]
@@ -630,7 +634,7 @@ mod tests {
         let poly: Vec<GoldilocksExt2> = (0..(1 << num_vars))
             .map(GoldilocksExt2::from_canonical_u64)
             .collect();
-        let mut poly = FieldType::Ext(poly);
+        let mut poly = FieldType::Ext(SmartSlice::Borrowed(&poly));
         let original = poly.clone();
 
         let root_table = fft_root_table(num_vars);
@@ -678,7 +682,7 @@ mod tests {
         let num_vars = 10;
 
         let poly: Vec<E> = (0..(1 << num_vars)).map(E::from_canonical_u64).collect();
-        let poly = FieldType::Ext(poly);
+        let poly = FieldType::Ext(SmartSlice::Borrowed(&poly));
 
         let pp = <Code as EncodingScheme<E>>::setup(num_vars);
         let (pp, _) = Code::trim(pp, num_vars).unwrap();
@@ -716,7 +720,7 @@ mod tests {
         let num_vars = 10;
 
         let poly: Vec<E> = (0..(1 << num_vars)).map(E::from_canonical_u64).collect();
-        let poly = FieldType::Ext(poly);
+        let poly = FieldType::Ext(SmartSlice::Borrowed(&poly));
 
         let pp = <Code as EncodingScheme<E>>::setup(num_vars);
         let (pp, _) = Code::trim(pp, num_vars).unwrap();
@@ -754,7 +758,7 @@ mod tests {
         reverse_index_bits_in_place(&mut left_right_sum);
         assert_eq!(left_right_sum[1], c1 + c_mid1);
         check_low_degree(
-            &FieldType::Ext(left_right_sum.clone()),
+            &FieldType::Ext(SmartSlice::Borrowed(&left_right_sum)),
             "check low degree of left+right",
         );
 
@@ -777,7 +781,7 @@ mod tests {
         assert_eq!(left_right_diff[0], c0 - c_mid);
         assert_eq!(left_right_diff[1], (c1 - c_mid1) * root_of_unity_inv);
         check_low_degree(
-            &FieldType::Ext(left_right_diff.clone()),
+            &FieldType::Ext(SmartSlice::Borrowed(&left_right_diff)),
             "check low degree of (left-right)*omega^(-i)",
         );
 
@@ -785,7 +789,7 @@ mod tests {
         let folded_codeword = Code::fold_bitreversed_codeword(&pp, &codeword, challenge);
         let c_fold = folded_codeword[0];
         let c_fold1 = folded_codeword[folded_codeword.len() >> 1];
-        let mut folded_codeword = FieldType::Ext(folded_codeword);
+        let mut folded_codeword = FieldType::Ext(SmartSlice::Owned(folded_codeword));
         reverse_index_bits_in_place_field_type(&mut folded_codeword);
         assert_eq!(c_fold, field_type_index_ext(&folded_codeword, 0));
         assert_eq!(c_fold1, field_type_index_ext(&folded_codeword, 1));

@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow, bail, ensure};
 use ff_ext::ExtensionField;
-use mpcs::PolynomialCommitmentScheme;
+use mpcs_lg::PolynomialCommitmentScheme;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -401,13 +401,13 @@ where
     type Ctx: VerifiableCtx<E, PCS>;
 
     /// Produces a proof of correct execution for this operation.
-    fn prove<T: Transcript<E>>(
-        &self,
+    fn prove<'a, T: Transcript<E>>(
+        &'a self,
         _node_id: NodeId,
         _ctx: &Self::Ctx,
         _last_claims: Vec<&Claim<E>>,
         _step_data: &StepData<E, E>,
-        _prover: &mut Prover<E, T, PCS>,
+        _prover: &'a mut Prover<'a, E, T, PCS>,
     ) -> Result<Vec<Claim<E>>> {
         // Default implementation, to avoid having to implement this method in case `is_provable` is false
         assert!(
@@ -418,12 +418,12 @@ where
     }
 
     /// Generate witness for a node where a lookup table is employed in proving
-    fn gen_lookup_witness(
+    fn gen_lookup_witness<'a>(
         &self,
         _id: NodeId,
-        _ctx: &Context<E, PCS>,
+        _ctx: &'a Context<'a, E, PCS>,
         _step_data: &StepData<Element, E>,
-    ) -> Result<LookupWitnessGen<E, PCS>> {
+    ) -> Result<LookupWitnessGen<'a, E, PCS>> {
         Ok(Default::default())
     }
 }

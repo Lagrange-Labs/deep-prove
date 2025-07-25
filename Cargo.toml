@@ -1,14 +1,7 @@
 [workspace]
 members = [
-  "ff_ext",
   "mpcs",
-  "multilinear_extensions",
-  "sumcheck_macro",
-  "poseidon",
-  "sumcheck",
-  "transcript",
   "simple-frontend",
-  "gkr",
   "zkml",
   "deep-prove",
   "utils",
@@ -16,12 +9,12 @@ members = [
 resolver = "2"
 
 [workspace.package]
-categories = ["cryptography", "zk", "blockchain", "ceno"]
+categories = ["cryptography", "zk", "blockchain"]
 edition = "2021"
-keywords = ["cryptography", "zk", "blockchain", "ceno"]
+keywords = ["cryptography", "zk", "blockchain"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
-repository = "https://github.com/scroll-tech/ceno"
+repository = "https://github.com/LagrangeLabs/deep-prove"
 version = "0.1.0"
 
 [workspace.dependencies]
@@ -40,25 +33,23 @@ ctr = "0.9"
 derive_more = "2.0.1"
 env_logger = "0.11"
 ff = "0.13"
-gkr = { version = "0.1.0", path = "gkr" }
 goldilocks = { git = "https://github.com/scroll-tech/ceno-Goldilocks" }
 hex = { version = "0.4" }
 itertools = "0.13"
 log = "0.4"
 memmap2 = "0.9"
-mpcs = { version = "0.1.0", path = "mpcs" }
+mpcs-lg = { version = "0.1.0", path = "mpcs" }
 num-bigint = "0.4"
 num-integer = "0.1"
 object_store = { version = "0.12", features = ["aws"] }
-p3-challenger = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
-p3-field = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
-p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb", features = [
+p3-challenger = { git = "https://github.com/Plonky3/plonky3", rev = "1ba4e5c" }
+p3-field = { git = "https://github.com/Plonky3/Plonky3", rev = "1ba4e5c" }
+p3-goldilocks = { git = "https://github.com/Plonky3/Plonky3", rev = "1ba4e5c", features = [
   "nightly-features",
 ] }
-p3-poseidon2 = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
-p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "f37dc2a59ad93fe6153091e11671d3d53708bcbb" }
+p3-poseidon2 = { git = "https://github.com/Plonky3/Plonky3", rev = "1ba4e5c" }
+p3-symmetric = { git = "https://github.com/Plonky3/Plonky3", rev = "1ba4e5c" }
 plonky2 = "1.1"
-poseidon = { path = "./poseidon" }
 pprof = "0.14.0"
 proc-macro2 = "1.0.92"
 quote = "1.0"
@@ -72,7 +63,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 simple-frontend = { path = "simple-frontend" }
 statrs = "0.18.0"
-sumcheck_macro = { path = "sumcheck_macro" }
 syn = "2.0"
 tempfile = "3"
 thiserror = "2.0.12"
@@ -84,6 +74,23 @@ tracing-flame = "0.2.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tract-onnx = "0.21"
 
+# gkr_iop = { git = "https://github.com/Lagrange-Labs/ceno", branch = "master" }
+# ff_ext = { git = "https://github.com/Lagrange-Labs/ceno", branch = "master" }
+# multilinear_extensions = { git = "https://github.com/Lagrange-Labs/ceno", branch = "master" }
+# poseidon = { git = "https://github.com/Lagrange-Labs/ceno", branch = "master" }
+# sumcheck_macro = { git = "https://github.com/Lagrange-Labs/ceno", branch = "master" }
+# sumcheck = { git = "https://github.com/Lagrange-Labs/ceno", branch = "master" }
+# transcript = { git = "https://github.com/Lagrange-Labs/ceno", branch = "master" }
+# p3 = { git = "https://github.com/Lagrange-Labs/ceno", branch = "master" }
+
+gkr_iop = { path = "../ceno/gkr_iop/" }
+ff_ext = { path = "../ceno/ff_ext/" }
+multilinear_extensions = { path = "../ceno/multilinear_extensions/" }
+poseidon = { path = "../ceno/poseidon/" }
+sumcheck_macro = { path = "../ceno/sumcheck_macro/" }
+sumcheck = { path = "../ceno/sumcheck/" }
+transcript = { path = "../ceno/transcript/" }
+p3 = { path = "../ceno/p3" }
 
 # Test must run fast, but still provides stacktraces.
 [profile.test]
@@ -107,3 +114,5 @@ lto = "fat"
 #[patch."https://github.com/nikkolasg/timed-rs"]
 #timed = { path = "/Users/nalos/prog/timed/timed" }
 #timed-core = { path = "/Users/nalos/prog/timed/timed-core" }
+
+

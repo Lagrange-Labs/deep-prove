@@ -11,8 +11,8 @@ use crate::{
 use ff_ext::ExtensionField;
 
 use anyhow::{Context, Result, anyhow, ensure};
-use mpcs::{Evaluation, PolynomialCommitmentScheme};
-use multilinear_extensions::mle::{DenseMultilinearExtension, MultilinearExtension};
+use mpcs_lg::{Evaluation, PolynomialCommitmentScheme};
+use multilinear_extensions::mle::MultilinearExtension;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -20,20 +20,20 @@ use transcript::Transcript;
 
 pub type PolyId = String;
 
-type ModelCommitmentsMap<PCS, E> = BTreeMap<
+type ModelCommitmentsMap<'a, PCS, E> = BTreeMap<
     NodeId,
     BTreeMap<
         PolyId,
         (
-            <PCS as PolynomialCommitmentScheme<E>>::CommitmentWithWitness,
-            DenseMultilinearExtension<E>,
+            <PCS as PolynomialCommitmentScheme<E>>::CommitmentWithWitness<'a>,
+            MultilinearExtension<'a, E>,
         ),
     >,
 >;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
 /// Struct that stores general information about commitments used for proving inference in a [`Model`].
-pub struct CommitmentContext<E, PCS>
+pub struct CommitmentContext<'a, E, PCS>
 where
     PCS: PolynomialCommitmentScheme<E>,
     E::BaseField: Serialize + DeserializeOwned,
@@ -44,12 +44,13 @@ where
     /// Verifier parameters for the [`PolynomialCommitmentScheme`]
     verifier_params: PCS::VerifierParam,
     /// This field contains a [`BTreeMap`] where the key is a [`NodeId`] and the value is a vector of tuples of [`PolynomialCommitmentScheme::CommitmentWithWitness`]  and [`DenseMultilinearExtension<E>`] corresponding to that ID.
-    model_comms_map: ModelCommitmentsMap<PCS, E>,
+    model_comms_map: ModelCommitmentsMap<'a, PCS, E>,
     /// This field contains a [`BTreeMap`] relating to lookup tables used by the model
-    table_comms_map: HashMap<TableType, (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
+    table_comms_map:
+        HashMap<TableType, (PCS::CommitmentWithWitness<'a>, MultilinearExtension<'a, E>)>,
 }
 
-impl<E, PCS> CommitmentContext<E, PCS>
+impl<'a, E, PCS> CommitmentContext<'a, E, PCS>
 where
     PCS: PolynomialCommitmentScheme<E>,
     E::BaseField: Serialize + DeserializeOwned,
@@ -58,9 +59,9 @@ where
     /// Make a new [`CommitmentContext`]
     pub fn new(
         witness_poly_size: usize,
-        polys: Vec<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>,
-        lookup_ctx: &LookupContext,
-    ) -> Result<CommitmentContext<E, PCS>> {
+        polys: Vec<(NodeId, HashMap<PolyId, MultilinearExtension<'a, E>>)>,
+        lookup_ctx: &'a LookupContext,
+    ) -> Result<CommitmentContext<'a, E, PCS>> {
         // Find the maximum size so we can generate params
         let max_poly_size = polys
             .iter()
@@ -89,7 +90,7 @@ where
                     .collect::<Result<
                         BTreeMap<
                             PolyId,
-                            (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>),
+                            (PCS::CommitmentWithWitness<'a>, MultilinearExtension<'_, E>),
                         >,
                         _,
                     >>()
@@ -102,9 +103,15 @@ where
             .collect::<Result<BTreeMap<NodeId, _>, _>>()
             .context("collecting model commitments")?;
 
-        let table_comms_map = lookup_ctx.iter().filter_map(|table_type| {
-            table_type.committed_columns().and_then(|poly| {let commit = PCS::commit(&prover_params, &poly).ok()?; Some((*table_type, (commit, poly)))})
-        }).collect::<HashMap<TableType, (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>>();
+        let table_comms_map = lookup_ctx
+            .iter()
+            .filter_map(|table_type| {
+                table_type.committed_columns().and_then(|poly| {
+                    let commit = PCS::commit(&prover_params, &poly).ok()?;
+                    Some((*table_type, (commit, poly)))
+                })
+            })
+            .collect::<HashMap<TableType, (PCS::CommitmentWithWitness<'a>, MultilinearExtension<'a, E>)>>();
 
         Ok(CommitmentContext {
             prover_params,
@@ -116,11 +123,11 @@ where
 
     /// Make a new [`CommitmentContext`] from known params
     pub fn new_with_params(
-        polys: Vec<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>,
-        lookup_ctx: &LookupContext,
+        polys: Vec<(NodeId, HashMap<PolyId, MultilinearExtension<'a, E>>)>,
+        lookup_ctx: &'a LookupContext,
         prover_params: PCS::ProverParam,
         verifier_params: PCS::VerifierParam,
-    ) -> Result<CommitmentContext<E, PCS>> {
+    ) -> Result<CommitmentContext<'a, E, PCS>> {
         let model_comms_map = polys
             .into_par_iter()
             .map(|(node_id, polys_vec)| {
@@ -134,7 +141,7 @@ where
                     .collect::<Result<
                         BTreeMap<
                             PolyId,
-                            (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>),
+                            (PCS::CommitmentWithWitness<'a>, MultilinearExtension<'a, E>),
                         >,
                         _,
                     >>()
@@ -149,7 +156,7 @@ where
 
         let table_comms_map = lookup_ctx.iter().filter_map(|table_type| {
             table_type.committed_columns().and_then(|poly| {let commit = PCS::commit(&prover_params, &poly).ok()?; Some((*table_type, (commit, poly)))})
-        }).collect::<HashMap<TableType, (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>>();
+        }).collect::<HashMap<TableType, (PCS::CommitmentWithWitness<'a>, MultilinearExtension<'a, E>)>>();
 
         Ok(CommitmentContext {
             prover_params,
@@ -170,7 +177,10 @@ where
     }
 
     /// Helper method to commit to polynomial.
-    pub fn commit(&self, mle: &DenseMultilinearExtension<E>) -> Result<PCS::CommitmentWithWitness> {
+    pub fn commit(
+        &self,
+        mle: &MultilinearExtension<'a, E>,
+    ) -> Result<PCS::CommitmentWithWitness<'_>> {
         PCS::commit(&self.prover_params, mle).map_err(|e| e.into())
     }
 
@@ -191,14 +201,14 @@ where
 
 #[derive(Clone, Debug)]
 /// Claim about a polynomial used by the prover (so contain witness as well)
-pub struct CommitmentClaim<E, PCS>
+pub struct CommitmentClaim<'a, E, PCS>
 where
     PCS: PolynomialCommitmentScheme<E>,
     E::BaseField: Serialize + DeserializeOwned,
     E: ExtensionField + Serialize + DeserializeOwned,
 {
-    commitment: PCS::CommitmentWithWitness,
-    poly: DenseMultilinearExtension<E>,
+    commitment: PCS::CommitmentWithWitness<'a>,
+    poly: MultilinearExtension<'a, E>,
     claim: Claim<E>,
 }
 
@@ -218,17 +228,17 @@ where
 #[derive(Clone, Debug, Serialize, Deserialize)]
 /// The opening proof for a model inference. We may have trivial proofs that occur when the prover has to commit
 /// to small witness polynomials.
-pub struct ModelOpeningProof<E, PCS>
+pub struct ModelOpeningProof<'a, E, PCS>
 where
     PCS: PolynomialCommitmentScheme<E>,
     E::BaseField: Serialize + DeserializeOwned,
     E: ExtensionField,
 {
-    batch_proof: PCS::Proof,
-    trivial_proofs: Vec<PCS::Proof>,
+    batch_proof: PCS::Proof<'a>,
+    trivial_proofs: Vec<PCS::Proof<'a>>,
 }
 
-impl<E, PCS> ModelOpeningProof<E, PCS>
+impl<'a, E, PCS> ModelOpeningProof<'a, E, PCS>
 where
     PCS: PolynomialCommitmentScheme<E>,
     E::BaseField: Serialize + DeserializeOwned,
@@ -236,9 +246,9 @@ where
 {
     /// Creates a new [`ModelOpeningProof`] from constituent parts.
     pub fn new(
-        batch_proof: PCS::Proof,
-        trivial_proofs: Vec<PCS::Proof>,
-    ) -> ModelOpeningProof<E, PCS> {
+        batch_proof: PCS::Proof<'a>,
+        trivial_proofs: Vec<PCS::Proof<'a>>,
+    ) -> ModelOpeningProof<'a, E, PCS> {
         ModelOpeningProof {
             batch_proof,
             trivial_proofs,
@@ -246,38 +256,38 @@ where
     }
 
     /// Getter for the batch proof
-    pub fn batch_proof(&self) -> &PCS::Proof {
+    pub fn batch_proof(&self) -> &PCS::Proof<'a> {
         &self.batch_proof
     }
 
     /// Getter for the trivial proofs
-    pub fn trivial_proofs(&self) -> &[PCS::Proof] {
+    pub fn trivial_proofs(&self) -> &[PCS::Proof<'a>] {
         &self.trivial_proofs
     }
 }
 
 #[derive(Debug, Clone)]
 /// Struct used to batch prove all commitment openings in a model proof.
-pub struct CommitmentProver<E, PCS>
+pub struct CommitmentProver<'a, E, PCS>
 where
     PCS: PolynomialCommitmentScheme<E>,
     E::BaseField: Serialize + DeserializeOwned,
     E: ExtensionField + Serialize + DeserializeOwned,
 {
     /// Claims that are made about non-trivial commitments
-    claims: Vec<CommitmentClaim<E, PCS>>,
+    claims: Vec<CommitmentClaim<'a, E, PCS>>,
     /// Claims about trivial commitments (fewer than 8 variables, in this case its more efficient just to evaluate the polynomial)
-    trivial_claims: Vec<CommitmentClaim<E, PCS>>,
+    trivial_claims: Vec<CommitmentClaim<'a, E, PCS>>,
 }
 
-impl<E, PCS> CommitmentProver<E, PCS>
+impl<'a, E, PCS> CommitmentProver<'a, E, PCS>
 where
     PCS: PolynomialCommitmentScheme<E>,
     E::BaseField: Serialize + DeserializeOwned,
     E: ExtensionField + Serialize + DeserializeOwned,
 {
     /// Create a new [`CommitmentProver`] from the [`CommitmentContext`] for the model.
-    pub fn new() -> CommitmentProver<E, PCS> {
+    pub fn new() -> CommitmentProver<'a, E, PCS> {
         CommitmentProver {
             claims: vec![],
             trivial_claims: vec![],
@@ -286,7 +296,7 @@ where
     /// Add a claim about a witness polynomial.
     pub fn add_witness_claim(
         &mut self,
-        (commitment, mle): (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>),
+        (commitment, mle): (PCS::CommitmentWithWitness<'a>, MultilinearExtension<'a, E>),
         claim: Claim<E>,
     ) -> Result<()> {
         if mle.num_vars() <= PCS::trivial_num_vars() {
@@ -307,7 +317,7 @@ where
     /// Add claims about model weights and biases for a certain node
     pub fn add_common_claims(
         &mut self,
-        ctx: &CommitmentContext<E, PCS>,
+        ctx: &CommitmentContext<'a, E, PCS>,
         node_id: NodeId,
         mut claims: HashMap<PolyId, Claim<E>>,
     ) -> Result<()> {
@@ -332,7 +342,7 @@ where
     /// Adds a claim about a table polynomial
     pub fn add_table_claim(
         &mut self,
-        ctx: &CommitmentContext<E, PCS>,
+        ctx: &CommitmentContext<'a, E, PCS>,
         table_type: TableType,
         claim: Claim<E>,
     ) -> Result<()> {
@@ -350,16 +360,16 @@ where
 
     /// Produce the [`ModelOpeningProof`] for this inference trace.
     pub fn prove<T: Transcript<E>>(
-        &mut self,
+        &'a mut self,
         commitment_context: &CommitmentContext<E, PCS>,
         transcript: &mut T,
-    ) -> Result<ModelOpeningProof<E, PCS>> {
+    ) -> Result<ModelOpeningProof<'a, E, PCS>> {
         // Prepare the parts that go into the batch proof
         #[allow(clippy::type_complexity)]
         let (comms, (polys, (points, evaluations))): (
-            Vec<PCS::CommitmentWithWitness>,
+            Vec<PCS::CommitmentWithWitness<'a>>,
             (
-                Vec<DenseMultilinearExtension<E>>,
+                Vec<MultilinearExtension<'a, E>>,
                 (Vec<Vec<E>>, Vec<Evaluation<E>>),
             ),
         ) = self
@@ -399,7 +409,7 @@ where
                 )
                 .map_err(|e| anyhow!("Could not open trivial commitment: {:?}", e))
             })
-            .collect::<Result<Vec<PCS::Proof>, anyhow::Error>>()?;
+            .collect::<Result<Vec<PCS::Proof<'a>>, anyhow::Error>>()?;
 
         // Make the batch proof
         let batch_proof = PCS::batch_open(

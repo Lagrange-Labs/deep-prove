@@ -2,8 +2,8 @@
 
 use anyhow::{Result, anyhow};
 use ff_ext::ExtensionField;
-use mpcs::PolynomialCommitmentScheme;
-use multilinear_extensions::mle::DenseMultilinearExtension;
+use mpcs_lg::PolynomialCommitmentScheme;
+use multilinear_extensions::mle::MultilinearExtension;
 use serde::{Serialize, de::DeserializeOwned};
 use transcript::Transcript;
 
@@ -16,24 +16,24 @@ use super::{
 
 #[derive(Clone, Debug)]
 /// Enum used for storing witness data for LogUp GKR, it is equivalent to [`LogUpInput`] but with no challenges stored.
-pub enum LogUpWitness<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> {
+pub enum LogUpWitness<'a, E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> {
     /// Lookup variant can have multiple instances in one [`LogUpInput::Lookup`], `columns_per_instance` is used to work out how many batches we need to prove.
     Lookup {
-        commits: Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
+        commits: Vec<(PCS::CommitmentWithWitness<'a>, MultilinearExtension<'a, E>)>,
         column_evals: Vec<Vec<E::BaseField>>,
         columns_per_instance: usize,
         table_type: TableType,
     },
     /// Input for a Table proof.
     Table {
-        multiplicity_commit: (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>),
+        multiplicity_commit: (PCS::CommitmentWithWitness<'a>, MultilinearExtension<'a, E>),
         multiplicity_evals: Vec<E::BaseField>,
         column_evals: Vec<Vec<E::BaseField>>,
         table_type: TableType,
     },
 }
 
-impl<E, PCS> LogUpWitness<E, PCS>
+impl<'a, E, PCS> LogUpWitness<'a, E, PCS>
 where
     E: ExtensionField,
     PCS: PolynomialCommitmentScheme<E>,
@@ -42,11 +42,11 @@ where
 {
     /// Creates a new lookup witness
     pub fn new_lookup(
-        commits: Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
+        commits: Vec<(PCS::CommitmentWithWitness<'a>, MultilinearExtension<'a, E>)>,
         column_evals: Vec<Vec<E::BaseField>>,
         columns_per_instance: usize,
         table_type: TableType,
-    ) -> LogUpWitness<E, PCS> {
+    ) -> LogUpWitness<'a, E, PCS> {
         LogUpWitness::Lookup {
             commits,
             column_evals,
@@ -57,11 +57,11 @@ where
 
     /// Creates a new table witness
     pub fn new_table(
-        multiplicity_commit: (PCS::CommitmentWithWitness, DenseMultilinearExtension<E>),
+        multiplicity_commit: (PCS::CommitmentWithWitness<'a>, MultilinearExtension<'a, E>),
         multiplicity_evals: Vec<E::BaseField>,
         column_evals: Vec<Vec<E::BaseField>>,
         table_type: TableType,
-    ) -> LogUpWitness<E, PCS> {
+    ) -> LogUpWitness<'a, E, PCS> {
         LogUpWitness::Table {
             multiplicity_commit,
             multiplicity_evals,
@@ -147,7 +147,7 @@ where
     /// Retrieves commitments from the witness.
     pub fn get_commitments(
         &self,
-    ) -> Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)> {
+    ) -> Vec<(PCS::CommitmentWithWitness<'a>, MultilinearExtension<'a, E>)> {
         match self {
             LogUpWitness::Lookup { commits, .. } => commits.to_vec(),
             LogUpWitness::Table {

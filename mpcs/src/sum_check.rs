@@ -11,7 +11,7 @@ use std::{collections::HashMap, fmt::Debug};
 use classic::{ClassicSumCheckRoundMessage, SumcheckProof};
 use ff_ext::ExtensionField;
 use itertools::Itertools;
-use multilinear_extensions::mle::DenseMultilinearExtension;
+use multilinear_extensions::mle::MultilinearExtension;
 use p3_field::Field;
 use serde::{Serialize, de::DeserializeOwned};
 use transcript::Transcript;
@@ -21,7 +21,7 @@ pub mod classic;
 #[derive(Clone, Debug)]
 pub struct VirtualPolynomial<'a, E: ExtensionField> {
     expression: &'a Expression<E>,
-    polys: Vec<&'a DenseMultilinearExtension<E>>,
+    polys: Vec<&'a MultilinearExtension<'a, E>>,
     challenges: &'a [E],
     ys: &'a [Vec<E>],
 }
@@ -29,7 +29,7 @@ pub struct VirtualPolynomial<'a, E: ExtensionField> {
 impl<'a, E: ExtensionField> VirtualPolynomial<'a, E> {
     pub fn new(
         expression: &'a Expression<E>,
-        polys: impl IntoIterator<Item = &'a DenseMultilinearExtension<E>>,
+        polys: impl IntoIterator<Item = &'a MultilinearExtension<'a, E>>,
         challenges: &'a [E],
         ys: &'a [Vec<E>],
     ) -> Self {
@@ -75,7 +75,7 @@ where
     ) -> Result<(E, Vec<E>), Error>;
 }
 
-pub fn evaluate<E: ExtensionField>(
+pub fn evaluate<E: ExtensionField + Field>(
     expression: &Expression<E>,
     num_vars: usize,
     evals: &HashMap<Query, E>,

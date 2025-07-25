@@ -60,18 +60,18 @@ pub struct BasefoldVerifierParams<E: ExtensionField, Spec: BasefoldSpec<E>> {
 /// used to generate this commitment and for assistant in opening
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
-pub struct BasefoldCommitmentWithWitness<E: ExtensionField, H: MerkleHasher<E>>
+pub struct BasefoldCommitmentWithWitness<'a, E: ExtensionField, H: MerkleHasher<E>>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
-    pub(crate) codeword_tree: MerkleTree<E, H>,
-    pub(crate) polynomials_bh_evals: Vec<FieldType<E>>,
+    pub(crate) codeword_tree: MerkleTree<'a, E, H>,
+    pub(crate) polynomials_bh_evals: Vec<FieldType<'a, E>>,
     pub(crate) num_vars: usize,
     pub(crate) is_base: bool,
     pub(crate) num_polys: usize,
 }
 
-impl<E: ExtensionField, H: MerkleHasher<E>> BasefoldCommitmentWithWitness<E, H>
+impl<'a, E: ExtensionField, H: MerkleHasher<E>> BasefoldCommitmentWithWitness<'a, E, H>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
@@ -147,8 +147,8 @@ where
 //     }
 // }
 
-impl<D, E: ExtensionField, H: MerkleHasher<E, Digest = D>>
-    From<&BasefoldCommitmentWithWitness<E, H>> for BasefoldCommitment<D>
+impl<'a, D, E: ExtensionField, H: MerkleHasher<E, Digest = D>>
+    From<&BasefoldCommitmentWithWitness<'a, E, H>> for BasefoldCommitment<D>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
@@ -188,7 +188,7 @@ impl<D: Clone> BasefoldCommitment<D> {
     }
 }
 
-impl<E: ExtensionField, H: MerkleHasher<E>> PartialEq for BasefoldCommitmentWithWitness<E, H>
+impl<E: ExtensionField, H: MerkleHasher<E>> PartialEq for BasefoldCommitmentWithWitness<'_, E, H>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
@@ -198,7 +198,7 @@ where
     }
 }
 
-impl<E: ExtensionField, H: MerkleHasher<E>> Eq for BasefoldCommitmentWithWitness<E, H> where
+impl<E: ExtensionField, H: MerkleHasher<E>> Eq for BasefoldCommitmentWithWitness<'_, E, H> where
     E::BaseField: Serialize + DeserializeOwned
 {
 }
@@ -247,7 +247,7 @@ where
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
-pub struct Basefold<E: ExtensionField, Spec: BasefoldSpec<E>>(PhantomData<(E, Spec)>);
+pub struct Basefold<'a, E: ExtensionField, Spec: BasefoldSpec<E>>(PhantomData<(E, Spec, &'a E)>);
 
 // impl<E: ExtensionField, Spec: BasefoldSpec<E>> Serialize for Basefold<E, Spec> {
 //    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -258,9 +258,9 @@ pub struct Basefold<E: ExtensionField, Spec: BasefoldSpec<E>>(PhantomData<(E, Sp
 //    }
 //}
 
-pub type BasefoldDefault<F, H> = Basefold<F, BasefoldRSParams<H>>;
+pub type BasefoldDefault<'a, F, H> = Basefold<'a, F, BasefoldRSParams<H>>;
 
-impl<E: ExtensionField, Spec: BasefoldSpec<E>> Clone for Basefold<E, Spec> {
+impl<E: ExtensionField, Spec: BasefoldSpec<E>> Clone for Basefold<'_, E, Spec> {
     fn clone(&self) -> Self {
         Self(PhantomData)
     }
@@ -274,7 +274,7 @@ impl<D> AsRef<[D]> for BasefoldCommitment<D> {
 }
 
 impl<E: ExtensionField, H: MerkleHasher<E>> AsRef<[<H as MerkleHasher<E>>::Digest]>
-    for BasefoldCommitmentWithWitness<E, H>
+    for BasefoldCommitmentWithWitness<'_, E, H>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
@@ -331,7 +331,7 @@ where
     serialize = "E::BaseField: Serialize",
     deserialize = "E::BaseField: DeserializeOwned"
 ))]
-pub struct BasefoldProof<E: ExtensionField, Digest>
+pub struct BasefoldProof<'a, E: ExtensionField, Digest>
 where
     E::BaseField: Serialize + DeserializeOwned,
     Digest: Clone + Serialize + DeserializeOwned,
@@ -340,16 +340,16 @@ where
     pub(crate) roots: Vec<Digest>,
     pub(crate) final_message: Vec<E>,
     pub(crate) query_result_with_merkle_path: ProofQueriesResultWithMerklePath<E, Digest>,
-    pub(crate) sumcheck_proof: Option<SumcheckProof<E, Coefficients<E>>>,
-    pub(crate) trivial_proof: Vec<FieldType<E>>,
+    pub(crate) sumcheck_proof: Option<SumcheckProof<E, Coefficients<'a, E>>>,
+    pub(crate) trivial_proof: Vec<FieldType<'a, E>>,
 }
 
-impl<E: ExtensionField, Digest> BasefoldProof<E, Digest>
+impl<'a, E: ExtensionField, Digest> BasefoldProof<'a, E, Digest>
 where
     E::BaseField: Serialize + DeserializeOwned,
     Digest: Clone + Send + Sync + Serialize + DeserializeOwned,
 {
-    pub fn trivial(evals: Vec<FieldType<E>>) -> Self {
+    pub fn trivial(evals: Vec<FieldType<'a, E>>) -> Self {
         Self {
             sumcheck_messages: vec![],
             roots: vec![],

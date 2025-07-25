@@ -6,8 +6,8 @@ use ff_ext::ExtensionField;
 use p3_field::FieldAlgebra;
 
 use multilinear_extensions::{
-    mle::{IntoMLE, MultilinearExtension},
-    virtual_poly::{ArcMultilinearExtension, VirtualPolynomial},
+    mle::{ArcMultilinearExtension, IntoMLE},
+    virtual_poly::VirtualPolynomial,
 };
 use sumcheck::structs::{IOPProof, IOPProverState};
 use transcript::Transcript;
@@ -53,13 +53,13 @@ pub fn batch_prove<E: ExtensionField, T: Transcript<E>>(
         .for_each(|evals| transcript.append_field_element_exts(evals));
 
     let batching_challenge = transcript
-        .get_and_append_challenge(b"initial_batching")
+        .sample_and_append_challenge(b"initial_batching")
         .elements;
     let mut alpha = transcript
-        .get_and_append_challenge(b"initial_alpha")
+        .sample_and_append_challenge(b"initial_alpha")
         .elements;
     let mut lambda = transcript
-        .get_and_append_challenge(b"initial_lambda")
+        .sample_and_append_challenge(b"initial_lambda")
         .elements;
 
     let (mut current_claim, _) =
@@ -131,18 +131,24 @@ pub fn batch_prove<E: ExtensionField, T: Transcript<E>>(
         let (proof, state) = IOPProverState::<E>::prove_parallel(vp, transcript);
 
         // Update the sumcheck proof
-        sumcheck_point = proof.point.clone();
+        sumcheck_point = state.collect_raw_challenges();
 
         // The first one is always the eq_poly eval
-        let evals = &state.get_mle_final_evaluations()[1..];
+        let evals = &state
+            .get_mle_final_evaluations()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()[1..];
 
         // Squeeze the challenges to combine everything into a single sumcheck
         let batching_challenge = transcript
-            .get_and_append_challenge(b"logup_batching")
+            .sample_and_append_challenge(b"logup_batching")
             .elements;
-        alpha = transcript.get_and_append_challenge(b"logup_alpha").elements;
+        alpha = transcript
+            .sample_and_append_challenge(b"logup_alpha")
+            .elements;
         lambda = transcript
-            .get_and_append_challenge(b"logup_lambda")
+            .sample_and_append_challenge(b"logup_lambda")
             .elements;
         // Append the batching challenge to the proof point
         sumcheck_point.push(batching_challenge);

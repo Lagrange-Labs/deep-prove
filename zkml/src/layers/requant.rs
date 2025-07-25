@@ -24,13 +24,14 @@ use crate::{
 use anyhow::{Result, anyhow, ensure};
 
 use ff_ext::ExtensionField;
-use gkr::util::ceil_log2;
+use itertools::Itertools;
+use multilinear_extensions::util::ceil_log2;
 use p3_field::FieldAlgebra;
 
-use mpcs::{PolynomialCommitmentScheme, sum_check::eq_xy_eval};
+use mpcs_lg::{PolynomialCommitmentScheme, sum_check::eq_xy_eval};
 use multilinear_extensions::{
-    mle::{DenseMultilinearExtension, IntoMLE},
-    virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial},
+    mle::{ArcMultilinearExtension, IntoMLE, MultilinearExtension},
+    virtual_poly::VirtualPolynomial,
 };
 
 use rayon::prelude::*;
@@ -204,12 +205,12 @@ where
         Ok(vec![self.prove_step(prover, last_claims[0], ctx, id)?])
     }
 
-    fn gen_lookup_witness(
+    fn gen_lookup_witness<'a>(
         &self,
         id: NodeId,
-        ctx: &Context<E, PCS>,
+        ctx: &'a Context<'a, E, PCS>,
         step_data: &StepData<Element, E>,
-    ) -> Result<LookupWitnessGen<E, PCS>> {
+    ) -> Result<LookupWitnessGen<'a, E, PCS>> {
         ensure!(
             step_data.inputs.len() == 1,
             "Found more than 1 input in inference step of requant layer"
@@ -289,7 +290,7 @@ where
 
         #[allow(clippy::type_complexity)]
         let (clamping_commits, clamping_evals): (
-            Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
+            Vec<(PCS::CommitmentWithWitness<'a>, MultilinearExtension<'_, E>)>,
             Vec<Vec<E::BaseField>>,
         ) = [clamping_in, clamping_out]
             .into_par_iter()
@@ -302,7 +303,7 @@ where
                     })
                     .collect::<Vec<E::BaseField>>();
                 let mle =
-                    DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, &evaluations);
+                    MultilinearExtension::<E>::from_evaluations_vec(num_vars, evaluations.clone());
                 let commit = ctx.commitment_ctx.commit(&mle)?;
                 Ok(((commit, mle), evaluations))
             })
@@ -312,7 +313,7 @@ where
 
         #[allow(clippy::type_complexity)]
         let (shifted_chunk_commits, shifted_chunks_evals): (
-            Vec<(PCS::CommitmentWithWitness, DenseMultilinearExtension<E>)>,
+            Vec<(PCS::CommitmentWithWitness<'a>, MultilinearExtension<'_, E>)>,
             Vec<Vec<E::BaseField>>,
         ) = shifted_chunks
             .into_par_iter()
@@ -325,7 +326,7 @@ where
                     })
                     .collect::<Vec<E::BaseField>>();
                 let mle =
-                    DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, &evaluations);
+                    MultilinearExtension::<E>::from_evaluations_vec(num_vars, evaluations.clone());
                 let commit = ctx.commitment_ctx.commit(&mle)?;
                 Ok(((commit, mle), evaluations))
             })
@@ -586,7 +587,7 @@ impl Requant {
         let clamping_mles = clamping_polys
             .iter()
             .map(|evaluations| {
-                DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, evaluations).into()
+                MultilinearExtension::<E>::from_evaluations_slice(num_vars, evaluations).into()
             })
             .collect::<Vec<ArcMultilinearExtension<E>>>();
 
@@ -594,7 +595,7 @@ impl Requant {
             .column_evals()
             .iter()
             .map(|evaluations| {
-                DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, evaluations).into()
+                MultilinearExtension::<E>::from_evaluations_slice(num_vars, evaluations).into()
             })
             .collect::<Vec<ArcMultilinearExtension<E>>>();
 
@@ -615,7 +616,7 @@ impl Requant {
         // Squeeze a batching challenge from the transcript.
         let batching_challenge = prover
             .transcript
-            .get_and_append_challenge(b"requant_batching")
+            .sample_and_append_challenge(b"requant_batching")
             .elements;
 
         // Construct the virtual polynomial for the sumcheck
@@ -643,8 +644,12 @@ impl Requant {
         let (claim_acc_proof, state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
 
         // Split out the eq poly evals from witness poly evals
-        let final_evals = state.get_mle_final_evaluations();
-        let point = claim_acc_proof.point.clone();
+        let final_evals = state
+            .get_mle_final_evaluations()
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
+        let point = state.collect_raw_challenges();
         let clamping_out_eval = final_evals[0];
         let clamping_in_eval = final_evals[3];
         let shifted_evals = &final_evals[5..];
@@ -737,7 +742,7 @@ impl RequantCtx {
         // Squeeze the batching challenge for the claim accumulation sumcheck
         let batching_challenge = verifier
             .transcript
-            .get_and_append_challenge(b"requant_batching")
+            .sample_and_append_challenge(b"requant_batching")
             .elements;
 
         // 2. Verify claim accumulation
@@ -762,7 +767,7 @@ impl RequantCtx {
                 (acc + chal * val, chal * batching_challenge)
             });
         // The verifier can work out the auxiliary information about the sumcheck on their own.
-        let aux_info = VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![
+        let aux_info = crate::util::from_mle_list_dimensions(&[vec![
             clamping_point.len(),
             clamping_point.len(),
         ]]);
@@ -775,7 +780,7 @@ impl RequantCtx {
         );
 
         // Now we check that the evalautions provided by the prover do recombine to the sumcheck subclaim
-        let acc_point = subclaim.point_flat();
+        let acc_point = subclaim.point.iter().map(|p| p.elements).collect_vec();
         // Calculate all th ebeta poly evals ourselves
         let last_claim_beta = eq_xy_eval(&last_claim.point, &acc_point);
         let clamping_beta = eq_xy_eval(clamping_point, &acc_point);

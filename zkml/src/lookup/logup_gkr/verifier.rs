@@ -27,13 +27,13 @@ pub fn verify_logup_proof<E: ExtensionField, T: Transcript<E>>(
     let (numerators, denominators): (Vec<E>, Vec<E>) = proof.fractional_outputs();
 
     let batching_challenge = transcript
-        .get_and_append_challenge(b"initial_batching")
+        .sample_and_append_challenge(b"initial_batching")
         .elements;
     let mut alpha = transcript
-        .get_and_append_challenge(b"initial_alpha")
+        .sample_and_append_challenge(b"initial_alpha")
         .elements;
     let mut lambda = transcript
-        .get_and_append_challenge(b"initial_lambda")
+        .sample_and_append_challenge(b"initial_lambda")
         .elements;
 
     let (mut current_claim, _) =
@@ -58,21 +58,23 @@ pub fn verify_logup_proof<E: ExtensionField, T: Transcript<E>>(
         transcript.append_field_element_ext(&current_claim);
 
         // Calculate the eq_poly evaluation for this round
-        let eq_eval = identity_eval(&sumcheck_point, &sumcheck_proof.point);
+        let eq_eval = identity_eval(&sumcheck_point, todo!() /* &sumcheck_proof.point */);
 
         // Run this rounds sumcheck verification
         let current_num_vars = i + 1;
-        let aux_info = VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![current_num_vars; 3]]);
+        let aux_info = crate::util::from_mle_list_dimensions(&[vec![current_num_vars; 3]]);
         let sumcheck_subclaim =
             IOPVerifierState::<E>::verify(current_claim, sumcheck_proof, &aux_info, transcript);
 
         // Squeeze the challenges to combine everything into a single sumcheck
         let batching_challenge = transcript
-            .get_and_append_challenge(b"logup_batching")
+            .sample_and_append_challenge(b"logup_batching")
             .elements;
-        let next_alpha = transcript.get_and_append_challenge(b"logup_alpha").elements;
+        let next_alpha = transcript
+            .sample_and_append_challenge(b"logup_alpha")
+            .elements;
         let next_lambda = transcript
-            .get_and_append_challenge(b"logup_lambda")
+            .sample_and_append_challenge(b"logup_lambda")
             .elements;
 
         // Now we take the round evals and check their consistency with the sumcheck claim
