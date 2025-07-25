@@ -78,14 +78,6 @@ jobs:
           # Manually configure rust-cache
           cache: false
 
-      - name: Restore model cache folder
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/target/test_assets_cache
-          key: model-cache-v1
-          restore-keys: |
-            model-cache-v1
-
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -96,6 +88,17 @@ jobs:
           # Useful if the workspace contains libraries that are only updated sporadically.
           # default: "false"
           cache-workspace-crates: true
+
+      # The model cache has to be after Rust cache because otherwise the
+      # post-step for Rust cache will clean the target directory before the
+      # post-step for model cache
+      - name: Restore model cache folder
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/target/test_assets_cache
+          key: model-cache-v1
+          restore-keys: |
+            model-cache-v1
 
       - name: Run cargo test
         run: cargo test
