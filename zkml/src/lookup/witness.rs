@@ -143,14 +143,14 @@ where
         }
     }
 
-    /// Retrieves commitments from the witness.
-    pub fn get_commitments(&self) -> Vec<ProverCommitment<PCS, E>> {
+    /// Consumes the witness and returns its commitments.
+    pub fn into_commitments(self) -> Vec<ProverCommitment<PCS, E>> {
         match self {
-            LogUpWitness::Lookup { commits, .. } => commits.to_vec(),
+            LogUpWitness::Lookup { commits, .. } => commits,
             LogUpWitness::Table {
                 multiplicity_commit,
                 ..
-            } => vec![multiplicity_commit.clone()],
+            } => vec![multiplicity_commit],
         }
     }
 }

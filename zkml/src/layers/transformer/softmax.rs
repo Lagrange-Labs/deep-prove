@@ -607,10 +607,10 @@ impl Softmax<Element> {
         }
         // Run the lookup protocol and return the lookup proof
         let (commits, logup_proofs): CommsAndProofs<PCS, E> = logup_witnesses
-            .iter()
+            .into_iter()
             .map(|logup_wit| {
-                let commits = logup_wit.get_commitments();
                 let logup_input = logup_wit.get_logup_input(&prover.challenge_storage)?;
+                let commits = logup_wit.into_commitments();
                 let logup_proof = batch_prove(&logup_input, prover.transcript)?;
                 Ok((commits, logup_proof))
             })

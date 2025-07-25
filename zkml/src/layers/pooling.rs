@@ -363,18 +363,17 @@ impl Pooling {
     {
         assert_eq!(input.get_shape().len(), 3, "Maxpool needs 3D inputs.");
         // Should only be one prover_info for this step
-        let logup_witnesses = prover.lookup_witness(id)?;
-        if logup_witnesses.len() != 1 {
-            return Err(anyhow!(
-                "Pooling only requires a lookup into one table type, but node: {} had {} lookup witnesses",
-                id,
-                logup_witnesses.len()
-            ));
-        }
-        let logup_witness = &logup_witnesses[0];
+        let mut logup_witnesses = prover.lookup_witness(id)?;
+        ensure!(
+            logup_witnesses.len() == 1,
+            "Pooling only requires a lookup into one table type, but node: {} had {} lookup witnesses",
+            id,
+            logup_witnesses.len(),
+        );
+        let logup_witness = logup_witnesses.pop().expect("Length is checked above");
 
         let prover_info = logup_witness.get_logup_input(&prover.challenge_storage)?;
-        let commits = logup_witness.get_commitments();
+        let commits = logup_witness.into_commitments();
         let logup_proof = logup_batch_prove(&prover_info, prover.transcript)?;
 
         // These are the polys that get passed to the zero check make sure their product is zero at every evaluation point

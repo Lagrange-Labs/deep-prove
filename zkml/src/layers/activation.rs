@@ -395,19 +395,18 @@ impl<N> Activation<N> {
         E::BaseField: Serialize + DeserializeOwned,
     {
         // Should only be one prover_info for this step
-        let logup_witnesses = prover.lookup_witness(node_id)?;
-        if logup_witnesses.len() != 1 {
-            return Err(anyhow!(
-                "Activation only requires a lookup into one table type, but node: {} had {} lookup witnesses",
-                node_id,
-                logup_witnesses.len()
-            ));
-        }
-        let logup_witness = &logup_witnesses[0];
+        let mut logup_witnesses = prover.lookup_witness(node_id)?;
+        ensure!(
+            logup_witnesses.len() == 1,
+            "Activation only requires a lookup into one table type, but node: {} had {} lookup witnesses",
+            node_id,
+            logup_witnesses.len()
+        );
+        let logup_witness = logup_witnesses.pop().expect("Length was checked above");
         // Run the lookup protocol and return the lookup proof
         let prover_info = logup_witness.get_logup_input(&prover.challenge_storage)?;
 
-        let commits = logup_witness.get_commitments();
+        let commits = logup_witness.into_commitments();
         // Run the lookup protocol and return the lookup proof
         let logup_proof = logup_batch_prove(&prover_info, prover.transcript)?;
 

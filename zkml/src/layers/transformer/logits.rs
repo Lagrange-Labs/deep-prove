@@ -343,7 +343,7 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS> f
 
         let max_values = &argmax_data.max_values[0];
 
-        let logup_witnesses = prover.lookup_witness(node_id)?;
+        let mut logup_witnesses = prover.lookup_witness(node_id)?;
 
         ensure!(
             logup_witnesses.len() == 1,
@@ -351,11 +351,11 @@ impl<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>> ProvableOp<E, PCS> f
             logup_witnesses.len(),
         );
 
-        let logup_witness = &logup_witnesses[0];
+        let logup_witness = logup_witnesses.pop().expect("Length is checked above");
 
         let logup_input = logup_witness.get_logup_input(&prover.challenge_storage)?;
 
-        let mut commits = logup_witness.get_commitments();
+        let mut commits = logup_witness.into_commitments();
 
         ensure!(
             commits.len() == 1,
