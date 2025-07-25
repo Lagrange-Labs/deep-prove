@@ -33,6 +33,7 @@ use crate::{
     padding::PaddingMode,
     quantization::{Fieldizer, ScalingFactor},
     tensor::{Number, Shape},
+    to_base,
 };
 
 use anyhow::{Result, anyhow, ensure};
@@ -754,39 +755,12 @@ impl Softmax<Element> {
         mask.pad()?;
         let shifted_input = softmax_data.shifted_input.pad_next_power_of_two();
 
-        let tril_mle: ArcMultilinearExtension<E> = mask
-            .tril
-            .get_data()
-            .iter()
-            .map(|v| {
-                let f: E = v.to_field();
-                f.as_bases()[0]
-            })
-            .collect::<Vec<E::BaseField>>()
-            .into_mle()
-            .into();
-
-        let bias_mle: ArcMultilinearExtension<E> = mask
-            .bias
-            .get_data()
-            .iter()
-            .map(|v| {
-                let f: E = v.to_field();
-                f.as_bases()[0]
-            })
-            .collect::<Vec<E::BaseField>>()
-            .into_mle()
-            .into();
-        let shifted_input_mle: ArcMultilinearExtension<E> = shifted_input
-            .get_data()
-            .iter()
-            .map(|v| {
-                let f: E = v.to_field();
-                f.as_bases()[0]
-            })
-            .collect::<Vec<E::BaseField>>()
-            .into_mle()
-            .into();
+        let tril_mle: ArcMultilinearExtension<E> =
+            to_base::<E, _>(mask.tril.get_data()).into_mle().into();
+        let bias_mle: ArcMultilinearExtension<E> =
+            to_base::<E, _>(mask.bias.get_data()).into_mle().into();
+        let shifted_input_mle: ArcMultilinearExtension<E> =
+            to_base::<E, _>(shifted_input.get_data()).into_mle().into();
 
         // Make the VirtualPolynomial to prove that the mask was applied correctly. This Virtual Polynomial is
         // eq(sumcheck_point,x) * (shifted_input_mle * mask.tril_mle + mask.bias_mle).
@@ -983,13 +957,7 @@ impl Softmax<Element> {
         let (commits, evals): CommsAndEvals<PCS, E> = poly_evals_vec
             .into_par_iter()
             .map(|vals| {
-                let evaluations = vals
-                    .iter()
-                    .map(|v| {
-                        let f: E = v.to_field();
-                        f.as_bases()[0]
-                    })
-                    .collect::<Vec<E::BaseField>>();
+                let evaluations = to_base::<E, _>(vals);
                 let mle =
                     DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, &evaluations);
                 let commit = ctx.commitment_ctx.commit(&mle)?;
@@ -1007,13 +975,7 @@ impl Softmax<Element> {
 
         // For the error we actually use the exp output table commitment so here we only need to make the evaluations
         // but we will store the `shift` polynomial and its commitment in the `LogUpWitness` that we create
-        let error_evals = normalisation_lookup
-            .par_iter()
-            .map(|val| {
-                let f: E = val.to_field();
-                f.as_bases()[0]
-            })
-            .collect::<Vec<E::BaseField>>();
+        let error_evals = to_base::<E, _>(&normalisation_lookup);
 
         // Pad the shift data if needed
         let shift_tensor = shift_tensor.pad_next_power_of_two();
@@ -1022,13 +984,7 @@ impl Softmax<Element> {
 
         let shift_mle = DenseMultilinearExtension::<E>::from_evaluations_vec(
             ceil_log2(shift_data.len()),
-            shift_data
-                .iter()
-                .map(|v| {
-                    let f: E = v.to_field();
-                    f.as_bases()[0]
-                })
-                .collect::<Vec<E::BaseField>>(),
+            to_base::<E, _>(shift_data),
         );
         let shift_commit = ctx.commitment_ctx.commit(&shift_mle)?;
 

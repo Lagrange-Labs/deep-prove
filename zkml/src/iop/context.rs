@@ -4,8 +4,8 @@ use crate::{
     layers::provable::{Node, NodeCtx, NodeId, OpInfo},
     lookup::context::{LookupContext, TableType},
     model::{Model, ModelCtx, ToIterator},
-    quantization::Fieldizer,
     tensor::Shape,
+    to_base,
 };
 use anyhow::{anyhow, ensure};
 use ff_ext::ExtensionField;
@@ -283,13 +283,7 @@ fn compute_node_shape<E: ExtensionField>(
                         poly_id,
                         DenseMultilinearExtension::<E>::from_evaluations_vec(
                             num_vars,
-                            evals
-                                .iter()
-                                .map(|v| {
-                                    let f: E = v.to_field();
-                                    f.as_bases()[0]
-                                })
-                                .collect::<Vec<E::BaseField>>(),
+                            to_base::<E, _>(evals),
                         ),
                     )
                 })

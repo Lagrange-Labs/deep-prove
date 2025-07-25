@@ -20,6 +20,7 @@ use crate::{
     padding::PaddingMode,
     quantization::{self, Fieldizer},
     tensor::Shape,
+    to_base,
 };
 use anyhow::{Result, anyhow, ensure};
 
@@ -291,13 +292,7 @@ where
         ) = [clamping_in, clamping_out]
             .into_par_iter()
             .map(|vals| {
-                let evaluations = vals
-                    .into_iter()
-                    .map(|v| {
-                        let f: E = v.to_field();
-                        f.as_bases()[0]
-                    })
-                    .collect::<Vec<E::BaseField>>();
+                let evaluations = to_base::<E, _>(vals);
                 let mle =
                     DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, &evaluations);
                 let commit = ctx.commitment_ctx.commit(&mle)?;
@@ -314,13 +309,7 @@ where
         ) = shifted_chunks
             .into_par_iter()
             .map(|chunk| {
-                let evaluations = chunk
-                    .into_iter()
-                    .map(|v| {
-                        let f: E = v.to_field();
-                        f.as_bases()[0]
-                    })
-                    .collect::<Vec<E::BaseField>>();
+                let evaluations = to_base::<E, _>(chunk);
                 let mle =
                     DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, &evaluations);
                 let commit = ctx.commitment_ctx.commit(&mle)?;

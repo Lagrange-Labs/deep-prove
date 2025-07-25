@@ -297,10 +297,7 @@ mod tests {
 
     #[test]
     fn test_circuit_construction() {
-        let column = random_field_vector::<GoldilocksExt2>(1 << 10)
-            .into_iter()
-            .map(|val| val.as_bases()[0])
-            .collect::<Vec<Goldilocks>>();
+        let column = random_field_vector::<Goldilocks>(1 << 10);
 
         let circuit = LogUpCircuit::<GoldilocksExt2>::new_lookup_circuit(
             &[column.clone()],
