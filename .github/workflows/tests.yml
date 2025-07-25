@@ -29,6 +29,7 @@ jobs:
           filters: |
             zkml_src:
               - 'zkml/**'
+              - 'mpcs/**'
               - '.github/workflows/tests.yml'
               - 'rust-toolchain.toml'
 
