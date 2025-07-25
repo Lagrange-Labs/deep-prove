@@ -10,10 +10,28 @@ on:
       - ready_for_review
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      should_run: ${{ steps.filter.outputs.watches }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            watches:
+              - 'zkml/**'
+              - '.github/workflows/pr-bench.yml'
+
   benchmark_pr_branch:
     name: Continuous Benchmarking PRs with Bencher
+    needs: changes
     # DO NOT REMOVE: For handling Fork PRs see Pull Requests from Forks
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    if: |
+      needs.changes.outputs.should_run == 'true'
+        && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       pull-requests: write
     runs-on: ubuntu-latest
