@@ -1,11 +1,11 @@
-use std::str::FromStr;
+use std::{io::Write, str::FromStr};
 
 use crate::{Command, Executor};
 use alloy::signers::local::LocalSigner;
 use anyhow::{Context, bail};
 use deep_prove::middleware::{
     DeepProveRequest, DeepProveResponse,
-    v1::{DeepProveRequest as DeepProveRequestV1, Input},
+    v1::{self, DeepProveRequest as DeepProveRequestV1, Input},
 };
 use lagrange::ProofChannelResponse;
 use tokio::fs::File;
@@ -128,7 +128,7 @@ pub async fn connect(gw_config: Executor) -> anyhow::Result<()> {
             let response = client.submit_task(task).await?;
             info!("got the response {response:?}");
         }
-        Command::Fetch {} => {
+        Command::Fetch { filename } => {
             let (proof_channel_tx, proof_channel_rx) = tokio::sync::mpsc::channel(1024);
 
             let proof_channel_rx = tokio_stream::wrappers::ReceiverStream::new(proof_channel_rx);
@@ -153,12 +153,20 @@ pub async fn connect(gw_config: Executor) -> anyhow::Result<()> {
                 let task_id = task_id.unwrap();
                 let task_output: DeepProveResponse = rmp_serde::from_slice(&task_output)?;
                 match task_output {
-                    DeepProveResponse::V1(_) => {
-                        info!(
-                            "Received proof for task {}",
-                            uuid::Uuid::from_slice(&task_id.id).unwrap_or_default()
-                        );
-                        // TODO: save proofs DP-76
+                    DeepProveResponse::V1(v1::DeepProveResponse { proofs }) => {
+                        let uuid = uuid::Uuid::from_slice(&task_id.id).unwrap_or_default();
+                        info!("Received proof for task {uuid}",);
+                        for proof in proofs.iter() {
+                            std::fs::File::create(
+                                filename
+                                    .as_ref()
+                                    .map(|f| format!("{f}-{uuid}."))
+                                    .unwrap_or_else(|| format!("{uuid}.bin")),
+                            )
+                            .context("failed to create proof file")?
+                            .write_all(serde_json::to_string(proof).unwrap().as_bytes())
+                            .context("failed to wrtite proof")?;
+                        }
                     }
                 }
 
