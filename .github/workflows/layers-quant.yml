@@ -15,6 +15,13 @@ jobs:
           seed="$(date +%s)"
           echo RNG seed: "$seed"
           echo RNG_SEED="$seed" >> "$GITHUB_ENV"
+      - name: Restore model cache folder
+        uses: actions/cache@v4
+        with:
+          path: target/test_assets_cache
+          key: model-cache-${{ hashFiles('my_folder/**') }}
+          restore-keys: |
+            model-cache-
       - name: Checkout base
         uses: actions/checkout@v4
         with:
