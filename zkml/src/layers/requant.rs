@@ -127,7 +127,11 @@ impl Evaluate<Element> for Requant {
         inputs: &[&Tensor<Element>],
         _unpadded_input_shapes: Vec<Shape>,
     ) -> Result<LayerOut<Element, E>> {
-        ensure!(inputs.len() == 1, "Requant layer expects 1 input, got {}", inputs.len());
+        ensure!(
+            inputs.len() == 1,
+            "Requant layer expects 1 input, got {}",
+            inputs.len()
+        );
         Ok(LayerOut::from_vec(
             inputs
                 .iter()

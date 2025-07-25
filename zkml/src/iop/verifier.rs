@@ -3,7 +3,11 @@ use std::collections::HashMap;
 use crate::{
     Claim, Element,
     commit::context::{CommitmentVerifier, PolyId},
-    iop::{ChallengeStorage, context::ShapeStep},
+    iop::{
+        ChallengeStorage,
+        context::ShapeStep,
+        prover::{MergeClaimNodeProof, MergeClaimsProof},
+    },
     layers::{
         LayerCtx, LayerProof,
         provable::{NodeCtx, NodeId, OpInfo, VerifiableCtx, compute_model_output_claims},
@@ -214,16 +218,25 @@ where
                 "Verifying proof {} for node {node_id}",
                 node_proof.variant_name(),
             );
-            let claims_for_verify = step.claims_for_node(&claims_by_layer, &out_claims)?;
+            let claims_for_verify = self.verify_merge_claims_proof(
+                step.claims_for_node(&claims_by_layer, &out_claims)?,
+                proof.merge_claim_proofs.get(&node_id),
+                node_id,
+            )?;
+
             let claims = {
                 if step.ctx.is_provable() {
                     // we verify the proof
-                    step.ctx
-                        .verify(node_proof, &claims_for_verify, &mut self, shape_step)?
+                    step.ctx.verify(
+                        node_proof,
+                        &claims_for_verify.iter().collect_vec(),
+                        &mut self,
+                        shape_step,
+                    )?
                 } else {
                     // we only propagate the claims, without changing them, as a non-provable layer
                     // shouldn't change the input values
-                    claims_for_verify.into_iter().cloned().collect()
+                    claims_for_verify
                 }
             };
             claims_by_layer.insert(node_id, claims);
@@ -309,6 +322,42 @@ where
         );
 
         Ok(())
+    }
+
+    fn verify_merge_claims_proof(
+        &mut self,
+        claims: Vec<Vec<&Claim<E>>>,
+        proof: Option<&MergeClaimsProof<E>>,
+        node_id: NodeId,
+    ) -> anyhow::Result<Vec<Claim<E>>> {
+        if proof.is_none() {
+            ensure!(claims.iter().all(|claims| claims.len() == 1));
+            return Ok(claims.into_iter().map(|claim| claim[0].clone()).collect());
+        }
+        let proof = proof.unwrap();
+        claims
+            .into_iter()
+            .enumerate()
+            .map(|(i, claims)| {
+                if claims.len() == 1 {
+                    // there is only one claim, no need to merge anything
+                    Ok(claims[0].clone())
+                } else {
+                    let merge_claim_proof = proof.get_proof(i).ok_or(anyhow!(
+                        "Merge claim proof for output index {i} not found for node {node_id}"
+                    ))?;
+                    self.verify_merge_claim_proof(&claims, merge_claim_proof)
+                }
+            })
+            .collect()
+    }
+
+    fn verify_merge_claim_proof(
+        &mut self,
+        claims: &[&Claim<E>],
+        proof: &MergeClaimNodeProof<E>,
+    ) -> anyhow::Result<Claim<E>> {
+        proof.verify_proof(self.transcript, claims)
     }
 
     pub(crate) fn add_common_claims(

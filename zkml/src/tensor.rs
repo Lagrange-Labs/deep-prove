@@ -1986,7 +1986,10 @@ impl<T> Tensor<T> {
         } else if self.data.len() > index {
             self.data[index] = value;
         } else {
-            panic!("Cannot insert at index {index} in tensor with data length {}", self.data.len());
+            panic!(
+                "Cannot insert at index {index} in tensor with data length {}",
+                self.data.len()
+            );
         }
         self
     }

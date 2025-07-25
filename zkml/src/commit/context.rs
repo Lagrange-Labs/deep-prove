@@ -66,7 +66,7 @@ where
         // Find the maximum size so we can generate params
         let max_poly_size = polys
             .iter()
-            .fold(witness_poly_size, |mut acc, (node_id, poly_vec)| {
+            .fold(witness_poly_size, |acc, (node_id, poly_vec)| {
                 debug!(
                     "Context Commitment: node {node_id} has {} polynomials of sizes {:?}",
                     poly_vec.len(),
@@ -75,7 +75,9 @@ where
                         .map(|poly| poly.num_vars())
                         .collect::<Vec<_>>()
                 );
-                poly_vec.iter().fold(acc,|mut lacc, (_, poly)| lacc.max(1 << poly.num_vars()) )
+                poly_vec
+                    .iter()
+                    .fold(acc, |lacc, (_, poly)| lacc.max(1 << poly.num_vars()))
             })
             .next_power_of_two();
 

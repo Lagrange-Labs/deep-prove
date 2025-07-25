@@ -155,6 +155,8 @@ impl<N: Number> Softmax<N> {
         let temperature = self.scalar.to_f32()?;
         let inv_float_temperature = 1.0f32 / temperature;
         let multiplier = (SCALE_FACTOR as f32 * input_scale_factor).round() as Element;
+        println!("Softmax input scale factor: {}", input_scale_factor);
+        println!("Softmax multiplier: {}", multiplier);
 
         // We want to be able to cover all possible inputs, to do this we need to work out what the minimum quantised input is.
         // this can be calculated by taking `input_scaling.domain().0` and then subtracting the maximum possible shift for normalisation.
