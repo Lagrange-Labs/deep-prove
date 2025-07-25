@@ -9,6 +9,7 @@ use mpcs::{Basefold, BasefoldRSParams, Hasher};
 use std::{net::SocketAddr, path::PathBuf};
 use tracing::{debug, error, info};
 use tracing_subscriber::{EnvFilter, filter::LevelFilter, fmt::format::FmtSpan};
+use url::Url;
 use zkml::{
     Context, Element, FloatOnnxLoader, Prover, default_transcript,
     model::Model,
@@ -29,7 +30,7 @@ type Pcs<E> = Basefold<E, BasefoldRSParams<Hasher>>;
 /// From a proof request wrapped in a [`DeepProveRequestV1`] and a [`Store`]
 /// implementation (to interact with the PPs), attempt to generate proofs for a
 /// list of inputs.
-async fn run_model_v1(model: DeepProveRequestV1, mut store: impl Store) -> Result<Vec<ProofV1>> {
+async fn run_model_v1<S: Store>(model: DeepProveRequestV1, store: &mut S) -> Result<Vec<ProofV1>> {
     info!("Proving inference");
     let DeepProveRequestV1 {
         model,
@@ -190,6 +191,28 @@ struct Args {
     run_mode: RunMode,
 }
 
+#[derive(clap::Args)]
+struct S3Args {
+    #[arg(long, env, default_value = "us-east-2", requires = "s3_store")]
+    s3_region: Option<String>,
+    #[arg(long, env, requires = "s3_store")]
+    s3_bucket: Option<String>,
+    #[arg(long, env, requires = "s3_store")]
+    s3_endpoint: Option<String>,
+    #[arg(long, env, default_value = "1000", requires = "s3_store")]
+    s3_timeout_secs: Option<u64>,
+    #[arg(env, requires = "s3_store")]
+    s3_access_key_id: Option<String>,
+    #[arg(env, requires = "s3_store")]
+    s3_secret_access_key: Option<String>,
+    /// Enable local file-system cache for S3 data
+    #[arg(long, env, requires = "s3_store")]
+    fs_cache: bool,
+    /// Set the path of the S3 store local cache.
+    #[arg(long, env, requires = "s3_store", default_value = "/var/cache")]
+    fs_cache_dir: PathBuf,
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum RunMode {
@@ -212,11 +235,13 @@ enum RunMode {
         #[arg(long, env, default_value = "deep-prove-1")]
         worker_class: String,
 
+        /// The operator name.
         #[arg(long, env, default_value = "Lagrange Labs")]
         operator_name: String,
 
+        /// The operator private key.
         #[arg(long, env)]
-        operator_priv_key: String,
+        private_key: String,
 
         /// Max message size passed through gRPC (in MBytes)
         #[arg(long, env, default_value = "100")]
@@ -226,32 +251,45 @@ enum RunMode {
         #[arg(long, env)]
         json: bool,
 
-        #[arg(long, env, default_value = "us-east-2", requires = "s3_store")]
-        s3_region: Option<String>,
-        #[arg(long, env, requires = "s3_store")]
-        s3_bucket: Option<String>,
-        #[arg(long, env, requires = "s3_store")]
-        s3_endpoint: Option<String>,
-        #[arg(long, env, default_value = "1000", requires = "s3_store")]
-        s3_timeout_secs: Option<u64>,
-        #[arg(env, requires = "s3_store")]
-        s3_access_key_id: Option<String>,
-        #[arg(env, requires = "s3_store")]
-        s3_secret_access_key: Option<String>,
-        #[arg(long, env, requires = "s3_store")]
-        /// Enable local file-system cache for S3 data
-        fs_cache: bool,
-        /// Set the dir for local file-system cache for S3 data. If not set, defaults to `/var/cache`.
-        #[arg(long, env, requires = "s3_store")]
-        fs_cache_dir: Option<PathBuf>,
+        /// If set, use S3 to store & fetch PPs, otherwise use memory.
+        #[command(flatten)]
+        s3_args: S3Args,
+    },
+    /// Connect to a LPN gateway to receive inference tasks.
+    #[command(
+        group(ArgGroup::new("s3_store")
+        .multiple(true)
+        .args(&["s3_region", "s3_bucket", "s3_endpoint", "s3_access_key_id", "s3_secret_access_key"])
+        .requires_all(&["s3_region", "s3_bucket", "s3_endpoint", "s3_access_key_id", "s3_secret_access_key"])
+    ))]
+    Http {
+        #[arg(long, env, default_value = "http://localhost:4000")]
+        gw_url: Url,
+
+        /// This worker unique name. If not set, a UID will be tentatively built
+        /// from the machine ID.
+        #[arg(short, long)]
+        worker_name: Option<String>,
+
+        /// The operator ETH address.
+        #[arg(long, env)]
+        address: String,
+
+        /// Print the logs in JSON format.
+        #[arg(long, env)]
+        json: bool,
+
+        /// If set, use S3 to store & fetch PPs, otherwise use memory.
+        #[command(flatten)]
+        s3_args: S3Args,
     },
     /// Prove inference on local files
     Local {
-        /// The model to prove inference on
+        /// The model to prove inference on.
         #[arg(short = 'm', long)]
         onnx: PathBuf,
 
-        /// The inputs to prove inference for
+        /// The inputs to prove inference for.
         #[arg(short = 'i', long)]
         inputs: PathBuf,
     },
@@ -275,9 +313,10 @@ enum RunMode {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     match args.run_mode {
-        remote_args @ RunMode::Grpc { .. } => lpn::run(remote_args).await,
+        grpc_args @ RunMode::Grpc { .. } => lpn::grpc::run(grpc_args).await,
         local_args @ RunMode::Local { .. } => immediate::run(local_args).await,
         api_args @ RunMode::LocalApi { .. } => api::serve(api_args).await,
+        http_args @ RunMode::Http { .. } => lpn::http::run(http_args).await,
     }
 }
 

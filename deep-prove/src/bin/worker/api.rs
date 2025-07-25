@@ -77,12 +77,13 @@ pub async fn serve(args: RunMode) -> anyhow::Result<()> {
     {
         let app_state = app_state.clone();
         tokio::spawn(async move {
+            let mut store = MemStore::default();
             loop {
                 let maybe_work = { app_state.lock().await.work_queue.pop() };
                 if let Some(proof_request) = maybe_work {
                     let now = std::time::Instant::now();
                     info!("processing proof...");
-                    let result = crate::run_model_v1(proof_request, MemStore::default()).await;
+                    let result = crate::run_model_v1(proof_request, &mut store).await;
                     match result {
                         Ok(proofs) => {
                             info!("proof generated in {}s", now.elapsed().as_secs());

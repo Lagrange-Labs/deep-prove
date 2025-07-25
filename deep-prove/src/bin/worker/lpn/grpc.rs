@@ -6,17 +6,16 @@ use crate::StoreKind;
 use alloy::signers::local::LocalSigner;
 use anyhow::Context;
 use axum::{Json, Router, http::StatusCode, routing::get};
-use deep_prove::{
-    middleware::{
-        DeepProveRequest, DeepProveResponse, v1::DeepProveResponse as DeepProveResponseV1,
-    },
-    store::{self, MemStore, S3Store},
+use deep_prove::middleware::{
+    DeepProveRequest, DeepProveResponse, v1::DeepProveResponse as DeepProveResponseV1,
 };
 use futures::{FutureExt, StreamExt};
 use lagrange::{WorkerToGwRequest, WorkerToGwResponse, worker_to_gw_request::Request};
 use std::{net::SocketAddr, str::FromStr};
 use tonic::{metadata::MetadataValue, transport::ClientTlsConfig};
-use tracing::{error, info, warn};
+use tracing::{error, info};
+
+use super::instantiate_store;
 
 mod lagrange {
     tonic::include_proto!("lagrange");
@@ -37,7 +36,7 @@ async fn serve_health_check(addr: SocketAddr) -> anyhow::Result<()> {
 async fn process_message_from_gw(
     msg: WorkerToGwResponse,
     outbound_tx: &tokio::sync::mpsc::Sender<WorkerToGwRequest>,
-    store: StoreKind,
+    store: &mut StoreKind,
 ) -> anyhow::Result<()> {
     let task: DeepProveRequest = rmp_serde::from_slice(
         zstd::decode_all(msg.task.as_slice())
@@ -86,17 +85,10 @@ pub async fn run(args: crate::RunMode) -> anyhow::Result<()> {
         healthcheck_addr,
         worker_class,
         operator_name,
-        operator_priv_key,
+        private_key,
         max_message_size,
         json,
-        s3_region,
-        s3_bucket,
-        s3_endpoint,
-        s3_timeout_secs,
-        s3_access_key_id,
-        s3_secret_access_key,
-        fs_cache,
-        fs_cache_dir,
+        s3_args,
     } = args
     else {
         unreachable!()
@@ -107,35 +99,7 @@ pub async fn run(args: crate::RunMode) -> anyhow::Result<()> {
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
-    // NOTE: the checked arg must not have a default
-    let store = if s3_bucket.is_some() {
-        info!("Running with S3 store");
-        let region = s3_region.context("gathering S3 config arguments")?;
-        let timeout = std::time::Duration::from_secs(s3_timeout_secs.unwrap());
-        let s3: store::AmazonS3 = store::AmazonS3Builder::new()
-            .with_region(region)
-            .with_bucket_name(s3_bucket.unwrap())
-            .with_access_key_id(s3_access_key_id.unwrap())
-            .with_secret_access_key(s3_secret_access_key.unwrap())
-            .with_endpoint(s3_endpoint.unwrap())
-            .with_client_options(
-                store::ClientOptions::default()
-                    .with_timeout(timeout)
-                    .with_allow_http(true),
-            )
-            .build()
-            .context("AWS S3 builder")?;
-        let s3 = S3Store::from(s3);
-        let s3 = if fs_cache || fs_cache_dir.is_some() {
-            s3.with_fs_cache(fs_cache_dir)
-        } else {
-            s3
-        };
-        StoreKind::S3(s3)
-    } else {
-        warn!("Running with in-memory store. Specify S3 args to use S3 instead");
-        StoreKind::Mem(MemStore::default())
-    };
+    let mut store = instantiate_store(s3_args).context("instantiating PPs store")?;
 
     let channel =
         tonic::transport::Channel::builder(gw_url.parse().context("parsing gateway URL")?)
@@ -146,8 +110,7 @@ pub async fn run(args: crate::RunMode) -> anyhow::Result<()> {
 
     let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(1024);
 
-    let wallet =
-        LocalSigner::from_str(&operator_priv_key).context("parsing operator private key")?;
+    let wallet = LocalSigner::from_str(&private_key).context("parsing operator private key")?;
 
     let claims = grpc_worker::auth::jwt::get_claims(
         operator_name.to_string(),
@@ -203,7 +166,7 @@ pub async fn run(args: crate::RunMode) -> anyhow::Result<()> {
                         break;
                     }
                 };
-                process_message_from_gw(msg, &outbound_tx, store.clone()).await?;
+                process_message_from_gw(msg, &outbound_tx, &mut store).await?;
             }
             h = &mut healthcheck_handler => {
                 if let Err(e) = h {
