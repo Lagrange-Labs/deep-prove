@@ -39,7 +39,7 @@ impl TryFrom<GwToWorker> for super::v1::DeepProveRequest {
         Ok(Self {
             model: BASE64_STANDARD
                 .decode(r.model)
-                .context("failed to base64-decade the model")?,
+                .context("failed to base64-decode the model")?,
             input: r.input,
             scaling_strategy: ScalingStrategyKind::AbsoluteMax,
             scaling_input_hash: None,
