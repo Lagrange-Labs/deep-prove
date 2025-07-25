@@ -10,13 +10,14 @@ jobs:
     outputs:
       should_run: ${{ steps.filter.outputs.watches }}
     steps:
+      - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
         id: filter
         with:
           filters: |
             watches:
               - 'zkml/**'
-              - '.github/workflows/pr-bench.yml'
+              - '.github/workflows/main-bench.yml'
 
   benchmark_pr_branch:
     name: Continuous Benchmarking PRs with Bencher
