@@ -108,13 +108,18 @@ where
 
     #[timed::timed_instrument(level = "debug")]
     fn prove_tables(&mut self) -> anyhow::Result<()> {
-        self.table_witness.iter().try_for_each(|table_witness| {
+        let mut table_witness = std::mem::replace(&mut self.table_witness, Vec::new());
+        table_witness.reverse();
+
+        while let Some(table_witness) = table_witness.pop() {
             let logup_input = table_witness.get_logup_input(&self.challenge_storage)?;
-            let comm_with_wit = table_witness
-                .get_commitments()
-                .first()
-                .ok_or(anyhow!("Table witness should have one commitment"))?
-                .clone();
+            let table_type = table_witness.table_type();
+            let mut comm_with_wit = table_witness.into_commitments();
+            ensure!(
+                comm_with_wit.len() == 1,
+                "Table witness should have one commitment"
+            );
+            let comm_with_wit = comm_with_wit.pop().expect("Length was checked above");
             let multiplicity_commit = PCS::get_pure_commitment(&comm_with_wit.0);
 
             // Make the proof for the table
@@ -127,7 +132,6 @@ where
             )?;
 
             // Add any table poly claims to the commitment prover
-            let table_type = table_witness.table_type();
             let table_poly_claims = table_type.table_claims(table_proof.output_claims());
 
             if !table_poly_claims.is_empty() {
@@ -148,9 +152,8 @@ where
                 multiplicity_commit,
                 lookup: table_proof,
             });
-
-            Ok(())
-        })
+        }
+        Ok(())
     }
 
     // Protocol for proving the correct computation of the FFT/iFFT matrix.
