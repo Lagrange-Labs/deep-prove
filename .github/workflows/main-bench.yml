@@ -5,8 +5,23 @@ on:
     branches: master
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.filter.outputs.watches }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            watches:
+              - 'zkml/**'
+              - '.github/workflows/pr-bench.yml'
+
   benchmark_pr_branch:
     name: Continuous Benchmarking PRs with Bencher
+    needs: changes
+    if: ${{ needs.changes.outputs.should_run == 'true' }}
     permissions:
       checks: write
     runs-on: ubuntu-latest
@@ -14,13 +29,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: "recursive"
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            zkml_src:
-              - 'zkml/**'
-              - '.github/workflows/pr-bench.yml'
       - name: Install protoc via apt
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: Install the Rust toolchain
