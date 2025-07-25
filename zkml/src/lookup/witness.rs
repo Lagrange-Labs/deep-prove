@@ -153,4 +153,15 @@ where
             } => vec![multiplicity_commit.clone()],
         }
     }
+
+    /// Consumes the witness and returns its commitments.
+    pub fn into_commitments(self) -> Vec<ProverCommitment<PCS, E>> {
+        match self {
+            LogUpWitness::Lookup { commits, .. } => commits,
+            LogUpWitness::Table {
+                multiplicity_commit,
+                ..
+            } => vec![multiplicity_commit],
+        }
+    }
 }

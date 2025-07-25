@@ -550,36 +550,35 @@ impl Requant {
         E: ExtensionField + Serialize + DeserializeOwned,
         E::BaseField: Serialize + DeserializeOwned,
     {
-        let logup_witnesses = prover.lookup_witness(id)?;
-        // Check that we have two witnesses for requantisation
-        if logup_witnesses.len() != 2 {
-            return Err(anyhow!(
-                "There should be two lookup witnesses during requantisation, node: {}, number of witnesses: {}",
-                id,
-                logup_witnesses.len()
-            ));
-        }
-        // Run the lookup protocol and return the lookup proof
-        let clamping_logup_witness = &logup_witnesses[0];
-        let shifted_logup_witness = &logup_witnesses[1];
-        let shifted_commitments = shifted_logup_witness.get_commitments();
-        let clamping_commitments = clamping_logup_witness.get_commitments();
-        // Run the lookup protocol and return the lookup proof
+        let mut logup_witnesses = prover.lookup_witness(id)?;
+        ensure!(
+            logup_witnesses.len() == 2,
+            "There should be two lookup witnesses during requantisation, node: {}, number of witnesses: {}",
+            id,
+            logup_witnesses.len(),
+        );
+
+        let shifted_logup_witness = logup_witnesses.pop().expect("Length is checked above");
+        let clamping_logup_witness = logup_witnesses.pop().expect("Length is checked above");
+
         let clamping_prover_info =
             clamping_logup_witness.get_logup_input(&prover.challenge_storage)?;
         let shifted_prover_info =
             shifted_logup_witness.get_logup_input(&prover.challenge_storage)?;
         let clamping_logup_proof = logup_batch_prove(&clamping_prover_info, prover.transcript)?;
         let shifted_logup_proof = logup_batch_prove(&shifted_prover_info, prover.transcript)?;
+
+        let shifted_commitments = shifted_logup_witness.into_commitments();
+        let clamping_commitments = clamping_logup_witness.into_commitments();
+
         // We need to prove that the output of this step is the input to following activation function
         // this is done by showing that the `last_claim` and the output column of the clamping lookup both relate to the
         // same polynomial. In addition, we need all the shifted claims to be about the same point as the clamping input claim, so we include these in the sumcheck as well
-        if clamping_prover_info.column_evals().len() != 2 {
-            return Err(anyhow!(
-                "Clamping logup proofs should only have two output evaluations, got: {}",
-                clamping_prover_info.column_evals().len()
-            ));
-        }
+        ensure!(
+            clamping_prover_info.column_evals().len() == 2,
+            "Clamping logup proofs should only have two output evaluations, got: {}",
+            clamping_prover_info.column_evals().len()
+        );
 
         // Extract the individual polynomials from the lookup arguments to be passed to the sumcheck
         let clamping_polys = clamping_prover_info.column_evals();
