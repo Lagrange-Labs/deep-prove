@@ -96,8 +96,7 @@ impl From<AmazonS3> for S3Store {
 }
 
 impl S3Store {
-    pub fn with_fs_cache(mut self, fs_cache_dir: Option<PathBuf>) -> Self {
-        let fs_cache_dir = fs_cache_dir.unwrap_or_else(|| PathBuf::from("/var/cache"));
+    pub fn with_fs_cache(mut self, fs_cache_dir: PathBuf) -> Self {
         self.fs_cache = Some(Arc::new(
             TempDir::new_in(fs_cache_dir).expect("able to setup an S3 store cache in a temp dir"),
         ));
