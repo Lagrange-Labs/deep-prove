@@ -39,6 +39,7 @@ jobs:
             deep-prove-worker:
               - 'zkml/**'
               - 'deep-prove/**'
+              - 'mpcs/**'
               - 'docker/deep-prove-worker.dockerfile'
               - '.github/workflows/docker.yml'
   build:

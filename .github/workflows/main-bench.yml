@@ -17,6 +17,7 @@ jobs:
           filters: |
             watches:
               - 'zkml/**'
+              - 'mpcs/**'
               - '.github/workflows/main-bench.yml'
 
   benchmark_pr_branch:
