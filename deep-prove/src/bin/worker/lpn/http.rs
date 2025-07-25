@@ -46,78 +46,117 @@ where
     unreachable!()
 }
 
-fn request_job(gw_url: &Url, worker_name: &str) -> anyhow::Result<v2::GwToWorker> {
-    ureq::get(
-        gw_url
-            .join(&format!("api/v1/jobs/{worker_name}"))
-            .unwrap()
-            .as_str(),
-    )
-    .call()
-    .context("fetching job from gateway")
-    .and_then(|mut r| {
-        serde_json::from_reader::<_, v2::GwToWorker>(r.body_mut().as_reader())
-            .context("deserializing job from gateway")
-    })
+/// A wrapper for the connection settings, as well as helper functions to
+/// interact with a gateway.
+struct ConnContext {
+    gw_url: Url,
+    worker_name: String,
+    address: String,
 }
-fn ack_job(gw_url: &Url, worker_name: &str, job_id: i64) -> anyhow::Result<()> {
-    retry_operation(
-        || {
-            ureq::get(
-                gw_url
-                    .join(&format!("/api/v1/jobs/{worker_name}/{job_id}/ack"))
-                    .unwrap()
-                    .as_str(),
-            )
-            .call()
-        },
-        || format!("ACK-ing job #{job_id}"),
-    )?;
+impl ConnContext {
+    fn new(gw_url: Url, worker_name: String, address: String) -> Self {
+        let address = address.trim_start_matches("0x").to_string();
+        Self {
+            gw_url,
+            worker_name,
+            address,
+        }
+    }
 
-    Ok(())
-}
+    /// Request a new job from the gateway.
+    ///
+    ///  - Will fail if the connection settings are not valid.
+    ///  - Will fail after retries if the connection can not be established.
+    fn request_job(&self) -> anyhow::Result<v2::GwToWorker> {
+        ureq::get(
+            self.gw_url
+                .join(&format!("api/v1/jobs/{}", self.worker_name))
+                .unwrap()
+                .as_str(),
+        )
+        .header("authorization", &self.address)
+        .call()
+        .context("connecting to gateway")
+        .and_then(|mut r| {
+            serde_json::from_reader::<_, v2::GwToWorker>(r.body_mut().as_reader())
+                .context("deserializing job from gateway")
+        })
+    }
 
-fn submit_proof(gw_url: &Url, worker_name: &str, job_id: i64, proof: &[u8]) -> anyhow::Result<()> {
-    let encoded_proof = BASE64_STANDARD.encode(proof);
-    info!(
-        "submitting a {} proof",
-        humansize::format_size(encoded_proof.len(), humansize::DECIMAL)
-    );
-    retry_operation(
-        || {
-            ureq::put(
-                gw_url
-                    .join(&format!("/api/v1/jobs/{worker_name}/{job_id}/proof"))
-                    .unwrap()
-                    .as_str(),
-            )
-            .send_json(json!({
-                "proof": BASE64_STANDARD.encode(proof),
-            }))
-        },
-        || format!("sending proof for job #{job_id} to the gateway"),
-    )?;
+    /// Confirm to the GW that we successfully received the job.
+    ///
+    ///  - Will fail if the connection settings are not valid.
+    ///  - Will fail after retries if the connection can not be established.
+    fn ack_job(&self, job_id: i64) -> anyhow::Result<()> {
+        retry_operation(
+            || {
+                ureq::get(
+                    self.gw_url
+                        .join(&format!("/api/v1/jobs/{}/{job_id}/ack", self.worker_name))
+                        .unwrap()
+                        .as_str(),
+                )
+                .header("authorization", &self.address)
+                .call()
+            },
+            || format!("ACK-ing job #{job_id}"),
+        )?;
 
-    Ok(())
-}
+        Ok(())
+    }
 
-fn submit_error(gw_url: &Url, worker_name: &str, job_id: i64, err_msg: &str) -> anyhow::Result<()> {
-    retry_operation(
-        || {
-            ureq::put(
-                gw_url
-                    .join(&format!("/api/v1/jobs/{worker_name}/{job_id}/error"))
-                    .unwrap()
-                    .as_str(),
-            )
-            .send_json(json!({
-                "error": err_msg,
-            }))
-        },
-        || format!("sending error for job #{job_id} to the gateway"),
-    )?;
+    /// Submit the proof for the given `job_id`.
+    ///
+    ///  - Will fail if the connection settings are not valid.
+    ///  - Will fail after retries if the connection can not be established.
+    fn submit_proof(&self, job_id: i64, proof: &[u8]) -> anyhow::Result<()> {
+        let encoded_proof = BASE64_STANDARD.encode(proof);
+        info!(
+            "submitting a {} proof",
+            humansize::format_size(encoded_proof.len(), humansize::DECIMAL)
+        );
+        retry_operation(
+            || {
+                ureq::put(
+                    self.gw_url
+                        .join(&format!("/api/v1/jobs/{}/{job_id}/proof", self.worker_name))
+                        .unwrap()
+                        .as_str(),
+                )
+                .header("authorization", &self.address)
+                .send_json(json!({
+                    "proof": BASE64_STANDARD.encode(proof),
+                }))
+            },
+            || format!("sending proof for job #{job_id} to the gateway"),
+        )?;
 
-    Ok(())
+        Ok(())
+    }
+
+    /// Submit a failure message for the given `job_id`.
+    ///
+    ///  - Will fail if the connection settings are not valid.
+    ///  - Will fail after retries if the connection can not be established.
+    fn submit_error(&self, job_id: i64, err_msg: &str) -> anyhow::Result<()> {
+        retry_operation(
+            || {
+                ureq::put(
+                    self.gw_url
+                        .join(&format!("/api/v1/jobs/{}/{job_id}/error", self.worker_name))
+                        .unwrap()
+                        .as_str(),
+                )
+                .header("authorization", &self.address)
+                .send_json(json!({
+                    "error": err_msg,
+                }))
+            },
+            || format!("sending error for job #{job_id} to the gateway"),
+        )?;
+
+        Ok(())
+    }
 }
 
 async fn process_job(job: v2::GwToWorker, store: &mut StoreKind) -> Result<Vec<u8>, String> {
@@ -158,30 +197,30 @@ pub async fn run(args: crate::RunMode) -> anyhow::Result<()> {
     info!("worker unique name: {worker_name}");
 
     // TODO: add S3 store DP-75
-    // TODO: implement auth DP-73
     let mut store = StoreKind::Mem(MemStore::default());
+    let conn = ConnContext::new(gw_url, worker_name, address);
 
     loop {
         // 1. Request job to the GW
         debug!("waiting for task from gateway");
-        let job = request_job(&gw_url, &worker_name).context("fetching job from LPM gateway")?;
+        let job = conn.request_job().context("fetching job from gateway")?;
         let job_id = job.job_id;
         info!("received job #{job_id} to execute");
 
         // 2. ACK job
-        match ack_job(&gw_url, &worker_name, job_id) {
+        match conn.ack_job(job_id) {
             Ok(_) => debug!("ACK-ed job #{job_id}"),
             Err(err) => error!("failed to ACK job: {err:?}"),
         }
         // 3. Process job & submit proof
         match process_job(job, &mut store).await {
             Ok(proof) => {
-                submit_proof(&gw_url, &worker_name, job_id, &proof)
+                conn.submit_proof(job_id, &proof)
                     .context("submitting proofs to gateway")?;
                 info!("submitted proof for job #{job_id}");
             }
             Err(err_msg) => {
-                submit_error(&gw_url, &worker_name, job_id, &err_msg)
+                conn.submit_error(job_id, &err_msg)
                     .context("submitting error to gateway")?;
                 info!("submitted error for job #{job_id}");
             }
