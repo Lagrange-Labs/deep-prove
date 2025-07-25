@@ -52,7 +52,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sumcheck::structs::{IOPProof, IOPProverState, IOPVerifierState};
 
 /// The base 2 logarithm of the scale factor used in exponential lookup tables
-pub(crate) const LOG_SCALE_FACTOR: usize = 28;
+pub(crate) const LOG_SCALE_FACTOR: usize = 24;
 /// The scale factor for our fixed point arithmetic
 pub(crate) const SCALE_FACTOR: usize = 1 << LOG_SCALE_FACTOR;
 /// The scale factor of the outputs of the `exp` lookup

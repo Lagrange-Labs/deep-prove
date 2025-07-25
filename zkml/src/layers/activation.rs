@@ -39,7 +39,7 @@ use super::provable::{
 };
 
 use anyhow::{Result, anyhow, bail, ensure};
-const GELU_SCALE_EXP: usize = 14;
+const GELU_SCALE_EXP: usize = 12;
 const GELU_SCALE_FACTOR: usize = 1 << GELU_SCALE_EXP;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -416,15 +416,7 @@ impl<N> Activation<N> {
         same_poly_prover.add_claim(last_claim.clone())?;
         // Activation proofs have two columns, input and output
         let input_claim = logup_proof.output_claims()[0].clone();
-        let input_claim = match &self {
-            Activation::Gelu(g) => {
-                let m: E = g.quant_data.as_ref().unwrap().multiplier.to_field();
-                let mi = m.inverse();
-                let eval = input_claim.eval * mi;
-                Claim::new(input_claim.point.clone(), eval)
-            }
-            _ => input_claim,
-        };
+
         let output_claim = logup_proof.output_claims()[1].clone();
 
         same_poly_prover.add_claim(output_claim)?;
