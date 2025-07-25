@@ -6,7 +6,7 @@ pub mod verifier;
 
 #[cfg(test)]
 mod tests {
-    use ff_ext::{ExtensionField, FromUniformBytes, GoldilocksExt2};
+    use ff_ext::{FromUniformBytes, GoldilocksExt2};
     use itertools::izip;
     use multilinear_extensions::mle::{DenseMultilinearExtension, MultilinearExtension};
     use p3_field::FieldAlgebra;
@@ -19,30 +19,16 @@ mod tests {
             structs::{Fraction, LogUpInput},
             verifier::verify_logup_proof,
         },
-        quantization::Fieldizer,
         rng_from_env_or_random,
-        testing::random_vector,
+        testing::random_field_vector,
     };
 
     #[test]
     fn test_logup_prove() {
         let mut rng = rng_from_env_or_random();
         for n in 5..15 {
-            let column = random_vector(1 << n)
-                .into_iter()
-                .map(|elem| {
-                    let f: GoldilocksExt2 = elem.to_field();
-                    f.as_bases()[0]
-                })
-                .collect::<Vec<Goldilocks>>();
-
-            let column_2 = random_vector(1 << n)
-                .into_iter()
-                .map(|elem| {
-                    let f: GoldilocksExt2 = elem.to_field();
-                    f.as_bases()[0]
-                })
-                .collect::<Vec<Goldilocks>>();
+            let column = random_field_vector::<Goldilocks>(1 << n);
+            let column_2 = random_field_vector::<Goldilocks>(1 << n);
 
             let constant_challenge = GoldilocksExt2::random(&mut rng);
             let column_separation_challenge = GoldilocksExt2::random(&mut rng);

@@ -17,6 +17,7 @@ use crate::{
     padding::{PaddingMode, ShapeInfo, pooling},
     quantization::{Fieldizer, IntoElement},
     tensor::{Number, Shape, Tensor},
+    to_base,
 };
 use anyhow::{Result, anyhow, ensure};
 use ff_ext::ExtensionField;
@@ -238,14 +239,7 @@ where
             }
         };
         // Commit to the witnes polys
-        let output_poly = step_data.outputs.outputs()[0]
-            .get_data()
-            .iter()
-            .map(|val| {
-                let f: E = val.to_field();
-                f.as_bases()[0]
-            })
-            .collect::<Vec<E::BaseField>>();
+        let output_poly = to_base::<E, _>(step_data.outputs.outputs()[0].get_data());
         let num_vars = ceil_log2(output_poly.len());
         let commit_evals = column_evals
             .iter()
@@ -790,7 +784,7 @@ pub fn maxpool2d_shape(input_shape: &Shape) -> Shape {
 }
 #[cfg(test)]
 mod tests {
-    use crate::{commit::compute_betas_eval, default_transcript, rng_from_env_or_random};
+    use crate::{commit::compute_betas_eval, default_transcript, rng_from_env_or_random, to_base};
 
     use super::*;
     use crate::quantization::Fieldizer;
@@ -845,14 +839,7 @@ mod tests {
 
             let mle = DenseMultilinearExtension::<F>::from_evaluations_vec(
                 num_vars,
-                padded_input
-                    .get_data()
-                    .iter()
-                    .map(|val_i128| {
-                        let field: F = val_i128.to_field();
-                        field.as_bases()[0]
-                    })
-                    .collect::<Vec<Goldilocks>>(),
+                to_base::<F, _>(padded_input.get_data()),
             );
 
             // This should give all possible combinations of fixing the lowest three bits in ascending order

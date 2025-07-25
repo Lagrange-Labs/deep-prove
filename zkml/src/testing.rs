@@ -1,6 +1,6 @@
 use crate::{Element, quantization, rng_from_env_or_random, seed_from_env_or_rng};
 use ark_std::rand::{Rng, SeedableRng, rngs::StdRng};
-use ff_ext::ExtensionField;
+use ff_ext::{ExtensionField, FromUniformBytes};
 use itertools::Itertools;
 use mpcs::{Basefold, BasefoldRSParams, Hasher};
 
@@ -19,7 +19,7 @@ pub fn random_vector(n: usize) -> Vec<Element> {
         .collect_vec()
 }
 
-pub fn random_field_vector<E: ExtensionField>(n: usize) -> Vec<E> {
+pub fn random_field_vector<E: FromUniformBytes>(n: usize) -> Vec<E> {
     let mut rng = rng_from_env_or_random();
     (0..n).map(|_| E::random(&mut rng)).collect_vec()
 }

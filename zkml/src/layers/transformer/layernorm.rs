@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::to_base;
 use anyhow::{Result, anyhow, ensure};
 use ark_std::Zero;
 use ff_ext::ExtensionField;
@@ -1179,13 +1180,7 @@ impl LayerNorm<Element> {
             .into_par_iter()
             .chain(range_checks.par_iter())
             .map(|vals| {
-                let evaluations = vals
-                    .iter()
-                    .map(|v| {
-                        let f: E = v.to_field();
-                        f.as_bases()[0]
-                    })
-                    .collect::<Vec<E::BaseField>>();
+                let evaluations = to_base::<E, _>(vals);
                 let mle =
                     DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, &evaluations);
                 let commit = ctx.commitment_ctx.commit(&mle)?;

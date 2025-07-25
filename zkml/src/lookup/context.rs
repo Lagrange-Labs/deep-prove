@@ -28,6 +28,7 @@ use crate::{
     },
     model::{InferenceTrace, ToIterator},
     quantization::{self, Fieldizer},
+    to_base,
 };
 use rayon::prelude::*;
 pub const TABLE_POLY_ID_OFFSET: usize = 666;
@@ -390,22 +391,17 @@ impl TableType {
                 let max: Element = 1 << (size - 1);
                 let min: Element = -max;
 
-                let second_col_eval = (min..max)
-                    .map(|i| {
-                        let out = if i < *quantization::MIN {
-                            *quantization::MIN
-                        } else if i > *quantization::MAX {
-                            *quantization::MAX
-                        } else {
-                            i
-                        };
-
-                        let out_field: E = out.to_field();
-                        out_field.as_bases()[0]
-                    })
-                    .collect::<Vec<E::BaseField>>()
-                    .into_mle()
-                    .evaluate(point);
+                let second_col_eval = to_base::<E, _>((min..max).map(|i| {
+                    if i < *quantization::MIN {
+                        *quantization::MIN
+                    } else if i > *quantization::MAX {
+                        *quantization::MAX
+                    } else {
+                        i
+                    }
+                }))
+                .into_mle()
+                .evaluate(point);
 
                 Ok(vec![first_column, second_col_eval])
             }
@@ -499,13 +495,7 @@ impl TableType {
     pub fn committed_columns<E: ExtensionField>(&self) -> Option<DenseMultilinearExtension<E>> {
         match self {
             TableType::GELU(qd) => {
-                let out_column = qd
-                    .table()
-                    .map(|(_, elem)| {
-                        let out_field: E = elem.to_field();
-                        out_field.as_bases()[0]
-                    })
-                    .collect::<Vec<E::BaseField>>();
+                let out_column = to_base::<E, _>(qd.table().map(|(_, elem)| elem));
                 Some(DenseMultilinearExtension::<E>::from_evaluations_vec(
                     qd.table_size(),
                     out_column,
@@ -514,13 +504,8 @@ impl TableType {
             TableType::Softmax(table_data) => {
                 let table_size = table_data.full_table_size();
 
-                let out_column = (0..table_size)
-                    .map(|j| {
-                        let out_elem = table_data.table_output(j);
-                        let out_field: E = out_elem.to_field();
-                        out_field.as_bases()[0]
-                    })
-                    .collect::<Vec<E::BaseField>>();
+                let out_column =
+                    to_base::<E, _>((0..table_size).map(|j| table_data.table_output(j)));
                 Some(DenseMultilinearExtension::<E>::from_evaluations_vec(
                     table_data.size(),
                     out_column,
@@ -548,13 +533,8 @@ impl TableType {
             TableType::InverseSQRT(table_data) => {
                 let table_max: Element = 1 << (2 * (*quantization::BIT_LEN - 1));
                 let table_min = -table_max;
-                let column = (table_min..table_max)
-                    .map(|i| {
-                        let out = table_data.table_output(i);
-                        let out_field: E = out.to_field();
-                        out_field.as_bases()[0]
-                    })
-                    .collect::<Vec<E::BaseField>>();
+                let column =
+                    to_base::<E, _>((table_min..table_max).map(|i| table_data.table_output(i)));
                 let num_vars = 2 * (*quantization::BIT_LEN - 1) + 1;
                 Some(DenseMultilinearExtension::<E>::from_evaluations_vec(
                     num_vars, column,

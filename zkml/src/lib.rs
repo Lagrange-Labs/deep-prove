@@ -6,9 +6,10 @@ use ark_std::rand::{self, SeedableRng, rngs::StdRng};
 use ff_ext::ExtensionField;
 use gkr::structs::PointAndEval;
 use itertools::Itertools;
+use quantization::Fieldizer;
 use rayon::iter::ParallelIterator;
 use serde::{Deserialize, Serialize};
-use std::{env, str::FromStr};
+use std::{borrow::Borrow, env, str::FromStr};
 use transcript::{BasicTranscript, Transcript};
 mod commit;
 pub mod iop;
@@ -172,6 +173,19 @@ pub fn argmax<T: PartialOrd>(v: &[T]) -> Option<usize> {
     }
 
     Some(max_index)
+}
+
+/// Converts an iterator of elements to the base field.
+pub(crate) fn to_base<E, I>(iter: I) -> Vec<E::BaseField>
+where
+    I: IntoIterator,
+    I::Item: Borrow<Element>,
+    Element: Fieldizer<E>,
+    E: ExtensionField,
+{
+    iter.into_iter()
+        .map(|v| v.borrow().to_field().as_bases()[0])
+        .collect()
 }
 
 /// Returns the maximum element in the slice `v`, and the position in `v`
