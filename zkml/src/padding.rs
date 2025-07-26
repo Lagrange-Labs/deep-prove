@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 use crate::{
     Element, Tensor,
@@ -142,6 +143,7 @@ pub fn pad_model(mut model: Model<Element>) -> Result<Model<Element>> {
     };
     let mut shape_infos: HashMap<NodeId, ShapeInfo> = HashMap::new();
     let unpadded_input_shapes = model.unpadded_input_shapes();
+    debug!("Padding model with {} inputs", unpadded_input_shapes.len());
     let nodes = model
         .into_forward_iterator()
         .map(|(node_id, node)| -> Result<(NodeId, Node<Element>)> {
@@ -178,6 +180,7 @@ pub fn pad_model(mut model: Model<Element>) -> Result<Model<Element>> {
         })
         .collect::<Result<_>>()?;
     model = Model::<Element>::new(unpadded_input_shapes, PaddingMode::Padding, nodes);
+    debug!("Padded model with {} layers", model.nodes.len());
     Ok(model)
 }
 

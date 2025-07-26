@@ -16,6 +16,7 @@ zkml/data
 zkml/cifar_net.pth
 zkml/cnn_model.pth
 zkml/assets/scripts/covid/data*
+*.gguf
 zkml/deepprove.csv
 zkml/bench.csv
 .venv

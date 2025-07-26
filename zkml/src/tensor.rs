@@ -1873,6 +1873,7 @@ impl<T: Number> Tensor<T> {
     pub fn min_value(&self) -> T {
         self.data.iter().fold(T::MAX, |min, x| min.cmp_min(x))
     }
+
     #[cfg(test)]
     pub fn random(shape: &Shape) -> Self {
         Self::random_seed(shape, Some(crate::seed_from_env_or_rng()))
@@ -1945,6 +1946,13 @@ impl<T> Tensor<T> {
         let (it, _) = self.slice_on_dim(self.shape.len() - 2);
         it
     }
+    pub fn map_data<O, F: Fn(&T) -> O>(&self, f: F) -> Tensor<O> {
+        Tensor {
+            data: self.data.iter().map(f).collect(),
+            shape: self.shape.clone(),
+            og_shape: self.og_shape.clone(),
+        }
+    }
 
     /// Returns an iterator of slices whose length corresponds to the subspace
     /// the dimension represents. Note dim is the dimension _index_ (0-based indexing).
@@ -1968,6 +1976,21 @@ impl<T> Tensor<T> {
             (self.shape.product(), self.shape.clone())
         };
         (self.data.chunks(stride), shape)
+    }
+
+    pub fn insert_at_dim(mut self, dim: usize, index: usize, value: T) -> Self {
+        if self.data.len() == index {
+            self.data.push(value);
+            *self.shape.get_mut(dim).unwrap() += 1;
+        } else if self.data.len() > index {
+            self.data[index] = value;
+        } else {
+            panic!(
+                "Cannot insert at index {index} in tensor with data length {}",
+                self.data.len()
+            );
+        }
+        self
     }
 
     // Concatenate the other tensor to the first one.
@@ -1999,6 +2022,7 @@ impl<T> Tensor<T> {
         *self.shape.get_mut(0).unwrap() += added_higher;
         self.data.extend(other.data);
     }
+
     /// Stack all the tensors in the iterator into a single tensor using `concat()`
     /// Note this naively increase the highest dimension. If you wish to stack along a new higher dimension,
     /// call `unsqueeze(0)` on the first or all tensors first.
@@ -2085,6 +2109,23 @@ impl Shape {
     /// ```
     pub fn dim(&self, index: usize) -> usize {
         self.0[index]
+    }
+
+    /// Sets the value of a given dimension.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index` is larger than this shape size.
+    ///
+    /// ```
+    /// # use zkml::tensor::Shape;
+    /// let mut shape = Shape::new(vec![3, 5]);
+    /// shape.set_dim(1, 10);
+    /// assert_eq!(shape.dim(1), 10);
+    /// ```
+    pub fn set_dim(&mut self, index: usize, value: usize) {
+        assert!(index < self.0.len(), "Index out of bounds");
+        self.0[index] = value;
     }
 
     /// Adds an extra dimension with size `1` to [Shape].

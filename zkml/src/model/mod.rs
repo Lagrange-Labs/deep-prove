@@ -156,8 +156,9 @@ where
         info!("Unpadded input shapes: {:?}", self.unpadded_input_shapes);
         info!("Padded input shapes: {:?}", self.padded_input_shapes());
         for (idx, layer) in self.to_forward_iterator() {
-            info!("\t- {}: {:?}", idx, layer.inputs);
             info!("\t- {}: {}", idx, layer.operation.describe());
+            info!("\t\t- {}: {:?}", idx, layer.inputs);
+            info!("\t\t- {}: {:?}", idx, layer.outputs);
         }
         info!("Output nodes:");
         for (idx, node) in self.output_nodes() {
@@ -185,20 +186,34 @@ where
             .enumerate()
             .zip(requants.into_iter())
             .map(|((i, wire), requant)| {
-                // INPUT EDGES: for each output wire, we simply copy the index i, and set the node to be input_node_id
-                let input_edges = wire
-                    .edges
-                    .iter()
-                    .map(|_| Edge::new(input_node_id, i))
-                    .collect();
+                let in_edge = Edge::new(input_node_id, i);
+                // let input_edges = wire
+                //     .edges
+                //     .iter()
+                //     .map(|_| Edge::new(input_node_id, i))
+                //     .collect();
                 // OUTPUT EDGES: We simply copy the output wires of input_node since they are the same.
                 // NOTE here we enforce that one requant  == one output wire. Later we might want to revisit that assumption if needed.
                 let output_wires = wire.clone();
                 Ok(Node::new_with_outputs(
-                    input_edges,
+                    vec![in_edge],
                     Layer::Requant(requant),
                     vec![output_wires],
                 ))
+                // INPUT EDGES: for each output wire, we simply copy the index i, and set the node to be input_node_id
+                // let input_edges = wire
+                //    .edges
+                //    .iter()
+                //    .map(|_| Edge::new(input_node_id, i))
+                //    .collect();
+                //// OUTPUT EDGES: We simply copy the output wires of input_node since they are the same.
+                //// NOTE here we enforce that one requant  == one output wire. Later we might want to revisit that assumption if needed.
+                // let output_wires = wire.clone();
+                // Ok(Node::new_with_outputs(
+                //    input_edges,
+                //    Layer::Requant(requant),
+                //    vec![output_wires],
+                //))
             })
             .collect::<Result<Vec<_>>>()?;
         debug!(
@@ -1520,6 +1535,63 @@ pub(crate) mod test {
             .unwrap();
 
         model.route_output(None).unwrap();
+
+        prove_model(model).unwrap();
+    }
+
+    #[test]
+    fn test_model_with_multiple_output_edges() {
+        let input_shapes = vec![vec![7, 11].into(), vec![11, 13].into()];
+
+        let input_layer =
+            Layer::MatMul(MatMul::new(OperandMatrix::Input, OperandMatrix::Input).unwrap());
+
+        let mut model = Model::new_from_input_shapes(input_shapes, PaddingMode::NoPadding);
+
+        let first_out_layer = Layer::MatMul(
+            MatMul::new(
+                OperandMatrix::Input,
+                OperandMatrix::new_weight_matrix(Tensor::random(&vec![13, 9].into())),
+            )
+            .unwrap(),
+        );
+
+        let second_out_layer = Layer::MatMul(
+            MatMul::new(
+                OperandMatrix::Input,
+                OperandMatrix::new_weight_matrix(Tensor::random(&vec![13, 13].into())),
+            )
+            .unwrap(),
+        );
+
+        let input_node_id = model.add_consecutive_layer(input_layer, None).unwrap();
+
+        let first_out_node_id = model
+            .add_node(Node::new(
+                vec![Edge::new(input_node_id, 0)],
+                first_out_layer,
+            ))
+            .unwrap();
+
+        let second_out_node_id = model
+            .add_node(Node::new(
+                vec![Edge::new(input_node_id, 0)],
+                second_out_layer,
+            ))
+            .unwrap();
+
+        model
+            .route_output(Some(vec![
+                Edge {
+                    node: Some(first_out_node_id),
+                    index: 0,
+                },
+                Edge {
+                    node: Some(second_out_node_id),
+                    index: 0,
+                },
+            ]))
+            .unwrap();
 
         prove_model(model).unwrap();
     }

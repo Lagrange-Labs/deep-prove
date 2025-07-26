@@ -160,6 +160,11 @@ where
         _unpadded_input_shapes: Vec<Shape>,
     ) -> anyhow::Result<LayerOut<N, E>> {
         ensure!(
+            inputs.len() == 1,
+            "Positional layer expects 1 input, got {}",
+            inputs.len()
+        );
+        ensure!(
             inputs.iter().all(|x| x.get_shape().len() == 2),
             "positional embeddings only support 2d tensors"
         );
@@ -180,6 +185,11 @@ where
                 }
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
+        ensure!(
+            outputs.len() == 1,
+            "Expected 1 output from positional layer, got {}",
+            outputs.len()
+        );
         Ok(LayerOut::from_vec(outputs))
     }
 }

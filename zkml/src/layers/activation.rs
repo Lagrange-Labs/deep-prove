@@ -415,15 +415,7 @@ impl<N> Activation<N> {
         same_poly_prover.add_claim(last_claim.clone())?;
         // Activation proofs have two columns, input and output
         let input_claim = logup_proof.output_claims()[0].clone();
-        let input_claim = match &self {
-            Activation::Gelu(g) => {
-                let m: E = g.quant_data.as_ref().unwrap().multiplier.to_field();
-                let mi = m.inverse();
-                let eval = input_claim.eval * mi;
-                Claim::new(input_claim.point.clone(), eval)
-            }
-            _ => input_claim,
-        };
+
         let output_claim = logup_proof.output_claims()[1].clone();
 
         same_poly_prover.add_claim(output_claim)?;
@@ -637,6 +629,8 @@ impl GELU<f32> {
         // During lookup, we basically scale down back to the original
         // float value, apply GELU and multiply by 128 which is right now the output maximum range.
         let multiplier = (GELU_SCALE_FACTOR as f32 * input_scaling.scale()).round() as Element;
+        println!("GELU SCALE FACTOR: {}", input_scaling.scale());
+        println!("GELU SCALE: {multiplier}");
         let table_min = -2i32.pow(7 + ceil_log2(multiplier as usize) as u32);
         let table_max = 2i32.pow(7 + ceil_log2(multiplier as usize) as u32);
         let table_size = table_max - table_min;

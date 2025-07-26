@@ -1,4 +1,7 @@
-use multilinear_extensions::mle::{IntoMLE, MultilinearExtension};
+use multilinear_extensions::{
+    mle::{IntoMLE, MultilinearExtension},
+    util::ceil_log2,
+};
 use serde::de::DeserializeOwned;
 use std::{cmp::Ordering, collections::HashMap};
 
@@ -24,7 +27,7 @@ use crate::{
     },
     model::StepData,
     padding::{PaddingMode, ShapeData, ShapeInfo},
-    quantization::Fieldizer,
+    quantization::{self, Fieldizer},
     tensor::{Number, Shape},
 };
 
@@ -420,7 +423,10 @@ impl QuantInfo {
     /// The absoloute value of intermedaite size before addition is bounded above by `self.common_scale.log2().abs().ceil()`, so we add 2 extra to this.
     /// The first because we need an additional bit for the sign and the second because of the actual addition.
     pub fn intermediate_bit_size(&self) -> usize {
-        self.common_scale.log2().abs().ceil() as usize + 2
+        // self.common_scale.log2().abs().ceil() as usize + 2
+        *quantization::BIT_LEN
+            + ceil_log2(std::cmp::max(self.left_multiplier, self.right_multiplier) as usize)
+            + 1
     }
 }
 
