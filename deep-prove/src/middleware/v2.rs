@@ -9,15 +9,25 @@ use zkml::{Proof as ZkmlProof, inputs::Input, quantization::ScalingStrategyKind}
 pub type Proof = ZkmlProof<GoldilocksExt2, Basefold<GoldilocksExt2, BasefoldRSParams<Hasher>>>;
 
 #[derive(Serialize, Deserialize)]
+#[serde(tag = "class", rename_all = "snake_case")]
+pub enum TaskClass {
+    RunOnnx {
+        /// The ID of the model to use.
+        model_id: i32,
+
+        /// An array of inputs to run proving for
+        input: Input,
+    },
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct ClientToGw {
     /// The user-facing name of the submitted task.
     pub pretty_name: String,
 
-    /// The ID of the model to use.
-    pub model_id: i32,
-
-    /// An array of inputs to run proving for
-    pub input: Input,
+    #[serde(flatten)]
+    /// The kind of class to run.
+    pub class: TaskClass,
 }
 
 #[derive(Serialize, Deserialize)]

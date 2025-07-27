@@ -1,6 +1,6 @@
 use anyhow::{Context, bail};
 use axum::http::StatusCode;
-use deep_prove::middleware::v2::ClientToGw;
+use deep_prove::middleware::v2::{ClientToGw, TaskClass};
 use std::io::Write;
 use tracing::{error, info};
 use zkml::inputs::Input;
@@ -40,8 +40,10 @@ pub async fn connect(executor: Executor) -> anyhow::Result<()> {
                             .as_secs()
                     )
                 }),
-                model_id: model_id.try_into().context("`model_id` is too large")?,
-                input,
+                class: TaskClass::RunOnnx {
+                    model_id: model_id.try_into().context("`model_id` is too large")?,
+                    input,
+                },
             };
 
             // build the API endpoint request and send the whole thing
