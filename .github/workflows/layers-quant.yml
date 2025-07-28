@@ -4,7 +4,7 @@ on:
 
 jobs:
   test:
-    runs-on: ['hostname:hetzner-dedicated-6']
+    runs-on: ['hostname:hetzner-dedicated-7']
     steps:
       - name: Clean previous outputs
         run: |

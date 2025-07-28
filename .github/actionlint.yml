@@ -1,4 +1,5 @@
 self-hosted-runner:
   labels:
     - hostname:hetzner-dedicated-6
+    - hostname:hetzner-dedicated-7
     - nix-128g
