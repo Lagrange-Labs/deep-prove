@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y git protobuf-compiler libssl-dev pkg-co
 WORKDIR /deep-prove-client
 COPY . .
 
-RUN cargo install --locked --path deep-prove --bin deep-prove-client
+RUN cargo install --locked --path deep-prove --bin deep-prove-cli
 
 
 # Create the actual final image
