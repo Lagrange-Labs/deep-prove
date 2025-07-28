@@ -269,8 +269,10 @@ pub fn load_float_model(model: &ModelProto) -> Result<Model<f32>> {
 pub mod file_cache {
     use anyhow::{Context as _, anyhow, bail};
     use hex;
-    use reqwest;
     use sha2::{Digest, Sha256};
+    use tokio::runtime::Runtime;
+    use wreq::{Client, redirect};
+    use wreq_util::Emulation;
     use std::{
         fs::{self, File},
         io::{ErrorKind, Write},
@@ -353,6 +355,7 @@ pub mod file_cache {
         const RETRY_DELAY_MS: u64 = 1000;
 
         for attempt in 0..MAX_RETRIES {
+            
             // Check 1: File exists and no lock. This is the ideal fast path.
             if local_file_path.exists() && !lock_file_path.exists() {
                 return Ok(local_file_path);
@@ -406,16 +409,35 @@ pub mod file_cache {
 
                     // Perform the download. Lock_guard ensures lock removal on success or panic/error.
                     match (|| -> anyhow::Result<()> {
-                        let response = reqwest::blocking::get(url)
-                            .with_context(|| format!("Download: Failed to GET URL: {}", url))?;
+                        // Create tokio runtime to handle async wreq operations
+                        let rt = Runtime::new()
+                            .context("Download: Failed to create tokio runtime")?;
+                        
+                        let content = rt.block_on(async {
+                            // Build wreq client with browser emulation and redirect following
+                            let client = Client::builder()
+                                .emulation(Emulation::Firefox136)
+                                .redirect(redirect::Policy::limited(10))
+                                .build()
+                                .map_err(|e| anyhow!("Download: Failed to build wreq client: {}", e))?;
 
-                        if !response.status().is_success() {
-                            bail!(
-                                "Download: Failed for URL: {}. Server status: {}",
-                                url,
-                                response.status()
-                            );
-                        }
+                            // Make the request
+                            let response = client.get(url).send().await
+                                .with_context(|| format!("Download: Failed to GET URL: {}", url))?;
+
+                            if !response.status().is_success() {
+                                bail!(
+                                    "Download: Failed for URL: {}. Server status: {}",
+                                    url,
+                                    response.status()
+                                );
+                            }
+
+                            // Get response bytes
+                            response.bytes().await.with_context(|| {
+                                format!("Download: Failed to read response bytes from URL: {}", url)
+                            })
+                        })?;
 
                         let mut dest_file =
                             File::create(&temp_download_path).with_context(|| {
@@ -424,10 +446,6 @@ pub mod file_cache {
                                     temp_download_path.display()
                                 )
                             })?;
-
-                        let content = response.bytes().with_context(|| {
-                            format!("Download: Failed to read response bytes from URL: {}", url)
-                        })?;
 
                         dest_file.write_all(&content).with_context(|| {
                             format!(

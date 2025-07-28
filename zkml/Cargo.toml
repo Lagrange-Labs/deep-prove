@@ -68,7 +68,9 @@ utils = { path = "../utils" }
 [dev-dependencies]
 criterion = { "version" = "0.6", features = ["html_reports"] }
 ndarray = "0.16.1"
-reqwest = { version = "0.12.22", features = ["blocking"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
+wreq = "5"
+wreq-util = "2"
 rstest = "0.25.0"
 sha2 = "0.10.9"
 tempfile.workspace = true
