@@ -42,6 +42,18 @@ jobs:
               - 'mpcs/**'
               - 'docker/deep-prove-worker.dockerfile'
               - '.github/workflows/docker.yml'
+            deep-prove-aws-client:
+              - 'zkml/**'
+              - 'deep-prove/**'
+              - 'mpcs/**'
+              - 'docker/deep-prove-aws-client.dockerfile'
+              - '.github/workflows/docker.yml'
+            deep-prove-aws-worker:
+              - 'zkml/**'
+              - 'deep-prove/**'
+              - 'mpcs/**'
+              - 'docker/deep-prove-aws-worker.dockerfile'
+              - '.github/workflows/docker.yml'
   build:
     name: Build Docker Image
     needs: changes
