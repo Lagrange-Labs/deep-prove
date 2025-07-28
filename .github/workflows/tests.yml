@@ -37,7 +37,7 @@ jobs:
     name: Run zkML Rust tests
     needs: changes
     if: ${{ needs.changes.outputs.zkml_src != '[]' }}
-    runs-on: ['hostname:hetzner-dedicated-6']
+    runs-on: ['hostname:hetzner-dedicated-7']
     steps:
       - uses: actions/checkout@v4
         with:
