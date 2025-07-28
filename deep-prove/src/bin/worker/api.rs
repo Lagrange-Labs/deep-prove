@@ -31,7 +31,7 @@ pub async fn serve(args: RunMode) -> anyhow::Result<()> {
     #[derive(Default)]
     struct AppState {
         work_queue: Vec<DeepProveRequestV1>,
-        proofs_queue: Vec<Vec<ProofV1>>,
+        proofs_queue: Vec<ProofV1>,
     }
 
     let RunMode::LocalApi {
@@ -87,7 +87,7 @@ pub async fn serve(args: RunMode) -> anyhow::Result<()> {
                     match result {
                         Ok(proofs) => {
                             info!("proof generated in {}s", now.elapsed().as_secs());
-                            app_state.lock().await.proofs_queue.push(proofs);
+                            app_state.lock().await.proofs_queue.extend(proofs);
                         }
                         Err(err) => error!("failed to generate proof: {err:?}"),
                     }

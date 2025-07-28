@@ -81,7 +81,7 @@ pub async fn connect(executor: Executor) -> anyhow::Result<()> {
                     let body = resp
                         .body_mut()
                         .with_config()
-                        .limit(1000 * 1024 * 1024)
+                        .limit(200 * 1024 * 1024)
                         .read_to_vec()?;
                     file.write_all(&body)?;
                     info!("proof received, saved to {}", file.path().display());
