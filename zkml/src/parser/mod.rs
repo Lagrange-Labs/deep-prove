@@ -282,7 +282,7 @@ pub mod file_cache {
 
     // Directory to store cached files.
     static CACHE_DIR: LazyLock<PathBuf> = LazyLock::new(|| {
-        let dir = PathBuf::from("target").join("test_assets_cache");
+        let dir = PathBuf::from("model_cache");
         if !dir.exists() {
             fs::create_dir_all(&dir).expect("Failed to create cache directory for test assets");
         }

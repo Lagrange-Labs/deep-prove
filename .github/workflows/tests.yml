@@ -82,10 +82,10 @@ jobs:
       - name: Restore model cache folder
         uses: actions/cache@v4
         with:
-          path: target/test_assets_cache
-          key: model-cache-${{ hashFiles('my_folder/**') }}
+          path: model_cache
+          key: model_cache_${{ hashFiles('model_cache/**') }}
           restore-keys: |
-            model-cache-
+            model_cache
 
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2
