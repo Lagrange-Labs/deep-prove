@@ -21,7 +21,7 @@ RUN apt-get update && \
     update-ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /usr/local/cargo/bin/deep-prove-client /usr/local/bin
+COPY --from=builder /usr/local/cargo/bin/deep-prove-cli /usr/local/bin
 ENV RUST_BACKTRACE=full
 USER lagrange
 ENTRYPOINT ["/usr/local/bin/deep-prove-cli", "local-api"]
