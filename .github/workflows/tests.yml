@@ -82,7 +82,7 @@ jobs:
       - name: Restore model cache folder
         uses: actions/cache@v4
         with:
-          path: model_cache
+          path: zkml/model_cache
           key: model_cache_${{ hashFiles('model_cache/**') }}
           restore-keys: |
             model_cache
