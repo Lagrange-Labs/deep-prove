@@ -24,5 +24,5 @@ RUN apt-get update && \
 COPY --from=builder /usr/local/cargo/bin/deep-prove-client /usr/local/bin
 ENV RUST_BACKTRACE=full
 USER lagrange
-ENTRYPOINT ["/usr/local/bin/deep-prove-client", "local-api"]
+ENTRYPOINT ["/usr/local/bin/deep-prove-cli", "local-api"]
 CMD ["fetch"]
