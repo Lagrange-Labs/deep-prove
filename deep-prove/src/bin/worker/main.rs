@@ -304,7 +304,7 @@ enum RunMode {
         json: bool,
 
         /// The maximal proof request size to accept (in MB)
-        #[arg(long, env, default_value_t = 100)]
+        #[arg(long, env, default_value_t = 200)]
         max_body_size: usize,
     },
 }
