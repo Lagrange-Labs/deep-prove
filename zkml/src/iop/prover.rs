@@ -108,7 +108,7 @@ where
 
     #[timed::timed_instrument(level = "debug")]
     fn prove_tables(&mut self) -> anyhow::Result<()> {
-        let mut table_witness = std::mem::replace(&mut self.table_witness, Vec::new());
+        let mut table_witness = std::mem::take(&mut self.table_witness);
         table_witness.reverse();
 
         while let Some(table_witness) = table_witness.pop() {
