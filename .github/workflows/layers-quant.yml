@@ -4,7 +4,7 @@ on:
 
 jobs:
   test:
-    runs-on: ['hostname:hetzner-dedicated-6']
+    runs-on: ['hostname:hetzner-dedicated-7']
     steps:
       - name: Clean previous outputs
         run: |
@@ -23,6 +23,13 @@ jobs:
         with:
           toolchain: nightly-2025-05-22
           cache: false
+      - name: Restore model cache folder
+        uses: actions/cache@v4
+        with:
+          path: zkml/model_cache
+          key: model_cache_${{ hashFiles('model_cache/**') }}
+          restore-keys: |
+            model_cache
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2
         with:
