@@ -16,7 +16,7 @@ jobs:
           echo RNG seed: "$seed"
           echo RNG_SEED="$seed" >> "$GITHUB_ENV"
       - name: Checkout base
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.base_ref || 'master' }}
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -45,7 +45,7 @@ jobs:
             --skip layers::transformer::mha::test::test_mha_with_real_values
           mv layers-quant ~/layers-quant-base
       - name: Checkout HEAD
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ github.event.pull_request.head.sha }}
       - name: Capture layers outputs on HEAD
