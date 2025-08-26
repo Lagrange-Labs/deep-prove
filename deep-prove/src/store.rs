@@ -288,7 +288,8 @@ impl Store for MemStore {
     ) -> impl Future<Output = anyhow::Result<Option<Params>>> + Send {
         async move {
             let key = params_key(key);
-            let guard = self.pps.lock().unwrap();
+            let guard = self.pps.lock()
+                .map_err(|e| anyhow::anyhow!("Failed to acquire mutex lock: {}", e))?;
             Ok(guard.get(&key).cloned())
         }
     }
@@ -300,7 +301,8 @@ impl Store for MemStore {
     ) -> impl Future<Output = anyhow::Result<()>> + Send {
         async move {
             let key = params_key(key);
-            let mut guard = self.pps.lock().unwrap();
+            let mut guard = self.pps.lock()
+                .map_err(|e| anyhow::anyhow!("Failed to acquire mutex lock: {}", e))?;
             guard.insert(key, params);
             Ok(())
         }
@@ -318,14 +320,16 @@ impl Store for MemStore {
         async move {
             let key = model_key(key);
             let get_result = {
-                let guard = self.models.lock().unwrap();
+                let guard = self.models.lock()
+                    .map_err(|e| anyhow::anyhow!("Failed to acquire mutex lock: {}", e))?;
                 guard.get(&key).cloned()
             };
             let value = match get_result {
                 Some(value) => value,
                 None => {
                     let value = init().await?;
-                    let mut guard = self.models.lock().unwrap();
+                    let mut guard = self.models.lock()
+                        .map_err(|e| anyhow::anyhow!("Failed to acquire mutex lock: {}", e))?;
                     guard.insert(key, value.clone());
                     value
                 }
