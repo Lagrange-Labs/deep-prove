@@ -21,7 +21,7 @@ jobs:
       zkml_src: ${{ steps.filter.outputs.zkml_src }}
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - uses: dorny/paths-filter@v3
         id: filter
@@ -39,7 +39,7 @@ jobs:
     if: ${{ needs.changes.outputs.zkml_src != '[]' }}
     runs-on: ['hostname:hetzner-dedicated-6']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: "recursive"
 
@@ -113,7 +113,7 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ needs.changes.outputs.zkml_src != '[]' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: "recursive"
 

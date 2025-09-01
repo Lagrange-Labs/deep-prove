@@ -30,7 +30,7 @@ jobs:
       images-to-build: ${{ steps.filter.outputs.changes }}
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - uses: dorny/paths-filter@v3
         id: filter
@@ -65,7 +65,7 @@ jobs:
         image:  ${{ fromJSON(needs.changes.outputs.images-to-build) }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: "recursive"
 
