@@ -129,7 +129,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Download Docker image from artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: ${{ matrix.image }}-${{ github.sha }}
           path: /tmp
@@ -172,7 +172,7 @@ jobs:
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Download Docker image from artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: deep-prove-worker-${{ github.sha }}
           path: /tmp
