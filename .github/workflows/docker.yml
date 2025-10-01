@@ -118,7 +118,7 @@ jobs:
             aws_account_id: ${{ vars.ZKMR_MAINNET_AWS_ACCOUNT_ID }}
     steps:
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: arn:aws:iam::${{ matrix.aws_account_id }}:role/github-actions-ecr-access-role
           role-session-name: github-actions-ecr-access-role
