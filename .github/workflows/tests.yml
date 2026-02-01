@@ -80,7 +80,7 @@ jobs:
           cache: false
 
       - name: Restore model cache folder
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: target/test_assets_cache
           key: model-cache-${{ hashFiles('my_folder/**') }}
