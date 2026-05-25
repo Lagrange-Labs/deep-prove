@@ -21,7 +21,7 @@ use anyhow::{Result, bail};
 use ff_ext::ExtensionField;
 use flatten::Flatten;
 use mpcs::PolynomialCommitmentScheme;
-use pooling::{PoolingCtx, PoolingProof};
+use pooling::{MaxPoolProof, PoolingCtx, PoolingProof};
 use provable::{
     Evaluate, LayerOut, Node, NodeId, OpInfo, PadOp, ProvableOp, ProveInfo, QuantizeOp,
     QuantizeOutput,
@@ -792,7 +792,10 @@ where
             LayerProof::Convolution(..) => None,
             LayerProof::Dummy => None,
             LayerProof::Activation(ActivationProof { lookup, .. })
-            | LayerProof::Pooling(PoolingProof { lookup, .. }) => Some(lookup.fractional_outputs()),
+            | LayerProof::Pooling(PoolingProof::MaxPool(MaxPoolProof { lookup, .. })) => {
+                Some(lookup.fractional_outputs())
+            }
+            LayerProof::Pooling(PoolingProof::GlobalAvgPool(_)) => None,
             LayerProof::Requant(RequantProof {
                 clamping_lookup,
                 shifted_lookup,

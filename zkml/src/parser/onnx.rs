@@ -3,7 +3,7 @@ use crate::{
         Layer,
         activation::Activation,
         convolution::Convolution,
-        pooling::{MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
+        pooling::{GlobalAvgPool2D, MAXPOOL2D_KERNEL_SIZE, Maxpool2D, Pooling},
         provable::{Edge, Node as ProvableNode, NodeId, OpInfo},
     },
     model::Model,
@@ -22,6 +22,7 @@ use tract_onnx::{
             binary::TypedBinOp,
             cnn::{Conv, MaxPool},
             einsum::EinSum,
+            nn::{Reduce, Reducer},
             source::TypedSource,
         },
     },
@@ -154,6 +155,9 @@ impl<'a, I: Iterator<Item = &'a usize> + Sized> ParserFactory<'a, I> {
         m.insert("Flatten", load_flatten as LoadFn<'a, I>);
         m.insert("Pool", load_maxpool as LoadFn<'a, I>);
         m.insert("Reshape", load_reshape as LoadFn<'a, I>);
+        // GlobalAveragePool: tract expands GlobalAveragePool → Reduce<Sum> + Mul(1/N).
+        // We match on the op type name "Reduce<Sum>" (checked via op().name()).
+        m.insert("Reduce<Sum>", load_globalavgpool as LoadFn<'a, I>);
         ParserFactory(m)
     }
 
@@ -171,10 +175,16 @@ impl<'a, I: Iterator<Item = &'a usize> + Sized> ParserFactory<'a, I> {
         );
         #[allow(unused_variables)]
         let op_name = &curr_node.name;
+        // Match by node name (original ONNX name), or fall back to matching by tract op type name.
+        // Use longest-match to ensure "GlobalAveragePool" wins over "Pool".
+        let op_type_name = curr_node.op().name();
         if let Some(layer_name) = self
             .0
             .keys()
-            .find(|&&layer_name| op_name.contains(layer_name))
+            .filter(|&&layer_name| {
+                op_name.contains(layer_name) || op_type_name.contains(layer_name)
+            })
+            .max_by_key(|&&layer_name| layer_name.len())
         {
             debug!("current node {:?}", curr_node.op);
             let parser = self.0.get(layer_name).unwrap();
@@ -327,6 +337,95 @@ fn load_maxpool<'a, I: Iterator<Item = &'a usize> + Sized>(
         zkml_maxpool,
     );
     Ok((node_id, node))
+}
+
+/// Parse a GlobalAveragePool ONNX op (expanded by tract into Reduce<Sum> + Div).
+///
+/// In the typed+decluttered graph, tract expands `GlobalAveragePool` into:
+///   1. `{name}.sum`   → `Reduce<Sum>` over the spatial axes (the node we receive here)
+///   2. `{name}.norm`  → `TypedBinOp<Div>` by the constant `N` (which we consume from iter)
+///
+/// We extract `spatial_size = N` from the output shape of the Reduce node (sum removes H,W → 1,1,
+/// so N = product of input spatial dims). We consume the following div node from `iter`.
+fn load_globalavgpool<'a, I: Iterator<Item = &'a usize> + Sized>(
+    model: &OnnxModel,
+    _node_id: NodeId,
+    node: &OnnxNode,
+    iter: &mut Peekable<I>,
+) -> Result<(NodeId, CustomNode)> {
+    // Verify this is a Reduce<Sum> over the spatial axes.
+    let reduce_op = node.op_as::<Reduce>().ok_or_else(|| {
+        anyhow::anyhow!(
+            "GlobalAveragePool: expected Reduce op, got {:?}",
+            node.op().name()
+        )
+    })?;
+    ensure_onnx!(
+        reduce_op.reducer == Reducer::Sum,
+        "GlobalAveragePool: expected Reducer::Sum, got {:?}",
+        reduce_op.reducer
+    );
+    // Ensure this is a GlobalAvgPool pattern: axes must be the spatial axes (all ≥ 2) and the
+    // output must keep the channel dimension (axis 1 not reduced).
+    ensure_onnx!(
+        !reduce_op.axes.is_empty() && reduce_op.axes.iter().all(|&ax| ax >= 2),
+        "GlobalAveragePool: axes must be spatial (all >= 2), got {:?}",
+        reduce_op.axes
+    );
+    ensure_onnx!(
+        node.inputs.len() == 1,
+        "GlobalAveragePool Reduce node must have 1 input, got {}",
+        node.inputs.len()
+    );
+    let input_link = node.inputs[0];
+
+    // Compute spatial_size from the input shape of the Reduce node.
+    // The input has shape [N, C, H, W] (with batch dim) or [C, H, W] (no batch).
+    // The axes being reduced are the spatial axes (axes in reduce_op.axes).
+    let input_node_out = &model.node(input_link.node).outputs[input_link.slot].fact;
+    let input_concrete = input_node_out
+        .shape
+        .as_concrete()
+        .ok_or_else(|| anyhow::anyhow!("GlobalAveragePool: input shape is not concrete"))?;
+    let spatial_size: usize = reduce_op
+        .axes
+        .iter()
+        .map(|&ax| {
+            input_concrete.get(ax).copied().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "GlobalAveragePool: axis {} out of range for shape {:?}",
+                    ax,
+                    input_concrete
+                )
+            })
+        })
+        .try_fold(1usize, |acc, dim| dim.map(|d| acc * d))?;
+
+    ensure_onnx!(
+        spatial_size > 0,
+        "GlobalAveragePool: spatial_size must be > 0"
+    );
+
+    // Consume the following `.norm` div node from the iterator.
+    // That node normalises by dividing by spatial_size; we absorb it into our layer.
+    let norm_node_id = iter
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("GlobalAveragePool: expected .norm div node after .sum"))?;
+    let norm_node = model.node(*norm_node_id);
+    // Sanity check: the norm node should be a TypedBinOp (Mul by 1/N or Div by N).
+    ensure_onnx!(
+        norm_node.op_as::<TypedBinOp>().is_some(),
+        "GlobalAveragePool: expected TypedBinOp (Mul/Div) after Reduce<Sum>, got {:?}",
+        norm_node.op().name()
+    );
+
+    let gap = GlobalAvgPool2D { spatial_size };
+    let provable_node = ProvableNode::new(
+        vec![Edge::new(input_link.node, input_link.slot)],
+        Layer::Pooling(Pooling::GlobalAvgPool2D(gap)),
+    );
+    // Return the norm node's id so the model graph maps to the correct output slot.
+    Ok((*norm_node_id, provable_node))
 }
 
 fn load_relu<'a, I: Iterator<Item = &'a usize> + Sized>(
@@ -733,6 +832,32 @@ mod tests {
         let input_tensor = crate::tensor::Tensor::random(&input_shape);
         let trace = model.run::<GoldilocksExt2>(&[input_tensor]).unwrap();
         assert!(trace.steps.len() >= 1);
+    }
+
+    #[test]
+    fn test_parser_load_globalavgpool() -> anyhow::Result<()> {
+        use crate::model::iterator::ToIterator;
+        // tiny_avgpool.onnx: Input [1, 2, 4, 4] → GlobalAveragePool → [1, 2, 1, 1]
+        let model = from_path("assets/scripts/CNN/tiny_avgpool.onnx")?;
+        let input_shapes = model.input_shapes();
+        // The batch dim is stripped so shape should be [2, 4, 4]
+        assert_eq!(input_shapes.len(), 1, "expected 1 input");
+        assert_eq!(
+            input_shapes[0].as_slice(),
+            &[2, 4, 4],
+            "unexpected input shape"
+        );
+        // The model should have exactly one layer: the GlobalAvgPool2D
+        let layers: Vec<_> = model.to_forward_iterator().collect();
+        assert_eq!(layers.len(), 1, "expected 1 layer");
+        let (_, node) = &layers[0];
+        match &node.operation {
+            Layer::Pooling(crate::layers::pooling::Pooling::GlobalAvgPool2D(gap)) => {
+                assert_eq!(gap.spatial_size, 16, "spatial_size should be 4*4=16");
+            }
+            other => panic!("expected GlobalAvgPool2D layer, got {:?}", other.describe()),
+        }
+        Ok(())
     }
 
     #[test]

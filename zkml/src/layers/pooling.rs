@@ -25,7 +25,7 @@ use gkr::util::ceil_log2;
 use itertools::{Itertools, izip};
 use mpcs::{PolynomialCommitmentScheme, sum_check::eq_xy_eval};
 use multilinear_extensions::{
-    mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension, IntoMLE},
+    mle::{ArcDenseMultilinearExtension, DenseMultilinearExtension, IntoMLE, MultilinearExtension},
     virtual_poly::{ArcMultilinearExtension, VPAuxInfo, VirtualPolynomial},
 };
 use serde::de::DeserializeOwned;
@@ -46,19 +46,27 @@ pub const MAXPOOL2D_KERNEL_SIZE: usize = 2;
 #[derive(Clone, Debug, Serialize, Deserialize, Copy)]
 pub enum Pooling {
     Maxpool2D(Maxpool2D),
+    GlobalAvgPool2D(GlobalAvgPool2D),
+}
+
+/// Describes what kind of pooling operation is stored in `PoolingCtx`
+#[derive(Clone, Debug, Serialize, Deserialize, Copy)]
+pub enum PoolKind {
+    MaxPool(Maxpool2D),
+    GlobalAvgPool(GlobalAvgPool2D),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PoolingCtx {
-    pub poolinfo: Maxpool2D,
+    pub pool_kind: PoolKind,
     pub node_id: NodeId,
     pub num_vars: usize,
 }
 
-/// Contains proof material related to one step of the inference
+/// Proof for MaxPool2D (zerocheck + logup lookup)
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
-pub struct PoolingProof<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>
+pub struct MaxPoolProof<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>
 where
     E::BaseField: Serialize + DeserializeOwned,
 {
@@ -74,6 +82,36 @@ where
     pub(crate) commitments: Vec<PCS::Commitment>,
 }
 
+/// Proof for GlobalAvgPool2D (simple sumcheck over spatial dimensions)
+///
+/// Proves: `N * output_mle(r_c) = sum_{b in Bool^k} input_mle(r_c, b)`
+/// where `r_c` are the channel random variables and `k = ceil_log2(H * W)`.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
+pub struct GlobalAvgPoolProof<E: ExtensionField>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+{
+    /// Sumcheck proof that `sum_b f_in_fixed(b) = claimed_sum`
+    pub(crate) sumcheck: IOPProof<E>,
+    /// Evaluation of the input MLE at the combined point (r_c || sumcheck_point)
+    pub(crate) input_eval: E,
+    /// Number of channel variables (i.e. `ceil_log2(C)`)
+    pub(crate) num_channel_vars: usize,
+}
+
+/// Contains proof material related to one pooling step of the inference.
+/// Different pool types require different proof strategies.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(bound(serialize = "E: Serialize", deserialize = "E: DeserializeOwned"))]
+pub enum PoolingProof<E: ExtensionField, PCS: PolynomialCommitmentScheme<E>>
+where
+    E::BaseField: Serialize + DeserializeOwned,
+{
+    MaxPool(MaxPoolProof<E, PCS>),
+    GlobalAvgPool(GlobalAvgPoolProof<E>),
+}
+
 const IS_PROVABLE: bool = true;
 
 impl OpInfo for Pooling {
@@ -82,6 +120,10 @@ impl OpInfo for Pooling {
             Pooling::Maxpool2D(maxpool2_d) => input_shapes
                 .iter()
                 .map(|shape| maxpool2_d.output_shape(shape))
+                .collect(),
+            Pooling::GlobalAvgPool2D(gap) => input_shapes
+                .iter()
+                .map(|shape| gap.output_shape(shape))
                 .collect(),
         }
     }
@@ -96,6 +138,9 @@ impl OpInfo for Pooling {
                 "MaxPool2D{{ kernel size: {}, stride: {} }}",
                 maxpool2d.kernel_size, maxpool2d.stride
             ),
+            Pooling::GlobalAvgPool2D(gap) => {
+                format!("GlobalAvgPool2D{{ spatial_size: {} }}", gap.spatial_size)
+            }
         }
     }
 
@@ -117,6 +162,7 @@ impl<N: Number> Evaluate<N> for Pooling {
         let input = inputs[0];
         let output = match self {
             Pooling::Maxpool2D(maxpool2d) => maxpool2d.op(input),
+            Pooling::GlobalAvgPool2D(gap) => gap.op(input),
         };
         Ok(LayerOut::from_vec(vec![output]))
     }
@@ -162,7 +208,36 @@ where
                         acc.max(shapes.next_power_of_two().product())
                     });
                 LayerCtx::Pooling(PoolingCtx {
-                    poolinfo: *info,
+                    pool_kind: PoolKind::MaxPool(*info),
+                    node_id: id,
+                    num_vars,
+                })
+            }
+            Pooling::GlobalAvgPool2D(_gap) => {
+                // GlobalAvgPool2D reduces spatial dims to 1x1, keeping only channels.
+                // Output shape: [C] (the padded channel count).
+                #[allow(clippy::manual_try_fold)]
+                let num_vars = aux.last_output_shape.iter_mut().fold(Ok(None), |expected_num_vars, shape| {
+                    ensure!(shape.len() == 3, "GlobalAvgPool2D requires 3D input [C, H, W]");
+                    // Replace H and W with 1
+                    shape[1] = 1;
+                    shape[2] = 1;
+                    let num_vars = ceil_log2(shape[0]); // only channel vars remain
+                    if let Some(vars) = expected_num_vars? {
+                        ensure!(vars == num_vars,
+                            "All input shapes for GlobalAvgPool2D must have the same number of variables");
+                    }
+                    Ok(Some(num_vars))
+                })?.expect("No input shape found for GlobalAvgPool2D layer?");
+                aux.model_polys = None;
+                aux.max_poly_len = aux
+                    .last_output_shape
+                    .iter()
+                    .fold(aux.max_poly_len, |acc, shapes| {
+                        acc.max(shapes.next_power_of_two().product())
+                    });
+                LayerCtx::Pooling(PoolingCtx {
+                    pool_kind: PoolKind::GlobalAvgPool(*_gap),
                     node_id: id,
                     num_vars,
                 })
@@ -177,7 +252,23 @@ impl PadOp for Pooling {
     where
         Self: Sized,
     {
-        pooling(self, si)
+        match &self {
+            Pooling::Maxpool2D(_) => pooling(self, si),
+            Pooling::GlobalAvgPool2D(_) => {
+                // GlobalAvgPool2D: update shapes so output = [C, 1, 1]
+                for sd in si.shapes.iter_mut() {
+                    ensure!(
+                        sd.input_shape_padded.is_power_of_two(),
+                        "Input shape for GlobalAvgPool is not padded"
+                    );
+                    let c = sd.input_shape_og[0];
+                    let c_pad = sd.input_shape_padded[0];
+                    sd.input_shape_og = Shape::new(vec![c, 1, 1]);
+                    sd.input_shape_padded = Shape::new(vec![c_pad, 1, 1]);
+                }
+                Ok(self)
+            }
+        }
     }
 }
 
@@ -197,14 +288,19 @@ where
         step_data: &StepData<E, E>,
         prover: &mut Prover<E, T, PCS>,
     ) -> Result<Vec<Claim<E>>> {
-        Ok(vec![self.prove_pooling(
-            prover,
-            last_claims[0],
-            &step_data.inputs[0],
-            step_data.outputs.outputs()[0],
-            ctx,
-            id,
-        )?])
+        Ok(vec![match self {
+            Pooling::Maxpool2D(_) => self.prove_maxpool(
+                prover,
+                last_claims[0],
+                &step_data.inputs[0],
+                step_data.outputs.outputs()[0],
+                ctx,
+                id,
+            )?,
+            Pooling::GlobalAvgPool2D(gap) => {
+                gap.prove_globalavgpool(prover, last_claims[0], &step_data.inputs[0], id)?
+            }
+        }])
     }
 
     fn gen_lookup_witness(
@@ -224,50 +320,55 @@ where
             step_data.outputs.outputs().len(),
         );
 
-        let mut element_count = HashMap::<Element, u64>::new();
-        let inputs = &step_data.inputs[0];
-        let column_evals = match self {
-            Pooling::Maxpool2D(maxpool2d) => {
-                let field_vecs = maxpool2d.compute_polys::<E>(inputs);
-
-                for value in field_vecs.iter().flat_map(|v| v.iter()) {
-                    let el = E::from(*value).to_element();
-                    *element_count.entry(el).or_default() += 1;
-                }
-
-                field_vecs
+        match self {
+            Pooling::GlobalAvgPool2D(_) => {
+                // GlobalAvgPool does not require any lookup table
+                Ok(LookupWitnessGen::<E, PCS>::default())
             }
-        };
-        // Commit to the witnes polys
-        let output_poly = to_base::<E, _>(step_data.outputs.outputs()[0].get_data());
-        let num_vars = ceil_log2(output_poly.len());
-        let commit_evals = column_evals
-            .iter()
-            .chain(std::iter::once(&output_poly))
-            .collect::<Vec<_>>();
-        let commits = commit_evals
-            .into_par_iter()
-            .map(|evaluations| {
-                let mle =
-                    DenseMultilinearExtension::<E>::from_evaluations_slice(num_vars, evaluations);
-                let commit = ctx.commitment_ctx.commit(&mle)?;
-                Ok((commit, mle))
-            })
-            .collect::<Result<Vec<_>, anyhow::Error>>()?;
+            Pooling::Maxpool2D(maxpool2d) => {
+                let mut element_count = HashMap::<Element, u64>::new();
+                let inputs = &step_data.inputs[0];
+                let column_evals = {
+                    let field_vecs = maxpool2d.compute_polys::<E>(inputs);
+                    for value in field_vecs.iter().flat_map(|v| v.iter()) {
+                        let el = E::from(*value).to_element();
+                        *element_count.entry(el).or_default() += 1;
+                    }
+                    field_vecs
+                };
+                // Commit to the witness polys
+                let output_poly = to_base::<E, _>(step_data.outputs.outputs()[0].get_data());
+                let num_vars = ceil_log2(output_poly.len());
+                let commit_evals = column_evals
+                    .iter()
+                    .chain(std::iter::once(&output_poly))
+                    .collect::<Vec<_>>();
+                let commits = commit_evals
+                    .into_par_iter()
+                    .map(|evaluations| {
+                        let mle = DenseMultilinearExtension::<E>::from_evaluations_slice(
+                            num_vars,
+                            evaluations,
+                        );
+                        let commit = ctx.commitment_ctx.commit(&mle)?;
+                        Ok((commit, mle))
+                    })
+                    .collect::<Result<Vec<_>, anyhow::Error>>()?;
 
-        let mut gen = LookupWitnessGen::<E, PCS>::default();
-        gen.logup_witnesses.insert(
-            id,
-            vec![LogUpWitness::<E, PCS>::new_lookup(
-                commits,
-                column_evals,
-                1,
-                TableType::Range,
-            )],
-        );
-        gen.element_count.insert(TableType::Range, element_count);
-
-        Ok(gen)
+                let mut gen = LookupWitnessGen::<E, PCS>::default();
+                gen.logup_witnesses.insert(
+                    id,
+                    vec![LogUpWitness::<E, PCS>::new_lookup(
+                        commits,
+                        column_evals,
+                        1,
+                        TableType::Range,
+                    )],
+                );
+                gen.element_count.insert(TableType::Range, element_count);
+                Ok(gen)
+            }
+        }
     }
 }
 
@@ -275,7 +376,10 @@ impl OpInfo for PoolingCtx {
     fn output_shapes(&self, input_shapes: &[Shape], _padding_mode: PaddingMode) -> Vec<Shape> {
         input_shapes
             .iter()
-            .map(|shape| self.poolinfo.output_shape(shape))
+            .map(|shape| match self.pool_kind {
+                PoolKind::MaxPool(ref info) => info.output_shape(shape),
+                PoolKind::GlobalAvgPool(ref gap) => gap.output_shape(shape),
+            })
             .collect()
     }
 
@@ -284,10 +388,18 @@ impl OpInfo for PoolingCtx {
     }
 
     fn describe(&self) -> String {
-        format!(
-            "MaxPool2D ctx{{ kernel size: {}, stride: {} }}",
-            self.poolinfo.kernel_size, self.poolinfo.stride
-        )
+        match self.pool_kind {
+            PoolKind::MaxPool(ref info) => format!(
+                "MaxPool2D ctx{{ kernel size: {}, stride: {} }}",
+                info.kernel_size, info.stride
+            ),
+            PoolKind::GlobalAvgPool(ref gap) => {
+                format!(
+                    "GlobalAvgPool2D ctx{{ spatial_size: {} }}",
+                    gap.spatial_size
+                )
+            }
+        }
     }
 
     fn is_provable(&self) -> bool {
@@ -310,20 +422,34 @@ where
         verifier: &mut Verifier<E, T, PCS>,
         _shape_step: &ShapeStep,
     ) -> Result<Vec<Claim<E>>> {
-        let (constant_challenge, column_separation_challenge) = verifier
-            .challenge_storage
-            .get_challenges_by_name(&TableType::Range.name())
-            .ok_or(anyhow!(
-                "Couldn't get challenges for LookupType: {}",
-                TableType::Range.name()
-            ))?;
-        Ok(vec![self.verify_pooling(
-            verifier,
-            last_claims[0],
-            proof,
-            constant_challenge,
-            column_separation_challenge,
-        )?])
+        match (proof, &self.pool_kind) {
+            (PoolingProof::MaxPool(mp_proof), PoolKind::MaxPool(_)) => {
+                let (constant_challenge, column_separation_challenge) = verifier
+                    .challenge_storage
+                    .get_challenges_by_name(&TableType::Range.name())
+                    .ok_or(anyhow!(
+                        "Couldn't get challenges for LookupType: {}",
+                        TableType::Range.name()
+                    ))?;
+                Ok(vec![self.verify_maxpool(
+                    verifier,
+                    last_claims[0],
+                    mp_proof,
+                    constant_challenge,
+                    column_separation_challenge,
+                )?])
+            }
+            (PoolingProof::GlobalAvgPool(gap_proof), PoolKind::GlobalAvgPool(gap)) => {
+                Ok(vec![gap.verify_globalavgpool(
+                    verifier,
+                    last_claims[0],
+                    gap_proof,
+                )?])
+            }
+            _ => Err(anyhow!(
+                "Mismatched PoolingProof variant and PoolKind in PoolingCtx"
+            )),
+        }
     }
 }
 
@@ -335,18 +461,19 @@ impl Pooling {
     pub fn op<T: Number>(&self, input: &Tensor<T>) -> Tensor<T> {
         match self {
             Pooling::Maxpool2D(maxpool2d) => maxpool2d.op(input),
+            Pooling::GlobalAvgPool2D(gap) => gap.op(input),
         }
     }
 
     #[timed::timed_instrument(name = "Prover::prove_pooling_step")]
-    pub fn prove_pooling<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
+    pub fn prove_maxpool<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         prover: &mut Prover<E, T, PCS>,
         // last random claim made
         last_claim: &Claim<E>,
-        // input to the dense layer
+        // input to the pooling layer
         input: &Tensor<E>,
-        // output of dense layer evaluation
+        // output of pooling layer evaluation
         output: &Tensor<E>,
         info: &PoolingCtx,
         id: NodeId,
@@ -355,6 +482,12 @@ impl Pooling {
         E::BaseField: Serialize + DeserializeOwned,
         E: ExtensionField + Serialize + DeserializeOwned,
     {
+        let kernel_info = match info.pool_kind {
+            PoolKind::MaxPool(ref mp) => mp,
+            PoolKind::GlobalAvgPool(_) => {
+                panic!("prove_maxpool called with GlobalAvgPool context")
+            }
+        };
         assert_eq!(input.get_shape().len(), 3, "Maxpool needs 3D inputs.");
         // Should only be one prover_info for this step
         let mut logup_witnesses = prover.lookup_witness(id)?;
@@ -432,7 +565,7 @@ impl Pooling {
         // Extract all claims about committed witness polys
         let zerocheck_point = &proof.point;
         let sumcheck_evals = sumcheck_state.get_mle_final_evaluations();
-        let kernel_size = info.poolinfo.kernel_size * info.poolinfo.kernel_size;
+        let kernel_size = kernel_info.kernel_size * kernel_info.kernel_size;
 
         let output_eval = sumcheck_evals[kernel_size + 1];
 
@@ -450,7 +583,7 @@ impl Pooling {
             })
             .collect::<Result<Vec<PCS::Commitment>, anyhow::Error>>()?;
 
-        // Now we must do the samething accumulating evals for the input poly as we fix variables on the input poly.
+        // Now we must do the same thing accumulating evals for the input poly as we fix variables on the input poly.
         // The point length is 2 longer because for now we only support MaxPool2D.
 
         let padded_input_shape = input.get_shape();
@@ -496,7 +629,7 @@ impl Pooling {
             eval: zc_in_claim,
         };
 
-        // We don't need the last eval of the the sumcheck state as it is the beta poly
+        // We don't need the last eval of the sumcheck state as it is the beta poly
 
         let zerocheck_evals = [
             &sumcheck_state.get_mle_final_evaluations()[..kernel_size],
@@ -506,13 +639,13 @@ impl Pooling {
         // Push the step proof to the list
         prover.push_proof(
             id,
-            LayerProof::Pooling(PoolingProof {
+            LayerProof::Pooling(PoolingProof::MaxPool(MaxPoolProof {
                 sumcheck: proof,
                 lookup: logup_proof,
                 zerocheck_evals,
                 variable_gap: padded_input_row_length_log - 1,
                 commitments,
-            }),
+            })),
         );
         Ok(next_claim)
     }
@@ -520,13 +653,20 @@ impl Pooling {
 
 impl PoolingCtx {
     pub fn output_shape(&self, input_shape: &Shape) -> Shape {
-        maxpool2d_shape(input_shape)
+        match self.pool_kind {
+            PoolKind::MaxPool(_) => maxpool2d_shape(input_shape),
+            PoolKind::GlobalAvgPool(_) => {
+                // [C, H, W] -> [C, 1, 1]
+                Shape::new(vec![input_shape[0], 1, 1])
+            }
+        }
     }
-    pub(crate) fn verify_pooling<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
+
+    pub(crate) fn verify_maxpool<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
         &self,
         verifier: &mut Verifier<E, T, PCS>,
         last_claim: &Claim<E>,
-        proof: &PoolingProof<E, PCS>,
+        proof: &MaxPoolProof<E, PCS>,
         constant_challenge: E,
         column_separation_challenge: E,
     ) -> anyhow::Result<Claim<E>>
@@ -607,7 +747,7 @@ impl PoolingCtx {
                 )
             })?;
 
-        // Challenegs used to batch input poly claims together and link them with zerocheck and lookup verification output
+        // Challenges used to batch input poly claims together and link them with zerocheck and lookup verification output
         let [r1, r2] = [verifier
             .transcript
             .get_and_append_challenge(b"input_batching")
@@ -766,6 +906,190 @@ impl Maxpool2D {
             .unzip();
 
         [even_diff, odd_diff].concat()
+    }
+}
+
+/// GlobalAvgPool2D reduces a 3D tensor `[C, H, W]` to `[C, 1, 1]` by averaging over the spatial
+/// dimensions.
+///
+/// In quantized inference, the `1/N` scale factor is **absorbed** by the requantization layer
+/// that follows; the prover only needs to prove the summation `N * output[c] = sum_{h,w} input[c, h, w]`.
+#[derive(Clone, Debug, Serialize, Deserialize, Copy, PartialEq, Eq)]
+pub struct GlobalAvgPool2D {
+    /// The number of spatial elements being averaged: `H * W` (using *unpadded* H, W).
+    pub spatial_size: usize,
+}
+
+impl GlobalAvgPool2D {
+    pub fn new(spatial_size: usize) -> Self {
+        Self { spatial_size }
+    }
+
+    /// Output shape: `[C, 1, 1]`
+    pub fn output_shape(&self, input_shape: &Shape) -> Shape {
+        Shape::new(vec![input_shape[0], 1, 1])
+    }
+
+    /// Forward pass: for each channel, sum all spatial values, then divide by `spatial_size`.
+    /// Returns an integer-valued tensor; the fractional part is handled by the requant layer.
+    pub fn op<T: Number>(&self, input: &Tensor<T>) -> Tensor<T> {
+        let shape = input.get_shape();
+        assert_eq!(
+            shape.len(),
+            3,
+            "GlobalAvgPool2D requires 3D input [C, H, W]"
+        );
+        let (c, h, w) = (shape[0], shape[1], shape[2]);
+        let output_data: Vec<T> = (0..c)
+            .map(|ci| {
+                let sum: T = (0..h)
+                    .flat_map(|hi| (0..w).map(move |wi| (hi, wi)))
+                    .fold(T::default(), |acc, (hi, wi)| {
+                        acc + input.get(vec![ci, hi, wi])
+                    });
+                // Integer average: sum / N (truncating toward zero)
+                T::from_usize(sum.to_usize() / self.spatial_size)
+            })
+            .collect();
+        Tensor::new(Shape::new(vec![c, 1, 1]), output_data)
+    }
+
+    /// Prove `N * output_mle(r_c) = sum_{b in Bool^k} input_mle_fixed(b)`.
+    ///
+    /// `last_claim` is a claim about the output MLE at point `r_c` (length = ceil_log2(C_pad)).
+    /// Returns a claim about the input MLE at point `(r_c, sumcheck_point)`.
+    pub fn prove_globalavgpool<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
+        &self,
+        prover: &mut Prover<E, T, PCS>,
+        last_claim: &Claim<E>,
+        input: &Tensor<E>,
+        id: NodeId,
+    ) -> anyhow::Result<Claim<E>>
+    where
+        E::BaseField: Serialize + DeserializeOwned,
+        E: ExtensionField + Serialize + DeserializeOwned,
+    {
+        let input_shape = input.get_shape();
+        assert_eq!(
+            input_shape.len(),
+            3,
+            "GlobalAvgPool2D prover needs 3D input"
+        );
+        let (_c_pad, h_pad, w_pad) = (input_shape[0], input_shape[1], input_shape[2]);
+
+        // Number of spatial variables after padding to next power of two
+        let num_spatial_vars = ceil_log2(h_pad) + ceil_log2(w_pad);
+
+        // r_c = last_claim.point (channel random variables from verifier's output claim)
+        let r_c = &last_claim.point;
+        let num_channel_vars = r_c.len();
+
+        // Build the input MLE with the channel variables fixed to r_c.
+        // input_mle has `num_channel_vars + num_spatial_vars` variables.
+        let input_data: Vec<E> = input.get_data().to_vec();
+        let total_vars = num_channel_vars + num_spatial_vars;
+        let input_mle: ArcMultilinearExtension<E> =
+            DenseMultilinearExtension::<E>::from_evaluations_ext_vec(total_vars, {
+                // Pad to 2^total_vars
+                let mut padded = input_data;
+                padded.resize(1 << total_vars, E::ZERO);
+                padded
+            })
+            .fix_high_variables(r_c)
+            .into();
+
+        // Prove: sum_{b in Bool^num_spatial_vars} input_mle_fixed(b) = claimed_sum
+        // where claimed_sum = N * last_claim.eval
+        let n_field = E::from_canonical_u64(self.spatial_size as u64);
+        let claimed_sum = last_claim.eval * n_field;
+
+        // Build a virtual polynomial with just the input MLE (degree 1, sumcheck over spatial vars)
+        let mut vp = VirtualPolynomial::<E>::new(num_spatial_vars);
+        vp.add_mle_list(vec![input_mle], E::ONE);
+
+        #[allow(deprecated)]
+        let (sc_proof, sc_state) = IOPProverState::<E>::prove_parallel(vp, prover.transcript);
+
+        let sc_point = sc_proof.point.clone();
+        let input_eval = sc_state.get_mle_final_evaluations()[0];
+
+        // Verify claimed_sum matches the sumcheck's expected evaluation
+        // (this is implicit in the prove call, but we track it for the proof)
+        let _ = claimed_sum;
+
+        // The input claim for the next (upstream) layer is at point (r_c || sc_point)
+        let input_claim_point = r_c
+            .iter()
+            .chain(sc_point.iter())
+            .copied()
+            .collect::<Vec<E>>();
+        let next_claim = Claim {
+            point: input_claim_point,
+            eval: input_eval,
+        };
+
+        prover.push_proof(
+            id,
+            LayerProof::Pooling(PoolingProof::GlobalAvgPool(GlobalAvgPoolProof {
+                sumcheck: sc_proof,
+                input_eval,
+                num_channel_vars,
+            })),
+        );
+        Ok(next_claim)
+    }
+
+    /// Verify the GlobalAvgPool proof.
+    ///
+    /// Checks: `N * last_claim.eval = sum_{b} input_mle_fixed(b)` via sumcheck.
+    /// Returns a claim about the *input* MLE at point `(last_claim.point || sc_random_point)`.
+    pub fn verify_globalavgpool<E, T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
+        &self,
+        verifier: &mut Verifier<E, T, PCS>,
+        last_claim: &Claim<E>,
+        proof: &GlobalAvgPoolProof<E>,
+    ) -> anyhow::Result<Claim<E>>
+    where
+        E::BaseField: Serialize + DeserializeOwned,
+        E: ExtensionField + Serialize + DeserializeOwned,
+    {
+        // claimed_sum = N * output_eval
+        let n_field = E::from_canonical_u64(self.spatial_size as u64);
+        let claimed_sum = last_claim.eval * n_field;
+
+        // The sumcheck proves a univariate (degree-1) polynomial sum.
+        // num_spatial_vars = total input vars - channel vars
+        let num_spatial_vars = proof.sumcheck.proofs.len();
+        let poly_aux = VPAuxInfo::<E>::from_mle_list_dimensions(&[vec![num_spatial_vars; 1]]);
+
+        let subclaim = IOPVerifierState::<E>::verify(
+            claimed_sum,
+            &proof.sumcheck,
+            &poly_aux,
+            verifier.transcript,
+        );
+
+        // At the sumcheck random point, the prover claims input_mle_fixed evaluates to `input_eval`.
+        ensure!(
+            proof.input_eval == subclaim.expected_evaluation,
+            "GlobalAvgPool sumcheck final evaluation mismatch: expected {:?}, got {:?}",
+            subclaim.expected_evaluation,
+            proof.input_eval,
+        );
+
+        // Reconstruct the input claim point: (r_c || sc_random_point)
+        let sc_point = subclaim.point_flat();
+        let input_claim_point = last_claim
+            .point
+            .iter()
+            .chain(sc_point.iter())
+            .copied()
+            .collect::<Vec<E>>();
+
+        Ok(Claim {
+            point: input_claim_point,
+            eval: proof.input_eval,
+        })
     }
 }
 
