@@ -57,6 +57,11 @@ pub struct Convolution<T> {
     pub bias: Tensor<T>,
     /// Unpadded shape of the filter. This is set to filter's shape in case of no padding.
     pub unpadded_shape: Shape,
+    /// Spatial zero-padding applied to H and W dimensions of the input before convolution.
+    /// Equivalent to ONNX `pads` = [pad_h, pad_w, pad_h, pad_w].
+    /// Default is [0, 0] (valid / no-padding convolution).
+    #[serde(default)]
+    pub input_padding: [usize; 2],
 }
 
 /// Info about the convolution layer derived during the setup phase
@@ -77,6 +82,9 @@ pub struct ConvCtx<E> {
     pub filter_size: usize,
     pub unpadded_filter_shape: Shape,
     pub padded_filter_shape: Shape,
+    /// Spatial zero-padding applied to input before convolution; mirrors `Convolution::input_padding`.
+    #[serde(default)]
+    pub input_padding: [usize; 2],
 }
 
 pub fn to_bits<E: ExtensionField>(mut num: usize, bitlen: usize) -> Vec<E> {
@@ -128,6 +136,18 @@ impl<T: Number> Convolution<T> {
         Self::new_padded(filter, bias, &filter_shape)
     }
 
+    pub fn new_with_padding(filter: Tensor<T>, bias: Tensor<T>, input_padding: [usize; 2]) -> Self {
+        assert_eq!(filter.kw(), bias.get_shape()[0]);
+        assert_eq!(filter.get_shape().len(), 4);
+        let filter_shape = filter.get_shape();
+        Self {
+            filter,
+            bias,
+            unpadded_shape: filter_shape,
+            input_padding,
+        }
+    }
+
     pub(crate) fn new_without_bias(filter: Tensor<T>) -> Self {
         let bias = Tensor::zeros(Shape::new(vec![filter.kw()]));
         Self::new(filter, bias)
@@ -139,13 +159,19 @@ impl<T: Number> Convolution<T> {
             filter,
             bias,
             unpadded_shape: unpadded_shape.clone(),
+            input_padding: [0, 0],
         }
     }
     pub fn output_shape(&self, input_shape: &Shape, padding_mode: PaddingMode) -> Shape {
+        let [ph, pw] = self.input_padding;
         match padding_mode {
             // unpadded shape is the shape found in onxx file for example
-            PaddingMode::NoPadding => conv2d_shape(input_shape, &self.unpadded_shape),
-            PaddingMode::Padding => padded_conv2d_shape(input_shape, &self.filter.real_shape()),
+            PaddingMode::NoPadding => {
+                conv2d_shape_with_padding(input_shape, &self.unpadded_shape, ph, pw)
+            }
+            PaddingMode::Padding => {
+                padded_conv2d_shape_with_padding(input_shape, &self.filter.real_shape(), ph, pw)
+            }
         }
     }
 
@@ -245,7 +271,9 @@ impl Evaluate<f32> for Convolution<f32> {
             "Found more than 1 input when evaluating convolution layer"
         );
         let input = inputs[0];
-        Ok(LayerOut::from_vec(vec![input.conv2d(
+        let [ph, pw] = self.input_padding;
+        let padded = input.zero_pad_spatial(ph, pw);
+        Ok(LayerOut::from_vec(vec![padded.conv2d(
             &self.filter,
             &self.bias,
             1,
@@ -260,11 +288,15 @@ impl Convolution<f32> {
     pub fn quantize(self, s: &ScalingFactor, bias_s: &ScalingFactor) -> Convolution<Element> {
         let quantized_filter = self.filter.quantize(s);
         let bias = self.bias.quantize(bias_s);
-        Convolution::<Element>::new(quantized_filter, bias)
+        let mut q = Convolution::<Element>::new(quantized_filter, bias);
+        q.input_padding = self.input_padding;
+        q
     }
 
     pub fn op<E: ExtensionField>(&self, input: &Tensor<f32>) -> Tensor<f32> {
-        input.conv2d(&self.filter, &self.bias, 1)
+        let [ph, pw] = self.input_padding;
+        let padded = input.zero_pad_spatial(ph, pw);
+        padded.conv2d(&self.filter, &self.bias, 1)
     }
 
     pub fn max_abs_weight(&self) -> f32 {
@@ -305,11 +337,34 @@ impl Evaluate<Element> for Convolution<Element> {
 }
 
 impl Convolution<Element> {
+    /// Returns the effective input shape after applying `input_padding` to the spatial dims.
+    ///
+    /// The FFT-based convolution operates on the spatially-padded input, so we compute
+    /// the filter's FFT with respect to this larger shape.
+    pub fn effective_input_shape(&self, unpadded_input_shape: &Shape) -> Shape {
+        let [ph, pw] = self.input_padding;
+        if ph == 0 && pw == 0 {
+            return unpadded_input_shape.clone();
+        }
+        // unpadded_input_shape is [C, H, W]
+        assert_eq!(
+            unpadded_input_shape.len(),
+            3,
+            "expected 3-D input shape [C,H,W]"
+        );
+        let c = unpadded_input_shape[0];
+        let h = unpadded_input_shape[1];
+        let w = unpadded_input_shape[2];
+        Shape::new(vec![c, h + 2 * ph, w + 2 * pw])
+    }
+
     /// Pads the filter and bias, and adapt the filter to the convolution fft operation.
     pub fn into_padded_and_ffted(mut self, unpadded_input_shape: &Shape) -> Self {
         self.filter = self.filter.pad_next_power_of_two();
         self.bias = self.bias.pad_next_power_of_two();
-        let padded_input_shape = unpadded_input_shape
+        // Use the spatially-padded input shape so the FFT is sized correctly.
+        let effective_shape = self.effective_input_shape(unpadded_input_shape);
+        let padded_input_shape = effective_shape
             .iter()
             .map(|&x| x.next_power_of_two())
             .collect::<Shape>();
@@ -322,16 +377,32 @@ impl Convolution<Element> {
         input: &Tensor<Element>,
         unpadded_input_shape: &Shape,
     ) -> (Tensor<Element>, ConvData<E>) {
-        let (output, mut proving_data) = self.filter.fft_conv(input);
+        // `input` is POT-padded. When there is ONNX spatial zero-padding we must:
+        //   1. Crop back to unpadded_input_shape (remove POT padding)
+        //   2. Apply ONNX spatial zero-padding
+        //   3. Re-apply POT padding for the FFT
+        // When there is no ONNX padding the input is used as-is.
+        let [ph, pw] = self.input_padding;
+        let fft_input: Tensor<Element> = if ph == 0 && pw == 0 {
+            input.clone()
+        } else {
+            // Crop `input` to the unpadded shape, then zero-pad spatially, then POT-pad.
+            // `unpadded_input_shape` is [C, H, W] (3-D).
+            let unpadded = input.crop_to(unpadded_input_shape);
+            let spatially = unpadded.zero_pad_spatial(ph, pw);
+            spatially.pad_next_power_of_two()
+        };
+        let (output, mut proving_data) = self.filter.fft_conv(&fft_input);
         let conv_output = self.add_bias(&output);
         // we record here the output _after_ the bias addition. During proving it's necessary since we're proving the clearing garbage
         // and that produces a new claim on this output.
         proving_data.set_output(conv_output.get_data());
         // At this stage, we're creating a "garbage clearing" tensor that sets all garbage values to 0. This is necessary
         // since the garbage might be of any value and we need to restrict the range of the output due to requantization proving logic.
-        let unpadded_output_shape = conv2d_shape(unpadded_input_shape, &self.unpadded_shape);
+        let effective_unpadded_input = self.effective_input_shape(unpadded_input_shape);
+        let unpadded_output_shape = conv2d_shape(&effective_unpadded_input, &self.unpadded_shape);
         debug_assert_eq!(
-            { padded_conv2d_shape(&input.get_shape(), &self.filter.real_shape()) },
+            { padded_conv2d_shape(&fft_input.get_shape(), &self.filter.real_shape(),) },
             conv_output.get_shape(),
             "FFT output shape not computable"
         );
@@ -528,6 +599,7 @@ where
             filter_size: self.filter_size(),
             unpadded_filter_shape: self.unpadded_shape.clone(),
             padded_filter_shape: self.filter.real_shape(),
+            input_padding: self.input_padding,
         });
 
         let filter_poly = self.filter.pad_next_power_of_two().get_data().to_vec();
@@ -1082,9 +1154,14 @@ where
     E: ExtensionField + Serialize + DeserializeOwned,
 {
     pub fn output_shape(&self, input_shape: &Shape, padding_mode: PaddingMode) -> Shape {
+        let [ph, pw] = self.input_padding;
         match padding_mode {
-            PaddingMode::NoPadding => conv2d_shape(input_shape, &self.unpadded_filter_shape),
-            PaddingMode::Padding => padded_conv2d_shape(input_shape, &self.padded_filter_shape),
+            PaddingMode::NoPadding => {
+                conv2d_shape_with_padding(input_shape, &self.unpadded_filter_shape, ph, pw)
+            }
+            PaddingMode::Padding => {
+                padded_conv2d_shape_with_padding(input_shape, &self.padded_filter_shape, ph, pw)
+            }
         }
     }
     pub(crate) fn verify_fft_delegation<T: Transcript<E>, PCS: PolynomialCommitmentScheme<E>>(
@@ -1163,12 +1240,20 @@ where
         // OR find a closed formula
         //
         // To recreat it, we need the unpadded output shape and the real output shape.
-        let unpadded_output_shape = conv2d_shape(
+        // Account for ONNX spatial padding: the effective input is spatially larger.
+        let [ph, pw] = self.input_padding;
+        let unpadded_output_shape = conv2d_shape_with_padding(
             &shape_step.unpadded_input_shape[0],
             &self.unpadded_filter_shape,
+            ph,
+            pw,
         );
-        let real_output_shape =
-            padded_conv2d_shape(&shape_step.padded_input_shape[0], &self.padded_filter_shape);
+        let real_output_shape = padded_conv2d_shape_with_padding(
+            &shape_step.padded_input_shape[0],
+            &self.padded_filter_shape,
+            ph,
+            pw,
+        );
         let clearing_tensor = new_clearing_tensor(&unpadded_output_shape, &real_output_shape);
         // now we need to verify the hadamard proof for the sumcheck part.
         let hctx = hadamard::HadamardCtx::from_len(real_output_shape.product());
@@ -1402,7 +1487,9 @@ impl<T: Number> Evaluate<T> for SchoolBookConv<T> {
             "Found more than 1 input when evaluating schoolbook convolution layer"
         );
         let input = inputs[0];
-        Ok(LayerOut::from_vec(vec![input.conv2d(
+        let [ph, pw] = self.0.input_padding;
+        let padded = input.zero_pad_spatial(ph, pw);
+        Ok(LayerOut::from_vec(vec![padded.conv2d(
             &self.0.filter,
             &self.0.bias,
             1,
@@ -1580,6 +1667,50 @@ pub fn conv2d_shape(input_shape: &Shape, filter_shape: &Shape) -> Shape {
 /// Similar to conv2d_shape but pads the output shape such that it matches what the padded inference and proving expects
 pub fn padded_conv2d_shape(input_shape: &Shape, filter_shape: &Shape) -> Shape {
     conv2d_shape(input_shape, filter_shape)
+        .into_vec()
+        .into_iter()
+        .map(|x| x.next_power_of_two())
+        .collect::<Shape>()
+}
+
+/// Like `conv2d_shape` but accounts for ONNX-style spatial zero-padding applied to the input.
+///
+/// The effective input spatial size is `(H + 2*pad_h) × (W + 2*pad_w)`, so the output is:
+/// `out = (spatial + 2*pad - kernel) / stride + 1` with stride=1.
+pub fn conv2d_shape_with_padding(
+    input_shape: &Shape,
+    filter_shape: &Shape,
+    pad_h: usize,
+    pad_w: usize,
+) -> Shape {
+    if pad_h == 0 && pad_w == 0 {
+        return conv2d_shape(input_shape, filter_shape);
+    }
+    let h_in = if input_shape.len() == 3 {
+        input_shape[1]
+    } else {
+        input_shape[2]
+    };
+    let w_in = if input_shape.len() == 3 {
+        input_shape[2]
+    } else {
+        input_shape[3]
+    };
+    let kh = filter_shape[2];
+    let kw = filter_shape[3];
+    let h_out = h_in + 2 * pad_h - kh + 1;
+    let w_out = w_in + 2 * pad_w - kw + 1;
+    Shape::new(vec![filter_shape[0], h_out, w_out])
+}
+
+/// Power-of-two padded variant of `conv2d_shape_with_padding`.
+pub fn padded_conv2d_shape_with_padding(
+    input_shape: &Shape,
+    filter_shape: &Shape,
+    pad_h: usize,
+    pad_w: usize,
+) -> Shape {
+    conv2d_shape_with_padding(input_shape, filter_shape, pad_h, pad_w)
         .into_vec()
         .into_iter()
         .map(|x| x.next_power_of_two())
@@ -1936,5 +2067,108 @@ mod test {
             fft_dense_output.get_data()[..weight.nrows_2d()]
         );
         Ok(())
+    }
+
+    /// Test that a Convolution with input_padding=[1,1] (ONNX "same" padding for kernel=3)
+    /// produces an output that matches naive zero-padding + conv2d, and that output spatial
+    /// dims equal input spatial dims ("same" convolution invariant).
+    #[test]
+    fn test_conv_with_padding() {
+        // Input: 1 channel, 8x8 spatial — padded to effective 10x10 with pad=1 on each side
+        let input_shape: Shape = vec![1, 8, 8].into();
+        let filter_shape: Shape = vec![4, 1, 3, 3].into(); // 4 out-channels, kernel=3
+
+        let filter: Tensor<f32> = Tensor::random(&filter_shape);
+        let bias: Tensor<f32> = Tensor::zeros(vec![filter_shape[0]].into());
+        let input: Tensor<f32> = Tensor::random(&input_shape);
+
+        // --- f32 path: Convolution::new_with_padding ---
+        let conv = Convolution::new_with_padding(filter.clone(), bias.clone(), [1, 1]);
+        let padded_input_naive = input.zero_pad_spatial(1, 1);
+        let expected_output = padded_input_naive.conv2d(&filter, &bias, 1);
+
+        let actual_output: Tensor<f32> = conv.op::<GoldilocksExt2>(&input);
+
+        assert_eq!(
+            actual_output.get_shape(),
+            expected_output.get_shape(),
+            "output shapes must match"
+        );
+        let actual_data = actual_output.get_data();
+        let expected_data = expected_output.get_data();
+        for (i, (a, e)) in actual_data.iter().zip(expected_data.iter()).enumerate() {
+            assert!(
+                (a - e).abs() < 1e-4,
+                "mismatch at index {}: actual={}, expected={}",
+                i,
+                a,
+                e
+            );
+        }
+
+        // "same" invariant: output H == input H, output W == input W
+        // output_shape returns [C_out, H_out, W_out]
+        let out_shape = actual_output.get_shape();
+        // remove batch dim if present
+        let spatial_h = if out_shape.len() == 4 {
+            out_shape[2]
+        } else {
+            out_shape[1]
+        };
+        let spatial_w = if out_shape.len() == 4 {
+            out_shape[3]
+        } else {
+            out_shape[2]
+        };
+        assert_eq!(spatial_h, 8, "output H must equal input H for same-conv");
+        assert_eq!(spatial_w, 8, "output W must equal input W for same-conv");
+    }
+
+    /// Test the Element (quantised / ZK) path for padding=1 convolution.
+    /// Verifies the FFT-based convolution with input_padding produces correct valid values.
+    #[test]
+    fn test_conv_with_padding_element() {
+        // Small input to keep FFT test fast
+        let input_shape: Shape = vec![1, 6, 6].into();
+        let filter_shape: Shape = vec![2, 1, 3, 3].into(); // 2 out-channels, kernel=3
+
+        let filter: Tensor<Element> = Tensor::random(&filter_shape);
+        let bias: Tensor<Element> = Tensor::zeros(vec![filter_shape[0]].into());
+        let input: Tensor<Element> = Tensor::random(&input_shape);
+
+        // Build the padded+ffted convolution with input_padding=[1,1]
+        let conv = Convolution::new_with_padding(filter.clone(), bias.clone(), [1, 1]);
+        let fft_conv = conv.into_padded_and_ffted(&input_shape);
+
+        // Run the FFT conv op
+        let padded_input = input.pad_next_power_of_two();
+        let (fft_output, _conv_data) = fft_conv.op::<GoldilocksExt2>(&padded_input, &input_shape);
+
+        // Naive reference: zero-pad input then conv2d
+        let padded_input_naive = input.zero_pad_spatial(1, 1);
+        let expected_output = padded_input_naive.conv2d(&filter, &bias, 1);
+        let expected_shape = expected_output.get_shape();
+
+        // Extract valid region from FFT output (ignoring power-of-two garbage)
+        let (valid, _garbage) = split_garbage(&fft_output, &expected_shape);
+        assert_eq!(
+            valid,
+            expected_output.get_data().to_vec(),
+            "FFT conv with input_padding=[1,1] must match naive zero-pad + conv2d"
+        );
+
+        // "same" invariant
+        let out_h = if expected_shape.len() == 4 {
+            expected_shape[2]
+        } else {
+            expected_shape[1]
+        };
+        let out_w = if expected_shape.len() == 4 {
+            expected_shape[3]
+        } else {
+            expected_shape[2]
+        };
+        assert_eq!(out_h, 6, "output H must equal input H for same-conv");
+        assert_eq!(out_w, 6, "output W must equal input W for same-conv");
     }
 }

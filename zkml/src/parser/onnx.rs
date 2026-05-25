@@ -587,8 +587,7 @@ fn load_conv<'a, I: Iterator<Item = &'a usize> + Sized>(
     _iter: &mut Peekable<I>,
 ) -> Result<(NodeId, CustomNode)> {
     let conv_node = downcast_to::<Conv>(node)?;
-    // TODO: once we support different padding and strides, extract the data in this function
-    check_conv2d_attributes(conv_node)?;
+    let input_padding = check_conv2d_attributes(conv_node)?;
     // TODO: support for conv without bias
     ensure_onnx!(
         node.inputs.len() == 3,
@@ -605,9 +604,11 @@ fn load_conv<'a, I: Iterator<Item = &'a usize> + Sized>(
     let bias_const = extract_const_tensor(bias_node)?;
     let conv = if bias_const.is_empty() {
         // it's a convolution layer without bias
-        Convolution::new_without_bias(filter_const)
+        let mut c = Convolution::new_without_bias(filter_const);
+        c.input_padding = input_padding;
+        c
     } else {
-        Convolution::new(filter_const, bias_const)
+        Convolution::new_with_padding(filter_const, bias_const, input_padding)
     };
     let provable_node = crate::layers::provable::Node::new(
         vec![Edge::new(input_link.node, input_link.slot)],
@@ -644,28 +645,49 @@ fn get_node_output_shape(node: &OnnxNode, output_idx: usize) -> Result<Shape> {
     Ok(shape.to_vec().into())
 }
 
-/// Get the conv2d attributes and assert if supported by DeepProve
-fn check_conv2d_attributes(node: &Conv) -> Result<()> {
+/// Get the conv2d attributes and assert if supported by DeepProve.
+/// Returns the spatial input padding `[pad_h, pad_w]` extracted from ONNX `pads`.
+///
+/// Supported: symmetric padding (pad_begin == pad_end) with equal H and W pads.
+fn check_conv2d_attributes(node: &Conv) -> Result<[usize; 2]> {
     let Some(ref strides) = node.pool_spec.strides else {
         return err(format!("Conv has no strides: {}", node.name()));
     };
     ensure_onnx!(strides.iter().all(|&x| x == 1), "Strides must be {}", 1);
-    ensure_onnx!(strides.iter().all(|&x| x == 1), "Strides must be {}", 1);
-    let PaddingSpec::Explicit(ref pad0, ref pad1) = &node.pool_spec.padding else {
-        return err(format!("Conv has no pads: {}", node.name()));
+    let input_padding = match &node.pool_spec.padding {
+        PaddingSpec::Explicit(pad0, pad1) => {
+            // pad0 = begin pads [pad_h, pad_w], pad1 = end pads [pad_h, pad_w]
+            ensure_onnx!(
+                pad0.len() == 2 && pad1.len() == 2,
+                "Conv {} padding must be 2-D (H and W): pad0={:?} pad1={:?}",
+                node.name(),
+                pad0,
+                pad1,
+            );
+            ensure_onnx!(
+                pad0[0] == pad1[0] && pad0[1] == pad1[1],
+                "Conv {} padding must be symmetric (begin == end): pad0={:?} pad1={:?}",
+                node.name(),
+                pad0,
+                pad1,
+            );
+            ensure_onnx!(
+                pad0[0] == pad0[1],
+                "Conv {} padding must be equal on H and W: pad0={:?}",
+                node.name(),
+                pad0,
+            );
+            [pad0[0], pad0[1]]
+        }
+        PaddingSpec::Valid => [0, 0],
+        other => {
+            return err(format!(
+                "Conv {} has unsupported padding spec: {:?}",
+                node.name(),
+                other
+            ));
+        }
     };
-    ensure_onnx!(
-        pad0.iter().all(|&x| x == 0),
-        "Padding for {}must be 0s: {:?}",
-        node.name(),
-        pad0,
-    );
-    ensure_onnx!(
-        pad1.iter().all(|&x| x == 0),
-        "Padding for {}must be 0s: {:?}",
-        node.name(),
-        pad1,
-    );
     let Some(ref dilations) = node.pool_spec.dilations else {
         return err(format!("Conv has no dilations: {}", node.name()));
     };
@@ -694,7 +716,7 @@ fn check_conv2d_attributes(node: &Conv) -> Result<()> {
         node.name(),
         kernel_shape
     );
-    Ok(())
+    Ok(input_padding)
 }
 
 fn err<T>(msg: String) -> Result<T> {

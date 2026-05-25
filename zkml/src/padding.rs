@@ -214,7 +214,6 @@ pub(crate) fn pad_conv(
         "More than 1 input shape found when padding convolution layer"
     );
     let sd = si.shapes.first_mut().unwrap();
-    sd.input_shape_og = safe_conv2d_shape(&sd.input_shape_og, &c.filter.get_shape())?;
     let weight_shape = c.filter.get_shape();
     // Perform basic sanity checks on the tensor dimensions
     check_filter(&weight_shape).context("filter shape test failed:")?;
@@ -231,11 +230,35 @@ pub(crate) fn pad_conv(
         sd.input_shape_padded.rank() == 3,
         "Input shape for convolution is not 3D"
     );
+
+    // Compute the effective input shapes after applying ONNX spatial zero-padding.
+    // When input_padding = [ph, pw], each spatial dimension grows by 2*ph / 2*pw.
+    let [ph, pw] = c.input_padding;
+    let effective_og = if ph > 0 || pw > 0 {
+        let orig = &sd.input_shape_og;
+        assert_eq!(orig.len(), 3, "expected 3-D input shape [C,H,W]");
+        Shape::new(vec![orig[0], orig[1] + 2 * ph, orig[2] + 2 * pw])
+    } else {
+        sd.input_shape_og.clone()
+    };
+    let effective_padded = if ph > 0 || pw > 0 {
+        // The power-of-two padded version of the effective (spatially-padded) input.
+        effective_og
+            .iter()
+            .map(|&x| x.next_power_of_two())
+            .collect::<Shape>()
+    } else {
+        sd.input_shape_padded.clone()
+    };
+
+    // Update output shapes using the effective (spatially-padded) input shapes.
+    sd.input_shape_og = safe_conv2d_shape(&effective_og, &c.filter.get_shape())?;
+
     let new_conv_good = c.clone();
     // Since we are doing an FFT based conv, we need to pad the last two dimensions of the filter to match the input.
     let weight_shape = c.filter.pad_next_power_of_two().get_shape();
     let (filter_height, filter_width) = (weight_shape[2], weight_shape[3]);
-    let (input_height, input_width) = (sd.input_shape_padded.dim(1), sd.input_shape_padded.dim(2));
+    let (input_height, input_width) = (effective_padded.dim(1), effective_padded.dim(2));
 
     ensure!(
         filter_height <= input_height && filter_width <= input_width,
@@ -243,7 +266,7 @@ pub(crate) fn pad_conv(
     );
 
     let new_conv = new_conv_good.into_padded_and_ffted(&sd.input_shape_og);
-    let output_shape: Shape = safe_conv2d_shape(&sd.input_shape_padded, &weight_shape)?;
+    let output_shape: Shape = safe_conv2d_shape(&effective_padded, &weight_shape)?;
     sd.input_shape_padded = output_shape.next_power_of_two();
     Ok(new_conv)
 }
