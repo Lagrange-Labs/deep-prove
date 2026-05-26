@@ -992,6 +992,84 @@ where
         self
     }
 
+    /// Zero-pad the spatial (H, W) dimensions of a [N, C, H, W] or [C, H, W] tensor.
+    ///
+    /// Each spatial dimension is padded by `pad_h` rows/columns on each side (top/bottom)
+    /// and `pad_w` columns on each side (left/right), producing a tensor whose spatial
+    /// dimensions are `(H + 2*pad_h) × (W + 2*pad_w)`.
+    ///
+    /// This is the "same" padding used by standard CNN frameworks.
+    pub fn zero_pad_spatial(&self, pad_h: usize, pad_w: usize) -> Self
+    where
+        T: Default + Copy,
+    {
+        if pad_h == 0 && pad_w == 0 {
+            return self.clone();
+        }
+        let (n, c, h, w) = self.get4d();
+        let new_h = h + 2 * pad_h;
+        let new_w = w + 2 * pad_w;
+        let new_len = n * c * new_h * new_w;
+        let mut data = vec![T::default(); new_len];
+        for ni in 0..n {
+            for ci in 0..c {
+                for hi in 0..h {
+                    for wi in 0..w {
+                        let src = ni * (c * h * w) + ci * (h * w) + hi * w + wi;
+                        let dst_h = hi + pad_h;
+                        let dst_w = wi + pad_w;
+                        let dst =
+                            ni * (c * new_h * new_w) + ci * (new_h * new_w) + dst_h * new_w + dst_w;
+                        data[dst] = self.data[src];
+                    }
+                }
+            }
+        }
+        let new_shape = if self.shape.len() == 3 {
+            Shape::new(vec![c, new_h, new_w])
+        } else {
+            Shape::new(vec![n, c, new_h, new_w])
+        };
+        Tensor::new(new_shape, data)
+    }
+
+    /// Crops a POT-padded tensor back to `target_shape`, extracting only the valid (unpadded)
+    /// spatial data. `target_shape` must be <= the tensor's shape in every dimension.
+    ///
+    /// The tensor is assumed to be 3-D `[C, H_padded, W_padded]` and `target_shape` is
+    /// `[C, H, W]` with `H <= H_padded` and `W <= W_padded`.
+    pub fn crop_to(&self, target_shape: &Shape) -> Self
+    where
+        T: Default + Copy,
+    {
+        assert_eq!(
+            self.shape.len(),
+            target_shape.len(),
+            "crop_to: rank mismatch"
+        );
+        // Fast-path: already the right shape
+        if self.shape == *target_shape {
+            return self.clone();
+        }
+        assert_eq!(target_shape.len(), 3, "crop_to: only 3-D [C,H,W] supported");
+        let c = target_shape[0];
+        let h = target_shape[1];
+        let w = target_shape[2];
+        let h_padded = self.shape[1];
+        let w_padded = self.shape[2];
+        let mut data = vec![T::default(); c * h * w];
+        for ci in 0..c {
+            for hi in 0..h {
+                for wi in 0..w {
+                    let src = ci * (h_padded * w_padded) + hi * w_padded + wi;
+                    let dst = ci * (h * w) + hi * w + wi;
+                    data[dst] = self.data[src];
+                }
+            }
+        }
+        Tensor::new(target_shape.clone(), data)
+    }
+
     /// Recursively pads the tensor so its ready to be viewed as an MLE
     pub fn pad_next_power_of_two(&self) -> Self {
         self.generic_pad_next_power_of_two(T::default())
@@ -1821,7 +1899,7 @@ impl<T: Default + Clone + Copy> Tensor<T> {
             .chain(self.shape.iter().copied())
             .collect::<Vec<usize>>();
         expansion_shape.iter().zip(padded_shape.iter()).try_for_each(|(&new_dim, &dim)|{
-            // Check new_dim isn't zero 
+            // Check new_dim isn't zero
             if new_dim == 0 {
                 Err(anyhow!("Cannot expand to new shape, new shape dim: {new_dim} was zero"))
             } else if dim != 1 {
@@ -2041,6 +2119,7 @@ impl<T> Tensor<T> {
     Deserialize,
     PartialEq,
     Eq,
+    Default,
 )]
 pub struct Shape(Vec<usize>);
 
@@ -3242,23 +3321,23 @@ mod test {
         let data = vec![
             1.0, 2.0,
 
-            3.0, 4.0, 
-                                  
+            3.0, 4.0,
+
             5.0, 6.0];
 
         let expansion_shape: Shape = vec![3, 3, 2].into();
         #[rustfmt::skip]
         let expansion_data = vec![
-            1.0, 2.0, 
-            1.0, 2.0, 
-            1.0, 2.0, 
-            
-            3.0, 4.0, 
-            3.0, 4.0, 
-            3.0, 4.0, 
-            
-            5.0, 6.0, 
-            5.0, 6.0, 
+            1.0, 2.0,
+            1.0, 2.0,
+            1.0, 2.0,
+
+            3.0, 4.0,
+            3.0, 4.0,
+            3.0, 4.0,
+
+            5.0, 6.0,
+            5.0, 6.0,
             5.0, 6.0,
         ];
 

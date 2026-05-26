@@ -8,7 +8,7 @@ use crate::{
     Element, Tensor,
     layers::{
         concat_matmul::ConcatMatMul,
-        convolution::Convolution,
+        convolution::{Convolution, conv2d_shape_with_padding_and_stride},
         dense::Dense,
         flatten::Flatten,
         matrix_mul::{MatMul, OperandMatrix},
@@ -214,7 +214,6 @@ pub(crate) fn pad_conv(
         "More than 1 input shape found when padding convolution layer"
     );
     let sd = si.shapes.first_mut().unwrap();
-    sd.input_shape_og = safe_conv2d_shape(&sd.input_shape_og, &c.filter.get_shape())?;
     let weight_shape = c.filter.get_shape();
     // Perform basic sanity checks on the tensor dimensions
     check_filter(&weight_shape).context("filter shape test failed:")?;
@@ -231,20 +230,77 @@ pub(crate) fn pad_conv(
         sd.input_shape_padded.rank() == 3,
         "Input shape for convolution is not 3D"
     );
+
+    // Compute the effective input shapes after applying ONNX spatial zero-padding.
+    // When input_padding = [ph, pw], each spatial dimension grows by 2*ph / 2*pw.
+    let [ph, pw] = c.input_padding;
+    let effective_og = if ph > 0 || pw > 0 {
+        let orig = &sd.input_shape_og;
+        assert_eq!(orig.len(), 3, "expected 3-D input shape [C,H,W]");
+        Shape::new(vec![orig[0], orig[1] + 2 * ph, orig[2] + 2 * pw])
+    } else {
+        sd.input_shape_og.clone()
+    };
+    let effective_padded = if ph > 0 || pw > 0 {
+        // The power-of-two padded version of the effective (spatially-padded) input.
+        effective_og
+            .iter()
+            .map(|&x| x.next_power_of_two())
+            .collect::<Shape>()
+    } else {
+        sd.input_shape_padded.clone()
+    };
+
+    // Capture the unpadded input shape before we overwrite sd.input_shape_og with the output shape.
+    let unpadded_input_shape_og = sd.input_shape_og.clone();
+
+    // Update output shapes.  For strided convolutions downstream layers receive the compact
+    // strided output, so we use the correct formula floor((H+2*ph-K)/S)+1.
+    let [sh, sw] = c.stride;
+    assert_eq!(sh, sw, "only square strides are supported");
+    let strided_og_shape = conv2d_shape_with_padding_and_stride(
+        &unpadded_input_shape_og,
+        &c.filter.get_shape(),
+        ph,
+        pw,
+        sh,
+        sw,
+    );
+    sd.input_shape_og = strided_og_shape;
+
     let new_conv_good = c.clone();
     // Since we are doing an FFT based conv, we need to pad the last two dimensions of the filter to match the input.
     let weight_shape = c.filter.pad_next_power_of_two().get_shape();
     let (filter_height, filter_width) = (weight_shape[2], weight_shape[3]);
-    let (input_height, input_width) = (sd.input_shape_padded.dim(1), sd.input_shape_padded.dim(2));
+    let (input_height, input_width) = (effective_padded.dim(1), effective_padded.dim(2));
 
     ensure!(
         filter_height <= input_height && filter_width <= input_width,
         "Filter dimensions in convolution have to be smaller than input dimensions",
     );
 
-    let new_conv = new_conv_good.into_padded_and_ffted(&sd.input_shape_og);
-    let output_shape: Shape = safe_conv2d_shape(&sd.input_shape_padded, &weight_shape)?;
-    sd.input_shape_padded = output_shape.next_power_of_two();
+    // into_padded_and_ffted expects the unpadded INPUT shape (it applies ONNX padding and POT
+    // internally to size the FFT).  Pass the original input shape, not the output shape.
+    let new_conv = new_conv_good.into_padded_and_ffted(&unpadded_input_shape_og);
+    let full_output_shape: Shape = safe_conv2d_shape(&effective_padded, &weight_shape)?;
+    sd.input_shape_padded = if sh == 1 {
+        full_output_shape.next_power_of_two()
+    } else {
+        // Compact strided POT-padded output shape: use the correct strided formula on the
+        // POT-padded input (ONNX padding already baked in via effective_padded).
+        let strided_padded = conv2d_shape_with_padding_and_stride(
+            &effective_padded,
+            &c.filter.get_shape(),
+            0,
+            0,
+            sh,
+            sw,
+        );
+        let c_pot = strided_padded[0].next_power_of_two();
+        let h_s_pot = strided_padded[1].next_power_of_two();
+        let w_s_pot = strided_padded[2].next_power_of_two();
+        Shape::new(vec![c_pot, h_s_pot, w_s_pot])
+    };
     Ok(new_conv)
 }
 

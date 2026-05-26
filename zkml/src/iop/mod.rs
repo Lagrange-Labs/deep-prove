@@ -100,11 +100,168 @@ where
 mod test {
     use ff_ext::GoldilocksExt2;
 
-    use crate::{default_transcript, init_test_logging_default, model::Model, testing::Pcs};
+    use crate::{
+        Element, default_transcript, init_test_logging_default,
+        layers::{Layer, convolution::Convolution},
+        model::Model,
+        padding::PaddingMode,
+        tensor::{Shape, Tensor},
+        testing::Pcs,
+    };
 
-    use super::{Context, prover::Prover, verifier::verify};
+    use p3_field::FieldAlgebra;
+
+    use super::{Context, prover::Prover, verifier::{IO, verify}};
 
     type F = GoldilocksExt2;
+
+    /// End-to-end ZK proof test for a strided convolution (stride=2).
+    /// Builds a model with a single stride-2 conv (4 out-ch, 3×3 kernel), runs inference,
+    /// generates a proof, and verifies it.  This validates the soundness of the
+    /// post-conv decimation circuit (full-res FFT conv + MLE point expansion + hadamard clearing).
+    #[test]
+    fn test_prover_strided_conv() {
+        init_test_logging_default();
+
+        // Input: [2 ch, 8×8] (already POT).  Kernel: [4 out, 2 in, 3×3].
+        // Stride 2 → valid out [4, 3, 3], POT-padded to [4, 4, 4].
+        let input_shape: Shape = vec![2usize, 8, 8].into();
+        let filter_shape: Shape = vec![4usize, 2, 3, 3].into();
+        let filter: Tensor<Element> = Tensor::random(&filter_shape);
+        let bias: Tensor<Element> = Tensor::zeros(vec![filter_shape[0]].into());
+
+        let stride = [2usize, 2];
+        let conv = Convolution::new_with_padding_and_stride(filter, bias, [0, 0], stride)
+            .into_padded_and_ffted(&input_shape);
+
+        let mut model =
+            Model::new_from_input_shapes(vec![input_shape.clone()], PaddingMode::Padding);
+        model
+            .add_consecutive_layer(Layer::Convolution(conv), None)
+            .expect("add conv layer");
+        model.route_output(None).expect("route output");
+
+        let input = Tensor::random(&input_shape);
+        let trace = model.run(&vec![input]).expect("model run");
+        let io = trace.to_verifier_io();
+        let ctx = Context::<F, Pcs<F>>::generate(&model, None, None).expect("generate context");
+        let mut prover_transcript = default_transcript();
+        let prover = Prover::<_, _, _>::new(&ctx, &mut prover_transcript);
+        let proof = prover.prove(trace).expect("generate proof");
+        let mut verifier_transcript = default_transcript();
+        verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript)
+            .expect("verify strided conv proof");
+    }
+
+    /// Expose the sumcheck inconsistency bug: stride=2, padding=1, 32×32 input.
+    /// This is the configuration used by cnn_wide_2_strided on CIFAR-10.
+    /// The bug: h_full_pot = h_s_pot * stride = 16*2 = 32, but the actual
+    /// POT-padded FFT spatial dim is n_x = next_pow2(34) = 64.  This causes
+    /// the full-res padded shape to be wrong, making the claim inconsistent.
+    #[test]
+    fn test_prover_strided_conv_with_padding() {
+        init_test_logging_default();
+
+        // Input: [3 ch, 32×32].  Kernel: [8 out, 3 in, 3×3].  Padding=1, Stride=2.
+        // After ONNX padding: effective 3×34×34 → n_x=64.
+        // Valid out: [8, 16, 16].  Compact POT: [8, 16, 16].
+        // BUG: prove_convolution_step assumes h_full_pot = 16*2 = 32 but actual n_x = 64.
+        let input_shape: Shape = vec![3usize, 32, 32].into();
+        let filter_shape: Shape = vec![8usize, 3, 3, 3].into();
+        let filter: Tensor<Element> = Tensor::random(&filter_shape);
+        let bias: Tensor<Element> = Tensor::zeros(vec![filter_shape[0]].into());
+
+        let stride = [2usize, 2];
+        let conv = Convolution::new_with_padding_and_stride(filter, bias, [1, 1], stride)
+            .into_padded_and_ffted(&input_shape);
+
+        let mut model =
+            Model::new_from_input_shapes(vec![input_shape.clone()], PaddingMode::Padding);
+        model
+            .add_consecutive_layer(Layer::Convolution(conv), None)
+            .expect("add conv layer");
+        model.route_output(None).expect("route output");
+
+        let raw_input = Tensor::random(&input_shape);
+        // Pad the input to the model's expected (POT) input shape, matching what prepare_inputs
+        // does in the ONNX pipeline.  Without this, to_verifier_io() would store a non-POT
+        // raw tensor (3072 elements) but the GKR claim is about the padded input (POT size).
+        let inputs = model
+            .prepare_inputs(vec![raw_input])
+            .expect("prepare inputs");
+        let trace = model.run(&inputs).expect("model run");
+        let io = trace.to_verifier_io();
+        let ctx = Context::<F, Pcs<F>>::generate(&model, None, None).expect("generate context");
+        let mut prover_transcript = default_transcript();
+        let prover = Prover::<_, _, _>::new(&ctx, &mut prover_transcript);
+        let proof = prover.prove(trace).expect("generate proof");
+        let mut verifier_transcript = default_transcript();
+        verify::<_, _, _>(ctx, proof, io, &mut verifier_transcript)
+            .expect("verify strided conv with padding proof");
+    }
+
+    /// Soundness mutation test for `verify_input_claim`: prove a stride-2 + ONNX-padding
+    /// conv correctly, then corrupt ALL elements of io.input[0] by +1.  The verifier must
+    /// reject — if it accepts, the `verify_input_claim` override is unsound.
+    ///
+    /// Why input (not output) corruption:
+    ///   - Output-claim corruption is unreliable: the Fiat-Shamir challenge `r` can make
+    ///     `delta.mle(r) = 0` for small corruptions, letting them pass undetected.
+    ///   - Input-claim corruption exercises the `verify_input_claim` override in `ConvCtx`,
+    ///     which uses `ensure!` and returns `Err` — a deterministic rejection path.
+    ///   - Corrupting ALL input elements guarantees `delta.mle(r) != 0` for any `r`, since
+    ///     `sum_k lagrange_k(r) = 1` always (partition of unity).
+    #[test]
+    fn test_soundness_reject_corrupted_input_strided_conv() {
+        init_test_logging_default();
+
+        let input_shape: Shape = vec![3usize, 32, 32].into();
+        let filter_shape: Shape = vec![8usize, 3, 3, 3].into();
+        let filter: Tensor<Element> = Tensor::random(&filter_shape);
+        let bias: Tensor<Element> = Tensor::zeros(vec![filter_shape[0]].into());
+
+        let stride = [2usize, 2];
+        let conv =
+            Convolution::new_with_padding_and_stride(filter, bias, [1, 1], stride)
+                .into_padded_and_ffted(&input_shape);
+
+        let mut model =
+            Model::new_from_input_shapes(vec![input_shape.clone()], PaddingMode::Padding);
+        model
+            .add_consecutive_layer(Layer::Convolution(conv), None)
+            .expect("add conv layer");
+        model.route_output(None).expect("route output");
+
+        let raw_input = Tensor::random(&input_shape);
+        let inputs = model.prepare_inputs(vec![raw_input]).expect("prepare inputs");
+        let trace = model.run(&inputs).expect("model run");
+        let io = trace.to_verifier_io();
+        let ctx = Context::<F, Pcs<F>>::generate(&model, None, None).expect("generate context");
+
+        let mut prover_transcript = default_transcript();
+        let prover = Prover::<_, _, _>::new(&ctx, &mut prover_transcript);
+        let proof = prover.prove(trace).expect("generate proof");
+
+        // Corrupt ALL elements of the input tensor (+1 mod p).
+        // sum_k lagrange_k(r) = 1 for any r (partition of unity), so the input MLE
+        // evaluation shifts by exactly 1, which verify_input_claim will detect via ensure!.
+        let mut corrupt_input = io.input.clone();
+        let in_shape = corrupt_input[0].get_shape().clone();
+        let mut in_data = corrupt_input[0].get_data().to_vec();
+        for x in in_data.iter_mut() {
+            *x += F::ONE;
+        }
+        corrupt_input[0] = Tensor::new(in_shape, in_data);
+
+        let corrupt_io = IO::new(corrupt_input, io.output);
+
+        let mut verifier_transcript = default_transcript();
+        let result = verify::<_, _, _>(ctx, proof, corrupt_io, &mut verifier_transcript);
+        assert!(
+            result.is_err(),
+            "verifier MUST reject a proof with corrupted input (soundness failure in verify_input_claim!)"
+        );
+    }
 
     #[test]
     fn test_prover_steps_generic() {

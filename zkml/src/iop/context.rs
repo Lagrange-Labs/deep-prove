@@ -93,6 +93,12 @@ impl ShapeStep {
 pub struct ContextAux {
     pub tables: BTreeSet<TableType>,
     pub last_output_shape: Vec<Shape>,
+    /// Unpadded (pre-POT-padding) output shapes of the previous node.
+    /// For the first node this is the model's unpadded input shapes.
+    /// Used so that layer contexts (e.g. ConvCtx) can record the
+    /// unpadded input shape they received, which is needed for verification
+    /// when ONNX spatial padding changes the effective input size.
+    pub last_unpadded_output_shape: Vec<Shape>,
     pub model_polys: Option<HashMap<PolyId, Vec<Element>>>,
     /// THis field is only used in macro layers like MHA
     pub max_poly_len: usize,
@@ -127,6 +133,7 @@ where
         let mut ctx_aux = ContextAux {
             tables,
             last_output_shape: input_shapes.clone(),
+            last_unpadded_output_shape: model.unpadded_input_shapes(),
             model_polys: None,
             max_poly_len,
         };
@@ -141,6 +148,7 @@ where
                     Vec::<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>::new();
                 let mut step_infos = BTreeMap::new();
                 let mut shapes: HashMap<NodeId, Vec<Shape>> = HashMap::new();
+                let mut unpadded_shapes: HashMap<NodeId, Vec<Shape>> = HashMap::new();
                 debug!("Context : layer info generation ...");
                 for (id, node) in model.to_forward_iterator() {
                     ctx_aux = compute_node_shape::<E>(
@@ -148,7 +156,9 @@ where
                         &mut model_polys,
                         &mut step_infos,
                         &mut shapes,
+                        &mut unpadded_shapes,
                         &input_shapes,
+                        &model.unpadded_input_shapes(),
                         id,
                         node,
                     )?;
@@ -171,6 +181,7 @@ where
                     Vec::<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>::new();
                 let mut step_infos = BTreeMap::new();
                 let mut shapes: HashMap<NodeId, Vec<Shape>> = HashMap::new();
+                let mut unpadded_shapes: HashMap<NodeId, Vec<Shape>> = HashMap::new();
                 debug!("Context : layer info generation ...");
                 for (id, node) in model.to_forward_iterator() {
                     ctx_aux = compute_node_shape::<E>(
@@ -178,7 +189,9 @@ where
                         &mut model_polys,
                         &mut step_infos,
                         &mut shapes,
+                        &mut unpadded_shapes,
                         &input_shapes,
+                        &model.unpadded_input_shapes(),
                         id,
                         node,
                     )?;
@@ -214,12 +227,15 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compute_node_shape<E: ExtensionField>(
     mut ctx_aux: ContextAux,
     model_polys: &mut Vec<(NodeId, HashMap<PolyId, DenseMultilinearExtension<E>>)>,
     step_infos: &mut BTreeMap<NodeId, NodeCtx<E>>,
     shapes: &mut HashMap<NodeId, Vec<Shape>>,
+    unpadded_shapes: &mut HashMap<NodeId, Vec<Shape>>,
     input_shapes: &[Shape],
+    unpadded_input_shapes: &[Shape],
     id: usize,
     node: &Node<Element>,
 ) -> anyhow::Result<ContextAux> {
@@ -232,7 +248,7 @@ fn compute_node_shape<E: ExtensionField>(
         "Generating context node with id {id}: {:?}",
         node.describe()
     );
-    // compute input shapes for this node
+    // compute input shapes for this node (padded)
     let node_input_shapes = node
         .inputs
         .iter()
@@ -244,7 +260,7 @@ fn compute_node_shape<E: ExtensionField>(
                 ))?;
                 ensure!(
                     edge.index < node_shapes.len(),
-                    "Input for node {} is coming from output {} of node {}, 
+                    "Input for node {} is coming from output {} of node {},
                         but this node has only {} outputs",
                     id,
                     edge.index,
@@ -256,7 +272,7 @@ fn compute_node_shape<E: ExtensionField>(
                 // input node
                 ensure!(
                     edge.index < input_shapes.len(),
-                    "Input for node {} is the input {} of the model, 
+                    "Input for node {} is the input {} of the model,
                         but the model has only {} inputs",
                     id,
                     edge.index,
@@ -266,7 +282,42 @@ fn compute_node_shape<E: ExtensionField>(
             })
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
+    // compute unpadded input shapes for this node (for layers like conv that need them)
+    let node_unpadded_input_shapes = node
+        .inputs
+        .iter()
+        .map(|edge| {
+            Ok(if let Some(node_id) = &edge.node {
+                let node_shapes = unpadded_shapes.get(node_id).ok_or(anyhow!(
+                    "Node {} not found in set of previous unpadded shapes",
+                    node_id
+                ))?;
+                ensure!(
+                    edge.index < node_shapes.len(),
+                    "Unpadded input for node {} from output {} of node {},
+                        but this node has only {} outputs",
+                    id,
+                    edge.index,
+                    node_id,
+                    node_shapes.len()
+                );
+                node_shapes[edge.index].clone()
+            } else {
+                // input node
+                ensure!(
+                    edge.index < unpadded_input_shapes.len(),
+                    "Unpadded input for node {} is the input {} of the model,
+                        but the model has only {} inputs",
+                    id,
+                    edge.index,
+                    unpadded_input_shapes.len()
+                );
+                unpadded_input_shapes[edge.index].clone()
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
     ctx_aux.last_output_shape = node_input_shapes;
+    ctx_aux.last_unpadded_output_shape = node_unpadded_input_shapes.clone();
     let (info, mut new_aux) = node.step_info(id, ctx_aux)?;
     // Retrieve any model polynomials that need to be committed
     if new_aux.model_polys.is_some() {
@@ -299,5 +350,14 @@ fn compute_node_shape<E: ExtensionField>(
         },
     );
     shapes.insert(id, new_aux.last_output_shape.clone());
+    // If the node's step_info explicitly updated last_unpadded_output_shape (e.g. conv),
+    // use that.  Otherwise fall back to the padded output shape: non-spatial-transforming layers
+    // (relu, dense, requant, etc.) don't apply ONNX spatial padding, so unpadded ≈ padded output.
+    let unpadded_out = if new_aux.last_unpadded_output_shape != node_unpadded_input_shapes {
+        new_aux.last_unpadded_output_shape.clone()
+    } else {
+        new_aux.last_output_shape.clone()
+    };
+    unpadded_shapes.insert(id, unpadded_out);
     Ok(new_aux)
 }

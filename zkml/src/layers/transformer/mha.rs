@@ -447,6 +447,9 @@ impl<E: ExtensionField> ProveInfo<E> for Mha<Element> {
         let qk_aux = ContextAux {
             tables: reshaped_aux.tables,
             last_output_shape: reshaped_aux.last_output_shape[..2].to_vec(),
+            last_unpadded_output_shape: reshaped_aux.last_unpadded_output_shape
+                [..2.min(reshaped_aux.last_unpadded_output_shape.len())]
+                .to_vec(),
             model_polys: reshaped_aux.model_polys,
             max_poly_len: reshaped_aux.max_poly_len,
         };
