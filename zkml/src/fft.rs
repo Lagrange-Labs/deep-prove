@@ -41,6 +41,17 @@ pub fn fft<F: PrimeField + Send + Sync>(v: &mut Vec<F>, flag: bool) -> anyhow::R
         "Input vector to fft must be a power of two",
     );
 
+    // A length-1 FFT is mathematically the identity transform, so handling
+    // this case with an early return preserves correctness while avoiding
+    // the panic that the general code path below would otherwise hit for
+    // n == 1: it unconditionally writes to `twiddle[1]`, even though
+    // `twiddle` has length 1 in that case, and `bitreverse_permutation`
+    // computes a right-shift of `usize::BITS - length.ilog2()` bits, which
+    // equals a full-width shift and panics under overflow-checks.
+    if v.len() == 1 {
+        return Ok(());
+    }
+
     let n = v.len();
     let logn = n.ilog2();
 
@@ -90,13 +101,38 @@ pub fn fft<F: PrimeField + Send + Sync>(v: &mut Vec<F>, flag: bool) -> anyhow::R
 
 #[cfg(test)]
 mod test {
+    use ark_bn254::Fr;
     use itertools::Itertools;
     use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
     use crate::{
-        fft::{bitreverse, bitreverse_permutation},
+        fft::{bitreverse, bitreverse_permutation, fft},
         testing::random_vector,
     };
+
+    /// Minimal PoC: `1usize.is_power_of_two() == true`, so `fft()`'s stated
+    /// precondition (`ensure!(v.len().is_power_of_two())`) admits a
+    /// length-1 input. Before the fix, this panicked with an out-of-bounds
+    /// write to `twiddle[1]` (`twiddle` has length 1 for n == 1). A
+    /// length-1 FFT is mathematically the identity transform.
+    #[test]
+    fn fft_single_element_should_not_panic() {
+        let mut v = vec![Fr::from(1u64)];
+
+        fft(&mut v, false).unwrap();
+
+        assert_eq!(v, vec![Fr::from(1u64)]);
+    }
+
+    /// Same PoC for the inverse transform (`flag == true`).
+    #[test]
+    fn ifft_single_element_should_not_panic() {
+        let mut v = vec![Fr::from(1u64)];
+
+        fft(&mut v, true).unwrap();
+
+        assert_eq!(v, vec![Fr::from(1u64)]);
+    }
 
     #[test]
     fn test_bitreverse_permutation() {
